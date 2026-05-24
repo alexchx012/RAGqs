@@ -1,0 +1,2 @@
+{"id":"rag-basics","question":"What is RAG?","expectedAnswerTraits":["retrieval","generation"],"expectedSources":["rag-basics.md"],"expectsRefusal":false}
+{"id":"no-answer","question":"What is the private launch code?","expectedAnswerTraits":[],"expectedSources":[],"expectsRefusal":true}
