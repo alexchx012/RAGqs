@@ -81,6 +81,9 @@ class MilvusConfig(FrozenConfigModel):
 class RagConfig(FrozenConfigModel):
     top_k: int
     model: str
+    query_rewriter_provider: str
+    context_compressor_provider: str
+    context_compressor_max_characters: int
 
 
 class ChunkingConfig(FrozenConfigModel):
@@ -152,6 +155,9 @@ class Settings(BaseSettings):
     # RAG 配置
     rag_top_k: int = 3
     rag_model: str = "qwen-max"
+    query_rewriter_provider: str = "none"
+    context_compressor_provider: str = "none"
+    context_compressor_max_characters: int = 1200
 
     # 文档分块配置
     chunk_max_size: int = 800
@@ -245,7 +251,13 @@ class Settings(BaseSettings):
 
     @property
     def rag(self) -> RagConfig:
-        return RagConfig(top_k=self.rag_top_k, model=self.rag_model)
+        return RagConfig(
+            top_k=self.rag_top_k,
+            model=self.rag_model,
+            query_rewriter_provider=self.query_rewriter_provider,
+            context_compressor_provider=self.context_compressor_provider,
+            context_compressor_max_characters=self.context_compressor_max_characters,
+        )
 
     @property
     def chunking(self) -> ChunkingConfig:

@@ -308,6 +308,25 @@ def test_config_validation_rejects_unknown_agent_runtime():
     assert ("AGENT_RUNTIME", "unsupported runtime: unknown") in issues
 
 
+def test_config_validation_rejects_unknown_retrieval_enhancer_settings():
+    report = validate_settings(
+        _settings(
+            query_rewriter_provider="unknown",
+            context_compressor_provider="unknown",
+            context_compressor_max_characters=0,
+        )
+    )
+
+    assert report.is_valid is False
+    issues = {(issue.field, issue.message) for issue in report.errors}
+    assert ("QUERY_REWRITER_PROVIDER", "unsupported provider: unknown") in issues
+    assert ("CONTEXT_COMPRESSOR_PROVIDER", "unsupported provider: unknown") in issues
+    assert (
+        "CONTEXT_COMPRESSOR_MAX_CHARACTERS",
+        "must be greater than or equal to 1",
+    ) in issues
+
+
 def test_phase8_docs_cover_extension_and_second_business_templates():
     extension_docs = (ROOT / "docs" / "extension-guide.md").read_text(encoding="utf-8")
     template_docs = (ROOT / "docs" / "templates" / "business-rag-template.md").read_text(
@@ -319,6 +338,7 @@ def test_phase8_docs_cover_extension_and_second_business_templates():
         "Tool Planning",
         "Provider Switching",
         "Prompt Profiles",
+        "Retrieval Enhancers",
         "Second-Business Template",
     ]:
         assert phrase in extension_docs
@@ -329,6 +349,8 @@ def test_phase8_docs_cover_extension_and_second_business_templates():
         "PROMPT_PROFILE",
         "CHAT_PROVIDER",
         "CHECKPOINT_PROVIDER",
+        "QUERY_REWRITER_PROVIDER",
+        "CONTEXT_COMPRESSOR_PROVIDER",
         "do not modify core code",
     ]:
         assert phrase in template_docs
@@ -362,6 +384,9 @@ def _settings(**overrides):
         "openai_compatible_base_url": "https://api.example.com/v1",
         "openai_compatible_model": "compatible-chat",
         "prompt_profile": "default",
+        "query_rewriter_provider": "none",
+        "context_compressor_provider": "none",
+        "context_compressor_max_characters": 1200,
         "enabled_tools": "retrieve_knowledge,get_current_time",
         "cors_allow_origins": "http://127.0.0.1:9900",
         "cors_allow_credentials": True,

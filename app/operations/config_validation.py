@@ -310,6 +310,56 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
         errors.append(
             ConfigIssue(field="RAG_TOP_K", message="must be greater than or equal to 1")
         )
+    query_rewriter_provider = _normalize_config_id(
+        _group_value(
+            rag_config,
+            settings,
+            "query_rewriter_provider",
+            "query_rewriter_provider",
+            default="none",
+        )
+    )
+    if query_rewriter_provider not in {"none", "llm"}:
+        errors.append(
+            ConfigIssue(
+                field="QUERY_REWRITER_PROVIDER",
+                message=f"unsupported provider: {query_rewriter_provider}",
+            )
+        )
+
+    context_compressor_provider = _normalize_config_id(
+        _group_value(
+            rag_config,
+            settings,
+            "context_compressor_provider",
+            "context_compressor_provider",
+            default="none",
+        )
+    )
+    if context_compressor_provider not in {"none", "llm"}:
+        errors.append(
+            ConfigIssue(
+                field="CONTEXT_COMPRESSOR_PROVIDER",
+                message=f"unsupported provider: {context_compressor_provider}",
+            )
+        )
+
+    if (
+        _group_value(
+            rag_config,
+            settings,
+            "context_compressor_max_characters",
+            "context_compressor_max_characters",
+            default=1200,
+        )
+        < 1
+    ):
+        errors.append(
+            ConfigIssue(
+                field="CONTEXT_COMPRESSOR_MAX_CHARACTERS",
+                message="must be greater than or equal to 1",
+            )
+        )
 
     chunk_max_size = _group_value(
         chunking_config, settings, "max_size", "chunk_max_size", default=800
