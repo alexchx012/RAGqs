@@ -37,7 +37,7 @@ from app.providers.postgres_session import PostgresSessionStoreProvider
 from app.providers.retrieval import VectorStoreRetrieverProvider
 from app.providers.selection import ProviderSelection, validate_provider_selection
 from app.providers.sqlite_session import SQLiteSessionStoreProvider
-from app.retrieval import RetrievalPipeline
+from app.retrieval import LLMContextCompressor, LLMQueryRewriter, RetrievalPipeline
 
 
 @dataclass(frozen=True)
@@ -131,8 +131,21 @@ def create_default_provider_container(
             vector_store_provider=vector_store_provider,
             default_top_k=settings.rag_top_k,
         )
+        query_rewriter = None
+        if _setting_id(settings, "query_rewriter_provider", "none") == "llm":
+            query_rewriter = LLMQueryRewriter(chat_model_provider)
+
+        compressor = None
+        if _setting_id(settings, "context_compressor_provider", "none") == "llm":
+            compressor = LLMContextCompressor(
+                chat_model_provider,
+                max_characters=getattr(settings, "context_compressor_max_characters", 1200),
+            )
+
         retriever_provider = RetrievalPipeline(
             primary_retriever=base_retriever_provider,
+            query_rewriter=query_rewriter,
+            compressor=compressor,
             default_top_k=settings.rag_top_k,
         )
 
@@ -189,3 +202,7 @@ def reset_default_provider_container() -> None:
 
     global _default_provider_container
     _default_provider_container = None
+
+
+def _setting_id(settings: Any, field_name: str, default: str) -> str:
+    return str(getattr(settings, field_name, default)).strip().lower().replace("-", "_")

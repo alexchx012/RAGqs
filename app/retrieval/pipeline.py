@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Protocol
+from typing import Any, Protocol
 
 from langchain_core.documents import Document
 
 from app.providers.contracts import (
+    ChatModelProvider,
     RetrievalRequest,
     RetrievalResult,
     RetrievalSource,
@@ -74,6 +75,66 @@ class StaticContextCompressor:
             )
             for document in selected
         ]
+
+
+@dataclass
+class LLMQueryRewriter:
+    """Chat-model-backed query rewriter for production retrieval quality tuning."""
+
+    chat_model_provider: ChatModelProvider
+
+    def rewrite(self, query: str) -> str:
+        model = self.chat_model_provider.create_chat_model(streaming=False)
+        response = model.invoke(
+            [
+                (
+                    "system",
+                    "Rewrite the question into a concise retrieval query. "
+                    "Preserve named entities, product names, dates, and constraints. "
+                    "Return only the rewritten query.",
+                ),
+                ("human", query),
+            ]
+        )
+        rewritten = _message_content(response).strip()
+        return rewritten or query
+
+
+@dataclass
+class LLMContextCompressor:
+    """Chat-model-backed context compressor that preserves document metadata."""
+
+    chat_model_provider: ChatModelProvider
+    max_characters: int = 1200
+
+    def compress(self, query: str, documents: list[Document]) -> list[Document]:
+        model = self.chat_model_provider.create_chat_model(streaming=False)
+        compressed_documents: list[Document] = []
+        for document in documents:
+            response = model.invoke(
+                [
+                    (
+                        "system",
+                        "Compress the document chunk for the user's question. "
+                        "Keep only facts useful for answering, preserve source-grounded wording, "
+                        "and return only the compressed context.",
+                    ),
+                    (
+                        "human",
+                        f"Question:\n{query}\n\nDocument chunk:\n{document.page_content}",
+                    ),
+                ]
+            )
+            compressed_content = _message_content(response).strip()
+            if not compressed_content:
+                compressed_content = document.page_content
+            compressed_documents.append(
+                Document(
+                    page_content=compressed_content[: self.max_characters],
+                    metadata=dict(document.metadata),
+                )
+            )
+        return compressed_documents
 
 
 @dataclass
@@ -203,3 +264,20 @@ def _heading_path(metadata: dict) -> str:
 
 def _elapsed_ms(started: float) -> float:
     return round((perf_counter() - started) * 1000, 3)
+
+
+def _message_content(message: Any) -> str:
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if text:
+                    parts.append(str(text))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
