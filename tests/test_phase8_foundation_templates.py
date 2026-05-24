@@ -279,6 +279,19 @@ def test_config_validation_requires_sqlite_checkpoint_path():
     ) in issues
 
 
+def test_config_validation_requires_postgres_checkpoint_dsn():
+    report = validate_settings(
+        _settings(checkpoint_provider="postgres", checkpoint_postgres_dsn=" ")
+    )
+
+    assert report.is_valid is False
+    issues = {(issue.field, issue.message) for issue in report.errors}
+    assert (
+        "CHECKPOINT_POSTGRES_DSN",
+        "must be set when CHECKPOINT_PROVIDER=postgres",
+    ) in issues
+
+
 def test_config_validation_rejects_unknown_checkpoint_provider():
     report = validate_settings(_settings(checkpoint_provider="unknown"))
 
@@ -342,6 +355,7 @@ def _settings(**overrides):
         "document_catalog_postgres_dsn": "",
         "checkpoint_provider": "memory",
         "checkpoint_sqlite_path": "data/checkpoints.sqlite3",
+        "checkpoint_postgres_dsn": "",
         "agent_runtime": "explicit_graph",
         "ingestion_provider": "vector_index",
         "openai_compatible_api_key": "sk-compatible",

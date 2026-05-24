@@ -20,7 +20,7 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - FastAPI serves the API and browser UI.
 - Milvus, etcd, and MinIO are started by the default `vector-database.yml` stack; Attu is available through the optional `ui` Docker profile.
 - DashScope is the default real chat and embedding provider; fake and OpenAI-compatible providers are selectable for tests or alternate deployments.
-- LangGraph checkpoints default to process-local memory, with `CHECKPOINT_PROVIDER=sqlite` available for local durable checkpoints.
+- LangGraph checkpoints default to process-local memory, with `CHECKPOINT_PROVIDER=sqlite` for local durable checkpoints and `CHECKPOINT_PROVIDER=postgres` for multi-instance checkpoints.
 
 ## Known Limitations
 
@@ -29,7 +29,7 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - Session state defaults to process-local backend memory; SQLite can persist local transcripts, Postgres is available for multi-instance chat history, and the browser uses localStorage only as a fallback cache.
 - Indexing is synchronous and has retry, idempotent document ids, optional SQLite/Postgres job state, and optional SQLite/Postgres document catalog storage.
 - Retrieval still defaults to basic top-k vector search, but query rewrite, metadata filters, rerank, compression, citation extraction, and debug trace extension points now exist.
-- Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, while production checkpoint providers are still evolving.
+- Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, with memory, SQLite, and Postgres checkpoint providers behind `CHECKPOINT_PROVIDER`.
 - API responses are inconsistent: chat endpoints return ad hoc dictionaries while other routes use Pydantic response models.
 - Observability and operations now include request trace id propagation, structured access logs, running API health preflight, upload security validation, hosted CI baseline validation, and evaluation JSON artifacts.
 - Tests now cover provider boundaries, ingestion, upload security, retrieval traces, session storage/listing, SQLite session and indexing job persistence, frontend history state, startup scripts, and evaluation scaffolding.
@@ -54,7 +54,7 @@ The repository now has an initial `app/providers/` boundary:
 
 `app/services/vector_embedding_service.py` is now a lazy compatibility wrapper instead of constructing the DashScope client at import time. `app/services/vector_store_manager.py` delegates to `MilvusVectorStoreProvider`, so vector store construction is behind a provider boundary. `app/tools/knowledge_tool.py` now retrieves through `RetrieverProvider`, which gives agents and future evaluators the same retrieval contract. `app/api/file.py` now sends upload indexing through `ProviderContainer.ingestion_provider` while preserving upload security validation and the existing indexing-status response.
 
-Current Phase 1 test coverage includes grouped settings, provider protocols, fake providers, lazy DashScope/Milvus construction, provider container wiring, `RagAgentService` chat model injection, provider-backed knowledge retrieval, upload indexing through the ingestion provider, service-side session store injection, SQLite session persistence, optional Postgres session persistence, and optional Postgres indexing-job persistence through injected connectors. Remaining provider work is mainly production-grade checkpoint/document-catalog adapters, production collection/knowledge-space selection, and gradually moving remaining flat config reads to grouped settings.
+Current Phase 1 test coverage includes grouped settings, provider protocols, fake providers, lazy DashScope/Milvus construction, provider container wiring, `RagAgentService` chat model injection, provider-backed knowledge retrieval, upload indexing through the ingestion provider, service-side session store injection, SQLite/Postgres session persistence, Postgres indexing-job persistence, Postgres document catalog persistence, and Postgres checkpoint selection through injected factories. Remaining provider work is mainly production collection/knowledge-space selection and gradually moving remaining flat config reads to grouped settings.
 
 ## Phase 2 Progress
 
@@ -83,14 +83,14 @@ The repository now has an initial `app/retrieval/` foundation:
 The repository now has an initial `app/agents/` graph foundation:
 
 - `rag_graph.py`: explicit LangGraph `StateGraph` builder with typed state and `normalize_input`, `decide_retrieval`, `retrieve`, `handoff`, `tool`, `answer`, `error_policy`, and `final_response` nodes plus `ChatModelAnswerGenerator`, `LangChainToolExecutor`, and `LangChainToolPlanner`.
-- The graph accepts injectable `RetrieverProvider`, `AnswerGenerator`, `ToolExecutor`, `ToolPlanner`, and LangGraph checkpointer implementations, propagates sources and retrieval debug data into state, accumulates routing/retrieval/tool/handoff/answer/error-policy/final events, resets per-run transient events across checkpointed invocations, and can compile with memory or SQLite checkpoint providers.
+- The graph accepts injectable `RetrieverProvider`, `AnswerGenerator`, `ToolExecutor`, `ToolPlanner`, and LangGraph checkpointer implementations, propagates sources and retrieval debug data into state, accumulates routing/retrieval/tool/handoff/answer/error-policy/final events, resets per-run transient events across checkpointed invocations, and can compile with memory, SQLite, or Postgres checkpoint providers.
 - `RagAgentService` routes `query()`, `query_with_trace()`, `query_stream()`, and `query_stream_with_trace()` through a default explicit graph when `AGENT_RUNTIME=explicit_graph`.
 - `TOOL_PLANNING_ENABLED=true` enables LangChain `bind_tools` planning for configured non-retrieval tools; `TOOL_PLANNING_EXCLUDED_TOOLS=retrieve_knowledge` keeps native RAG retrieval on the graph retrieval path by default.
 - Streaming explicit-graph calls use LangGraph `stream_mode=["custom", "updates"]`; `ChatModelAnswerGenerator.stream()` emits token chunks through custom stream events while node updates carry retrieval, tool, error, and final `done` events.
 - The graph records retrieval and answer-generation failures as structured `error` events instead of letting node exceptions escape, routes failures through an explicit `error_policy` node, skips answer generation when retrieval fails, returns a deterministic refusal when retrieval returns no usable context, and emits a graph-owned `done` payload for every terminal path.
 - `app/api/chat.py` maps stream chunks for `retrieval_decision`, `retrieval`, `handoff`, `error_policy`, `source`, `tool_call`, `tool_result`, `token`, `error`, and `done`, keeping the SSE envelope stable while the graph runtime evolves.
 
-This graph is tested as a standalone orchestration skeleton and through the service-level default runtime path. The compatibility `create_agent` path remains selectable through `AGENT_RUNTIME=legacy`; production Redis/Postgres-style checkpoint providers remain open.
+This graph is tested as a standalone orchestration skeleton and through the service-level default runtime path. The compatibility `create_agent` path remains selectable through `AGENT_RUNTIME=legacy`; Postgres checkpoint selection is available for multi-instance graph state, while real database integration testing remains deployment-environment work.
 
 ## Phase 5 Progress
 
@@ -110,7 +110,7 @@ The repository now has an initial product capability foundation:
 - Legacy `create_agent` tool execution now runs inside an enforced request-scoped knowledge-space context, so tool calls cannot silently fall back to another space during chat.
 - The browser sidebar refreshes from backend session summaries, searches through `/chat/sessions`, and lazily loads `/chat/session/{id}` before rendering selected backend histories.
 
-Knowledge-space and document catalog stores can use memory, local SQLite, or Postgres. Session and indexing-job storage also have Postgres options; production multi-instance checkpoint storage remains open.
+Knowledge-space and document catalog stores can use memory, local SQLite, or Postgres. Session, indexing-job, and checkpoint storage also have Postgres options for multi-instance deployments.
 
 ## Phase 6 Progress
 
@@ -150,10 +150,10 @@ The repository now has an initial extension-template layer:
 - `app/prompts/profiles.py`: named prompt profiles for `default`, `strict`, and `concise` RAG behaviors, selected through `PROMPT_PROFILE`.
 - `app/providers/selection.py`: provider id validation for chat, embedding, vector store, session store, and ingestion boundaries.
 - `app/providers/sqlite_session.py`: local durable SQLite implementation for `SessionStoreProvider`.
-- `app/providers/checkpoints.py`: memory and SQLite LangGraph checkpoint providers selected by `CHECKPOINT_PROVIDER`.
+- `app/providers/checkpoints.py`: memory, SQLite, and Postgres LangGraph checkpoint providers selected by `CHECKPOINT_PROVIDER`.
 - `app/providers/openai_compatible.py`: OpenAI-compatible chat and embedding provider implementations for endpoints that expose OpenAI-style APIs.
 - `app/providers/factory.py`: default container now honors provider ids and can build local fake providers without external clients.
 - `app/knowledge/catalog.py`: memory, SQLite, and Postgres document catalog implementations selected through `DOCUMENT_CATALOG_PROVIDER`.
 - `docs/extension-guide.md` and `docs/templates/business-rag-template.md`: second-development guidance for adding business tools, prompt profiles, provider settings, and evaluation data without modifying core API code.
 
-This completes the first reusable base-agent extension surface. Open product work still includes production-grade checkpoint backends beyond local SQLite.
+This completes the first reusable base-agent extension surface. Open product work still includes real provider evaluation, background indexing workers, richer retrieval-quality providers, and production security hardening.

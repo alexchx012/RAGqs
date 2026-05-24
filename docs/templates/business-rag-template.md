@@ -22,6 +22,7 @@ DOCUMENT_CATALOG_SQLITE_PATH=data/document-catalog.sqlite3
 DOCUMENT_CATALOG_POSTGRES_DSN=
 CHECKPOINT_PROVIDER=memory
 CHECKPOINT_SQLITE_PATH=data/checkpoints.sqlite3
+CHECKPOINT_POSTGRES_DSN=
 AGENT_RUNTIME=explicit_graph
 ENABLED_TOOLS=retrieve_knowledge,get_current_time
 TOOL_PLANNING_ENABLED=false
@@ -41,7 +42,7 @@ INGESTION_PROVIDER=fake
 
 For OpenAI-compatible endpoints, set `CHAT_PROVIDER=openai_compatible` or `EMBEDDING_PROVIDER=openai_compatible`, then configure `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_MODEL`, and `OPENAI_COMPATIBLE_EMBEDDING_MODEL`.
 
-For multi-instance persistence, install the optional Postgres dependency group. Use `SESSION_STORE_PROVIDER=postgres` plus `SESSION_STORE_POSTGRES_DSN` for chat history, `INDEXING_JOB_STORE_PROVIDER=postgres` plus `INDEXING_JOB_STORE_POSTGRES_DSN` for indexing job status, and `DOCUMENT_CATALOG_PROVIDER=postgres` plus `DOCUMENT_CATALOG_POSTGRES_DSN` for knowledge-space document lifecycle metadata.
+For multi-instance persistence, install the optional Postgres dependency group. Use `SESSION_STORE_PROVIDER=postgres` plus `SESSION_STORE_POSTGRES_DSN` for chat history, `INDEXING_JOB_STORE_PROVIDER=postgres` plus `INDEXING_JOB_STORE_POSTGRES_DSN` for indexing job status, `DOCUMENT_CATALOG_PROVIDER=postgres` plus `DOCUMENT_CATALOG_POSTGRES_DSN` for knowledge-space document lifecycle metadata, and `CHECKPOINT_PROVIDER=postgres` plus `CHECKPOINT_POSTGRES_DSN` for LangGraph checkpoint state.
 
 ## Tools
 
