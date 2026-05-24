@@ -14,9 +14,9 @@ Mitigation: keep query rewrite, metadata filters, rerank, contextual compression
 
 ## Session Persistence
 
-Risk: backend sessions default to process-local memory, with SQLite available for local durability and Postgres available as the first multi-instance session store. Indexing jobs and document catalog metadata can use memory, SQLite, or Postgres. Checkpoints still rely on memory or SQLite.
+Risk: backend sessions, indexing jobs, document catalog metadata, and LangGraph checkpoints can use memory, SQLite, or Postgres, but real Postgres integration still depends on deployed database credentials and schema setup at runtime.
 
-Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, document-catalog boundary, SQLite/Postgres providers, and backend-first frontend history covered by tests; add production-grade Postgres/Redis-style adapters for checkpoint state before production multi-instance use.
+Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, document-catalog boundary, checkpoint boundary, SQLite/Postgres providers, and backend-first frontend history covered by tests; add environment-backed integration checks before production multi-instance use.
 
 ## Indexing Reliability
 

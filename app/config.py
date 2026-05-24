@@ -48,6 +48,7 @@ class StorageConfig(FrozenConfigModel):
     document_catalog_sqlite_path: str
     document_catalog_postgres_dsn: str
     checkpoint_sqlite_path: str
+    checkpoint_postgres_dsn: str
 
 
 class AgentConfig(FrozenConfigModel):
@@ -125,6 +126,7 @@ class Settings(BaseSettings):
     document_catalog_postgres_dsn: str = ""
     checkpoint_provider: str = "memory"
     checkpoint_sqlite_path: str = "data/checkpoints.sqlite3"
+    checkpoint_postgres_dsn: str = ""
     agent_runtime: str = "explicit_graph"
     enabled_tools: str = "retrieve_knowledge,get_current_time"
     tool_planning_enabled: bool = False
@@ -203,6 +205,7 @@ class Settings(BaseSettings):
             document_catalog_sqlite_path=self.document_catalog_sqlite_path,
             document_catalog_postgres_dsn=self.document_catalog_postgres_dsn,
             checkpoint_sqlite_path=self.checkpoint_sqlite_path,
+            checkpoint_postgres_dsn=self.checkpoint_postgres_dsn,
         )
 
     @property

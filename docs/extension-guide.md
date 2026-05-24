@@ -36,11 +36,12 @@ Provider ids are configured by environment variables:
 - `DOCUMENT_CATALOG_PROVIDER`: `memory` by default, `sqlite` for local durable document lifecycle metadata, or `postgres` for multi-instance document lifecycle metadata.
 - `DOCUMENT_CATALOG_SQLITE_PATH`: SQLite database path when `DOCUMENT_CATALOG_PROVIDER=sqlite`.
 - `DOCUMENT_CATALOG_POSTGRES_DSN`: PostgreSQL connection string when `DOCUMENT_CATALOG_PROVIDER=postgres`.
-- `CHECKPOINT_PROVIDER`: `memory` by default, or `sqlite` for local durable LangGraph checkpoints.
+- `CHECKPOINT_PROVIDER`: `memory` by default, `sqlite` for local durable LangGraph checkpoints, or `postgres` for multi-instance graph state.
 - `CHECKPOINT_SQLITE_PATH`: SQLite database path when `CHECKPOINT_PROVIDER=sqlite`.
+- `CHECKPOINT_POSTGRES_DSN`: PostgreSQL connection string when `CHECKPOINT_PROVIDER=postgres`.
 - `AGENT_RUNTIME`: `explicit_graph` by default, or `legacy` for the old `create_agent` compatibility path.
 
-Use `fake` providers for local tests and demos that must not call DashScope, Milvus, or external APIs. Use `openai_compatible` for chat or embedding endpoints that implement OpenAI-compatible APIs. Install the optional `postgres` dependency group before enabling Postgres-backed session, indexing job, or document catalog storage.
+Use `fake` providers for local tests and demos that must not call DashScope, Milvus, or external APIs. Use `openai_compatible` for chat or embedding endpoints that implement OpenAI-compatible APIs. Install the optional `postgres` dependency group before enabling Postgres-backed session, indexing job, document catalog, or checkpoint storage.
 
 ## Prompt Profiles
 
