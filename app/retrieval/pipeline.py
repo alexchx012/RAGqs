@@ -1,0 +1,205 @@
+"""Composable retrieval pipeline with extension points."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from time import perf_counter
+from typing import Protocol
+
+from langchain_core.documents import Document
+
+from app.providers.contracts import (
+    RetrievalRequest,
+    RetrievalResult,
+    RetrievalSource,
+    RetrieverProvider,
+)
+
+
+class QueryRewriter(Protocol):
+    def rewrite(self, query: str) -> str:
+        """Return a rewritten query."""
+
+
+class Reranker(Protocol):
+    def rerank(self, query: str, documents: list[Document]) -> list[Document]:
+        """Return documents in preferred order."""
+
+
+class ContextCompressor(Protocol):
+    def compress(self, query: str, documents: list[Document]) -> list[Document]:
+        """Return a smaller set of documents or shorter contents."""
+
+
+@dataclass
+class StaticQueryRewriter:
+    """Deterministic query rewriter for tests and simple profiles."""
+
+    rewrites: dict[str, str] = field(default_factory=dict)
+
+    def rewrite(self, query: str) -> str:
+        return self.rewrites.get(query, query)
+
+
+@dataclass
+class StaticReranker:
+    """Metadata-key reranker for deterministic local behavior."""
+
+    key: str = "score"
+    reverse: bool = True
+
+    def rerank(self, query: str, documents: list[Document]) -> list[Document]:
+        return sorted(
+            documents,
+            key=lambda document: document.metadata.get(self.key, 0) or 0,
+            reverse=self.reverse,
+        )
+
+
+@dataclass
+class StaticContextCompressor:
+    """Trims document count and optional document text length."""
+
+    max_documents: int | None = None
+    max_characters: int | None = None
+
+    def compress(self, query: str, documents: list[Document]) -> list[Document]:
+        selected = documents[: self.max_documents] if self.max_documents is not None else documents
+        if self.max_characters is None:
+            return selected
+        return [
+            Document(
+                page_content=document.page_content[: self.max_characters],
+                metadata=dict(document.metadata),
+            )
+            for document in selected
+        ]
+
+
+@dataclass
+class RetrievalPipeline:
+    """RetrieverProvider that composes rewrite, retrieval, rerank, compression, and sources."""
+
+    primary_retriever: RetrieverProvider
+    additional_retrievers: list[RetrieverProvider] = field(default_factory=list)
+    query_rewriter: QueryRewriter | None = None
+    reranker: Reranker | None = None
+    compressor: ContextCompressor | None = None
+    default_top_k: int = 3
+
+    def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        total_started = perf_counter()
+        stages: list[str] = []
+        timings_ms: dict[str, float] = {}
+        top_k = request.top_k or self.default_top_k
+        rewritten_query = request.query
+
+        if self.query_rewriter is not None:
+            started = perf_counter()
+            rewritten_query = self.query_rewriter.rewrite(request.query)
+            timings_ms["rewrite"] = _elapsed_ms(started)
+            stages.append("rewrite")
+
+        started = perf_counter()
+        stages.append("retrieve")
+        retriever_request = RetrievalRequest(
+            query=rewritten_query,
+            top_k=top_k,
+            filters=request.filters,
+        )
+        retriever_results = [
+            retriever.retrieve(retriever_request)
+            for retriever in [self.primary_retriever, *self.additional_retrievers]
+        ]
+        timings_ms["retrieve"] = _elapsed_ms(started)
+
+        started = perf_counter()
+        documents, deduplicated = _deduplicate_documents(
+            document
+            for result in retriever_results
+            for document in result.documents
+        )
+        timings_ms["deduplicate"] = _elapsed_ms(started)
+        stages.append("deduplicate")
+
+        if self.reranker is not None:
+            started = perf_counter()
+            documents = self.reranker.rerank(rewritten_query, documents)
+            timings_ms["rerank"] = _elapsed_ms(started)
+            stages.append("rerank")
+
+        if self.compressor is not None:
+            started = perf_counter()
+            documents = self.compressor.compress(rewritten_query, documents)
+            timings_ms["compress"] = _elapsed_ms(started)
+            stages.append("compress")
+
+        started = perf_counter()
+        documents = documents[:top_k]
+        sources = [_source_from_document(index, document) for index, document in enumerate(documents, 1)]
+        timings_ms["sources"] = _elapsed_ms(started)
+        timings_ms["total"] = _elapsed_ms(total_started)
+        stages.append("sources")
+
+        return RetrievalResult(
+            query=request.query,
+            rewritten_query=rewritten_query if rewritten_query != request.query else None,
+            documents=documents,
+            sources=sources,
+            debug={
+                "top_k": top_k,
+                "retriever_count": len(retriever_results),
+                "retrievers": [result.debug for result in retriever_results],
+                "deduplicated": deduplicated,
+                "stages": stages,
+                "timings_ms": timings_ms,
+            },
+        )
+
+
+def _deduplicate_documents(documents) -> tuple[list[Document], int]:
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[Document] = []
+    deduplicated = 0
+    for document in documents:
+        metadata = document.metadata
+        chunk_id = str(metadata.get("chunk_id") or "")
+        key = (
+            ("chunk_id", chunk_id)
+            if chunk_id
+            else (
+                "content",
+                str(metadata.get("source_path") or metadata.get("_source") or metadata.get("source", "")),
+                document.page_content,
+            )
+        )
+        if key in seen:
+            deduplicated += 1
+            continue
+        seen.add(key)
+        unique.append(document)
+    return unique, deduplicated
+
+
+def _source_from_document(index: int, document: Document) -> RetrievalSource:
+    metadata = document.metadata
+    heading_path = metadata.get("heading_path") or _heading_path(metadata)
+    score = metadata.get("score")
+    return RetrievalSource(
+        index=index,
+        source_path=str(metadata.get("source_path") or metadata.get("_source") or metadata.get("source") or ""),
+        file_name=str(metadata.get("file_name") or metadata.get("_file_name") or ""),
+        heading_path=heading_path,
+        chunk_id=str(metadata.get("chunk_id") or ""),
+        document_id=str(metadata.get("document_id") or ""),
+        score=float(score) if isinstance(score, int | float) else None,
+    )
+
+
+def _heading_path(metadata: dict) -> str:
+    headings = [metadata[key] for key in ("h1", "h2", "h3", "h4") if metadata.get(key)]
+    return " > ".join(headings)
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((perf_counter() - started) * 1000, 3)

@@ -1,0 +1,157 @@
+from app.config import (
+    AgentConfig,
+    AppConfig,
+    ChunkingConfig,
+    CorsConfig,
+    DashScopeConfig,
+    MilvusConfig,
+    OpenAICompatibleConfig,
+    ProviderConfig,
+    RagConfig,
+    Settings,
+    StorageConfig,
+    UploadConfig,
+)
+from app.operations.config_validation import validate_settings
+from app.providers.selection import ProviderSelection
+
+
+def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
+    settings = Settings(
+        _env_file=None,
+        app_name="Grouped RAG",
+        app_version="2.0.0",
+        debug=True,
+        host="127.0.0.1",
+        port=9911,
+        cors_allow_origins="http://localhost:9911,https://rag.example.com",
+        cors_allow_credentials=False,
+        upload_allowed_extensions="txt,md,pdf",
+        upload_max_bytes=2048,
+        upload_prompt_injection_scan_enabled=False,
+        chat_provider="openai_compatible",
+        embedding_provider="fake",
+        vector_store_provider="fake",
+        session_store_provider="sqlite",
+        ingestion_provider="fake",
+        checkpoint_provider="sqlite",
+        session_store_sqlite_path="data/test-sessions.sqlite3",
+        session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
+        indexing_job_store_provider="sqlite",
+        indexing_job_store_sqlite_path="data/test-indexing.sqlite3",
+        indexing_job_store_postgres_dsn="postgresql://rag:secret@db/ragqs-indexing",
+        document_catalog_provider="sqlite",
+        document_catalog_sqlite_path="data/test-documents.sqlite3",
+        document_catalog_postgres_dsn="postgresql://rag:secret@db/ragqs-documents",
+        checkpoint_sqlite_path="data/test-checkpoints.sqlite3",
+        agent_runtime="legacy",
+        enabled_tools="retrieve_knowledge",
+        tool_planning_enabled=True,
+        tool_planning_excluded_tools="retrieve_knowledge",
+        prompt_profile="strict",
+        openai_compatible_api_key="sk-openai",
+        openai_compatible_base_url="https://models.example.com/v1",
+        openai_compatible_model="gpt-test",
+        openai_compatible_embedding_model="embed-test",
+        dashscope_api_key="sk-dashscope",
+        dashscope_model="qwen-plus",
+        dashscope_embedding_model="text-embedding-v4",
+        milvus_host="milvus.local",
+        milvus_port=19531,
+        milvus_timeout=5000,
+        rag_top_k=8,
+        rag_model="qwen-plus",
+        chunk_max_size=1200,
+        chunk_overlap=120,
+    )
+
+    assert settings.app == AppConfig(
+        name="Grouped RAG",
+        version="2.0.0",
+        debug=True,
+        host="127.0.0.1",
+        port=9911,
+    )
+    assert settings.cors == CorsConfig(
+        allow_origins="http://localhost:9911,https://rag.example.com",
+        allow_credentials=False,
+    )
+    assert settings.upload == UploadConfig(
+        allowed_extensions="txt,md,pdf",
+        max_bytes=2048,
+        prompt_injection_scan_enabled=False,
+    )
+    assert settings.providers == ProviderConfig(
+        chat="openai_compatible",
+        embedding="fake",
+        vector_store="fake",
+        session_store="sqlite",
+        ingestion="fake",
+        checkpoint="sqlite",
+    )
+    assert settings.storage == StorageConfig(
+        session_store_sqlite_path="data/test-sessions.sqlite3",
+        session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
+        indexing_job_store_provider="sqlite",
+        indexing_job_store_sqlite_path="data/test-indexing.sqlite3",
+        indexing_job_store_postgres_dsn="postgresql://rag:secret@db/ragqs-indexing",
+        document_catalog_provider="sqlite",
+        document_catalog_sqlite_path="data/test-documents.sqlite3",
+        document_catalog_postgres_dsn="postgresql://rag:secret@db/ragqs-documents",
+        checkpoint_sqlite_path="data/test-checkpoints.sqlite3",
+    )
+    assert settings.agent == AgentConfig(
+        runtime="legacy",
+        enabled_tools="retrieve_knowledge",
+        tool_planning_enabled=True,
+        tool_planning_excluded_tools="retrieve_knowledge",
+        prompt_profile="strict",
+    )
+    assert settings.openai_compatible == OpenAICompatibleConfig(
+        api_key="sk-openai",
+        base_url="https://models.example.com/v1",
+        model="gpt-test",
+        embedding_model="embed-test",
+    )
+    assert settings.dashscope == DashScopeConfig(
+        api_key="sk-dashscope",
+        model="qwen-plus",
+        embedding_model="text-embedding-v4",
+    )
+    assert settings.milvus == MilvusConfig(
+        host="milvus.local",
+        port=19531,
+        timeout=5000,
+    )
+    assert settings.rag == RagConfig(top_k=8, model="qwen-plus")
+    assert settings.chunking == ChunkingConfig(max_size=1200, overlap=120)
+
+    assert settings.app_name == settings.app.name
+    assert settings.chat_provider == settings.providers.chat
+    assert settings.rag_top_k == settings.rag.top_k
+
+
+def test_provider_selection_and_validation_use_grouped_settings():
+    settings = Settings(
+        _env_file=None,
+        dashscope_api_key="sk-valid",
+        chat_provider="fake",
+        embedding_provider="fake",
+        vector_store_provider="fake",
+        session_store_provider="sqlite",
+        session_store_sqlite_path="data/sessions.sqlite3",
+        ingestion_provider="fake",
+        checkpoint_provider="sqlite",
+        checkpoint_sqlite_path="data/checkpoints.sqlite3",
+        indexing_job_store_provider="sqlite",
+        indexing_job_store_sqlite_path="data/indexing.sqlite3",
+        document_catalog_provider="sqlite",
+        document_catalog_sqlite_path="data/documents.sqlite3",
+    )
+
+    selection = ProviderSelection.from_settings(settings)
+    report = validate_settings(settings)
+
+    assert selection.session_store_provider == "sqlite"
+    assert selection.checkpoint_provider == "sqlite"
+    assert report.is_valid is True
