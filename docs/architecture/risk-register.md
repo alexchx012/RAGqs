@@ -1,0 +1,43 @@
+# RAGqs Foundation Risk Register
+
+## Configuration
+
+Risk: settings now expose typed groups over the existing environment variables, but some service modules still read flat global config fields directly.
+
+Mitigation: keep grouped settings views for app, CORS, uploads, providers, storage, agent, model providers, Milvus, RAG, and chunking. Continue migrating runtime modules to these groups while keeping `.env.example` synchronized with `app/config.py`.
+
+## Retrieval Quality
+
+Risk: default top-k similarity retrieval can still fail on ambiguous questions, long documents, sparse metadata, and queries needing synthesis across sections.
+
+Mitigation: keep query rewrite, metadata filters, rerank, contextual compression, source attribution, and retrieval debug output behind provider boundaries. Track retrieval hit rate in evaluation tests and add real rerank/rewrite providers before production quality claims.
+
+## Session Persistence
+
+Risk: backend sessions default to process-local memory, with SQLite available for local durability and Postgres available as the first multi-instance session store. Indexing jobs and document catalog metadata can use memory, SQLite, or Postgres. Checkpoints still rely on memory or SQLite.
+
+Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, document-catalog boundary, SQLite/Postgres providers, and backend-first frontend history covered by tests; add production-grade Postgres/Redis-style adapters for checkpoint state before production multi-instance use.
+
+## Indexing Reliability
+
+Risk: uploads are indexed synchronously; SQLite and Postgres can persist job status and document lifecycle metadata, but there is no background worker.
+
+Mitigation: keep ingestion jobs, idempotent document ids, delete/reindex operations, SQLite/Postgres job persistence, SQLite/Postgres document metadata persistence, and explicit API errors covered by tests; add background job execution before production use.
+
+## Observability
+
+Risk: request trace ids, structured access logs, health gates, and evaluation artifacts exist, but retrieval inputs, selected chunks, token usage, latency buckets, and LangGraph node transitions are still limited.
+
+Mitigation: extend per-step timing, retriever traces, optional LangSmith tracing, CI collection, and LangGraph event logs beyond the current request and health boundaries.
+
+## Security
+
+Risk: upload filename/path normalization, extension and size limits, UTF-8 validation, prompt-injection screening, and configurable CORS are in place, but document trust tiers, malware scanning, storage isolation, audit trails, and production secret handling are still limited.
+
+Mitigation: keep upload security tests in the baseline, keep secrets out of logs, add document trust metadata, add storage isolation and malware scanning for untrusted uploads, keep deployment CORS origins explicit, and document prompt-injection constraints.
+
+## Extensibility
+
+Risk: several legacy compatibility paths still rely on global service objects, which makes full multi-tenant configuration and production lifecycle management harder.
+
+Mitigation: provider factories, selection validation, fake providers, prompt profiles, and the tool registry now cover the first extension layer. Continue moving remaining global service paths behind durable, tenant-aware factories before production multi-tenant use.
