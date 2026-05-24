@@ -62,6 +62,9 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         milvus_timeout=5000,
         rag_top_k=8,
         rag_model="qwen-plus",
+        query_rewriter_provider="llm",
+        context_compressor_provider="llm",
+        context_compressor_max_characters=600,
         chunk_max_size=1200,
         chunk_overlap=120,
     )
@@ -125,7 +128,13 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         port=19531,
         timeout=5000,
     )
-    assert settings.rag == RagConfig(top_k=8, model="qwen-plus")
+    assert settings.rag == RagConfig(
+        top_k=8,
+        model="qwen-plus",
+        query_rewriter_provider="llm",
+        context_compressor_provider="llm",
+        context_compressor_max_characters=600,
+    )
     assert settings.chunking == ChunkingConfig(max_size=1200, overlap=120)
 
     assert settings.app_name == settings.app.name

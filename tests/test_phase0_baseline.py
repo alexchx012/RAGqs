@@ -70,6 +70,9 @@ def test_env_example_documents_all_current_settings():
         "MILVUS_TIMEOUT",
         "RAG_TOP_K",
         "RAG_MODEL",
+        "QUERY_REWRITER_PROVIDER",
+        "CONTEXT_COMPRESSOR_PROVIDER",
+        "CONTEXT_COMPRESSOR_MAX_CHARACTERS",
         "CHUNK_MAX_SIZE",
         "CHUNK_OVERLAP",
     ]:
@@ -148,6 +151,7 @@ def test_baseline_validation_script_runs_core_checks():
         "test_knowledge_spaces_lifecycle.py",
         "test_evaluation_foundation.py",
         "test_retrieval_pipeline.py",
+        "test_retrieval_enhancers.py",
         "test_chat_retrieval_trace.py",
         "test_rag_state_graph.py",
         "test_rag_agent_graph_runtime.py",
@@ -211,6 +215,7 @@ def test_extension_docs_cover_phase8_foundation_templates():
         "Provider Switching",
         "Prompt Profiles",
         "Tool Planning",
+        "Retrieval Enhancers",
         "Second-Business Template",
     ]:
         assert phrase in docs
@@ -220,6 +225,8 @@ def test_extension_docs_cover_phase8_foundation_templates():
         "TOOL_PLANNING_ENABLED",
         "PROMPT_PROFILE",
         "CHAT_PROVIDER",
+        "QUERY_REWRITER_PROVIDER",
+        "CONTEXT_COMPRESSOR_PROVIDER",
         "do not modify core code",
     ]:
         assert phrase in template

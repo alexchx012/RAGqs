@@ -49,6 +49,12 @@ Prompt Profiles live in `app.prompts.profiles`. Set `PROMPT_PROFILE=default`, `s
 
 Add a profile by registering a `PromptProfile` with a unique name, description, and full system prompt. Keep profiles specific to answer style and grounding policy; do not mix provider or database configuration into prompts.
 
+## Retrieval Enhancers
+
+The default retriever runs vector search through `RetrievalPipeline`. Keep `QUERY_REWRITER_PROVIDER=none` and `CONTEXT_COMPRESSOR_PROVIDER=none` for low-latency local development. Set either value to `llm` when the configured chat model should rewrite user questions before retrieval or compress each retrieved chunk before answer generation.
+
+Use `CONTEXT_COMPRESSOR_MAX_CHARACTERS` to cap each compressed chunk, for example `CONTEXT_COMPRESSOR_MAX_CHARACTERS=1200`. Treat these switches as business-profile choices: enable them for ambiguous natural-language questions or long chunks, and keep evaluation reports before making them default for a new agent.
+
 ## Second-Business Template
 
 Start from `docs/templates/business-rag-template.md` when creating another business agent. The template keeps customization in environment settings, prompt profiles, tool registration, evaluation data, and docs. If the new business needs runtime behavior that cannot fit these extension points, add a new provider or registry entry instead of editing API handlers directly.

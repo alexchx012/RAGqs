@@ -37,6 +37,9 @@ class FakeChatModel:
     def __init__(self, response: str):
         self.response = response
 
+    def invoke(self, messages: list[object]) -> AIMessage:
+        return AIMessage(content=self.response)
+
     async def ainvoke(self, messages: list[object]) -> AIMessage:
         return AIMessage(content=self.response)
 

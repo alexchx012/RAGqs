@@ -2,6 +2,8 @@
 
 from app.retrieval.pipeline import (
     ContextCompressor,
+    LLMContextCompressor,
+    LLMQueryRewriter,
     QueryRewriter,
     RetrievalPipeline,
     Reranker,
@@ -12,6 +14,8 @@ from app.retrieval.pipeline import (
 
 __all__ = [
     "ContextCompressor",
+    "LLMContextCompressor",
+    "LLMQueryRewriter",
     "QueryRewriter",
     "RetrievalPipeline",
     "Reranker",
