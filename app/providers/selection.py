@@ -11,7 +11,7 @@ SUPPORTED_EMBEDDING_PROVIDERS = {"dashscope", "openai_compatible", "fake"}
 SUPPORTED_VECTOR_STORE_PROVIDERS = {"milvus", "fake"}
 SUPPORTED_SESSION_STORE_PROVIDERS = {"memory", "sqlite", "postgres"}
 SUPPORTED_INGESTION_PROVIDERS = {"vector_index", "fake"}
-SUPPORTED_CHECKPOINT_PROVIDERS = {"memory", "sqlite"}
+SUPPORTED_CHECKPOINT_PROVIDERS = {"memory", "sqlite", "postgres"}
 
 
 @dataclass(frozen=True)

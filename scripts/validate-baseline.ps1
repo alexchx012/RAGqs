@@ -41,6 +41,7 @@ try {
                 tests\test_ingestion_foundation.py `
                 tests\test_postgres_indexing_job_store.py `
                 tests\test_postgres_document_catalog.py `
+                tests\test_postgres_checkpoint_provider.py `
                 tests\test_vector_index_service_ingestion.py `
                 tests\test_file_upload_ingestion.py `
                 tests\test_upload_security.py `

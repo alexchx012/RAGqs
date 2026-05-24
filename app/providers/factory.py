@@ -14,7 +14,11 @@ from app.providers.contracts import (
     SessionStoreProvider,
     VectorStoreProvider,
 )
-from app.providers.checkpoints import InMemoryCheckpointProvider, SQLiteCheckpointProvider
+from app.providers.checkpoints import (
+    InMemoryCheckpointProvider,
+    PostgresCheckpointProvider,
+    SQLiteCheckpointProvider,
+)
 from app.providers.dashscope import DashScopeChatModelProvider
 from app.providers.fakes import (
     FakeChatModelProvider,
@@ -155,6 +159,8 @@ def create_default_provider_container(
     if checkpoint_provider is None:
         if selection.checkpoint_provider == "sqlite":
             checkpoint_provider = SQLiteCheckpointProvider(settings.checkpoint_sqlite_path)
+        elif selection.checkpoint_provider == "postgres":
+            checkpoint_provider = PostgresCheckpointProvider(settings.checkpoint_postgres_dsn)
         else:
             checkpoint_provider = InMemoryCheckpointProvider()
 

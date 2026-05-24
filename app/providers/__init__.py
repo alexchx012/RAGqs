@@ -15,7 +15,11 @@ from app.providers.contracts import (
     StoredMessage,
     VectorStoreProvider,
 )
-from app.providers.checkpoints import InMemoryCheckpointProvider, SQLiteCheckpointProvider
+from app.providers.checkpoints import (
+    InMemoryCheckpointProvider,
+    PostgresCheckpointProvider,
+    SQLiteCheckpointProvider,
+)
 from app.providers.dashscope import DashScopeChatModelProvider, DashScopeEmbeddingProvider
 from app.providers.fakes import (
     FakeChatModelProvider,
@@ -54,6 +58,7 @@ __all__ = [
     "OpenAICompatibleChatModelProvider",
     "OpenAICompatibleEmbeddingProvider",
     "PostgresSessionStoreProvider",
+    "PostgresCheckpointProvider",
     "RetrievalRequest",
     "RetrievalResult",
     "RetrievalSource",

@@ -44,6 +44,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         document_catalog_sqlite_path="data/test-documents.sqlite3",
         document_catalog_postgres_dsn="postgresql://rag:secret@db/ragqs-documents",
         checkpoint_sqlite_path="data/test-checkpoints.sqlite3",
+        checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
         agent_runtime="legacy",
         enabled_tools="retrieve_knowledge",
         tool_planning_enabled=True,
@@ -99,6 +100,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         document_catalog_sqlite_path="data/test-documents.sqlite3",
         document_catalog_postgres_dsn="postgresql://rag:secret@db/ragqs-documents",
         checkpoint_sqlite_path="data/test-checkpoints.sqlite3",
+        checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
     )
     assert settings.agent == AgentConfig(
         runtime="legacy",

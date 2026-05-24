@@ -163,6 +163,20 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
                     message="must be set when CHECKPOINT_PROVIDER=sqlite",
                 )
             )
+    if selection.checkpoint_provider == "postgres":
+        postgres_dsn = _group_value(
+            storage_config,
+            settings,
+            "checkpoint_postgres_dsn",
+            "checkpoint_postgres_dsn",
+        )
+        if not postgres_dsn.strip():
+            errors.append(
+                ConfigIssue(
+                    field="CHECKPOINT_POSTGRES_DSN",
+                    message="must be set when CHECKPOINT_PROVIDER=postgres",
+                )
+            )
 
     indexing_job_store_provider = _normalize_config_id(
         _group_value(
