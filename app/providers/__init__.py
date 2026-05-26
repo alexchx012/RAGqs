@@ -1,5 +1,10 @@
 """Provider contracts and test doubles for the RAG foundation."""
 
+from app.providers.checkpoints import (
+    InMemoryCheckpointProvider,
+    PostgresCheckpointProvider,
+    SQLiteCheckpointProvider,
+)
 from app.providers.contracts import (
     ChatModelProvider,
     CheckpointProvider,
@@ -10,15 +15,10 @@ from app.providers.contracts import (
     RetrievalResult,
     RetrievalSource,
     RetrieverProvider,
-    SessionSummary,
     SessionStoreProvider,
+    SessionSummary,
     StoredMessage,
     VectorStoreProvider,
-)
-from app.providers.checkpoints import (
-    InMemoryCheckpointProvider,
-    PostgresCheckpointProvider,
-    SQLiteCheckpointProvider,
 )
 from app.providers.dashscope import DashScopeChatModelProvider, DashScopeEmbeddingProvider
 from app.providers.fakes import (

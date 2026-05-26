@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 

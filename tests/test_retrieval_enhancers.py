@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from langchain_core.documents import Document
 
 import app.retrieval as retrieval
-from app.providers import RetrievalRequest, RetrievalResult
+from app.providers import RetrievalRequest
 from app.providers.factory import create_default_provider_container
 
 

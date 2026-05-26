@@ -2,12 +2,14 @@
 
 import inspect
 import json
+
 from fastapi import APIRouter, HTTPException
-from sse_starlette.sse import EventSourceResponse
-from app.models.request import ChatRequest, ClearRequest
-from app.models.response import SessionInfoResponse, ApiResponse
-from app.services.rag_agent_service import rag_agent_service
 from loguru import logger
+from sse_starlette.sse import EventSourceResponse
+
+from app.models.request import ChatRequest, ClearRequest
+from app.models.response import ApiResponse, SessionInfoResponse
+from app.services.rag_agent_service import rag_agent_service
 
 router = APIRouter()
 
@@ -115,7 +117,7 @@ async def clear_session(request: ClearRequest):
             data=None,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/chat/sessions")
@@ -130,7 +132,7 @@ async def list_sessions(query: str | None = None):
             "data": {"count": len(sessions), "sessions": sessions},
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/chat/session/{session_id}", response_model=SessionInfoResponse)
@@ -140,7 +142,7 @@ async def get_session_info(session_id: str) -> SessionInfoResponse:
         history = rag_agent_service.get_session_history(session_id)
         return SessionInfoResponse(session_id=session_id, message_count=len(history), history=history)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 def _serialize_session_summary(summary) -> dict:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
 SUPPORTED_CHAT_PROVIDERS = {"dashscope", "openai_compatible", "fake"}
 SUPPORTED_EMBEDDING_PROVIDERS = {"dashscope", "openai_compatible", "fake"}
 SUPPORTED_VECTOR_STORE_PROVIDERS = {"milvus", "fake"}
@@ -24,7 +23,7 @@ class ProviderSelection:
     checkpoint_provider: str = "memory"
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "ProviderSelection":
+    def from_settings(cls, settings: Any) -> ProviderSelection:
         providers = getattr(settings, "providers", None)
         return cls(
             chat_provider=_normalize(

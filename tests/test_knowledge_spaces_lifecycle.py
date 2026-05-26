@@ -6,7 +6,7 @@ import pytest
 from langchain_core.documents import Document
 
 from app.api import file as file_api
-from app.ingestion import DocumentLoaderRegistry, InMemoryIndexingJobStore, IndexingJob
+from app.ingestion import DocumentLoaderRegistry, IndexingJob, InMemoryIndexingJobStore
 from app.providers import IngestionResult, RetrievalRequest, RetrievalResult
 from app.services.rag_agent_service import RagAgentService
 from app.services.vector_index_service import VectorIndexService

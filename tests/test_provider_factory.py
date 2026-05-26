@@ -8,8 +8,8 @@ from app.providers import (
     CheckpointProvider,
     FakeEmbeddingProvider,
     FakeIngestionProvider,
-    InMemorySessionStoreProvider,
     IngestionProvider,
+    InMemorySessionStoreProvider,
     RetrieverProvider,
     SessionStoreProvider,
     VectorStoreProvider,
@@ -104,8 +104,8 @@ def test_vector_store_retriever_provider_returns_structured_debug_output():
         def delete_by_source(self, source):
             return 0
 
-    from app.providers.retrieval import VectorStoreRetrieverProvider
     from app.providers import RetrievalRequest
+    from app.providers.retrieval import VectorStoreRetrieverProvider
 
     vector_store = RecordingVectorStore()
     retriever = VectorStoreRetrieverProvider(vector_store_provider=vector_store, default_top_k=7)

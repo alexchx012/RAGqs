@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import app.evaluation.runner as evaluation_runner
 from app.evaluation import (
     AgentRunResult,
     FaithfulnessVerdict,
@@ -16,7 +17,6 @@ from app.evaluation import (
     run_http_evaluation,
     run_service_evaluation,
 )
-import app.evaluation.runner as evaluation_runner
 from app.evaluation.runner import build_arg_parser, main
 
 

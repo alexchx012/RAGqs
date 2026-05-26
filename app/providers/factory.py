@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.providers.checkpoints import (
+    InMemoryCheckpointProvider,
+    PostgresCheckpointProvider,
+    SQLiteCheckpointProvider,
+)
 from app.providers.contracts import (
     ChatModelProvider,
     CheckpointProvider,
@@ -13,11 +18,6 @@ from app.providers.contracts import (
     RetrieverProvider,
     SessionStoreProvider,
     VectorStoreProvider,
-)
-from app.providers.checkpoints import (
-    InMemoryCheckpointProvider,
-    PostgresCheckpointProvider,
-    SQLiteCheckpointProvider,
 )
 from app.providers.dashscope import DashScopeChatModelProvider
 from app.providers.fakes import (

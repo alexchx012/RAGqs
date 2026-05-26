@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from collections.abc import Iterable
-from typing import Annotated, Any, Callable, Protocol, runtime_checkable
+from typing import Annotated, Any, Protocol, runtime_checkable
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
-from langchain_core.messages import HumanMessage, SystemMessage
 from typing_extensions import TypedDict
 
 from app.providers import RetrievalRequest, RetrievalResult, RetrievalSource, RetrieverProvider
-
 
 NO_CONTEXT_ANSWER = "知识库中没有足够依据回答这个问题。"
 RESET_EVENTS_TYPE = "__reset_events__"
