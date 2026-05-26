@@ -312,6 +312,7 @@ def test_config_validation_rejects_unknown_retrieval_enhancer_settings():
     report = validate_settings(
         _settings(
             query_rewriter_provider="unknown",
+            reranker_provider="unknown",
             context_compressor_provider="unknown",
             context_compressor_max_characters=0,
         )
@@ -320,6 +321,7 @@ def test_config_validation_rejects_unknown_retrieval_enhancer_settings():
     assert report.is_valid is False
     issues = {(issue.field, issue.message) for issue in report.errors}
     assert ("QUERY_REWRITER_PROVIDER", "unsupported provider: unknown") in issues
+    assert ("RERANKER_PROVIDER", "unsupported provider: unknown") in issues
     assert ("CONTEXT_COMPRESSOR_PROVIDER", "unsupported provider: unknown") in issues
     assert (
         "CONTEXT_COMPRESSOR_MAX_CHARACTERS",
@@ -350,6 +352,7 @@ def test_phase8_docs_cover_extension_and_second_business_templates():
         "CHAT_PROVIDER",
         "CHECKPOINT_PROVIDER",
         "QUERY_REWRITER_PROVIDER",
+        "RERANKER_PROVIDER",
         "CONTEXT_COMPRESSOR_PROVIDER",
         "do not modify core code",
     ]:
@@ -385,6 +388,7 @@ def _settings(**overrides):
         "openai_compatible_model": "compatible-chat",
         "prompt_profile": "default",
         "query_rewriter_provider": "none",
+        "reranker_provider": "none",
         "context_compressor_provider": "none",
         "context_compressor_max_characters": 1200,
         "enabled_tools": "retrieve_knowledge,get_current_time",

@@ -37,7 +37,7 @@ from app.providers.postgres_session import PostgresSessionStoreProvider
 from app.providers.retrieval import VectorStoreRetrieverProvider
 from app.providers.selection import ProviderSelection, validate_provider_selection
 from app.providers.sqlite_session import SQLiteSessionStoreProvider
-from app.retrieval import LLMContextCompressor, LLMQueryRewriter, RetrievalPipeline
+from app.retrieval import LLMContextCompressor, LLMQueryRewriter, LLMReranker, RetrievalPipeline
 
 
 @dataclass(frozen=True)
@@ -135,6 +135,10 @@ def create_default_provider_container(
         if _setting_id(settings, "query_rewriter_provider", "none") == "llm":
             query_rewriter = LLMQueryRewriter(chat_model_provider)
 
+        reranker = None
+        if _setting_id(settings, "reranker_provider", "none") == "llm":
+            reranker = LLMReranker(chat_model_provider)
+
         compressor = None
         if _setting_id(settings, "context_compressor_provider", "none") == "llm":
             compressor = LLMContextCompressor(
@@ -145,6 +149,7 @@ def create_default_provider_container(
         retriever_provider = RetrievalPipeline(
             primary_retriever=base_retriever_provider,
             query_rewriter=query_rewriter,
+            reranker=reranker,
             compressor=compressor,
             default_top_k=settings.rag_top_k,
         )
