@@ -7,9 +7,9 @@ from pymilvus import (
     DataType,
     FieldSchema,
     MilvusClient,
+    MilvusException,
     connections,
     utility,
-    MilvusException,
 )
 
 from app.config import config
@@ -33,7 +33,7 @@ def _patch_pymilvus_milvus_client_orm_alias() -> None:
         self._using = "default"
 
     MilvusClient.__init__ = _wrapped_init
-    setattr(_patch_pymilvus_milvus_client_orm_alias, "_done", True)
+    _patch_pymilvus_milvus_client_orm_alias._done = True
 
 
 class MilvusClientManager:

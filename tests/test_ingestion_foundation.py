@@ -5,9 +5,9 @@ import pytest
 from app.ingestion import (
     DocumentLoaderRegistry,
     DocumentMetadataNormalizer,
-    InMemoryIndexingJobStore,
     IndexingJob,
     IndexingJobStatus,
+    InMemoryIndexingJobStore,
     SQLiteIndexingJobStore,
 )
 

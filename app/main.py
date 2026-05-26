@@ -9,8 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
+from app.api import chat, file, health
 from app.config import config
-from app.api import chat, health, file
 from app.core.milvus_client import milvus_manager
 from app.ingestion.worker import get_background_indexing_worker
 from app.observability import install_request_context_middleware

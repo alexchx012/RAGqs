@@ -7,9 +7,9 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, TextIO
-
+from typing import Any, TextIO
 
 REQUIRED_DEPENDENCIES = [
     "app",

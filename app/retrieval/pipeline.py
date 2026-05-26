@@ -141,7 +141,7 @@ class LLMReranker:
             return documents
 
         lookup: dict[str, Document] = {}
-        for index, (identifier, document) in enumerate(zip(identifiers, documents), start=1):
+        for index, (identifier, document) in enumerate(zip(identifiers, documents, strict=True), start=1):
             lookup[identifier] = document
             lookup[str(index)] = document
 
@@ -356,7 +356,7 @@ def _rerank_prompt(
     max_content_characters: int,
 ) -> str:
     chunks = []
-    for identifier, document in zip(identifiers, documents):
+    for identifier, document in zip(identifiers, documents, strict=True):
         content = " ".join(document.page_content.split())
         chunks.append(f"[{identifier}]\n{content[:max_content_characters]}")
     return "Question:\n" + query + "\n\nDocument chunks:\n" + "\n\n".join(chunks)

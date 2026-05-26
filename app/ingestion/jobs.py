@@ -41,7 +41,7 @@ class IndexingJob:
         space_id: str = "default",
         job_id: str | None = None,
         created_at: datetime | None = None,
-    ) -> "IndexingJob":
+    ) -> IndexingJob:
         return cls(
             document_id=document_id,
             source_path=source_path,

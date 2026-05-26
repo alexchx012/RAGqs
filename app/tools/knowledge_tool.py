@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import List, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.tools import tool
@@ -12,7 +11,6 @@ from app.config import config
 from app.providers.contracts import RetrievalRequest, RetrieverProvider
 from app.providers.factory import get_default_provider_container
 
-
 _active_knowledge_space_id: ContextVar[str | None] = ContextVar(
     "active_knowledge_space_id",
     default=None,
@@ -20,7 +18,7 @@ _active_knowledge_space_id: ContextVar[str | None] = ContextVar(
 
 
 @tool(response_format="content_and_artifact")
-def retrieve_knowledge(query: str, space_id: str = "default") -> Tuple[str, List[Document]]:
+def retrieve_knowledge(query: str, space_id: str = "default") -> tuple[str, list[Document]]:
     """从知识库中检索相关信息来回答问题
 
     当用户的问题涉及专业知识、文档内容或需要参考资料时，使用此工具。
@@ -50,7 +48,7 @@ def retrieve_knowledge_with_provider(
     retriever_provider: RetrieverProvider,
     top_k: int,
     space_id: str = "default",
-) -> Tuple[str, List[Document]]:
+) -> tuple[str, list[Document]]:
     effective_space_id = resolve_knowledge_space_id(space_id)
     filters = (
         {"space_id": effective_space_id}
@@ -92,8 +90,7 @@ def _normalize_space_id(space_id: str) -> str:
     return normalized or "default"
 
 
-def _format_docs(docs: List[Document]) -> str:
-    from pathlib import Path
+def _format_docs(docs: list[Document]) -> str:
     parts = []
     for i, doc in enumerate(docs, 1):
         metadata = doc.metadata

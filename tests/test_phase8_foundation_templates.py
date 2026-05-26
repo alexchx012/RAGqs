@@ -21,7 +21,7 @@ from app.services.rag_agent_service import RagAgentService
 
 
 def test_tool_registry_registers_builtin_and_business_tools():
-    from app.extensions.tools import ToolRegistry, build_default_tool_registry
+    from app.extensions.tools import build_default_tool_registry
 
     @tool("crm_lookup")
     def crm_lookup(customer_id: str) -> str:
@@ -55,7 +55,10 @@ def test_tool_registry_rejects_duplicate_or_unknown_tools():
 
 
 def test_prompt_profiles_are_named_and_extensible():
-    from app.prompts.profiles import PromptProfile, PromptProfileRegistry, build_default_prompt_registry
+    from app.prompts.profiles import (
+        PromptProfile,
+        build_default_prompt_registry,
+    )
 
     registry = build_default_prompt_registry()
     registry.register(

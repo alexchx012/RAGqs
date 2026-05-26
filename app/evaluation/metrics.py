@@ -7,7 +7,6 @@ from typing import Any
 
 from app.evaluation.models import AgentRunResult, EvaluationMetrics, EvaluationReport, GoldenExample
 
-
 _SOURCE_KEYS = (
     "documentId",
     "document_id",

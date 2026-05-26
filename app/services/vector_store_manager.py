@@ -9,7 +9,6 @@ from app.core.milvus_client import milvus_manager
 from app.providers.milvus import MilvusVectorStoreProvider
 from app.services.vector_embedding_service import vector_embedding_service
 
-
 COLLECTION_NAME = "biz"
 
 

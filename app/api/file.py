@@ -70,7 +70,7 @@ async def upload_file(file: UploadFile = File(...), space_id: str = "default"):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {e}")
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {e}") from e
 
 
 @router.get("/knowledge-spaces")

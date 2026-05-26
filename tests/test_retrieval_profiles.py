@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 
-import pytest
 from langchain_core.documents import Document
 
 import app.retrieval as retrieval

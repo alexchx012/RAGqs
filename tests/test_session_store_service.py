@@ -2,8 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.providers import InMemorySessionStoreProvider, RetrievalRequest, RetrievalResult, RetrievalSource
 from app.models.response import SessionInfoResponse
+from app.providers import (
+    InMemorySessionStoreProvider,
+    RetrievalRequest,
+    RetrievalResult,
+    RetrievalSource,
+)
 from app.services.rag_agent_service import RagAgentService
 
 

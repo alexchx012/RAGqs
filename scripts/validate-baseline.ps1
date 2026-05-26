@@ -29,6 +29,10 @@ try {
     }
 
     if (Test-Path -LiteralPath (Join-Path $repoRoot ".venv\Scripts\python.exe")) {
+        Invoke-Step "ruff check app tests" {
+            & $python -m ruff check app tests
+        }
+
         Invoke-Step "pytest backend baseline/provider tests" {
             & $python -m pytest `
                 tests\test_phase0_baseline.py `

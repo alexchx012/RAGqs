@@ -1,7 +1,9 @@
 """日志配置模块"""
 
 import sys
+
 from loguru import logger
+
 from app.config import config
 
 

@@ -4,7 +4,6 @@ from app.config import config
 from app.providers.contracts import EmbeddingProvider
 from app.providers.dashscope import DashScopeEmbeddingProvider
 
-
 _vector_embedding_service: EmbeddingProvider | None = None
 
 

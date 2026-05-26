@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -140,6 +139,7 @@ def test_baseline_validation_script_runs_core_checks():
     script = read("scripts/validate-baseline.ps1")
 
     for phrase in [
+        "ruff check app tests",
         "pytest",
         "test_phase0_baseline.py",
         "test_api_models.py",

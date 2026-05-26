@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from app.config import config
 
@@ -21,7 +22,7 @@ class HealthCheckResult:
         cls,
         message: str = "healthy",
         details: dict[str, Any] | None = None,
-    ) -> "HealthCheckResult":
+    ) -> HealthCheckResult:
         return cls(status="healthy", message=message, details=details or {})
 
     @classmethod
@@ -29,7 +30,7 @@ class HealthCheckResult:
         cls,
         message: str = "unhealthy",
         details: dict[str, Any] | None = None,
-    ) -> "HealthCheckResult":
+    ) -> HealthCheckResult:
         return cls(status="unhealthy", message=message, details=details or {})
 
     def to_dict(self) -> dict[str, Any]:

@@ -37,7 +37,7 @@ class AgentRunResult(BaseModel):
     cited_sources: list[dict[str, Any]] = Field(default_factory=list, alias="citedSources")
     latency_ms: float = Field(default=0.0, alias="latencyMs")
     refused: bool = False
-    faithfulness: "FaithfulnessVerdict | None" = None
+    faithfulness: FaithfulnessVerdict | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

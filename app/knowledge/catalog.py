@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.ingestion.jobs import IndexingJob
-
 
 DEFAULT_SPACE_ID = "default"
 

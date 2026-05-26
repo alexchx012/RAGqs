@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from openai import OpenAI
 from langchain_openai import ChatOpenAI
+from openai import OpenAI
 
 
 class OpenAICompatibleChatModelProvider:
