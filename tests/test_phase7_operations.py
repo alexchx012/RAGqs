@@ -965,7 +965,21 @@ def test_postgres_smoke_script_documents_non_destructive_checks():
     for phrase in [
         "app.operations.postgres_smoke",
         "RequireConfigured",
+        "ValidateWritePath",
+        "--validate-write-path",
         "Postgres",
         "does not create, delete, start, stop, or restart databases",
     ]:
         assert phrase in script
+
+
+def test_operations_docs_describe_postgres_write_path_smoke():
+    docs = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+
+    for phrase in [
+        "-ValidateWritePath",
+        "temporary table",
+        "create, insert, select, and rollback",
+        "writePathValidated",
+    ]:
+        assert phrase in docs

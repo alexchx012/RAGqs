@@ -2,6 +2,7 @@
 param(
     [double]$TimeoutSeconds = 5,
     [switch]$RequireConfigured,
+    [switch]$ValidateWritePath,
     [switch]$Json
 )
 
@@ -22,13 +23,17 @@ if (-not (Test-Path -LiteralPath $python)) {
 $exitCode = 0
 Push-Location $repoRoot
 try {
-    Write-Host "[smoke] Checking configured Postgres stores. This script does not create, delete, start, stop, or restart databases." -ForegroundColor Cyan
+    Write-Host "[smoke] Checking configured Postgres stores. The default check does not create, delete, start, stop, or restart databases." -ForegroundColor Cyan
     $runnerArgs = @(
         "-m", "app.operations.postgres_smoke",
         "--timeout", $TimeoutSeconds
     )
     if ($RequireConfigured) {
         $runnerArgs += "--require-configured"
+    }
+    if ($ValidateWritePath) {
+        Write-Host "[smoke] ValidateWritePath enabled; using temporary tables and rollback only." -ForegroundColor Cyan
+        $runnerArgs += "--validate-write-path"
     }
     if ($Json) {
         $runnerArgs += "--json"
