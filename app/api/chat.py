@@ -3,12 +3,19 @@
 import inspect
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from sse_starlette.sse import EventSourceResponse
 
 from app.models.request import ChatRequest, ClearRequest
 from app.models.response import ApiResponse, SessionInfoResponse, error_envelope, success_envelope
+from app.security.auth import (
+    AuthContext,
+    active_auth_context,
+    is_all_space_context,
+    require_permission,
+    require_space_access,
+)
 from app.services.rag_agent_service import rag_agent_service
 
 router = APIRouter()
@@ -42,8 +49,13 @@ def format_stream_chunk(chunk: dict) -> dict | None:
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    auth_context: AuthContext = Depends(require_permission("chat:write")),
+):
     """快速对话接口（非流式）"""
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, request.space_id)
     try:
         result = await _call_query_with_trace(
             request.question,
@@ -60,6 +72,8 @@ async def chat(request: ChatRequest):
                 "errorMessage": None,
             }
         ).model_dump(mode="json")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"对话接口错误: {e}")
         return error_envelope(
@@ -84,8 +98,13 @@ def _accepts_keyword(method, keyword: str) -> bool:
 
 
 @router.post("/chat_stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(
+    request: ChatRequest,
+    auth_context: AuthContext = Depends(require_permission("chat:write")),
+):
     """流式对话接口（SSE）"""
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, request.space_id)
 
     async def event_generator():
         try:
@@ -104,8 +123,12 @@ async def chat_stream(request: ChatRequest):
 
 
 @router.post("/chat/clear", response_model=ApiResponse)
-async def clear_session(request: ClearRequest):
+async def clear_session(
+    request: ClearRequest,
+    auth_context: AuthContext = Depends(require_permission("chat:write")),
+):
     """清空会话历史"""
+    active_auth_context(auth_context)
     try:
         success = rag_agent_service.clear_session(request.session_id)
         return ApiResponse(
@@ -118,8 +141,12 @@ async def clear_session(request: ClearRequest):
 
 
 @router.get("/chat/sessions")
-async def list_sessions(query: str | None = None):
+async def list_sessions(
+    query: str | None = None,
+    auth_context: AuthContext = Depends(require_permission("session:read")),
+):
     """查询会话摘要列表"""
+    active_auth_context(auth_context)
     try:
         summaries = rag_agent_service.list_sessions(query=query)
         sessions = [_serialize_session_summary(summary) for summary in summaries]
@@ -136,8 +163,12 @@ async def list_retrieval_audits(
     space_id: str | None = None,
     trace_id: str | None = None,
     limit: int = 50,
+    auth_context: AuthContext = Depends(require_permission("audit:read")),
 ):
     """查询最近的检索审计记录"""
+    active_context = active_auth_context(auth_context)
+    if space_id:
+        require_space_access(active_context, space_id)
     try:
         normalized_limit = max(0, min(limit, 500))
         audits = rag_agent_service.list_retrieval_audits(
@@ -146,6 +177,12 @@ async def list_retrieval_audits(
             trace_id=trace_id,
             limit=normalized_limit,
         )
+        if not space_id and not is_all_space_context(active_context):
+            audits = [
+                audit
+                for audit in audits
+                if active_context.can_access_space(getattr(audit, "space_id", "default"))
+            ]
         serialized = [_serialize_retrieval_audit(audit) for audit in audits]
         return success_envelope({"count": len(serialized), "audits": serialized}).model_dump(
             mode="json"
@@ -155,8 +192,12 @@ async def list_retrieval_audits(
 
 
 @router.get("/chat/session/{session_id}", response_model=SessionInfoResponse)
-async def get_session_info(session_id: str) -> SessionInfoResponse:
+async def get_session_info(
+    session_id: str,
+    auth_context: AuthContext = Depends(require_permission("session:read")),
+) -> SessionInfoResponse:
     """查询会话历史"""
+    active_auth_context(auth_context)
     try:
         history = rag_agent_service.get_session_history(session_id)
         return SessionInfoResponse(session_id=session_id, message_count=len(history), history=history)

@@ -3,7 +3,7 @@
 import inspect
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from loguru import logger
 from pydantic import BaseModel
 
@@ -12,6 +12,13 @@ from app.ingestion import IndexingJob
 from app.models.response import envelope_json_response
 from app.providers.contracts import IngestionResult
 from app.providers.factory import get_default_provider_container
+from app.security.auth import (
+    AuthContext,
+    active_auth_context,
+    is_all_space_context,
+    require_permission,
+    require_space_access,
+)
 from app.security.uploads import (
     UploadSecurityError,
     UploadSecurityPolicy,
@@ -32,8 +39,14 @@ class KnowledgeSpaceCreateRequest(BaseModel):
 
 
 @router.post("/upload")
-async def upload_file(file: UploadFile = File(...), space_id: str = "default"):
+async def upload_file(
+    file: UploadFile = File(...),
+    space_id: str = "default",
+    auth_context: AuthContext = Depends(require_permission("document:upload")),
+):
     """上传文件并自动创建向量索引"""
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, space_id)
     try:
         content = await file.read()
         try:
@@ -73,13 +86,25 @@ async def upload_file(file: UploadFile = File(...), space_id: str = "default"):
 
 
 @router.get("/knowledge-spaces")
-async def list_knowledge_spaces():
+async def list_knowledge_spaces(
+    auth_context: AuthContext = Depends(require_permission("space:read")),
+):
+    active_context = active_auth_context(auth_context)
     spaces = vector_index_service.list_knowledge_spaces()
+    if not is_all_space_context(active_context):
+        spaces = [
+            space for space in spaces if active_context.can_access_space(space.space_id)
+        ]
     return envelope_json_response({"spaces": [_serialize_knowledge_space(space) for space in spaces]})
 
 
 @router.post("/knowledge-spaces")
-async def create_knowledge_space(request: KnowledgeSpaceCreateRequest):
+async def create_knowledge_space(
+    request: KnowledgeSpaceCreateRequest,
+    auth_context: AuthContext = Depends(require_permission("space:write")),
+):
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, request.space_id)
     space = vector_index_service.document_catalog.ensure_space(
         request.space_id,
         name=request.name,
@@ -89,7 +114,12 @@ async def create_knowledge_space(request: KnowledgeSpaceCreateRequest):
 
 
 @router.get("/knowledge-spaces/{space_id}/documents")
-async def list_documents(space_id: str):
+async def list_documents(
+    space_id: str,
+    auth_context: AuthContext = Depends(require_permission("document:read")),
+):
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, space_id)
     documents = vector_index_service.list_documents(space_id=space_id)
     return envelope_json_response(
         {
@@ -101,7 +131,13 @@ async def list_documents(space_id: str):
 
 
 @router.get("/knowledge-spaces/{space_id}/documents/{document_id}")
-async def get_document(space_id: str, document_id: str):
+async def get_document(
+    space_id: str,
+    document_id: str,
+    auth_context: AuthContext = Depends(require_permission("document:read")),
+):
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, space_id)
     document = vector_index_service.get_document(space_id=space_id, document_id=document_id)
     if document is None:
         raise HTTPException(status_code=404, detail=f"文档不存在: {space_id}/{document_id}")
@@ -109,7 +145,13 @@ async def get_document(space_id: str, document_id: str):
 
 
 @router.delete("/knowledge-spaces/{space_id}/documents/{document_id}")
-async def delete_document(space_id: str, document_id: str):
+async def delete_document(
+    space_id: str,
+    document_id: str,
+    auth_context: AuthContext = Depends(require_permission("document:delete")),
+):
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, space_id)
     try:
         document = vector_index_service.delete_document(space_id=space_id, document_id=document_id)
     except ValueError as e:
@@ -118,7 +160,13 @@ async def delete_document(space_id: str, document_id: str):
 
 
 @router.post("/knowledge-spaces/{space_id}/documents/{document_id}/rebuild")
-async def rebuild_document(space_id: str, document_id: str):
+async def rebuild_document(
+    space_id: str,
+    document_id: str,
+    auth_context: AuthContext = Depends(require_permission("document:rebuild")),
+):
+    active_context = active_auth_context(auth_context)
+    require_space_access(active_context, space_id)
     try:
         job = vector_index_service.rebuild_document(space_id=space_id, document_id=document_id)
     except ValueError as e:
@@ -131,12 +179,18 @@ async def list_indexing_jobs(
     document_id: str | None = None,
     source_path: str | None = None,
     status: str | None = None,
+    auth_context: AuthContext = Depends(require_permission("index_job:read")),
 ):
+    active_context = active_auth_context(auth_context)
     jobs = vector_index_service.list_indexing_jobs(
         document_id=document_id,
         source_path=source_path,
         status=status,
     )
+    if not is_all_space_context(active_context):
+        jobs = [
+            job for job in jobs if active_context.can_access_space(getattr(job, "space_id", "default"))
+        ]
     return envelope_json_response(
         {
             "count": len(jobs),
@@ -146,19 +200,32 @@ async def list_indexing_jobs(
 
 
 @router.get("/index-jobs/{job_id}")
-async def get_indexing_job(job_id: str):
+async def get_indexing_job(
+    job_id: str,
+    auth_context: AuthContext = Depends(require_permission("index_job:read")),
+):
+    active_context = active_auth_context(auth_context)
     job = vector_index_service.get_indexing_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"索引任务不存在: {job_id}")
+    require_space_access(active_context, getattr(job, "space_id", "default"))
     return envelope_json_response({"indexing": _serialize_indexing_job(job, include_source_path=True)})
 
 
 @router.post("/index-jobs/{job_id}/retry")
-async def retry_indexing_job(job_id: str):
+async def retry_indexing_job(
+    job_id: str,
+    auth_context: AuthContext = Depends(require_permission("index_job:retry")),
+):
+    active_context = active_auth_context(auth_context)
+    current_job = vector_index_service.get_indexing_job(job_id)
+    if current_job is not None:
+        require_space_access(active_context, getattr(current_job, "space_id", "default"))
     try:
         job = vector_index_service.retry_indexing_job(job_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    require_space_access(active_context, getattr(job, "space_id", "default"))
     return envelope_json_response({"indexing": _serialize_indexing_job(job, include_source_path=True)})
 
 

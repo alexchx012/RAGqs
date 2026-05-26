@@ -47,6 +47,12 @@ curl -X POST http://localhost:9900/api/upload -F "file=@your-doc.md"
 
 默认配置使用本地 SQLite 保存会话、检索审计、索引队列、索引任务、文档目录和 LangGraph checkpoint，数据库文件位于 `data/*.sqlite3`。保持 `.env.example` 中的 `SESSION_STORE_PROVIDER=sqlite`、`RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite`、`INDEXING_QUEUE_PROVIDER=sqlite`、`INDEXING_JOB_STORE_PROVIDER=sqlite`、`DOCUMENT_CATALOG_PROVIDER=sqlite` 和 `CHECKPOINT_PROVIDER=sqlite` 即可获得可重启的本地开发状态。`memory` provider 仅用于显式配置的临时测试，不作为开发默认数据库。
 
+## 内部认证与知识空间权限
+
+本地默认 `AUTH_ENABLED=false`，会以 `local-admin` 兼容既有开发流程。内部试运行应设置 `AUTH_ENABLED=true`，先用 `AUTH_PROVIDER=dev_header` 和 `AUTH_DEV_USERS=alice:viewer|uploader:hr|finance;bob:admin:*` 验证权限路径；接入企业 SSO/OIDC 或反向代理时使用 `AUTH_PROVIDER=reverse_proxy`，由网关把身份、角色和知识空间映射到 `X-RAG-User`、`X-RAG-Roles`、`X-RAG-Spaces`。
+
+后端会在 chat、upload、knowledge-space、document lifecycle、index-job 和 retrieval audit API 统一检查权限与知识空间访问，不能只依赖客户端传入的 `spaceId` 做隔离。
+
 ## API
 
 | 方法 | 路径 | 说明 |
