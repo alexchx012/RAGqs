@@ -61,7 +61,7 @@ Current progress: `app/ingestion/` now contains UTF-8 text/Markdown loaders, met
 - [x] Add rerank and context compression extension points.
 - [x] Include citations and retrieval trace data in chat responses.
 
-Current progress: `app/retrieval/` now provides a composable `RetrievalPipeline` that implements `RetrieverProvider` and wraps one or more retrievers with optional query rewrite, deduplication, rerank, context compression, citation extraction, and per-stage timing debug data. `ProviderContainer` now wires the default vector-store retriever through this pipeline, so `knowledge_tool` uses the new retrieval foundation by default. `QUERY_REWRITER_PROVIDER=llm` enables an LLM-backed query rewriter, `RERANKER_PROVIDER=llm` enables an LLM-backed listwise reranker, `CONTEXT_COMPRESSOR_PROVIDER=llm` enables an LLM-backed context compressor, and `CONTEXT_COMPRESSOR_MAX_CHARACTERS` caps compressed chunk size. `RagAgentService.query_with_trace()` and `query_stream_with_trace()` expose sources and retrieval debug data through `/chat` and `/chat_stream`. This is an interim compatibility path before deeper retrieval-quality work; multi-retriever profiles and real-provider evaluation are still pending.
+Current progress: `app/retrieval/` now provides a composable `RetrievalPipeline` that implements `RetrieverProvider` and wraps one or more retrievers with optional query rewrite, deduplication, rerank, context compression, citation extraction, and per-stage timing debug data. `ProviderContainer` now wires the default vector-store retriever through this pipeline, so `knowledge_tool` uses the new retrieval foundation by default. `RETRIEVAL_PROFILE=high_recall` enables a multi-retriever profile that widens top-k and adds a relaxed metadata-filter fallback while preserving space and tenant filter keys. `QUERY_REWRITER_PROVIDER=llm` enables an LLM-backed query rewriter, `RERANKER_PROVIDER=llm` enables an LLM-backed listwise reranker, `CONTEXT_COMPRESSOR_PROVIDER=llm` enables an LLM-backed context compressor, and `CONTEXT_COMPRESSOR_MAX_CHARACTERS` caps compressed chunk size. `RagAgentService.query_with_trace()` and `query_stream_with_trace()` expose sources and retrieval debug data through `/chat` and `/chat_stream`. Real-provider evaluation remains pending before production retrieval-quality claims.
 
 ## Phase 4: Explicit LangGraph Agent
 
@@ -109,7 +109,7 @@ Current progress: `app/observability/`, `app/operations/`, and `app/security/` p
 - [x] Add provider switching examples for DashScope, OpenAI-compatible APIs, and local test doubles. Current progress: provider ids are configurable through `CHAT_PROVIDER`, `EMBEDDING_PROVIDER`, `VECTOR_STORE_PROVIDER`, `SESSION_STORE_PROVIDER`, and `INGESTION_PROVIDER`; `dashscope`, `openai_compatible`, `fake`, SQLite session, and Postgres session provider paths are covered by tests and docs.
 - [x] Add a second-business-template guide showing how to fork configuration without changing core code. Current progress: `docs/extension-guide.md` and `docs/templates/business-rag-template.md` document tool registration, provider switching, prompt profiles, evaluation setup, and the no-core-code customization rule.
 
-Current progress: Phase 8 has a tested extension layer for tool registration, optional model tool planning, prompt profile selection, provider switching, indexing execution mode, retrieval enhancer switches, local test doubles, SQLite session/job/document/checkpoint storage, Postgres session/indexing-job/document/checkpoint storage, configurable agent runtime, and second-business documentation. Remaining foundation work after this plan includes deeper production capabilities such as real provider evaluation, distributed indexing queues, and multi-retriever retrieval profiles.
+Current progress: Phase 8 has a tested extension layer for tool registration, optional model tool planning, prompt profile selection, provider switching, indexing execution mode, retrieval profile selection, retrieval enhancer switches, local test doubles, SQLite session/job/document/checkpoint storage, Postgres session/indexing-job/document/checkpoint storage, configurable agent runtime, and second-business documentation. Remaining foundation work after this plan includes deeper production capabilities such as real provider evaluation and distributed indexing queues.
 
 ## Verification Gates
 
@@ -126,6 +126,7 @@ Current progress: Phase 8 has a tested extension layer for tool registration, op
 - [x] indexing job store, directory batch summary, status API, and retry API tests
 - [x] knowledge-space document lifecycle API tests
 - [x] retrieval pipeline and chat citation/trace API tests
+- [x] retrieval profile tests
 - [x] explicit LangGraph StateGraph skeleton and service runtime tests
 - [x] service-side session store tests
 - [x] SQLite session provider tests

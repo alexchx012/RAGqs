@@ -311,6 +311,9 @@ def test_config_validation_rejects_unknown_agent_runtime():
 def test_config_validation_rejects_unknown_retrieval_enhancer_settings():
     report = validate_settings(
         _settings(
+            retrieval_profile="unknown",
+            retrieval_high_recall_top_k_multiplier=0,
+            retrieval_relaxed_filter_preserve_keys=" ",
             query_rewriter_provider="unknown",
             reranker_provider="unknown",
             context_compressor_provider="unknown",
@@ -320,6 +323,15 @@ def test_config_validation_rejects_unknown_retrieval_enhancer_settings():
 
     assert report.is_valid is False
     issues = {(issue.field, issue.message) for issue in report.errors}
+    assert ("RETRIEVAL_PROFILE", "unsupported profile: unknown") in issues
+    assert (
+        "RETRIEVAL_HIGH_RECALL_TOP_K_MULTIPLIER",
+        "must be greater than or equal to 1",
+    ) in issues
+    assert (
+        "RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS",
+        "must contain at least one filter key",
+    ) in issues
     assert ("QUERY_REWRITER_PROVIDER", "unsupported provider: unknown") in issues
     assert ("RERANKER_PROVIDER", "unsupported provider: unknown") in issues
     assert ("CONTEXT_COMPRESSOR_PROVIDER", "unsupported provider: unknown") in issues
@@ -351,6 +363,7 @@ def test_phase8_docs_cover_extension_and_second_business_templates():
         "PROMPT_PROFILE",
         "CHAT_PROVIDER",
         "CHECKPOINT_PROVIDER",
+        "RETRIEVAL_PROFILE",
         "QUERY_REWRITER_PROVIDER",
         "RERANKER_PROVIDER",
         "CONTEXT_COMPRESSOR_PROVIDER",
@@ -387,6 +400,9 @@ def _settings(**overrides):
         "openai_compatible_base_url": "https://api.example.com/v1",
         "openai_compatible_model": "compatible-chat",
         "prompt_profile": "default",
+        "retrieval_profile": "default",
+        "retrieval_high_recall_top_k_multiplier": 2,
+        "retrieval_relaxed_filter_preserve_keys": "space_id,spaceId,tenant_id,tenantId",
         "query_rewriter_provider": "none",
         "reranker_provider": "none",
         "context_compressor_provider": "none",

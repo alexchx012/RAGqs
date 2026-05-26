@@ -12,6 +12,7 @@ from app.config import Settings, config
 from app.extensions.tools import build_default_tool_registry, parse_enabled_tool_names
 from app.prompts.profiles import build_default_prompt_registry
 from app.providers.selection import ProviderSelection, validate_provider_selection
+from app.retrieval import build_default_retrieval_profile_registry, parse_filter_key_list
 from app.security.cors import parse_cors_origins
 from app.security.uploads import parse_allowed_extensions
 
@@ -361,6 +362,58 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
         errors.append(
             ConfigIssue(field="RAG_TOP_K", message="must be greater than or equal to 1")
         )
+    retrieval_profile_registry = build_default_retrieval_profile_registry()
+    retrieval_profile = _normalize_config_id(
+        _group_value(
+            rag_config,
+            settings,
+            "retrieval_profile",
+            "retrieval_profile",
+            default="default",
+        )
+    )
+    if retrieval_profile not in retrieval_profile_registry.names():
+        errors.append(
+            ConfigIssue(
+                field="RETRIEVAL_PROFILE",
+                message=f"unsupported profile: {retrieval_profile}",
+            )
+        )
+
+    if (
+        _group_value(
+            rag_config,
+            settings,
+            "retrieval_high_recall_top_k_multiplier",
+            "retrieval_high_recall_top_k_multiplier",
+            default=2,
+        )
+        < 1
+    ):
+        errors.append(
+            ConfigIssue(
+                field="RETRIEVAL_HIGH_RECALL_TOP_K_MULTIPLIER",
+                message="must be greater than or equal to 1",
+            )
+        )
+
+    relaxed_filter_preserve_keys = parse_filter_key_list(
+        _group_value(
+            rag_config,
+            settings,
+            "retrieval_relaxed_filter_preserve_keys",
+            "retrieval_relaxed_filter_preserve_keys",
+            default="space_id,spaceId,tenant_id,tenantId",
+        )
+    )
+    if not relaxed_filter_preserve_keys:
+        errors.append(
+            ConfigIssue(
+                field="RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS",
+                message="must contain at least one filter key",
+            )
+        )
+
     query_rewriter_provider = _normalize_config_id(
         _group_value(
             rag_config,

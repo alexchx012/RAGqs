@@ -32,6 +32,9 @@ TOOL_PLANNING_ENABLED=false
 TOOL_PLANNING_EXCLUDED_TOOLS=retrieve_knowledge
 PROMPT_PROFILE=strict
 RAG_TOP_K=3
+RETRIEVAL_PROFILE=default
+RETRIEVAL_HIGH_RECALL_TOP_K_MULTIPLIER=2
+RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS=space_id,spaceId,tenant_id,tenantId
 QUERY_REWRITER_PROVIDER=none
 RERANKER_PROVIDER=none
 CONTEXT_COMPRESSOR_PROVIDER=none
@@ -53,7 +56,7 @@ For multi-instance persistence, install the optional Postgres dependency group. 
 
 For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while the in-process worker performs indexing. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
 
-For retrieval-quality profiles, set `QUERY_REWRITER_PROVIDER=llm` to rewrite user questions into concise retrieval queries, `RERANKER_PROVIDER=llm` to rerank retrieved chunks before truncation, and `CONTEXT_COMPRESSOR_PROVIDER=llm` to compress retrieved chunks before answer generation. Tune these switches with evaluation data instead of enabling extra model calls blindly.
+For retrieval-quality profiles, set `RETRIEVAL_PROFILE=high_recall` when the business needs a wider recall path with relaxed non-isolation metadata filters. Keep `RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS` aligned with tenant and knowledge-space boundaries. Set `QUERY_REWRITER_PROVIDER=llm` to rewrite user questions into concise retrieval queries, `RERANKER_PROVIDER=llm` to rerank retrieved chunks before truncation, and `CONTEXT_COMPRESSOR_PROVIDER=llm` to compress retrieved chunks before answer generation. Tune these switches with evaluation data instead of enabling extra model calls blindly.
 
 ## Tools
 
@@ -75,4 +78,4 @@ Add a business golden dataset under `data/evaluation/`, then run:
 
 ## Rule
 
-Business-specific work should use configuration, provider selection, indexing execution mode, retrieval enhancer switches, tool registration, prompt profiles, and evaluation data. As a default rule, do not modify core code unless a reusable extension point is missing.
+Business-specific work should use configuration, provider selection, indexing execution mode, retrieval profiles, retrieval enhancer switches, tool registration, prompt profiles, and evaluation data. As a default rule, do not modify core code unless a reusable extension point is missing.

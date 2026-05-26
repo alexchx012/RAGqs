@@ -10,7 +10,7 @@ Mitigation: keep grouped settings views for app, CORS, uploads, providers, stora
 
 Risk: default top-k similarity retrieval can still fail on ambiguous questions, long documents, sparse metadata, and queries needing synthesis across sections. LLM-backed query rewrite, rerank, and context compression are available, but they add latency and are not yet calibrated by real-provider evaluation.
 
-Mitigation: keep query rewrite, metadata filters, rerank, contextual compression, source attribution, and retrieval debug output behind provider boundaries. Track retrieval hit rate in evaluation tests, enable `QUERY_REWRITER_PROVIDER=llm`, `RERANKER_PROVIDER=llm`, and `CONTEXT_COMPRESSOR_PROVIDER=llm` only for profiles that benefit from the extra model calls, and add provider-backed evaluation before production quality claims.
+Mitigation: keep query rewrite, metadata filters, rerank, contextual compression, source attribution, and retrieval debug output behind provider boundaries. Use `RETRIEVAL_PROFILE=high_recall` for wider multi-retriever recall while preserving space and tenant filters, track retrieval hit rate in evaluation tests, enable `QUERY_REWRITER_PROVIDER=llm`, `RERANKER_PROVIDER=llm`, and `CONTEXT_COMPRESSOR_PROVIDER=llm` only for profiles that benefit from the extra model calls, and add provider-backed evaluation before production quality claims.
 
 ## Session Persistence
 
