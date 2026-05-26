@@ -222,11 +222,42 @@ def _indexing_job_from_ingestion_result(
 
 
 def _upload_security_policy() -> UploadSecurityPolicy:
+    return build_upload_security_policy(config)
+
+
+def build_upload_security_policy(settings=config) -> UploadSecurityPolicy:
+    upload_config = getattr(settings, "upload", settings)
     return UploadSecurityPolicy(
-        allowed_extensions=parse_allowed_extensions(config.upload_allowed_extensions),
-        max_bytes=config.upload_max_bytes,
-        prompt_injection_scan_enabled=config.upload_prompt_injection_scan_enabled,
+        allowed_extensions=parse_allowed_extensions(
+            _settings_group_value(
+                upload_config,
+                settings,
+                "allowed_extensions",
+                "upload_allowed_extensions",
+                "txt,md,csv,html,htm,json",
+            )
+        ),
+        max_bytes=_settings_group_value(
+            upload_config,
+            settings,
+            "max_bytes",
+            "upload_max_bytes",
+            10 * 1024 * 1024,
+        ),
+        prompt_injection_scan_enabled=_settings_group_value(
+            upload_config,
+            settings,
+            "prompt_injection_scan_enabled",
+            "upload_prompt_injection_scan_enabled",
+            True,
+        ),
     )
+
+
+def _settings_group_value(group, settings, group_name: str, flat_name: str, default):
+    if group is not None and hasattr(group, group_name):
+        return getattr(group, group_name)
+    return getattr(settings, flat_name, default)
 
 
 def _accepts_keyword(method, keyword: str) -> bool:

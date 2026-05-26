@@ -2,7 +2,7 @@
 
 ## Configuration
 
-Risk: settings now expose typed groups over the existing environment variables, production deployment guardrails reject unsafe local defaults, real Milvus and Postgres smoke commands exist, and Milvus host ports are configurable for Windows reserved-port cases, but some service modules still read flat global config fields directly.
+Risk: settings now expose typed groups over the existing environment variables, upload and ingestion storage runtime paths consume those grouped views, production deployment guardrails reject unsafe local defaults, real Milvus and Postgres smoke commands exist, and Milvus host ports are configurable for Windows reserved-port cases, but some remaining service modules still read flat global config fields directly.
 
 Mitigation: keep grouped settings views for app, CORS, uploads, deployment environment, providers, storage, agent, model providers, Milvus, RAG, and chunking. Continue migrating runtime modules to these groups while keeping `.env.example` synchronized with `app/config.py`, run `scripts/run-integration-smoke.ps1 -Json` before local or staged deployments that depend on Milvus, and run `scripts/run-postgres-smoke.ps1 -RequireConfigured -Json` before deployments that depend on Postgres-backed runtime state.
 
