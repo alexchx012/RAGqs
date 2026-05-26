@@ -2,8 +2,6 @@ import pytest
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.providers.dashscope import DashScopeChatModelProvider, DashScopeEmbeddingProvider
-from app.providers.milvus import MilvusVectorStoreProvider
 from app.providers import (
     ChatModelProvider,
     EmbeddingProvider,
@@ -12,13 +10,15 @@ from app.providers import (
     FakeIngestionProvider,
     FakeRetrieverProvider,
     FakeVectorStoreProvider,
-    InMemorySessionStoreProvider,
     IngestionProvider,
+    InMemorySessionStoreProvider,
     RetrievalRequest,
     RetrieverProvider,
     SessionStoreProvider,
     VectorStoreProvider,
 )
+from app.providers.dashscope import DashScopeChatModelProvider, DashScopeEmbeddingProvider
+from app.providers.milvus import MilvusVectorStoreProvider
 
 
 def test_fake_embedding_provider_is_deterministic_and_matches_contract():
@@ -57,16 +57,18 @@ def test_fake_vector_store_provider_adds_searches_and_deletes_by_source():
     documents = [
         Document(page_content="alpha rag content", metadata={"_source": "a.md"}),
         Document(page_content="beta operations content", metadata={"_source": "b.md"}),
+        Document(page_content="legacy source path content", metadata={"source_path": "a.md"}),
+        Document(page_content="legacy source content", metadata={"source": "a.md"}),
     ]
 
     ids = provider.add_documents(documents)
 
     assert isinstance(provider, VectorStoreProvider)
-    assert len(ids) == 2
+    assert len(ids) == 4
     assert [doc.page_content for doc in provider.similarity_search("rag", k=3)] == [
         "alpha rag content"
     ]
-    assert provider.delete_by_source("a.md") == 1
+    assert provider.delete_by_source("a.md") == 3
     assert provider.similarity_search("rag", k=3) == []
 
 
@@ -162,6 +164,49 @@ def test_milvus_vector_store_provider_deletes_by_document_id_expression():
     assert deleted_count == 4
     assert manager.connect_count == 1
     assert manager.collection.expressions == ['metadata["document_id"] == "doc-a"']
+
+
+def test_milvus_vector_store_provider_deletes_legacy_source_metadata_fields():
+    class DeleteResult:
+        delete_count = 1
+
+    class FakeCollection:
+        def __init__(self):
+            self.expressions = []
+
+        def delete(self, expr):
+            self.expressions.append(expr)
+            return DeleteResult()
+
+    class FakeMilvusManager:
+        def __init__(self):
+            self.connect_count = 0
+            self.collection = FakeCollection()
+
+        def connect(self):
+            self.connect_count += 1
+
+        def get_collection(self):
+            return self.collection
+
+    manager = FakeMilvusManager()
+    provider = MilvusVectorStoreProvider(
+        embedding_provider=FakeEmbeddingProvider(),
+        milvus_manager=manager,
+        collection_name="unit_test_collection",
+        host="127.0.0.1",
+        port=19530,
+    )
+
+    deleted_count = provider.delete_by_source('C:/docs/"legacy".md')
+
+    assert deleted_count == 3
+    assert manager.connect_count == 3
+    assert manager.collection.expressions == [
+        'metadata["_source"] == "C:/docs/\\"legacy\\".md"',
+        'metadata["source_path"] == "C:/docs/\\"legacy\\".md"',
+        'metadata["source"] == "C:/docs/\\"legacy\\".md"',
+    ]
 
 
 def test_fake_retriever_provider_returns_structured_result():

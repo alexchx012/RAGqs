@@ -70,7 +70,7 @@ class FakeVectorStoreProvider:
         self.documents = [
             document
             for document in self.documents
-            if document.metadata.get("_source") != source
+            if not _document_matches_source(document, source)
         ]
         return before - len(self.documents)
 
@@ -223,6 +223,13 @@ def _matches_session_query(
     haystacks = [session_id, summary.title, summary.last_message]
     haystacks.extend(message.content for message in messages)
     return any(query in haystack.lower() for haystack in haystacks)
+
+
+def _document_matches_source(document: Document, source: str) -> bool:
+    return any(
+        document.metadata.get(key) == source
+        for key in ("_source", "source_path", "source")
+    )
 
 
 def _truncate_text(value: str, *, max_length: int) -> str:

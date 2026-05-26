@@ -5,10 +5,11 @@ from langchain_core.documents import Document
 
 from app.ingestion import (
     DocumentLoaderRegistry,
-    InMemoryIndexingJobStore,
     IndexingJobStatus,
+    InMemoryIndexingJobStore,
     SQLiteIndexingJobStore,
 )
+from app.knowledge.catalog import InMemoryKnowledgeCatalog
 from app.services.vector_index_service import VectorIndexService
 
 
@@ -70,7 +71,7 @@ def test_vector_index_service_uses_loader_and_normalized_chunk_metadata(tmp_path
     assert job.total_chunks == 2
     assert job.indexed_chunks == 2
     assert splitter.calls == [("# Graph\n\nLangGraph content", normalized_path)]
-    assert vector_store.deleted_sources == []
+    assert vector_store.deleted_sources == [normalized_path]
     assert vector_store.deleted_document_ids == [job.document_id]
     assert len(vector_store.added_documents) == 2
     first, second = vector_store.added_documents
@@ -128,6 +129,7 @@ def test_vector_index_service_runs_existing_pending_job(tmp_path):
     assert completed_job.total_chunks == 2
     assert completed_job.indexed_chunks == 2
     assert vector_store.deleted_document_ids == [pending_job.document_id]
+    assert vector_store.deleted_sources == [file_path.resolve().as_posix()]
     assert len(vector_store.added_documents) == 2
 
 
@@ -203,3 +205,26 @@ def test_vector_index_service_index_directory_returns_per_file_jobs(tmp_path):
     assert {job["status"] for job in result_data["jobs"]} == {"succeeded", "failed"}
     assert len(job_store.list(status=IndexingJobStatus.SUCCEEDED)) == 1
     assert len(job_store.list(status=IndexingJobStatus.FAILED)) == 1
+
+
+def test_vector_index_service_delete_document_cleans_legacy_source_chunks(tmp_path):
+    file_path = tmp_path / "legacy.md"
+    file_path.write_text("# Legacy\n\nold metadata", encoding="utf-8")
+    vector_store = RecordingVectorStore()
+    catalog = InMemoryKnowledgeCatalog()
+    service = VectorIndexService(
+        upload_path=str(tmp_path),
+        document_splitter=RecordingSplitter(),
+        vector_store=vector_store,
+        loader_registry=DocumentLoaderRegistry.default(),
+        job_store=InMemoryIndexingJobStore(),
+        document_catalog=catalog,
+    )
+    job = service.index_single_file(str(file_path), space_id="finance")
+    vector_store.deleted_sources.clear()
+    vector_store.deleted_document_ids.clear()
+
+    service.delete_document(space_id="finance", document_id=job.document_id)
+
+    assert vector_store.deleted_document_ids == [job.document_id]
+    assert vector_store.deleted_sources == [file_path.resolve().as_posix()]

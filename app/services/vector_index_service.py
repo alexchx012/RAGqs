@@ -2,16 +2,17 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
+from app.config import config
 from app.ingestion import (
     DocumentLoaderRegistry,
     DocumentMetadataNormalizer,
     IndexingJob,
-    IndexingJobStore,
     IndexingJobStatus,
+    IndexingJobStore,
     InMemoryIndexingJobStore,
     PostgresIndexingJobStore,
     SQLiteIndexingJobStore,
@@ -24,7 +25,6 @@ from app.knowledge.catalog import (
 )
 from app.services.document_splitter_service import document_splitter_service
 from app.services.vector_store_manager import vector_store_manager
-from app.config import config
 
 
 class IndexingResult:
@@ -34,13 +34,13 @@ class IndexingResult:
         self.total_files = 0
         self.success_count = 0
         self.fail_count = 0
-        self.start_time: Optional[datetime] = None
-        self.end_time: Optional[datetime] = None
+        self.start_time: datetime | None = None
+        self.end_time: datetime | None = None
         self.error_message = ""
-        self.failed_files: Dict[str, str] = {}
+        self.failed_files: dict[str, str] = {}
         self.jobs: list[IndexingJob] = []
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         duration_ms = 0
         if self.start_time and self.end_time:
             duration_ms = int((self.end_time - self.start_time).total_seconds() * 1000)
@@ -81,7 +81,7 @@ class VectorIndexService:
 
     def index_directory(
         self,
-        directory_path: Optional[str] = None,
+        directory_path: str | None = None,
         *,
         space_id: str = DEFAULT_SPACE_ID,
     ) -> IndexingResult:
@@ -163,7 +163,10 @@ class VectorIndexService:
             if document_metadata["document_id"] != job.document_id:
                 raise ValueError("索引任务 document_id 与文件元数据不匹配")
 
-            self.vector_store.delete_by_document_id(document_metadata["document_id"])
+            self._delete_existing_document_chunks(
+                document_id=document_metadata["document_id"],
+                source_path=normalized_path,
+            )
             documents = self.document_splitter.split_document(content, normalized_path)
             for index, document in enumerate(documents):
                 headings = {
@@ -244,7 +247,10 @@ class VectorIndexService:
         record = self.document_catalog.get_document(space_id=space_id, document_id=document_id)
         if record is None:
             raise ValueError(f"文档不存在: {space_id}/{document_id}")
-        self.vector_store.delete_by_document_id(document_id)
+        self._delete_existing_document_chunks(
+            document_id=document_id,
+            source_path=record.source_path,
+        )
         return self.document_catalog.mark_deleted(space_id=space_id, document_id=document_id)
 
     def rebuild_document(self, space_id: str, document_id: str) -> IndexingJob:
@@ -256,6 +262,11 @@ class VectorIndexService:
     def _latest_job_for_source(self, source_path: str) -> IndexingJob | None:
         jobs = self.job_store.list(source_path=source_path)
         return jobs[-1] if jobs else None
+
+    def _delete_existing_document_chunks(self, *, document_id: str, source_path: str) -> int:
+        deleted_by_document_id = self.vector_store.delete_by_document_id(document_id)
+        deleted_by_source = self.vector_store.delete_by_source(source_path)
+        return deleted_by_document_id + deleted_by_source
 
 
 def _build_default_job_store(settings) -> IndexingJobStore:
