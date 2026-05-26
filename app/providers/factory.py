@@ -7,6 +7,7 @@ from typing import Any
 
 from app.observability.retrieval_audit import (
     InMemoryRetrievalAuditStore,
+    PostgresRetrievalAuditStore,
     SQLiteRetrievalAuditStore,
 )
 from app.providers.checkpoints import (
@@ -209,6 +210,10 @@ def create_default_provider_container(
         if selection.retrieval_audit_store_provider == "sqlite":
             retrieval_audit_store_provider = SQLiteRetrievalAuditStore(
                 settings.retrieval_audit_sqlite_path
+            )
+        elif selection.retrieval_audit_store_provider == "postgres":
+            retrieval_audit_store_provider = PostgresRetrievalAuditStore(
+                settings.retrieval_audit_postgres_dsn
             )
         else:
             retrieval_audit_store_provider = InMemoryRetrievalAuditStore()

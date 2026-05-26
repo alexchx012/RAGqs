@@ -129,7 +129,7 @@ Current metrics cover retrieval hit rate, expected answer trait coverage, answer
 The repository now has an initial operations foundation:
 
 - `app/observability/request_context.py`: FastAPI middleware for `X-Trace-Id` propagation, request-local trace id lookup, and structured `http_request` access log records with method, path, status code, and latency.
-- `app/observability/retrieval_audit.py`: memory and SQLite retrieval audit stores for traced RAG answers, selected sources, retrieval debug payloads, session id, space id, and trace id.
+- `app/observability/retrieval_audit.py`: memory, SQLite, and Postgres retrieval audit stores for traced RAG answers, selected sources, retrieval debug payloads, session id, space id, and trace id.
 - `app/operations/health.py`: composable dependency health checks with explicit `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, and `sessionStore` boundaries.
 - `app/operations/config_validation.py`: shared startup configuration validation for DashScope credentials, RAG retrieval limits, chunking settings, and service ports.
 - `app/operations/health_preflight.py`: validates a running `/health` response and reports unhealthy dependency names for deployment gates.
@@ -142,7 +142,7 @@ The repository now has an initial operations foundation:
 - `vector-database.yml`: Attu is now behind the optional Docker Compose `ui` profile, while the core Milvus services remain the default stack.
 - `docs/operations.md` and `docs/deployment.md`: document trace id, access log, retrieval audit store, health check, config validation, Docker profile, CORS security-boundary, deployment runbook, and CI artifact behavior.
 
-Durable retrieval audit storage is available through local SQLite. Production secret management, central log/trace collection, and multi-instance audit storage remain open.
+Durable retrieval audit storage is available through local SQLite and Postgres. Production secret management, central log/trace collection, and real database integration validation remain open.
 
 ## Phase 8 Progress
 

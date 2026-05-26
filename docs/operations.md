@@ -39,6 +39,13 @@ RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite
 RETRIEVAL_AUDIT_SQLITE_PATH=data/retrieval-audits.sqlite3
 ```
 
+Use PostgreSQL when multiple FastAPI instances should write to the same audit store:
+
+```env
+RETRIEVAL_AUDIT_STORE_PROVIDER=postgres
+RETRIEVAL_AUDIT_POSTGRES_DSN=postgresql://rag:secret@db/ragqs
+```
+
 `GET /api/chat/audits` returns recent audit records and accepts `session_id`, `space_id`, `trace_id`, and `limit` query parameters. Each record includes the request trace id, session id, knowledge-space id, question, answer, serialized sources, and retrieval debug payload.
 
 ## Health Checks

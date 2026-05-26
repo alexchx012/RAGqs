@@ -6,12 +6,14 @@ from app.observability.request_context import (
 )
 from app.observability.retrieval_audit import (
     InMemoryRetrievalAuditStore,
+    PostgresRetrievalAuditStore,
     RetrievalAuditRecord,
     SQLiteRetrievalAuditStore,
 )
 
 __all__ = [
     "InMemoryRetrievalAuditStore",
+    "PostgresRetrievalAuditStore",
     "RetrievalAuditRecord",
     "SQLiteRetrievalAuditStore",
     "get_current_trace_id",
