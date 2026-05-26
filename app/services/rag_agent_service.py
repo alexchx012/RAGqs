@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator, Sequence
 from typing import Annotated, Any
+from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -19,10 +20,13 @@ from app.agents import (
 )
 from app.config import config
 from app.extensions.tools import ToolRegistry, build_enabled_tools, parse_enabled_tool_names
+from app.observability import get_current_trace_id
+from app.observability.retrieval_audit import RetrievalAuditRecord
 from app.prompts.profiles import build_system_prompt
 from app.providers.contracts import (
     ChatModelProvider,
     CheckpointProvider,
+    RetrievalAuditStoreProvider,
     RetrievalRequest,
     RetrievalResult,
     RetrievalSource,
@@ -51,6 +55,7 @@ class RagAgentService:
         checkpoint_provider: CheckpointProvider | None = None,
         retriever_provider: RetrieverProvider | None = None,
         session_store_provider: SessionStoreProvider | None = None,
+        retrieval_audit_store_provider: RetrievalAuditStoreProvider | None = None,
         retrieval_top_k: int | None = None,
         use_explicit_graph: bool | None = None,
         explicit_graph: Any | None = None,
@@ -89,6 +94,7 @@ class RagAgentService:
         )
         self.retriever_provider = retriever_provider
         self.session_store_provider = session_store_provider
+        self.retrieval_audit_store_provider = retrieval_audit_store_provider
         self.retrieval_top_k = retrieval_top_k or config.rag_top_k
         self.agent_runtime = _normalize_agent_runtime(agent_runtime or config.agent_runtime)
         self.use_explicit_graph = (
@@ -152,6 +158,12 @@ class RagAgentService:
                 answer=result["answer"],
                 assistant_metadata=_session_metadata_from_trace(result),
             )
+            self._record_retrieval_audit(
+                session_id=session_id,
+                space_id=space_id,
+                question=question,
+                trace=result,
+            )
             return result
         retrieval_result = self.retrieve_context(question, space_id=space_id)
         answer = await self._run_legacy_query(
@@ -169,6 +181,12 @@ class RagAgentService:
             question=question,
             answer=answer,
             assistant_metadata=_session_metadata_from_trace(result),
+        )
+        self._record_retrieval_audit(
+            session_id=session_id,
+            space_id=space_id,
+            question=question,
+            trace=result,
         )
         return result
 
@@ -243,11 +261,38 @@ class RagAgentService:
                 final_state=state,
             ):
                 yield chunk
+            trace = _serialize_graph_state(question, state)
+            self._record_session_exchange(
+                session_id=session_id,
+                question=question,
+                answer=trace["answer"],
+                assistant_metadata=_session_metadata_from_trace(trace),
+            )
+            self._record_retrieval_audit(
+                session_id=session_id,
+                space_id=space_id,
+                question=question,
+                trace=trace,
+            )
             return
         retrieval_result = self.retrieve_context(question, space_id=space_id)
-        yield {"type": "retrieval", "data": _serialize_retrieval_result(retrieval_result)}
+        retrieval = _serialize_retrieval_result(retrieval_result)
+        yield {"type": "retrieval", "data": retrieval}
+        answer_parts: list[str] = []
         async for chunk in self.query_stream(question, session_id=session_id, space_id=space_id):
+            if chunk.get("type") in {"content", "token"} and isinstance(chunk.get("data"), str):
+                answer_parts.append(chunk["data"])
             yield chunk
+        self._record_retrieval_audit(
+            session_id=session_id,
+            space_id=space_id,
+            question=question,
+            trace={
+                "answer": "".join(answer_parts),
+                "sources": retrieval["sources"],
+                "retrieval": retrieval,
+            },
+        )
 
     def _invoke_explicit_graph(
         self,
@@ -361,6 +406,15 @@ class RagAgentService:
             self.session_store_provider = get_default_provider_container().session_store_provider
         return self.session_store_provider
 
+    def _get_retrieval_audit_store_provider(self) -> RetrievalAuditStoreProvider:
+        if self.retrieval_audit_store_provider is None:
+            from app.providers.factory import get_default_provider_container
+
+            self.retrieval_audit_store_provider = (
+                get_default_provider_container().retrieval_audit_store_provider
+            )
+        return self.retrieval_audit_store_provider
+
     def _get_checkpoint_provider(self) -> CheckpointProvider:
         if self.checkpoint_provider is None:
             from app.providers.factory import get_default_provider_container
@@ -392,6 +446,28 @@ class RagAgentService:
         session_store = self._get_session_store_provider()
         session_store.append_message(session_id, "user", question)
         session_store.append_message(session_id, "assistant", answer, assistant_metadata)
+
+    def _record_retrieval_audit(
+        self,
+        *,
+        session_id: str,
+        space_id: str,
+        question: str,
+        trace: dict[str, Any],
+    ) -> None:
+        try:
+            record = RetrievalAuditRecord(
+                trace_id=get_current_trace_id() or str(uuid4()),
+                session_id=session_id,
+                space_id=space_id,
+                question=question,
+                answer=str(trace.get("answer", "")),
+                sources=list(trace.get("sources", [])),
+                retrieval=dict(trace.get("retrieval", {})),
+            )
+            self._get_retrieval_audit_store_provider().append(record)
+        except Exception as exc:
+            logger.warning(f"记录检索审计失败: {exc}")
 
     def get_session_history(self, session_id: str) -> list:
         session_store = self._get_session_store_provider()
@@ -425,6 +501,21 @@ class RagAgentService:
     def list_sessions(self, query: str | None = None) -> list[SessionSummary]:
         session_store = self._get_session_store_provider()
         return session_store.list_sessions(query=query)
+
+    def list_retrieval_audits(
+        self,
+        *,
+        session_id: str | None = None,
+        space_id: str | None = None,
+        trace_id: str | None = None,
+        limit: int = 50,
+    ) -> list[RetrievalAuditRecord]:
+        return self._get_retrieval_audit_store_provider().list_records(
+            session_id=session_id,
+            space_id=space_id,
+            trace_id=trace_id,
+            limit=limit,
+        )
 
     def clear_session(self, session_id: str) -> bool:
         try:

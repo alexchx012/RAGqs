@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from langchain_core.documents import Document
+
+if TYPE_CHECKING:
+    from app.observability.retrieval_audit import RetrievalAuditRecord
 
 
 def _utc_now_iso() -> str:
@@ -158,6 +161,24 @@ class SessionStoreProvider(Protocol):
 
     def clear(self, session_id: str) -> bool:
         """Clear one session."""
+
+
+@runtime_checkable
+class RetrievalAuditStoreProvider(Protocol):
+    """Store selected retrieval context and generated answer traces."""
+
+    def append(self, record: RetrievalAuditRecord) -> RetrievalAuditRecord:
+        """Persist one retrieval audit record."""
+
+    def list_records(
+        self,
+        *,
+        session_id: str | None = None,
+        space_id: str | None = None,
+        trace_id: str | None = None,
+        limit: int = 50,
+    ) -> list[RetrievalAuditRecord]:
+        """Return recent retrieval audit records matching the optional filters."""
 
 
 @runtime_checkable

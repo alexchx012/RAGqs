@@ -31,8 +31,8 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - Retrieval still defaults to basic top-k vector search, but metadata filters, citation extraction, and debug trace data are now on the default path. `RETRIEVAL_PROFILE=high_recall` enables multi-retriever recall widening with protected space and tenant filters, and LLM-backed query rewrite, rerank, and context compression can be enabled by configuration.
 - Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, with memory, SQLite, and Postgres checkpoint providers behind `CHECKPOINT_PROVIDER`.
 - API responses are inconsistent: chat endpoints return ad hoc dictionaries while other routes use Pydantic response models.
-- Observability and operations now include request trace id propagation, structured access logs, running API health preflight, upload security validation, hosted CI baseline validation, and evaluation JSON artifacts.
-- Tests now cover provider boundaries, ingestion, upload security, retrieval traces, session storage/listing, SQLite session and indexing job persistence, frontend history state, startup scripts, and evaluation scaffolding.
+- Observability and operations now include request trace id propagation, structured access logs, retrieval audit storage, running API health preflight, upload security validation, hosted CI baseline validation, and evaluation JSON artifacts.
+- Tests now cover provider boundaries, ingestion, upload security, retrieval traces and audit storage, session storage/listing, SQLite session and indexing job persistence, frontend history state, startup scripts, and evaluation scaffolding.
 
 ## Target Foundation Direction
 
@@ -50,7 +50,7 @@ The repository now has an initial `app/providers/` boundary:
 - `retrieval.py`: structured retriever provider that returns documents plus debug data.
 - `ingestion.py`: compatibility adapter around the current vector index service.
 - `postgres_session.py`: optional PostgreSQL `SessionStoreProvider` for multi-instance chat history.
-- `factory.py`: default provider container that wires chat, embedding, vector store, retriever, session store, ingestion, and checkpoint providers without opening external connections during construction.
+- `factory.py`: default provider container that wires chat, embedding, vector store, retriever, session store, retrieval audit store, ingestion, and checkpoint providers without opening external connections during construction.
 
 `app/services/vector_embedding_service.py` is now a lazy compatibility wrapper instead of constructing the DashScope client at import time. `app/services/vector_store_manager.py` delegates to `MilvusVectorStoreProvider`, so vector store construction is behind a provider boundary. `app/tools/knowledge_tool.py` now retrieves through `RetrieverProvider`, which gives agents and future evaluators the same retrieval contract. `app/api/file.py` now sends upload indexing through `ProviderContainer.ingestion_provider` while preserving upload security validation and the existing indexing-status response.
 
@@ -129,6 +129,7 @@ Current metrics cover retrieval hit rate, expected answer trait coverage, answer
 The repository now has an initial operations foundation:
 
 - `app/observability/request_context.py`: FastAPI middleware for `X-Trace-Id` propagation, request-local trace id lookup, and structured `http_request` access log records with method, path, status code, and latency.
+- `app/observability/retrieval_audit.py`: memory and SQLite retrieval audit stores for traced RAG answers, selected sources, retrieval debug payloads, session id, space id, and trace id.
 - `app/operations/health.py`: composable dependency health checks with explicit `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, and `sessionStore` boundaries.
 - `app/operations/config_validation.py`: shared startup configuration validation for DashScope credentials, RAG retrieval limits, chunking settings, and service ports.
 - `app/operations/health_preflight.py`: validates a running `/health` response and reports unhealthy dependency names for deployment gates.
@@ -139,9 +140,9 @@ The repository now has an initial operations foundation:
 - `scripts/check-api-health.ps1`: command-line health gate for a running API.
 - `.github/workflows/ci.yml`: hosted GitHub Actions baseline validation on Windows with Python/Node setup and uploaded evaluation report artifact.
 - `vector-database.yml`: Attu is now behind the optional Docker Compose `ui` profile, while the core Milvus services remain the default stack.
-- `docs/operations.md` and `docs/deployment.md`: document trace id, access log, health check, config validation, Docker profile, CORS security-boundary, deployment runbook, and CI artifact behavior.
+- `docs/operations.md` and `docs/deployment.md`: document trace id, access log, retrieval audit store, health check, config validation, Docker profile, CORS security-boundary, deployment runbook, and CI artifact behavior.
 
-Durable operations state and production secret management remain open.
+Durable retrieval audit storage is available through local SQLite. Production secret management, central log/trace collection, and multi-instance audit storage remain open.
 
 ## Phase 8 Progress
 
