@@ -1,5 +1,7 @@
 """Milvus 客户端管理模块"""
 
+from typing import Any
+
 from loguru import logger
 from pymilvus import (
     Collection,
@@ -45,7 +47,18 @@ class MilvusClientManager:
     CONTENT_MAX_LENGTH: int = 8000
     DEFAULT_SHARD_NUMBER: int = 2
 
-    def __init__(self) -> None:
+    def __init__(self, settings: Any | None = None) -> None:
+        self.settings = settings or config
+        self.host = _settings_value(self.settings, "milvus", "host", "milvus_host", "localhost")
+        self.port = _settings_value(self.settings, "milvus", "port", "milvus_port", 19530)
+        self.timeout_ms = _settings_value(
+            self.settings,
+            "milvus",
+            "timeout",
+            "milvus_timeout",
+            10000,
+        )
+        self.uri = f"http://{self.host}:{self.port}"
         self._client: MilvusClient | None = None
         self._collection: Collection | None = None
 
@@ -58,17 +71,16 @@ class MilvusClientManager:
         try:
             _patch_pymilvus_milvus_client_orm_alias()
 
-            logger.info(f"正在连接到 Milvus: {config.milvus_host}:{config.milvus_port}")
+            logger.info(f"正在连接到 Milvus: {self.host}:{self.port}")
 
             connections.connect(
                 alias="default",
-                host=config.milvus_host,
-                port=str(config.milvus_port),
-                timeout=config.milvus_timeout / 1000,
+                host=self.host,
+                port=str(self.port),
+                timeout=self.timeout_ms / 1000,
             )
 
-            uri = f"http://{config.milvus_host}:{config.milvus_port}"
-            self._client = MilvusClient(uri=uri)
+            self._client = MilvusClient(uri=self.uri)
             logger.info("成功连接到 Milvus")
 
             if not self._collection_exists():
@@ -170,6 +182,19 @@ class MilvusClientManager:
             pass
         self._client = None
         logger.info("已关闭 Milvus 连接")
+
+
+def _settings_value(
+    settings: Any,
+    group_name: str,
+    group_field_name: str,
+    flat_field_name: str,
+    default: Any,
+) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, group_field_name):
+        return getattr(group, group_field_name)
+    return getattr(settings, flat_field_name, default)
 
 
 milvus_manager = MilvusClientManager()
