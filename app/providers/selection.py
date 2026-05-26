@@ -19,10 +19,10 @@ class ProviderSelection:
     chat_provider: str = "dashscope"
     embedding_provider: str = "dashscope"
     vector_store_provider: str = "milvus"
-    session_store_provider: str = "memory"
-    retrieval_audit_store_provider: str = "memory"
+    session_store_provider: str = "sqlite"
+    retrieval_audit_store_provider: str = "sqlite"
     ingestion_provider: str = "vector_index"
-    checkpoint_provider: str = "memory"
+    checkpoint_provider: str = "sqlite"
 
     @classmethod
     def from_settings(cls, settings: Any) -> ProviderSelection:

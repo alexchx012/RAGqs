@@ -15,3 +15,6 @@ htmlcov/
 artifacts/
 .ruff_cache/
 .mypy_cache/
+data/*.db
+data/*.sqlite
+data/*.sqlite3

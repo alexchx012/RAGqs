@@ -32,17 +32,17 @@ These records are emitted as JSON payloads through Loguru. Keep business logs co
 
 ## Retrieval Audit
 
-Successful traced RAG answers are written to the configured retrieval audit store. The default is process memory:
-
-```env
-RETRIEVAL_AUDIT_STORE_PROVIDER=memory
-```
-
-Use local SQLite when selected chunks, sources, and retrieval debug data should survive a FastAPI restart:
+Successful traced RAG answers are written to the configured retrieval audit store. The development default is local SQLite:
 
 ```env
 RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite
 RETRIEVAL_AUDIT_SQLITE_PATH=data/retrieval-audits.sqlite3
+```
+
+Use process memory only for throwaway tests:
+
+```env
+RETRIEVAL_AUDIT_STORE_PROVIDER=memory
 ```
 
 Use PostgreSQL when multiple FastAPI instances should write to the same audit store:
@@ -90,7 +90,7 @@ The validator fails fast for unsafe startup values, including a missing or place
 DEPLOYMENT_ENVIRONMENT=local
 ```
 
-Supported values are `local`, `staging`, and `production`. Production mode rejects local/demo defaults: `DEBUG=true`, wildcard or localhost CORS origins, `fake` providers, and `memory` stores for sessions, retrieval audits, indexing jobs, document catalog, or checkpoints. Use production mode before staging a deployment so unsafe local settings fail during preflight instead of at runtime.
+Supported values are `local`, `staging`, and `production`. Production mode rejects unsafe runtime settings: `DEBUG=true`, wildcard or localhost CORS origins, `fake` providers, and explicit `memory` stores for sessions, retrieval audits, indexing jobs, document catalog, or checkpoints. Use production mode before staging a deployment so unsafe local settings fail during preflight instead of at runtime.
 
 ## Background Indexing
 
@@ -107,7 +107,7 @@ INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
 INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
 ```
 
-Use SQLite or Postgres job storage when background mode should survive status lookups beyond process memory. For multi-instance production ingestion, add an external queue or dedicated worker service instead of relying only on the in-process worker.
+The development default SQLite job store preserves status lookups across FastAPI restarts. For multi-instance production ingestion, use Postgres plus an external queue or dedicated worker service instead of relying only on the in-process worker.
 
 ## Docker Profiles
 

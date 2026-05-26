@@ -197,11 +197,11 @@ def create_default_provider_container(
     if session_store_provider is None:
         if selection.session_store_provider == "sqlite":
             session_store_provider = SQLiteSessionStoreProvider(
-                settings.session_store_sqlite_path
+                getattr(settings, "session_store_sqlite_path", "data/sessions.sqlite3")
             )
         elif selection.session_store_provider == "postgres":
             session_store_provider = PostgresSessionStoreProvider(
-                settings.session_store_postgres_dsn
+                getattr(settings, "session_store_postgres_dsn", "")
             )
         else:
             session_store_provider = InMemorySessionStoreProvider()
@@ -209,11 +209,15 @@ def create_default_provider_container(
     if retrieval_audit_store_provider is None:
         if selection.retrieval_audit_store_provider == "sqlite":
             retrieval_audit_store_provider = SQLiteRetrievalAuditStore(
-                settings.retrieval_audit_sqlite_path
+                getattr(
+                    settings,
+                    "retrieval_audit_sqlite_path",
+                    "data/retrieval-audits.sqlite3",
+                )
             )
         elif selection.retrieval_audit_store_provider == "postgres":
             retrieval_audit_store_provider = PostgresRetrievalAuditStore(
-                settings.retrieval_audit_postgres_dsn
+                getattr(settings, "retrieval_audit_postgres_dsn", "")
             )
         else:
             retrieval_audit_store_provider = InMemoryRetrievalAuditStore()
@@ -240,9 +244,13 @@ def create_default_provider_container(
 
     if checkpoint_provider is None:
         if selection.checkpoint_provider == "sqlite":
-            checkpoint_provider = SQLiteCheckpointProvider(settings.checkpoint_sqlite_path)
+            checkpoint_provider = SQLiteCheckpointProvider(
+                getattr(settings, "checkpoint_sqlite_path", "data/checkpoints.sqlite3")
+            )
         elif selection.checkpoint_provider == "postgres":
-            checkpoint_provider = PostgresCheckpointProvider(settings.checkpoint_postgres_dsn)
+            checkpoint_provider = PostgresCheckpointProvider(
+                getattr(settings, "checkpoint_postgres_dsn", "")
+            )
         else:
             checkpoint_provider = InMemoryCheckpointProvider()
 
