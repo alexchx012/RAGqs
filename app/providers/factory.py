@@ -103,15 +103,39 @@ def create_default_provider_container(
             chat_model_provider = FakeChatModelProvider()
         elif selection.chat_provider == "openai_compatible":
             chat_model_provider = OpenAICompatibleChatModelProvider(
-                api_key=settings.openai_compatible_api_key,
-                model_name=settings.openai_compatible_model,
-                base_url=settings.openai_compatible_base_url,
+                api_key=_settings_value(
+                    settings,
+                    "openai_compatible",
+                    "api_key",
+                    "openai_compatible_api_key",
+                    "",
+                ),
+                model_name=_settings_value(
+                    settings,
+                    "openai_compatible",
+                    "model",
+                    "openai_compatible_model",
+                    "",
+                ),
+                base_url=_settings_value(
+                    settings,
+                    "openai_compatible",
+                    "base_url",
+                    "openai_compatible_base_url",
+                    "",
+                ),
                 temperature=0.7,
             )
         else:
             chat_model_provider = DashScopeChatModelProvider(
-                api_key=settings.dashscope_api_key,
-                model_name=settings.rag_model,
+                api_key=_settings_value(
+                    settings,
+                    "dashscope",
+                    "api_key",
+                    "dashscope_api_key",
+                    "",
+                ),
+                model_name=_settings_value(settings, "rag", "model", "rag_model", "qwen-max"),
                 temperature=0.7,
             )
 
@@ -120,9 +144,27 @@ def create_default_provider_container(
             embedding_provider = FakeEmbeddingProvider()
         elif selection.embedding_provider == "openai_compatible":
             embedding_provider = OpenAICompatibleEmbeddingProvider(
-                api_key=settings.openai_compatible_api_key,
-                model=settings.openai_compatible_embedding_model,
-                base_url=settings.openai_compatible_base_url,
+                api_key=_settings_value(
+                    settings,
+                    "openai_compatible",
+                    "api_key",
+                    "openai_compatible_api_key",
+                    "",
+                ),
+                model=_settings_value(
+                    settings,
+                    "openai_compatible",
+                    "embedding_model",
+                    "openai_compatible_embedding_model",
+                    "",
+                ),
+                base_url=_settings_value(
+                    settings,
+                    "openai_compatible",
+                    "base_url",
+                    "openai_compatible_base_url",
+                    "",
+                ),
             )
         else:
             from app.services.vector_embedding_service import vector_embedding_service
@@ -137,28 +179,41 @@ def create_default_provider_container(
                 embedding_provider=embedding_provider,
                 milvus_manager=milvus_manager,
                 collection_name="biz",
-                host=settings.milvus_host,
-                port=settings.milvus_port,
+                host=_settings_value(settings, "milvus", "host", "milvus_host", "localhost"),
+                port=_settings_value(settings, "milvus", "port", "milvus_port", 19530),
             )
 
     if retriever_provider is None:
+        rag_top_k = _settings_value(settings, "rag", "top_k", "rag_top_k", 3)
         base_retriever_provider = VectorStoreRetrieverProvider(
             vector_store_provider=vector_store_provider,
-            default_top_k=settings.rag_top_k,
+            default_top_k=rag_top_k,
         )
         retrieval_profile_registry = build_default_retrieval_profile_registry(
-            high_recall_top_k_multiplier=getattr(
+            high_recall_top_k_multiplier=_settings_value(
                 settings,
+                "rag",
+                "retrieval_high_recall_top_k_multiplier",
                 "retrieval_high_recall_top_k_multiplier",
                 2,
             ),
-            relaxed_filter_preserve_keys=getattr(
+            relaxed_filter_preserve_keys=_settings_value(
                 settings,
+                "rag",
+                "retrieval_relaxed_filter_preserve_keys",
                 "retrieval_relaxed_filter_preserve_keys",
                 "space_id,spaceId,tenant_id,tenantId",
             ),
         )
-        retrieval_profile_name = _setting_id(settings, "retrieval_profile", "default")
+        retrieval_profile_name = _setting_id(
+            _settings_value(
+                settings,
+                "rag",
+                "retrieval_profile",
+                "retrieval_profile",
+                "default",
+            )
+        )
         try:
             retrieval_profile = retrieval_profile_registry.get(retrieval_profile_name)
         except KeyError as exc:
@@ -171,18 +226,57 @@ def create_default_provider_container(
         )
 
         query_rewriter = None
-        if _setting_id(settings, "query_rewriter_provider", "none") == "llm":
+        if (
+            _setting_id(
+                _settings_value(
+                    settings,
+                    "rag",
+                    "query_rewriter_provider",
+                    "query_rewriter_provider",
+                    "none",
+                )
+            )
+            == "llm"
+        ):
             query_rewriter = LLMQueryRewriter(chat_model_provider)
 
         reranker = None
-        if _setting_id(settings, "reranker_provider", "none") == "llm":
+        if (
+            _setting_id(
+                _settings_value(
+                    settings,
+                    "rag",
+                    "reranker_provider",
+                    "reranker_provider",
+                    "none",
+                )
+            )
+            == "llm"
+        ):
             reranker = LLMReranker(chat_model_provider)
 
         compressor = None
-        if _setting_id(settings, "context_compressor_provider", "none") == "llm":
+        if (
+            _setting_id(
+                _settings_value(
+                    settings,
+                    "rag",
+                    "context_compressor_provider",
+                    "context_compressor_provider",
+                    "none",
+                )
+            )
+            == "llm"
+        ):
             compressor = LLMContextCompressor(
                 chat_model_provider,
-                max_characters=getattr(settings, "context_compressor_max_characters", 1200),
+                max_characters=_settings_value(
+                    settings,
+                    "rag",
+                    "context_compressor_max_characters",
+                    "context_compressor_max_characters",
+                    1200,
+                ),
             )
 
         retriever_provider = RetrievalPipeline(
@@ -191,17 +285,29 @@ def create_default_provider_container(
             query_rewriter=query_rewriter,
             reranker=reranker,
             compressor=compressor,
-            default_top_k=settings.rag_top_k,
+            default_top_k=rag_top_k,
         )
 
     if session_store_provider is None:
         if selection.session_store_provider == "sqlite":
             session_store_provider = SQLiteSessionStoreProvider(
-                getattr(settings, "session_store_sqlite_path", "data/sessions.sqlite3")
+                _settings_value(
+                    settings,
+                    "storage",
+                    "session_store_sqlite_path",
+                    "session_store_sqlite_path",
+                    "data/sessions.sqlite3",
+                )
             )
         elif selection.session_store_provider == "postgres":
             session_store_provider = PostgresSessionStoreProvider(
-                getattr(settings, "session_store_postgres_dsn", "")
+                _settings_value(
+                    settings,
+                    "storage",
+                    "session_store_postgres_dsn",
+                    "session_store_postgres_dsn",
+                    "",
+                )
             )
         else:
             session_store_provider = InMemorySessionStoreProvider()
@@ -209,15 +315,23 @@ def create_default_provider_container(
     if retrieval_audit_store_provider is None:
         if selection.retrieval_audit_store_provider == "sqlite":
             retrieval_audit_store_provider = SQLiteRetrievalAuditStore(
-                getattr(
+                _settings_value(
                     settings,
+                    "storage",
+                    "retrieval_audit_sqlite_path",
                     "retrieval_audit_sqlite_path",
                     "data/retrieval-audits.sqlite3",
                 )
             )
         elif selection.retrieval_audit_store_provider == "postgres":
             retrieval_audit_store_provider = PostgresRetrievalAuditStore(
-                getattr(settings, "retrieval_audit_postgres_dsn", "")
+                _settings_value(
+                    settings,
+                    "storage",
+                    "retrieval_audit_postgres_dsn",
+                    "retrieval_audit_postgres_dsn",
+                    "",
+                )
             )
         else:
             retrieval_audit_store_provider = InMemoryRetrievalAuditStore()
@@ -229,7 +343,15 @@ def create_default_provider_container(
             from app.ingestion.worker import get_background_indexing_worker
             from app.services.vector_index_service import vector_index_service
 
-            execution_mode = _setting_id(settings, "indexing_execution_mode", "sync")
+            execution_mode = _setting_id(
+                _settings_value(
+                    settings,
+                    "storage",
+                    "indexing_execution_mode",
+                    "indexing_execution_mode",
+                    "sync",
+                )
+            )
             background_worker = None
             if execution_mode == "background":
                 background_worker = get_background_indexing_worker(
@@ -245,11 +367,23 @@ def create_default_provider_container(
     if checkpoint_provider is None:
         if selection.checkpoint_provider == "sqlite":
             checkpoint_provider = SQLiteCheckpointProvider(
-                getattr(settings, "checkpoint_sqlite_path", "data/checkpoints.sqlite3")
+                _settings_value(
+                    settings,
+                    "storage",
+                    "checkpoint_sqlite_path",
+                    "checkpoint_sqlite_path",
+                    "data/checkpoints.sqlite3",
+                )
             )
         elif selection.checkpoint_provider == "postgres":
             checkpoint_provider = PostgresCheckpointProvider(
-                getattr(settings, "checkpoint_postgres_dsn", "")
+                _settings_value(
+                    settings,
+                    "storage",
+                    "checkpoint_postgres_dsn",
+                    "checkpoint_postgres_dsn",
+                    "",
+                )
             )
         else:
             checkpoint_provider = InMemoryCheckpointProvider()
@@ -282,5 +416,18 @@ def reset_default_provider_container() -> None:
     _default_provider_container = None
 
 
-def _setting_id(settings: Any, field_name: str, default: str) -> str:
-    return str(getattr(settings, field_name, default)).strip().lower().replace("-", "_")
+def _settings_value(
+    settings: Any,
+    group_name: str,
+    group_field_name: str,
+    flat_field_name: str,
+    default: Any,
+) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, group_field_name):
+        return getattr(group, group_field_name)
+    return getattr(settings, flat_field_name, default)
+
+
+def _setting_id(value: Any) -> str:
+    return str(value).strip().lower().replace("-", "_")
