@@ -137,6 +137,6 @@ Current progress: Phase 8 has a tested extension layer for tool registration, op
 - [x] initial Phase 7 operations tests
 - [x] Phase 8 extension registry, provider switching, prompt profile, and business template tests
 - [x] frontend state tests
-- [ ] startup preflight with real Milvus. Current command: `scripts/run-integration-smoke.ps1 -Json`; leave unchecked until it has been run against a live Milvus stack with real local credentials. Latest local attempt showed Windows reserved port range `19498-19597` blocked default host port `19530`; `MILVUS_PORT` is now configurable for the next live retry.
+- [x] startup preflight with real Milvus. Verified locally after rebuilding `milvus-standalone` with `MILVUS_PORT=19630` because Windows reserved port range `19498-19597` blocked default host port `19530`; `scripts/run-integration-smoke.ps1 -Json` and `start.ps1 -PreflightOnly` both passed.
 - [x] initial RAG evaluation suite with fake-provider command
 - [x] real-provider evaluation readiness preflight
