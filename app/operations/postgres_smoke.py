@@ -108,11 +108,14 @@ def run_postgres_smoke(
     postgres_probe: PostgresProbe | None = None,
     timeout_seconds: float = 5.0,
     require_configured: bool = False,
+    validate_write_path: bool = False,
 ) -> PostgresSmokeReport:
     """Run non-destructive PostgreSQL checks for configured Postgres-backed stores."""
 
     settings = settings or config
-    active_probe = postgres_probe or probe_postgres
+    active_probe = postgres_probe or (
+        probe_postgres_write_path if validate_write_path else probe_postgres
+    )
     checks: list[PostgresSmokeCheck] = []
     errors: list[PostgresSmokeIssue] = []
 
@@ -167,7 +170,63 @@ def probe_postgres(dsn: str, timeout_seconds: float) -> dict[str, Any]:
     except Exception as exc:
         raise PostgresSmokeError(str(exc)) from exc
 
-    return {"serverReachable": bool(row and row["ok"] == 1)}
+    return {"serverReachable": bool(row and _row_value(row, "ok") == 1)}
+
+
+def probe_postgres_write_path(
+    dsn: str,
+    timeout_seconds: float,
+    *,
+    connector: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Validate temporary-table create, insert, select, and rollback permissions."""
+
+    row_factory = None
+    if connector is None:
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as exc:
+            raise PostgresSmokeError(
+                "psycopg is not installed; install the postgres extras, "
+                'for example: uv pip install -e ".[postgres]"'
+            ) from exc
+
+        connector = psycopg.connect
+        row_factory = dict_row
+
+    connect_timeout = max(1, int(round(timeout_seconds)))
+    try:
+        with connector(
+            dsn,
+            connect_timeout=connect_timeout,
+            row_factory=row_factory,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 AS ok")
+                reachable_row = cursor.fetchone()
+                cursor.execute(
+                    """
+                    CREATE TEMP TABLE ragqs_smoke_write_path (
+                        id integer PRIMARY KEY,
+                        value text NOT NULL
+                    ) ON COMMIT DROP
+                    """
+                )
+                cursor.execute(
+                    "INSERT INTO ragqs_smoke_write_path (id, value) VALUES (%s, %s)",
+                    (1, "ok"),
+                )
+                cursor.execute("SELECT value FROM ragqs_smoke_write_path WHERE id = %s", (1,))
+                write_row = cursor.fetchone()
+            connection.rollback()
+    except Exception as exc:
+        raise PostgresSmokeError(str(exc)) from exc
+
+    return {
+        "serverReachable": bool(reachable_row and _row_value(reachable_row, "ok") == 1),
+        "writePathValidated": bool(write_row and _row_value(write_row, "value") == "ok"),
+    }
 
 
 def main(
@@ -184,6 +243,11 @@ def main(
         action="store_true",
         help="Fail when no Postgres-backed stores are selected.",
     )
+    parser.add_argument(
+        "--validate-write-path",
+        action="store_true",
+        help="Validate temporary-table create, insert, select, and rollback permissions.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args(argv)
 
@@ -193,6 +257,7 @@ def main(
         postgres_probe=postgres_probe,
         timeout_seconds=args.timeout,
         require_configured=args.require_configured,
+        validate_write_path=args.validate_write_path,
     )
 
     if args.json:
@@ -227,11 +292,25 @@ def _append_store_check(
         checks.append(PostgresSmokeCheck(name=target.name, status="unhealthy", message=str(exc)))
         errors.append(PostgresSmokeIssue(field=target.dsn_env, message=str(exc)))
     else:
+        failure_message = _probe_failure_message(details)
+        if failure_message:
+            checks.append(
+                PostgresSmokeCheck(
+                    name=target.name,
+                    status="unhealthy",
+                    message=failure_message,
+                    details={"dsn": _redact_dsn(dsn), **dict(details)},
+                )
+            )
+            errors.append(PostgresSmokeIssue(field=target.dsn_env, message=failure_message))
+            return
+
+        message = "write path validated" if details.get("writePathValidated") else "connected"
         checks.append(
             PostgresSmokeCheck(
                 name=target.name,
                 status="healthy",
-                message="connected",
+                message=message,
                 details={"dsn": _redact_dsn(dsn), **dict(details)},
             )
         )
@@ -251,6 +330,25 @@ def _redact_dsn(dsn: str) -> str:
 
 def _setting_id(value: Any) -> str:
     return str(value).strip().lower().replace("-", "_")
+
+
+def _probe_failure_message(details: dict[str, Any]) -> str:
+    if details.get("serverReachable") is False:
+        return "server reachability validation failed"
+    if details.get("writePathValidated") is False:
+        return "write path validation failed"
+    return ""
+
+
+def _row_value(row: Any, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    if hasattr(row, "__getitem__"):
+        try:
+            return row[key]
+        except (KeyError, TypeError):
+            return row[0]
+    return None
 
 
 def _print_text_report(report: PostgresSmokeReport, stream: TextIO) -> None:

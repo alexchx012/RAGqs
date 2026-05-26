@@ -121,6 +121,125 @@ def test_postgres_smoke_marks_probe_failure_unready():
     ]
 
 
+def test_postgres_smoke_can_validate_write_path_for_configured_store(monkeypatch):
+    from app.operations import postgres_smoke
+
+    calls = []
+
+    def write_probe(dsn: str, timeout_seconds: float):
+        calls.append((dsn, timeout_seconds))
+        return {"serverReachable": True, "writePathValidated": True}
+
+    monkeypatch.setattr(postgres_smoke, "probe_postgres_write_path", write_probe)
+
+    report = postgres_smoke.run_postgres_smoke(
+        settings=_settings(
+            session_store_provider="postgres",
+            session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
+        ),
+        timeout_seconds=3.5,
+        validate_write_path=True,
+    )
+
+    assert report.ready is True
+    assert calls == [("postgresql://rag:secret@db/ragqs", 3.5)]
+    assert [(check.name, check.status, check.message) for check in report.checks] == [
+        ("sessionStore", "healthy", "write path validated")
+    ]
+    assert report.checks[0].details["writePathValidated"] is True
+
+
+def test_postgres_smoke_marks_failed_write_path_validation_unready():
+    from app.operations.postgres_smoke import run_postgres_smoke
+
+    report = run_postgres_smoke(
+        settings=_settings(
+            session_store_provider="postgres",
+            session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
+        ),
+        postgres_probe=lambda dsn, timeout_seconds: {
+            "serverReachable": True,
+            "writePathValidated": False,
+        },
+    )
+
+    assert report.ready is False
+    assert [(issue.field, issue.message) for issue in report.errors] == [
+        ("SESSION_STORE_POSTGRES_DSN", "write path validation failed")
+    ]
+    assert [(check.name, check.status, check.message) for check in report.checks] == [
+        ("sessionStore", "unhealthy", "write path validation failed")
+    ]
+
+
+def test_probe_postgres_write_path_uses_temp_table_and_rolls_back():
+    from app.operations.postgres_smoke import probe_postgres_write_path
+
+    class FakeCursor:
+        def __init__(self):
+            self.statements = []
+            self.result = {"ok": 1}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement, params=None):
+            self.statements.append((statement, params))
+            if "SELECT value" in statement:
+                self.result = {"value": "ok"}
+
+        def fetchone(self):
+            return self.result
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_instance = FakeCursor()
+            self.rollback_count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def rollback(self):
+            self.rollback_count += 1
+
+    connection = FakeConnection()
+    calls = []
+
+    def connector(dsn, **kwargs):
+        calls.append((dsn, kwargs))
+        return connection
+
+    result = probe_postgres_write_path(
+        "postgresql://rag:secret@db/ragqs",
+        timeout_seconds=2.4,
+        connector=connector,
+    )
+
+    statements = [statement for statement, _ in connection.cursor_instance.statements]
+    assert result == {"serverReachable": True, "writePathValidated": True}
+    assert calls == [
+        (
+            "postgresql://rag:secret@db/ragqs",
+            {"connect_timeout": 2, "row_factory": None},
+        )
+    ]
+    assert statements[0] == "SELECT 1 AS ok"
+    assert "CREATE TEMP TABLE ragqs_smoke_write_path" in statements[1]
+    assert "ON COMMIT DROP" in statements[1]
+    assert statements[2].startswith("INSERT INTO ragqs_smoke_write_path")
+    assert statements[3].startswith("SELECT value FROM ragqs_smoke_write_path")
+    assert connection.rollback_count == 1
+
+
 def test_postgres_smoke_cli_outputs_json_report():
     from app.operations.postgres_smoke import main
 
