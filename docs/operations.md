@@ -32,6 +32,11 @@ These records are emitted as JSON payloads through Loguru. Keep business logs co
 
 ## Runtime Metrics
 
+JSON API routes use the public response envelope with `code`, `message`, and `data` fields where
+their compatibility contract allows it. The shared `ApiEnvelope` helpers live in
+`app.models.response`; keep new JSON endpoints on that helper path unless a route has an older
+response model that must remain unchanged.
+
 `GET /api/metrics` returns an in-process operational snapshot for the current
 FastAPI worker. This is a lightweight local signal, not a replacement for a
 central metrics backend in multi-instance deployments.
