@@ -52,6 +52,23 @@ Startup uses the same Python config validation module as tests:
 
 The validator fails fast for unsafe startup values, including a missing or placeholder `DASHSCOPE_API_KEY`, invalid `RAG_TOP_K`, invalid `CHUNK_MAX_SIZE` / `CHUNK_OVERLAP`, invalid upload security settings, and out-of-range app or Milvus ports. `start.ps1` calls this module during preflight so the PowerShell script and application share one config validation boundary.
 
+## Background Indexing
+
+Uploads use synchronous indexing by default:
+
+```env
+INDEXING_EXECUTION_MODE=sync
+```
+
+Set `INDEXING_EXECUTION_MODE=background` when uploads should return a pending indexing job immediately and let the FastAPI process execute it through an in-process worker. The worker starts and stops in the FastAPI lifespan, uses persisted indexing job ids, and drains queued jobs during graceful shutdown.
+
+```env
+INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
+INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
+```
+
+Use SQLite or Postgres job storage when background mode should survive status lookups beyond process memory. For multi-instance production ingestion, add an external queue or dedicated worker service instead of relying only on the in-process worker.
+
 ## Docker Profiles
 
 `vector-database.yml` keeps the core Milvus stack available by default: etcd, MinIO, and Milvus standalone. The Attu browser UI is optional and belongs to the `ui` Docker Compose profile.

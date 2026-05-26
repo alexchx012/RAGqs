@@ -12,6 +12,7 @@ from loguru import logger
 from app.config import config
 from app.api import chat, health, file
 from app.core.milvus_client import milvus_manager
+from app.ingestion.worker import get_background_indexing_worker
 from app.observability import install_request_context_middleware
 from app.security import build_cors_options
 
@@ -21,9 +22,26 @@ async def lifespan(app: FastAPI):
     logger.info(f"🚀 {config.app_name} v{config.app_version} 启动中...")
     milvus_manager.connect()
     logger.info("✅ Milvus 连接成功")
-    yield
-    milvus_manager.close()
-    logger.info(f"👋 {config.app_name} 关闭")
+    indexing_worker = None
+    if _config_id(getattr(config, "indexing_execution_mode", "sync")) == "background":
+        indexing_worker = get_background_indexing_worker(settings=config)
+        indexing_worker.start()
+        logger.info("✅ 后台索引 worker 已启动")
+    try:
+        yield
+    finally:
+        if indexing_worker is not None:
+            stopped = indexing_worker.stop(
+                timeout_seconds=float(
+                    getattr(config, "indexing_worker_shutdown_timeout_seconds", 5.0)
+                )
+            )
+            if stopped:
+                logger.info("✅ 后台索引 worker 已停止")
+            else:
+                logger.warning("后台索引 worker 未在超时时间内停止")
+        milvus_manager.close()
+        logger.info(f"👋 {config.app_name} 关闭")
 
 
 app = FastAPI(
@@ -55,6 +73,10 @@ async def root():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return {"message": f"{config.app_name} API", "docs": "/docs"}
+
+
+def _config_id(value: str) -> str:
+    return str(value).strip().lower().replace("-", "_")
 
 
 if __name__ == "__main__":

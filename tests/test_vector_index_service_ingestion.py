@@ -84,6 +84,53 @@ def test_vector_index_service_uses_loader_and_normalized_chunk_metadata(tmp_path
     assert second.metadata["_file_name"] == "graph.md"
 
 
+def test_vector_index_service_can_create_pending_job_without_indexing(tmp_path):
+    file_path = tmp_path / "queued.md"
+    file_path.write_text("# Queued\n\nBackground indexing", encoding="utf-8")
+    vector_store = RecordingVectorStore()
+    job_store = InMemoryIndexingJobStore()
+    service = VectorIndexService(
+        upload_path=str(tmp_path),
+        document_splitter=RecordingSplitter(),
+        vector_store=vector_store,
+        loader_registry=DocumentLoaderRegistry.default(),
+        job_store=job_store,
+    )
+
+    job = service.create_pending_indexing_job(str(file_path), space_id="finance")
+
+    assert job.status is IndexingJobStatus.PENDING
+    assert job.space_id == "finance"
+    assert job.source_path == file_path.resolve().as_posix()
+    assert job_store.get(job.job_id) is job
+    assert vector_store.deleted_document_ids == []
+    assert vector_store.added_documents == []
+
+
+def test_vector_index_service_runs_existing_pending_job(tmp_path):
+    file_path = tmp_path / "queued.md"
+    file_path.write_text("# Queued\n\nBackground indexing", encoding="utf-8")
+    vector_store = RecordingVectorStore()
+    job_store = InMemoryIndexingJobStore()
+    service = VectorIndexService(
+        upload_path=str(tmp_path),
+        document_splitter=RecordingSplitter(),
+        vector_store=vector_store,
+        loader_registry=DocumentLoaderRegistry.default(),
+        job_store=job_store,
+    )
+    pending_job = service.create_pending_indexing_job(str(file_path), space_id="finance")
+
+    completed_job = service.run_indexing_job(pending_job.job_id)
+
+    assert completed_job is pending_job
+    assert completed_job.status is IndexingJobStatus.SUCCEEDED
+    assert completed_job.total_chunks == 2
+    assert completed_job.indexed_chunks == 2
+    assert vector_store.deleted_document_ids == [pending_job.document_id]
+    assert len(vector_store.added_documents) == 2
+
+
 def test_vector_index_service_can_select_sqlite_job_store_by_config(tmp_path):
     service = VectorIndexService(
         upload_path=str(tmp_path),

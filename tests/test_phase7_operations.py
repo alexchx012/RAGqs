@@ -194,6 +194,28 @@ def test_config_validation_rejects_invalid_upload_security_settings():
     ) in [(issue.field, issue.message) for issue in report.errors]
 
 
+def test_config_validation_rejects_invalid_background_indexing_settings():
+    report = validate_settings(
+        _settings(
+            indexing_execution_mode="invalid",
+            indexing_worker_poll_interval_seconds=0,
+            indexing_worker_shutdown_timeout_seconds=0,
+        )
+    )
+
+    assert report.is_valid is False
+    issues = [(issue.field, issue.message) for issue in report.errors]
+    assert ("INDEXING_EXECUTION_MODE", "unsupported mode: invalid") in issues
+    assert (
+        "INDEXING_WORKER_POLL_INTERVAL_SECONDS",
+        "must be greater than 0",
+    ) in issues
+    assert (
+        "INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS",
+        "must be greater than 0",
+    ) in issues
+
+
 def test_config_validation_cli_returns_nonzero_and_actionable_output():
     output = StringIO()
 
@@ -339,6 +361,15 @@ def test_start_script_runs_health_preflight_for_existing_api():
 
     assert "Assert-RunningApiHealth" in script
     assert "app.operations.health_preflight" in script
+
+
+def test_main_lifespan_controls_background_indexing_worker():
+    main_source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+
+    assert "indexing_execution_mode" in main_source
+    assert "get_background_indexing_worker" in main_source
+    assert "indexing_worker.start()" in main_source
+    assert "indexing_worker.stop(" in main_source
 
 
 def test_operations_docs_describe_dependency_health_preflight():

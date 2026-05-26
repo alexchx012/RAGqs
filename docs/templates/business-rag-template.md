@@ -14,6 +14,9 @@ SESSION_STORE_PROVIDER=memory
 SESSION_STORE_SQLITE_PATH=data/sessions.sqlite3
 SESSION_STORE_POSTGRES_DSN=
 INGESTION_PROVIDER=vector_index
+INDEXING_EXECUTION_MODE=sync
+INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
+INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
 INDEXING_JOB_STORE_PROVIDER=memory
 INDEXING_JOB_STORE_SQLITE_PATH=data/indexing-jobs.sqlite3
 INDEXING_JOB_STORE_POSTGRES_DSN=
@@ -47,6 +50,8 @@ For OpenAI-compatible endpoints, set `CHAT_PROVIDER=openai_compatible` or `EMBED
 
 For multi-instance persistence, install the optional Postgres dependency group. Use `SESSION_STORE_PROVIDER=postgres` plus `SESSION_STORE_POSTGRES_DSN` for chat history, `INDEXING_JOB_STORE_PROVIDER=postgres` plus `INDEXING_JOB_STORE_POSTGRES_DSN` for indexing job status, `DOCUMENT_CATALOG_PROVIDER=postgres` plus `DOCUMENT_CATALOG_POSTGRES_DSN` for knowledge-space document lifecycle metadata, and `CHECKPOINT_PROVIDER=postgres` plus `CHECKPOINT_POSTGRES_DSN` for LangGraph checkpoint state.
 
+For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while the in-process worker performs indexing. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
+
 For retrieval-quality profiles, set `QUERY_REWRITER_PROVIDER=llm` to rewrite user questions into concise retrieval queries and `CONTEXT_COMPRESSOR_PROVIDER=llm` to compress retrieved chunks before answer generation. Tune `CONTEXT_COMPRESSOR_MAX_CHARACTERS` with evaluation data instead of enabling compression blindly.
 
 ## Tools
@@ -69,4 +74,4 @@ Add a business golden dataset under `data/evaluation/`, then run:
 
 ## Rule
 
-Business-specific work should use configuration, provider selection, retrieval enhancer switches, tool registration, prompt profiles, and evaluation data. As a default rule, do not modify core code unless a reusable extension point is missing.
+Business-specific work should use configuration, provider selection, indexing execution mode, retrieval enhancer switches, tool registration, prompt profiles, and evaluation data. As a default rule, do not modify core code unless a reusable extension point is missing.

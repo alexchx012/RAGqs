@@ -38,6 +38,7 @@ try {
                 tests\test_agent_provider_injection.py `
                 tests\test_provider_factory.py `
                 tests\test_knowledge_tool_provider.py `
+                tests\test_background_indexing_worker.py `
                 tests\test_ingestion_foundation.py `
                 tests\test_postgres_indexing_job_store.py `
                 tests\test_postgres_document_catalog.py `

@@ -178,6 +178,57 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
                 )
             )
 
+    indexing_execution_mode = _normalize_config_id(
+        _group_value(
+            storage_config,
+            settings,
+            "indexing_execution_mode",
+            "indexing_execution_mode",
+            default="sync",
+        )
+    )
+    if indexing_execution_mode not in {"sync", "background"}:
+        errors.append(
+            ConfigIssue(
+                field="INDEXING_EXECUTION_MODE",
+                message=f"unsupported mode: {indexing_execution_mode}",
+            )
+        )
+
+    if (
+        _group_value(
+            storage_config,
+            settings,
+            "indexing_worker_poll_interval_seconds",
+            "indexing_worker_poll_interval_seconds",
+            default=0.25,
+        )
+        <= 0
+    ):
+        errors.append(
+            ConfigIssue(
+                field="INDEXING_WORKER_POLL_INTERVAL_SECONDS",
+                message="must be greater than 0",
+            )
+        )
+
+    if (
+        _group_value(
+            storage_config,
+            settings,
+            "indexing_worker_shutdown_timeout_seconds",
+            "indexing_worker_shutdown_timeout_seconds",
+            default=5.0,
+        )
+        <= 0
+    ):
+        errors.append(
+            ConfigIssue(
+                field="INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS",
+                message="must be greater than 0",
+            )
+        )
+
     indexing_job_store_provider = _normalize_config_id(
         _group_value(
             storage_config,

@@ -1,0 +1,56 @@
+from app.ingestion.worker import BackgroundIndexingWorker
+
+
+class RecordingIndexService:
+    def __init__(self, fail_job_ids: set[str] | None = None):
+        self.fail_job_ids = fail_job_ids or set()
+        self.ran_job_ids = []
+
+    def run_indexing_job(self, job_id: str):
+        self.ran_job_ids.append(job_id)
+        if job_id in self.fail_job_ids:
+            raise RuntimeError(f"failed {job_id}")
+
+
+def test_background_indexing_worker_processes_one_queued_job():
+    index_service = RecordingIndexService()
+    worker = BackgroundIndexingWorker(index_service=index_service)
+
+    worker.enqueue("job-1")
+
+    assert worker.run_once(timeout_seconds=0) is True
+    assert index_service.ran_job_ids == ["job-1"]
+    assert worker.stats.processed_count == 1
+    assert worker.stats.failed_count == 0
+
+
+def test_background_indexing_worker_records_job_failures_without_stopping():
+    index_service = RecordingIndexService(fail_job_ids={"job-1"})
+    worker = BackgroundIndexingWorker(index_service=index_service)
+
+    worker.enqueue("job-1")
+    worker.enqueue("job-2")
+
+    assert worker.run_once(timeout_seconds=0) is True
+    assert worker.run_once(timeout_seconds=0) is True
+    assert index_service.ran_job_ids == ["job-1", "job-2"]
+    assert worker.stats.processed_count == 1
+    assert worker.stats.failed_count == 1
+    assert worker.stats.last_error == "failed job-1"
+
+
+def test_background_indexing_worker_starts_processes_and_stops_gracefully():
+    index_service = RecordingIndexService()
+    worker = BackgroundIndexingWorker(
+        index_service=index_service,
+        poll_interval_seconds=0.01,
+    )
+
+    worker.enqueue("job-1")
+    worker.start()
+
+    assert worker.wait_until_idle(timeout_seconds=1) is True
+    worker.stop(timeout_seconds=1)
+
+    assert index_service.ran_job_ids == ["job-1"]
+    assert worker.is_running is False
