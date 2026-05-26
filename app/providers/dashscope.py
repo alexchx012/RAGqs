@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from openai import OpenAI
-from loguru import logger
 from langchain_qwq import ChatQwen
+from loguru import logger
+from openai import OpenAI
 
 
 class DashScopeChatModelProvider:

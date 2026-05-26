@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 import time
-from typing import Any, Callable, Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 from app.evaluation.context import example_space_id
 from app.evaluation.judges import FaithfulnessJudge

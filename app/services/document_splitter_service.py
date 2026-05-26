@@ -1,7 +1,6 @@
 """文档分割服务 - 基于 LangChain 的智能文档分割"""
 
 from pathlib import Path
-from typing import List
 
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -29,7 +28,7 @@ class DocumentSplitterService:
             is_separator_regex=False,
         )
 
-    def split_markdown(self, content: str, file_path: str = "") -> List[Document]:
+    def split_markdown(self, content: str, file_path: str = "") -> list[Document]:
         if not content or not content.strip():
             return []
         try:
@@ -45,7 +44,7 @@ class DocumentSplitterService:
             logger.error(f"Markdown 分割失败: {file_path}, 错误: {e}")
             raise
 
-    def split_text(self, content: str, file_path: str = "") -> List[Document]:
+    def split_text(self, content: str, file_path: str = "") -> list[Document]:
         if not content or not content.strip():
             return []
         try:
@@ -58,12 +57,12 @@ class DocumentSplitterService:
             logger.error(f"文本分割失败: {file_path}, 错误: {e}")
             raise
 
-    def split_document(self, content: str, file_path: str = "") -> List[Document]:
+    def split_document(self, content: str, file_path: str = "") -> list[Document]:
         if file_path.endswith(".md"):
             return self.split_markdown(content, file_path)
         return self.split_text(content, file_path)
 
-    def _merge_small_chunks(self, documents: List[Document], min_size: int = 300) -> List[Document]:
+    def _merge_small_chunks(self, documents: list[Document], min_size: int = 300) -> list[Document]:
         if not documents:
             return []
         merged_docs = []

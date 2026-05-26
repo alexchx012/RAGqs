@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from app.evaluation.metrics import evaluate_results
-from app.evaluation.models import AgentRunResult, EvaluationReport, FaithfulnessVerdict, GoldenExample
+from app.evaluation.models import (
+    AgentRunResult,
+    EvaluationReport,
+    FaithfulnessVerdict,
+    GoldenExample,
+)
 
 
 def run_fake_evaluation(examples: list[GoldenExample]) -> EvaluationReport:

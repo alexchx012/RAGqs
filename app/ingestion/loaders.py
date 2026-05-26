@@ -51,7 +51,7 @@ class DocumentLoaderRegistry:
         self.loaders = list(loaders)
 
     @classmethod
-    def default(cls) -> "DocumentLoaderRegistry":
+    def default(cls) -> DocumentLoaderRegistry:
         return cls(loaders=[TextDocumentLoader(), MarkdownDocumentLoader()])
 
     def load(self, path: str | Path) -> list[Document]:

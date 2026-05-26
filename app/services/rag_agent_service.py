@@ -1,6 +1,7 @@
 """RAG Agent 服务 - 基于 LangGraph 的知识库问答"""
 
-from typing import Annotated, Any, AsyncGenerator, Dict, Sequence
+from collections.abc import AsyncGenerator, Sequence
+from typing import Annotated, Any
 
 from langchain.agents import create_agent
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -26,8 +27,8 @@ from app.providers.contracts import (
     RetrievalResult,
     RetrievalSource,
     RetrieverProvider,
-    SessionSummary,
     SessionStoreProvider,
+    SessionSummary,
     StoredMessage,
 )
 from app.tools.knowledge_tool import enforce_knowledge_space
@@ -176,7 +177,7 @@ class RagAgentService:
         question: str,
         session_id: str,
         space_id: str = "default",
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """流式问答"""
         try:
             if self.use_explicit_graph:
@@ -232,7 +233,7 @@ class RagAgentService:
         question: str,
         session_id: str,
         space_id: str = "default",
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         if self.use_explicit_graph:
             state: dict[str, Any] = {}
             for chunk in self._stream_explicit_graph(

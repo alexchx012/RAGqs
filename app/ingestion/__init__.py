@@ -1,12 +1,12 @@
 """Ingestion foundation primitives."""
 
-from app.ingestion.jobs import IndexingJob, IndexingJobStatus
 from app.ingestion.job_store import (
-    InMemoryIndexingJobStore,
     IndexingJobStore,
+    InMemoryIndexingJobStore,
     PostgresIndexingJobStore,
     SQLiteIndexingJobStore,
 )
+from app.ingestion.jobs import IndexingJob, IndexingJobStatus
 from app.ingestion.loaders import (
     DocumentLoader,
     DocumentLoaderRegistry,
