@@ -102,6 +102,19 @@ def test_env_example_documents_all_current_settings():
         assert f"{key}=" in env_example
 
 
+def test_readme_documents_sqlite_development_state_defaults():
+    readme = read("README.md")
+
+    for phrase in [
+        "本地 SQLite",
+        "SESSION_STORE_PROVIDER=sqlite",
+        "INDEXING_QUEUE_PROVIDER=sqlite",
+        "CHECKPOINT_PROVIDER=sqlite",
+        "data/*.sqlite3",
+    ]:
+        assert phrase in readme
+
+
 def test_architecture_audit_captures_current_boundaries_and_limitations():
     audit = read("docs/architecture/baseline-audit.md")
 
