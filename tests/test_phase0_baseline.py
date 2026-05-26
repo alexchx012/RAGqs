@@ -74,6 +74,7 @@ def test_env_example_documents_all_current_settings():
         "DASHSCOPE_EMBEDDING_MODEL",
         "MILVUS_HOST",
         "MILVUS_PORT",
+        "MILVUS_HEALTH_PORT",
         "MILVUS_TIMEOUT",
         "RAG_TOP_K",
         "RAG_MODEL",

@@ -114,6 +114,93 @@ function Test-HttpHealth {
     }
 }
 
+function Get-DotEnvValue {
+    param([string]$Key)
+
+    $envFile = Join-Path $script:RepoRoot ".env"
+    if (-not (Test-Path -LiteralPath $envFile)) {
+        return ""
+    }
+
+    foreach ($line in Get-Content -Encoding UTF8 -LiteralPath $envFile) {
+        if ($line -match "^\s*$([regex]::Escape($Key))\s*=\s*(.*)\s*$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+
+    return ""
+}
+
+function Get-MilvusHostPort {
+    $value = [Environment]::GetEnvironmentVariable("MILVUS_PORT")
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = Get-DotEnvValue -Key "MILVUS_PORT"
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return 19530
+    }
+
+    $parsed = 0
+    if (-not [int]::TryParse($value, [ref]$parsed) -or $parsed -lt 1 -or $parsed -gt 65535) {
+        throw "MILVUS_PORT must be an integer between 1 and 65535."
+    }
+    return $parsed
+}
+
+function Test-WindowsExcludedPort {
+    param([int]$PortNumber)
+
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        return $false
+    }
+
+    try {
+        $ranges = netsh interface ipv4 show excludedportrange protocol=tcp 2>$null
+    }
+    catch {
+        return $false
+    }
+
+    foreach ($line in $ranges) {
+        if ($line -match "^\s*(\d+)\s+(\d+)") {
+            $startPort = [int]$Matches[1]
+            $endPort = [int]$Matches[2]
+            if ($PortNumber -ge $startPort -and $PortNumber -le $endPort) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
+function Assert-MilvusHostPortAvailable {
+    param([int]$PortNumber)
+
+    if (Test-WindowsExcludedPort -PortNumber $PortNumber) {
+        throw "Milvus host port $PortNumber is reserved by Windows excluded TCP port ranges. Set MILVUS_PORT to an available port in .env, for example 19630, then recreate the Milvus standalone container so Docker can apply the new port mapping."
+    }
+}
+
+function Get-ContainerHostPort {
+    param(
+        [string]$ContainerName,
+        [string]$ContainerPort
+    )
+
+    if (-not $script:DockerPath) {
+        return ""
+    }
+
+    $template = "{{with (index .HostConfig.PortBindings `"$ContainerPort/tcp`")}}{{(index . 0).HostPort}}{{end}}"
+    $value = & $script:DockerPath inspect --format $template $ContainerName 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return ""
+    }
+
+    return ([string]::Join("", $value)).Trim()
+}
+
 function Resolve-PythonRuntime {
     $venvPython = Join-Path $script:RepoRoot ".venv\Scripts\python.exe"
     if (Test-Path -LiteralPath $venvPython) {
@@ -261,6 +348,18 @@ function Start-ExistingMilvusContainers {
 
     Write-Warn "Existing Milvus containers detected; reusing them instead of running docker compose up."
 
+    $configuredMilvusPort = Get-MilvusHostPort
+    $existingMilvusPort = Get-ContainerHostPort -ContainerName "milvus-standalone" -ContainerPort "19530"
+    if (-not [string]::IsNullOrWhiteSpace($existingMilvusPort)) {
+        $existingMilvusPortNumber = 0
+        if ([int]::TryParse($existingMilvusPort, [ref]$existingMilvusPortNumber)) {
+            Assert-MilvusHostPortAvailable -PortNumber $existingMilvusPortNumber
+            if ($existingMilvusPortNumber -ne $configuredMilvusPort) {
+                throw "Existing milvus-standalone maps host port $existingMilvusPortNumber, but MILVUS_PORT is $configuredMilvusPort. Recreate the Milvus standalone container so Docker can apply the configured port."
+            }
+        }
+    }
+
     foreach ($containerName in $script:MilvusCoreContainerNames) {
         $container = $ExistingContainers | Where-Object { $_.Name -eq $containerName } | Select-Object -First 1
         if ($container.Status -ne "running") {
@@ -285,12 +384,13 @@ function Start-ExistingMilvusContainers {
 }
 
 function Start-MilvusStack {
+    $milvusHostPort = Get-MilvusHostPort
     if ($SkipDocker) {
         Write-Warn "Skipping Docker Compose startup by request."
-        if (-not (Test-TcpPort -HostName "127.0.0.1" -PortNumber 19530 -TimeoutMs 1000)) {
-            throw "Milvus port 19530 is not reachable. Start Milvus or rerun without -SkipDocker."
+        if (-not (Test-TcpPort -HostName "127.0.0.1" -PortNumber $milvusHostPort -TimeoutMs 1000)) {
+            throw "Milvus port $milvusHostPort is not reachable. Start Milvus or rerun without -SkipDocker."
         }
-        Write-Ok "Milvus port 19530 is reachable"
+        Write-Ok "Milvus port $milvusHostPort is reachable"
         return
     }
 
@@ -299,6 +399,7 @@ function Start-MilvusStack {
     }
 
     $script:DockerPath = Get-CommandPath "docker"
+    Assert-MilvusHostPortAvailable -PortNumber $milvusHostPort
     Write-Step "Checking Docker daemon"
     Invoke-Native -FilePath $script:DockerPath -Arguments @("info") | Out-Null
 

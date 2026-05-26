@@ -102,7 +102,7 @@ Current progress: `app/evaluation/` now provides typed golden examples, run resu
 - [x] Harden uploads against unsafe files and prompt-injection content. Current progress: `app.security.uploads` normalizes uploaded filenames into the upload directory, enforces configured extensions and byte limits, rejects invalid UTF-8 text documents, and blocks high-risk prompt-injection patterns before files are written or indexed.
 - [x] Add deployment documentation and CI artifact reporting. Current progress: `docs/deployment.md` documents the deployment runbook, `scripts/check-api-health.ps1` checks a running API, `scripts/run-evaluation.ps1 -ReportPath` writes JSON reports for CI collection, and `.github/workflows/ci.yml` runs hosted baseline validation with an uploaded `evaluation-report` artifact.
 
-Current progress: `app/observability/`, `app/operations/`, and `app/security/` provide the first operations boundaries for request tracing, structured access logs, retrieval audit persistence, dependency health, configuration validation, production deployment guardrails, running-API health preflight, non-destructive integration smoke checks, CORS configuration, upload validation, and prompt-injection screening. `docs/operations.md` and `docs/deployment.md` document the runtime contract, including retrieval audits, Docker profiles, health gates, integration smoke gates, security boundaries, hosted CI, and CI evaluation artifacts. Production secret management, central log/trace collection, and real Postgres audit integration validation remain open.
+Current progress: `app/observability/`, `app/operations/`, and `app/security/` provide the first operations boundaries for request tracing, structured access logs, retrieval audit persistence, dependency health, configuration validation, production deployment guardrails, running-API health preflight, non-destructive integration smoke checks, configurable Milvus host ports for Windows reserved-port cases, CORS configuration, upload validation, and prompt-injection screening. `docs/operations.md` and `docs/deployment.md` document the runtime contract, including retrieval audits, Docker profiles, health gates, integration smoke gates, security boundaries, hosted CI, and CI evaluation artifacts. Production secret management, central log/trace collection, and real Postgres audit integration validation remain open.
 
 ## Phase 8: Foundation Templates
 
@@ -137,6 +137,6 @@ Current progress: Phase 8 has a tested extension layer for tool registration, op
 - [x] initial Phase 7 operations tests
 - [x] Phase 8 extension registry, provider switching, prompt profile, and business template tests
 - [x] frontend state tests
-- [ ] startup preflight with real Milvus. Current command: `scripts/run-integration-smoke.ps1 -Json`; leave unchecked until it has been run against a live Milvus stack with real local credentials.
+- [ ] startup preflight with real Milvus. Current command: `scripts/run-integration-smoke.ps1 -Json`; leave unchecked until it has been run against a live Milvus stack with real local credentials. Latest local attempt showed Windows reserved port range `19498-19597` blocked default host port `19530`; `MILVUS_PORT` is now configurable for the next live retry.
 - [x] initial RAG evaluation suite with fake-provider command
 - [x] real-provider evaluation readiness preflight
