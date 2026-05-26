@@ -59,6 +59,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
     selection = ProviderSelection.from_settings(settings)
     app_config = getattr(settings, "app", settings)
     agent_config = getattr(settings, "agent", settings)
+    auth_config = getattr(settings, "auth", settings)
     chunking_config = getattr(settings, "chunking", settings)
     cors_config = getattr(settings, "cors", settings)
     dashscope_config = getattr(settings, "dashscope", settings)
@@ -90,7 +91,28 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             )
         )
 
-    runtime_controls_enabled = bool(
+    auth_enabled = _bool_value(
+        _group_value(auth_config, settings, "enabled", "auth_enabled", default=False)
+    )
+    auth_provider = _normalize_config_id(
+        _group_value(auth_config, settings, "provider", "auth_provider", default="dev_header")
+    )
+    if auth_provider not in {"dev_header", "reverse_proxy"}:
+        errors.append(
+            ConfigIssue(field="AUTH_PROVIDER", message=f"unsupported provider: {auth_provider}")
+        )
+    if auth_enabled:
+        auth_user_header = _group_value(
+            auth_config,
+            settings,
+            "user_header",
+            "auth_user_header",
+            default="X-RAG-User",
+        )
+        if not str(auth_user_header).strip():
+            errors.append(ConfigIssue(field="AUTH_USER_HEADER", message="must not be empty"))
+
+    runtime_controls_enabled = _bool_value(
         _group_value(
             runtime_config,
             settings,
@@ -720,9 +742,11 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             cors_origins=cors_origins,
             selection=selection,
             indexing_execution_mode=indexing_execution_mode,
-            indexing_queue_provider=indexing_queue_provider,
             indexing_job_store_provider=indexing_job_store_provider,
             document_catalog_provider=document_catalog_provider,
+            indexing_queue_provider=indexing_queue_provider,
+            auth_enabled=auth_enabled,
+            runtime_controls_enabled=runtime_controls_enabled,
         )
 
     upload_extensions = parse_allowed_extensions(
@@ -754,9 +778,11 @@ def _validate_production_settings(
     cors_origins: list[str],
     selection: ProviderSelection,
     indexing_execution_mode: str,
-    indexing_queue_provider: str,
     indexing_job_store_provider: str,
     document_catalog_provider: str,
+    indexing_queue_provider: str,
+    auth_enabled: bool,
+    runtime_controls_enabled: bool,
 ) -> None:
     if _group_value(app_config, settings, "debug", "debug", default=False):
         errors.append(
@@ -771,6 +797,22 @@ def _validate_production_settings(
             ConfigIssue(
                 field="CORS_ALLOW_ORIGINS",
                 message="must not include localhost, 127.0.0.1, or '*' in production",
+            )
+        )
+
+    if not auth_enabled:
+        errors.append(
+            ConfigIssue(
+                field="AUTH_ENABLED",
+                message="must be true when DEPLOYMENT_ENVIRONMENT=production",
+            )
+        )
+
+    if not runtime_controls_enabled:
+        errors.append(
+            ConfigIssue(
+                field="RUNTIME_CONTROLS_ENABLED",
+                message="must be true when DEPLOYMENT_ENVIRONMENT=production",
             )
         )
 
@@ -789,6 +831,7 @@ def _validate_production_settings(
     memory_provider_fields = {
         "SESSION_STORE_PROVIDER": selection.session_store_provider,
         "RETRIEVAL_AUDIT_STORE_PROVIDER": selection.retrieval_audit_store_provider,
+        "INDEXING_QUEUE_PROVIDER": indexing_queue_provider,
         "INDEXING_JOB_STORE_PROVIDER": indexing_job_store_provider,
         "DOCUMENT_CATALOG_PROVIDER": document_catalog_provider,
         "CHECKPOINT_PROVIDER": selection.checkpoint_provider,
@@ -847,6 +890,12 @@ def _is_local_or_wildcard_origin(origin: str) -> bool:
         or "://localhost" in normalized
         or "://127.0.0.1" in normalized
     )
+
+
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _group_value(

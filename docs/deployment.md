@@ -11,7 +11,7 @@ This runbook captures the current Phase 7 operating contract for local and stage
 - On Windows, if port `19530` is in an excluded TCP range, set an available `MILVUS_PORT`
   such as `19630` in `.env`; recreate existing Milvus containers after changing host port mappings.
 
-Production mode rejects debug mode, wildcard or localhost CORS origins, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing queue, indexing status, document catalog, checkpoint, and retrieval audit state.
+Production mode rejects debug mode, wildcard or localhost CORS origins, disabled auth, disabled runtime request controls, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing queue, indexing status, document catalog, checkpoint, and retrieval audit state.
 
 For background indexing, `INDEXING_QUEUE_PROVIDER=sqlite` is the local durable queue boundary. Use `INDEXING_QUEUE_PROVIDER=memory` only for throwaway tests. For multi-instance ingestion, set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` and use Postgres-backed indexing job and document catalog stores. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` lets FastAPI-managed workers recover persisted pending jobs on startup.
 
@@ -60,7 +60,11 @@ Add the API URL to combine both checks:
 .\scripts\run-integration-smoke.ps1 -ApiUrl http://127.0.0.1:9900/health -Json
 ```
 
-The health gate fails if `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, or `sessionStore` is missing or unhealthy. The smoke gate checks configuration and Milvus without creating, deleting, starting, stopping, or restarting Milvus.
+The health gate fails if any required provider boundary is missing or unhealthy:
+`app`, `modelProvider`, `embeddingProvider`, `vectorStore`, `sessionStore`,
+`checkpointStore`, `retrievalAuditStore`, `indexingQueue`, `indexingJobStore`,
+or `documentCatalog`. The smoke gate checks configuration and Milvus without
+creating, deleting, starting, stopping, or restarting Milvus.
 
 Before running any local load path without real LLM credentials, start the API
 with fake providers and run:

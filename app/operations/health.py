@@ -7,6 +7,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import config
+from app.providers.selection import ProviderSelection
+
+SQLITE_DEFAULT_PATHS = {
+    "session_store_sqlite_path": "data/sessions.sqlite3",
+    "retrieval_audit_sqlite_path": "data/retrieval-audits.sqlite3",
+    "indexing_queue_sqlite_path": "data/indexing-queue.sqlite3",
+    "indexing_job_store_sqlite_path": "data/indexing-jobs.sqlite3",
+    "document_catalog_sqlite_path": "data/document-catalog.sqlite3",
+    "checkpoint_sqlite_path": "data/checkpoints.sqlite3",
+}
 
 
 @dataclass(frozen=True)
@@ -132,7 +142,67 @@ def create_default_health_checker(
             ),
             DependencyHealthCheck(
                 name="sessionStore",
-                check=lambda: _session_store_health(session_store_provider),
+                check=lambda: _session_store_health(active_settings, session_store_provider),
+            ),
+            DependencyHealthCheck(
+                name="checkpointStore",
+                check=lambda: _store_provider_health(
+                    active_settings,
+                    provider_attr="checkpoint_provider",
+                    sqlite_path_attr="checkpoint_sqlite_path",
+                    postgres_dsn_attr="checkpoint_postgres_dsn",
+                    provider_env="CHECKPOINT_PROVIDER",
+                    sqlite_env="CHECKPOINT_SQLITE_PATH",
+                    postgres_env="CHECKPOINT_POSTGRES_DSN",
+                ),
+            ),
+            DependencyHealthCheck(
+                name="retrievalAuditStore",
+                check=lambda: _store_provider_health(
+                    active_settings,
+                    provider_attr="retrieval_audit_store_provider",
+                    sqlite_path_attr="retrieval_audit_sqlite_path",
+                    postgres_dsn_attr="retrieval_audit_postgres_dsn",
+                    provider_env="RETRIEVAL_AUDIT_STORE_PROVIDER",
+                    sqlite_env="RETRIEVAL_AUDIT_SQLITE_PATH",
+                    postgres_env="RETRIEVAL_AUDIT_POSTGRES_DSN",
+                ),
+            ),
+            DependencyHealthCheck(
+                name="indexingQueue",
+                check=lambda: _store_provider_health(
+                    active_settings,
+                    provider_attr="indexing_queue_provider",
+                    sqlite_path_attr="indexing_queue_sqlite_path",
+                    postgres_dsn_attr="indexing_queue_postgres_dsn",
+                    provider_env="INDEXING_QUEUE_PROVIDER",
+                    sqlite_env="INDEXING_QUEUE_SQLITE_PATH",
+                    postgres_env="INDEXING_QUEUE_POSTGRES_DSN",
+                ),
+            ),
+            DependencyHealthCheck(
+                name="indexingJobStore",
+                check=lambda: _store_provider_health(
+                    active_settings,
+                    provider_attr="indexing_job_store_provider",
+                    sqlite_path_attr="indexing_job_store_sqlite_path",
+                    postgres_dsn_attr="indexing_job_store_postgres_dsn",
+                    provider_env="INDEXING_JOB_STORE_PROVIDER",
+                    sqlite_env="INDEXING_JOB_STORE_SQLITE_PATH",
+                    postgres_env="INDEXING_JOB_STORE_POSTGRES_DSN",
+                ),
+            ),
+            DependencyHealthCheck(
+                name="documentCatalog",
+                check=lambda: _store_provider_health(
+                    active_settings,
+                    provider_attr="document_catalog_provider",
+                    sqlite_path_attr="document_catalog_sqlite_path",
+                    postgres_dsn_attr="document_catalog_postgres_dsn",
+                    provider_env="DOCUMENT_CATALOG_PROVIDER",
+                    sqlite_env="DOCUMENT_CATALOG_SQLITE_PATH",
+                    postgres_env="DOCUMENT_CATALOG_POSTGRES_DSN",
+                ),
             ),
         ],
         metadata={"service": service_name, "version": service_version},
@@ -140,19 +210,83 @@ def create_default_health_checker(
 
 
 def _model_provider_health(settings: Any = config) -> HealthCheckResult:
+    selection = ProviderSelection.from_settings(settings)
+    if selection.chat_provider == "fake":
+        return HealthCheckResult.healthy(
+            "fake provider selected for local software-path checks",
+            {"provider": "fake", "validation": "not_real_answer_quality"},
+        )
+    if selection.chat_provider == "openai_compatible":
+        api_key = _settings_value(
+            settings,
+            "openai_compatible",
+            "api_key",
+            "openai_compatible_api_key",
+            "",
+        ).strip()
+        model = _settings_value(
+            settings,
+            "openai_compatible",
+            "model",
+            "openai_compatible_model",
+            "",
+        ).strip()
+        if api_key and model:
+            return HealthCheckResult.healthy(
+                "configured",
+                {"provider": "openai_compatible", "model": model},
+            )
+        return HealthCheckResult.unhealthy(
+            "OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_MODEL must be configured",
+            {"provider": "openai_compatible"},
+        )
     if _dashscope_configured(settings):
         return HealthCheckResult.healthy(
             "configured",
-            {"model": _settings_value(settings, "rag", "model", "rag_model", "qwen-max")},
+            {
+                "provider": "dashscope",
+                "model": _settings_value(settings, "rag", "model", "rag_model", "qwen-max"),
+            },
         )
     return HealthCheckResult.unhealthy("DASHSCOPE_API_KEY is not configured")
 
 
 def _embedding_provider_health(settings: Any = config) -> HealthCheckResult:
+    selection = ProviderSelection.from_settings(settings)
+    if selection.embedding_provider == "fake":
+        return HealthCheckResult.healthy(
+            "fake provider selected for local software-path checks",
+            {"provider": "fake", "validation": "not_real_embedding_quality"},
+        )
+    if selection.embedding_provider == "openai_compatible":
+        api_key = _settings_value(
+            settings,
+            "openai_compatible",
+            "api_key",
+            "openai_compatible_api_key",
+            "",
+        ).strip()
+        model = _settings_value(
+            settings,
+            "openai_compatible",
+            "embedding_model",
+            "openai_compatible_embedding_model",
+            "",
+        ).strip()
+        if api_key and model:
+            return HealthCheckResult.healthy(
+                "configured",
+                {"provider": "openai_compatible", "model": model},
+            )
+        return HealthCheckResult.unhealthy(
+            "OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_EMBEDDING_MODEL must be configured",
+            {"provider": "openai_compatible"},
+        )
     if _dashscope_configured(settings):
         return HealthCheckResult.healthy(
             "configured",
             {
+                "provider": "dashscope",
                 "model": _settings_value(
                     settings,
                     "dashscope",
@@ -169,6 +303,13 @@ def _vector_store_health(
     settings: Any = config,
     milvus_manager: Any | None = None,
 ) -> HealthCheckResult:
+    selection = ProviderSelection.from_settings(settings)
+    if selection.vector_store_provider == "fake":
+        return HealthCheckResult.healthy(
+            "fake vector store selected for local software-path checks",
+            {"provider": "fake", "validation": "not_real_retrieval_quality"},
+        )
+
     if milvus_manager is None:
         from app.core.milvus_client import milvus_manager as default_milvus_manager
 
@@ -176,6 +317,7 @@ def _vector_store_health(
 
     healthy = milvus_manager.health_check()
     details = {
+        "provider": "milvus",
         "host": _settings_value(settings, "milvus", "host", "milvus_host", "localhost"),
         "port": _settings_value(settings, "milvus", "port", "milvus_port", 19530),
     }
@@ -184,16 +326,70 @@ def _vector_store_health(
     return HealthCheckResult.unhealthy("disconnected", details)
 
 
-def _session_store_health(session_store_provider: Any | None = None) -> HealthCheckResult:
+def _session_store_health(
+    settings: Any = config,
+    session_store_provider: Any | None = None,
+) -> HealthCheckResult:
     if session_store_provider is None:
-        from app.providers.factory import get_default_provider_container
-
-        session_store_provider = get_default_provider_container().session_store_provider
+        return _store_provider_health(
+            settings,
+            provider_attr="session_store_provider",
+            sqlite_path_attr="session_store_sqlite_path",
+            postgres_dsn_attr="session_store_postgres_dsn",
+            provider_env="SESSION_STORE_PROVIDER",
+            sqlite_env="SESSION_STORE_SQLITE_PATH",
+            postgres_env="SESSION_STORE_POSTGRES_DSN",
+        )
 
     return HealthCheckResult.healthy(
         "available",
         {"provider": session_store_provider.__class__.__name__},
     )
+
+
+def _store_provider_health(
+    settings: Any,
+    *,
+    provider_attr: str,
+    sqlite_path_attr: str,
+    postgres_dsn_attr: str,
+    provider_env: str,
+    sqlite_env: str,
+    postgres_env: str,
+) -> HealthCheckResult:
+    provider = _setting_id(_settings_storage_value(settings, provider_attr, "sqlite"))
+    if provider == "memory":
+        return HealthCheckResult.healthy(
+            "process memory selected",
+            {"provider": provider, "durable": False},
+        )
+    if provider == "sqlite":
+        path = str(
+            _settings_storage_value(
+                settings,
+                sqlite_path_attr,
+                SQLITE_DEFAULT_PATHS.get(sqlite_path_attr, ""),
+            )
+        ).strip()
+        if path:
+            return HealthCheckResult.healthy(
+                "configured",
+                {"provider": provider, "path": path, "durable": True},
+            )
+        return HealthCheckResult.unhealthy(f"{sqlite_env} must be configured")
+    if provider == "postgres":
+        dsn = str(_settings_storage_value(settings, postgres_dsn_attr, "")).strip()
+        if dsn:
+            return HealthCheckResult.healthy(
+                "configured; run postgres smoke for reachability",
+                {
+                    "provider": provider,
+                    "dsnConfigured": True,
+                    "connectivity": "not_checked",
+                },
+            )
+        return HealthCheckResult.unhealthy(f"{postgres_env} must be configured")
+    return HealthCheckResult.unhealthy(f"{provider_env} unsupported provider: {provider}")
 
 
 def _dashscope_configured(settings: Any = config) -> bool:
@@ -212,3 +408,14 @@ def _settings_value(
     if group is not None and hasattr(group, group_field_name):
         return getattr(group, group_field_name)
     return getattr(settings, flat_field_name, default)
+
+
+def _settings_storage_value(settings: Any, flat_field_name: str, default: Any) -> Any:
+    group = getattr(settings, "storage", None)
+    if group is not None and hasattr(group, flat_field_name):
+        return getattr(group, flat_field_name)
+    return getattr(settings, flat_field_name, default)
+
+
+def _setting_id(value: Any) -> str:
+    return str(value).strip().lower().replace("-", "_")
