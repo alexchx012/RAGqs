@@ -6,7 +6,10 @@ This runbook captures the current Phase 7 operating contract for local and stage
 
 - Create `.env` from `.env.example` and set a real `DASHSCOPE_API_KEY`.
 - Keep `CORS_ALLOW_ORIGINS` explicit for deployed frontends, for example `https://rag.example.com`.
+- Set `DEPLOYMENT_ENVIRONMENT=production` for production-like validation before release.
 - Ensure Docker is running before starting the Milvus stack.
+
+Production mode rejects debug mode, wildcard or localhost CORS origins, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing, document catalog, checkpoint, and retrieval audit state.
 
 ## Start
 

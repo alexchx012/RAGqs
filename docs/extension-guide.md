@@ -23,6 +23,7 @@ The explicit graph owns retrieval by default. Set `TOOL_PLANNING_ENABLED=true` w
 
 Provider ids are configured by environment variables:
 
+- `DEPLOYMENT_ENVIRONMENT`: `local` by default, `staging` for pre-production checks, or `production` to reject unsafe local defaults during startup validation.
 - `CHAT_PROVIDER`: `dashscope`, `openai_compatible`, or `fake`.
 - `EMBEDDING_PROVIDER`: `dashscope`, `openai_compatible`, or `fake`.
 - `VECTOR_STORE_PROVIDER`: `milvus` or `fake`.
@@ -47,6 +48,8 @@ Provider ids are configured by environment variables:
 Use `fake` providers for local tests and demos that must not call DashScope, Milvus, or external APIs. Use `openai_compatible` for chat or embedding endpoints that implement OpenAI-compatible APIs. Install the optional `postgres` dependency group before enabling Postgres-backed session, indexing job, document catalog, or checkpoint storage.
 
 Retrieval audits are exposed through `GET /api/chat/audits` and can be filtered by session, knowledge space, trace id, and limit. Enable SQLite audit storage when a business needs local post-answer review of selected chunks and retrieval debug data; use Postgres when multiple API instances need to share the same audit trail.
+
+When `DEPLOYMENT_ENVIRONMENT=production`, the validator rejects fake providers, memory-backed stores, debug mode, and wildcard or localhost CORS origins. Keep business templates production-ready by switching all runtime state to SQLite or Postgres before deployment.
 
 ## Prompt Profiles
 

@@ -2,9 +2,9 @@
 
 ## Configuration
 
-Risk: settings now expose typed groups over the existing environment variables, but some service modules still read flat global config fields directly.
+Risk: settings now expose typed groups over the existing environment variables and production deployment guardrails reject unsafe local defaults, but some service modules still read flat global config fields directly.
 
-Mitigation: keep grouped settings views for app, CORS, uploads, providers, storage, agent, model providers, Milvus, RAG, and chunking. Continue migrating runtime modules to these groups while keeping `.env.example` synchronized with `app/config.py`.
+Mitigation: keep grouped settings views for app, CORS, uploads, deployment environment, providers, storage, agent, model providers, Milvus, RAG, and chunking. Continue migrating runtime modules to these groups while keeping `.env.example` synchronized with `app/config.py`.
 
 ## Retrieval Quality
 
@@ -32,7 +32,7 @@ Mitigation: keep selected retrieval chunks, sources, answer text, session id, sp
 
 ## Security
 
-Risk: upload filename/path normalization, extension and size limits, UTF-8 validation, prompt-injection screening, and configurable CORS are in place, but document trust tiers, malware scanning, storage isolation, audit trails, and production secret handling are still limited.
+Risk: upload filename/path normalization, extension and size limits, UTF-8 validation, prompt-injection screening, configurable CORS, and production-mode rejection of debug/demo/local defaults are in place, but document trust tiers, malware scanning, storage isolation, and production secret handling are still limited.
 
 Mitigation: keep upload security tests in the baseline, keep secrets out of logs, add document trust metadata, add storage isolation and malware scanning for untrusted uploads, keep deployment CORS origins explicit, and document prompt-injection constraints.
 

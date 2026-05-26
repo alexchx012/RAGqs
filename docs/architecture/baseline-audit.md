@@ -31,7 +31,7 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - Retrieval still defaults to basic top-k vector search, but metadata filters, citation extraction, and debug trace data are now on the default path. `RETRIEVAL_PROFILE=high_recall` enables multi-retriever recall widening with protected space and tenant filters, and LLM-backed query rewrite, rerank, and context compression can be enabled by configuration.
 - Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, with memory, SQLite, and Postgres checkpoint providers behind `CHECKPOINT_PROVIDER`.
 - API responses are inconsistent: chat endpoints return ad hoc dictionaries while other routes use Pydantic response models.
-- Observability and operations now include request trace id propagation, structured access logs, retrieval audit storage, running API health preflight, upload security validation, hosted CI baseline validation, and evaluation JSON artifacts.
+- Observability and operations now include request trace id propagation, structured access logs, retrieval audit storage, production deployment guardrails, running API health preflight, upload security validation, hosted CI baseline validation, and evaluation JSON artifacts.
 - Tests now cover provider boundaries, ingestion, upload security, retrieval traces and audit storage, session storage/listing, SQLite session and indexing job persistence, frontend history state, startup scripts, and evaluation scaffolding.
 
 ## Target Foundation Direction
@@ -132,6 +132,7 @@ The repository now has an initial operations foundation:
 - `app/observability/retrieval_audit.py`: memory, SQLite, and Postgres retrieval audit stores for traced RAG answers, selected sources, retrieval debug payloads, session id, space id, and trace id.
 - `app/operations/health.py`: composable dependency health checks with explicit `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, and `sessionStore` boundaries.
 - `app/operations/config_validation.py`: shared startup configuration validation for DashScope credentials, RAG retrieval limits, chunking settings, and service ports.
+- `DEPLOYMENT_ENVIRONMENT=production`: rejects debug mode, fake providers, process-memory stores, wildcard CORS origins, and localhost CORS origins during startup validation.
 - `app/operations/health_preflight.py`: validates a running `/health` response and reports unhealthy dependency names for deployment gates.
 - `app/security/cors.py`: CORS option builder backed by environment settings, with validation that rejects wildcard origins when credentialed requests are enabled.
 - `app/security/uploads.py`: upload filename/path normalization, extension and size enforcement, UTF-8 validation, and high-risk prompt-injection screening before document indexing.
@@ -142,7 +143,7 @@ The repository now has an initial operations foundation:
 - `vector-database.yml`: Attu is now behind the optional Docker Compose `ui` profile, while the core Milvus services remain the default stack.
 - `docs/operations.md` and `docs/deployment.md`: document trace id, access log, retrieval audit store, health check, config validation, Docker profile, CORS security-boundary, deployment runbook, and CI artifact behavior.
 
-Durable retrieval audit storage is available through local SQLite and Postgres. Production secret management, central log/trace collection, and real database integration validation remain open.
+Durable retrieval audit storage is available through local SQLite and Postgres, and production mode now blocks local/demo defaults before startup. Production secret management, central log/trace collection, and real database integration validation remain open.
 
 ## Phase 8 Progress
 

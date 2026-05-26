@@ -4,6 +4,7 @@ from app.config import (
     ChunkingConfig,
     CorsConfig,
     DashScopeConfig,
+    DeploymentConfig,
     MilvusConfig,
     OpenAICompatibleConfig,
     ProviderConfig,
@@ -29,6 +30,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         upload_allowed_extensions="txt,md,pdf",
         upload_max_bytes=2048,
         upload_prompt_injection_scan_enabled=False,
+        deployment_environment="staging",
         chat_provider="openai_compatible",
         embedding_provider="fake",
         vector_store_provider="fake",
@@ -95,6 +97,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         max_bytes=2048,
         prompt_injection_scan_enabled=False,
     )
+    assert settings.deployment == DeploymentConfig(environment="staging")
     assert settings.providers == ProviderConfig(
         chat="openai_compatible",
         embedding="fake",
@@ -158,6 +161,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
     assert settings.chunking == ChunkingConfig(max_size=1200, overlap=120)
 
     assert settings.app_name == settings.app.name
+    assert settings.deployment_environment == settings.deployment.environment
     assert settings.chat_provider == settings.providers.chat
     assert settings.retrieval_audit_store_provider == settings.providers.retrieval_audit_store
     assert settings.rag_top_k == settings.rag.top_k

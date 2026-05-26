@@ -44,6 +44,7 @@ def test_env_example_documents_all_current_settings():
         "UPLOAD_ALLOWED_EXTENSIONS",
         "UPLOAD_MAX_BYTES",
         "UPLOAD_PROMPT_INJECTION_SCAN_ENABLED",
+        "DEPLOYMENT_ENVIRONMENT",
         "CHAT_PROVIDER",
         "EMBEDDING_PROVIDER",
         "VECTOR_STORE_PROVIDER",
@@ -281,6 +282,7 @@ def test_operations_docs_cover_trace_ids_and_health_checks():
         "Background Indexing",
         "CORS_ALLOW_ORIGINS",
         "CORS_ALLOW_CREDENTIALS",
+        "DEPLOYMENT_ENVIRONMENT",
     ]:
         assert phrase in docs
 
