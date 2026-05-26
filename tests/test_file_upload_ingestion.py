@@ -72,6 +72,25 @@ class FailingIngestionProvider:
         )
 
 
+class QueuedIngestionProvider:
+    def __init__(self, job: IndexingJob):
+        self.job = job
+        self.indexed_paths = []
+
+    def index_file(self, file_path: str, space_id: str = "default") -> IngestionResult:
+        self.indexed_paths.append((file_path, space_id))
+        return IngestionResult(
+            success=True,
+            source=file_path,
+            document_count=0,
+            metadata={
+                "indexing_job": self.job,
+                "queued": True,
+                "execution_mode": "background",
+            },
+        )
+
+
 class JobStatusService:
     def __init__(self, jobs: list[IndexingJob], retry_job: IndexingJob | None = None):
         self.jobs = jobs
@@ -154,6 +173,35 @@ async def test_upload_file_returns_indexing_status_on_success(tmp_path, monkeypa
         "errors": [],
         "space_id": "finance",
     }
+
+
+@pytest.mark.asyncio
+async def test_upload_file_returns_pending_status_for_background_indexing(tmp_path, monkeypatch):
+    now = datetime(2026, 5, 23, 12, 0, tzinfo=UTC)
+    job = IndexingJob.create(
+        document_id="doc-queued",
+        source_path=(tmp_path / "queued.md").as_posix(),
+        space_id="finance",
+        job_id="job-queued",
+        created_at=now,
+    )
+    ingestion_provider = QueuedIngestionProvider(job)
+    monkeypatch.setattr(file_api, "UPLOAD_DIR", tmp_path)
+    use_upload_ingestion_provider(monkeypatch, ingestion_provider)
+
+    response = await file_api.upload_file(
+        FakeUploadFile("queued.md", b"# Queued"),
+        space_id="finance",
+    )
+    payload = parse_json_response(response)
+
+    assert response.status_code == 200
+    assert [(Path(path), space_id) for path, space_id in ingestion_provider.indexed_paths] == [
+        (tmp_path / "queued.md", "finance")
+    ]
+    assert payload["data"]["indexing"]["job_id"] == "job-queued"
+    assert payload["data"]["indexing"]["status"] == "pending"
+    assert payload["data"]["indexing"]["space_id"] == "finance"
 
 
 @pytest.mark.asyncio

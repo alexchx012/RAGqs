@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from langchain_core.documents import Document
 
+from app.ingestion.worker import reset_background_indexing_worker
 from app.providers import (
     ChatModelProvider,
     CheckpointProvider,
@@ -14,6 +15,7 @@ from app.providers import (
     VectorStoreProvider,
 )
 from app.providers.factory import ProviderContainer, create_default_provider_container
+from app.providers.ingestion import VectorIndexIngestionProvider
 from app.retrieval import RetrievalPipeline
 
 
@@ -57,6 +59,34 @@ def test_default_provider_container_wires_all_boundaries_without_connecting():
     )
     assert container.retriever_provider.default_top_k == 5
     assert manager.connect_count == 0
+
+
+def test_default_provider_container_can_enable_background_indexing_mode():
+    reset_background_indexing_worker()
+    settings = SimpleNamespace(
+        dashscope_api_key="unit-test-key",
+        rag_model="qwen-max",
+        rag_top_k=5,
+        milvus_host="127.0.0.1",
+        milvus_port=19530,
+        chat_provider="fake",
+        embedding_provider="fake",
+        vector_store_provider="fake",
+        session_store_provider="memory",
+        ingestion_provider="vector_index",
+        checkpoint_provider="memory",
+        indexing_execution_mode="background",
+        indexing_worker_poll_interval_seconds=0.01,
+    )
+
+    try:
+        container = create_default_provider_container(settings=settings, milvus_manager=object())
+
+        assert isinstance(container.ingestion_provider, VectorIndexIngestionProvider)
+        assert container.ingestion_provider.execution_mode == "background"
+        assert container.ingestion_provider.background_worker is not None
+    finally:
+        reset_background_indexing_worker()
 
 
 def test_vector_store_retriever_provider_returns_structured_debug_output():

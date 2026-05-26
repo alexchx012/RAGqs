@@ -165,9 +165,21 @@ def create_default_provider_container(
         if selection.ingestion_provider == "fake":
             ingestion_provider = FakeIngestionProvider()
         else:
+            from app.ingestion.worker import get_background_indexing_worker
             from app.services.vector_index_service import vector_index_service
 
-            ingestion_provider = VectorIndexIngestionProvider(vector_index_service)
+            execution_mode = _setting_id(settings, "indexing_execution_mode", "sync")
+            background_worker = None
+            if execution_mode == "background":
+                background_worker = get_background_indexing_worker(
+                    index_service=vector_index_service,
+                    settings=settings,
+                )
+            ingestion_provider = VectorIndexIngestionProvider(
+                vector_index_service,
+                execution_mode=execution_mode,
+                background_worker=background_worker,
+            )
 
     if checkpoint_provider is None:
         if selection.checkpoint_provider == "sqlite":

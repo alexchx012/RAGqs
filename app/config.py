@@ -41,6 +41,9 @@ class ProviderConfig(FrozenConfigModel):
 class StorageConfig(FrozenConfigModel):
     session_store_sqlite_path: str
     session_store_postgres_dsn: str
+    indexing_execution_mode: str
+    indexing_worker_poll_interval_seconds: float
+    indexing_worker_shutdown_timeout_seconds: float
     indexing_job_store_provider: str
     indexing_job_store_sqlite_path: str
     indexing_job_store_postgres_dsn: str
@@ -121,6 +124,9 @@ class Settings(BaseSettings):
     session_store_sqlite_path: str = "data/sessions.sqlite3"
     session_store_postgres_dsn: str = ""
     ingestion_provider: str = "vector_index"
+    indexing_execution_mode: str = "sync"
+    indexing_worker_poll_interval_seconds: float = 0.25
+    indexing_worker_shutdown_timeout_seconds: float = 5.0
     indexing_job_store_provider: str = "memory"
     indexing_job_store_sqlite_path: str = "data/indexing-jobs.sqlite3"
     indexing_job_store_postgres_dsn: str = ""
@@ -204,6 +210,9 @@ class Settings(BaseSettings):
         return StorageConfig(
             session_store_sqlite_path=self.session_store_sqlite_path,
             session_store_postgres_dsn=self.session_store_postgres_dsn,
+            indexing_execution_mode=self.indexing_execution_mode,
+            indexing_worker_poll_interval_seconds=self.indexing_worker_poll_interval_seconds,
+            indexing_worker_shutdown_timeout_seconds=self.indexing_worker_shutdown_timeout_seconds,
             indexing_job_store_provider=self.indexing_job_store_provider,
             indexing_job_store_sqlite_path=self.indexing_job_store_sqlite_path,
             indexing_job_store_postgres_dsn=self.indexing_job_store_postgres_dsn,

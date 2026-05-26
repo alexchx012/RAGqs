@@ -20,9 +20,9 @@ Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, docum
 
 ## Indexing Reliability
 
-Risk: uploads are indexed synchronously; SQLite and Postgres can persist job status and document lifecycle metadata, but there is no background worker.
+Risk: uploads can run through synchronous indexing or an in-process background worker; SQLite and Postgres can persist job status and document lifecycle metadata, but distributed queue execution and cross-process worker coordination are not implemented yet.
 
-Mitigation: keep ingestion jobs, idempotent document ids, delete/reindex operations, SQLite/Postgres job persistence, SQLite/Postgres document metadata persistence, and explicit API errors covered by tests; add background job execution before production use.
+Mitigation: keep ingestion jobs, idempotent document ids, delete/reindex operations, SQLite/Postgres job persistence, SQLite/Postgres document metadata persistence, background worker behavior, and explicit API errors covered by tests; add an external queue or dedicated worker service before production multi-instance ingestion.
 
 ## Observability
 
