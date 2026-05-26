@@ -17,8 +17,11 @@ from app.evaluation import (
     run_fake_evaluation,
     run_http_evaluation,
     run_service_evaluation,
+    validate_business_golden_dataset,
 )
 from app.evaluation.runner import build_arg_parser, main
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _real_settings(**overrides):
@@ -193,6 +196,15 @@ def test_evaluation_cli_accepts_real_preflight_only_mode():
     assert args.faithfulness_judge == "model"
 
 
+def test_evaluation_cli_accepts_min_examples_preflight_threshold():
+    args = build_arg_parser().parse_args(
+        ["--mode", "service", "--preflight-only", "--min-examples", "6"]
+    )
+
+    assert args.preflight_only is True
+    assert args.min_examples == 6
+
+
 def test_real_evaluation_readiness_rejects_fake_mode():
     from app.evaluation.readiness import validate_real_evaluation_readiness
 
@@ -230,6 +242,112 @@ def test_real_evaluation_readiness_validates_dataset_quality():
     assert "DATASET" in {issue.field for issue in report.errors}
     assert "DATASET[weak].expectedAnswerTraits" in {issue.field for issue in report.errors}
     assert "DATASET[weak].expectedSources" in {issue.field for issue in report.errors}
+
+
+def test_business_golden_dataset_quality_requires_unique_space_scoped_examples():
+    report = validate_business_golden_dataset(
+        [
+            GoldenExample(
+                id="duplicate",
+                question="What is the PTO policy?",
+                expected_answer_traits=["pto"],
+                expected_sources=["hr-handbook.md"],
+                metadata={"spaceId": "hr"},
+            ),
+            GoldenExample(
+                id="duplicate",
+                question="What is the expense policy?",
+                expected_answer_traits=["expense"],
+                expected_sources=["expense-policy.md"],
+            ),
+            GoldenExample(
+                id="unsupported",
+                question="What is the private payroll password?",
+                expected_answer_traits=["password"],
+                expected_sources=["payroll.md"],
+                expects_refusal=True,
+                metadata={"spaceId": "hr"},
+            ),
+        ],
+        min_examples=4,
+    )
+
+    assert report.ready is False
+    assert report.dataset_examples == 3
+    assert report.grounded_examples == 2
+    assert report.refusal_examples == 1
+    errors = {(issue.field, issue.message) for issue in report.errors}
+    assert ("DATASET", "include at least 4 golden examples") in errors
+    assert ("DATASET[duplicate].id", "example ids must be unique") in errors
+    assert (
+        "DATASET[duplicate].metadata.spaceId",
+        "business evaluation examples must target a knowledge space",
+    ) in errors
+    assert (
+        "DATASET[unsupported].expectedAnswerTraits",
+        "refusal examples must not define answer traits",
+    ) in errors
+    assert (
+        "DATASET[unsupported].expectedSources",
+        "refusal examples must not define expected sources",
+    ) in errors
+
+
+def test_real_evaluation_readiness_requires_space_scoped_business_examples():
+    from app.evaluation.readiness import validate_real_evaluation_readiness
+
+    report = validate_real_evaluation_readiness(
+        [
+            GoldenExample(
+                id="grounded",
+                question="What is the policy?",
+                expected_answer_traits=["policy"],
+                expected_sources=["policy.md"],
+            ),
+            GoldenExample(
+                id="unsupported",
+                question="What is not documented?",
+                expects_refusal=True,
+                metadata={"spaceId": "business"},
+            ),
+        ],
+        settings=_real_settings(),
+        mode="service",
+        faithfulness_judge="static",
+    )
+
+    assert report.ready is False
+    assert "DATASET[grounded].metadata.spaceId" in {issue.field for issue in report.errors}
+
+
+def test_business_example_dataset_is_strong_enough_for_real_evaluation_preflight():
+    examples = load_golden_dataset("data/evaluation/business.example.jsonl")
+
+    quality = validate_business_golden_dataset(examples, min_examples=6)
+    fake_report = run_fake_evaluation(examples)
+
+    assert quality.ready is True
+    assert quality.dataset_examples == 6
+    assert quality.grounded_examples >= 4
+    assert quality.refusal_examples >= 2
+    assert fake_report.metrics.retrieval_hit_rate == 1.0
+    assert fake_report.metrics.citation_accuracy == 1.0
+    assert fake_report.metrics.no_answer_refusal_rate == 1.0
+
+
+def test_business_example_dataset_sources_map_to_sample_documents():
+    examples = load_golden_dataset("data/evaluation/business.example.jsonl")
+    sample_docs_dir = ROOT / "docs" / "business-samples"
+
+    for example in examples:
+        if example.expects_refusal:
+            continue
+        for source in example.expected_sources:
+            source_path = sample_docs_dir / source
+            assert source_path.exists(), source
+            content = source_path.read_text(encoding="utf-8").lower()
+            for trait in example.expected_answer_traits:
+                assert trait.lower() in content
 
 
 def test_real_evaluation_readiness_rejects_fake_service_providers():
@@ -327,6 +445,46 @@ def test_real_evaluation_cli_preflight_only_outputs_readiness_report(
     output = capsys.readouterr().out
     assert '"ready": true' in output
     assert '"datasetExamples": 2' in output
+
+
+def test_real_evaluation_cli_preflight_only_enforces_min_examples(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    dataset_path = tmp_path / "small-business-golden.jsonl"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                '{"id":"grounded","question":"What is the policy?","expectedAnswerTraits":["policy"],"expectedSources":["policy.md"],"expectsRefusal":false,"metadata":{"spaceId":"business"}}',
+                '{"id":"unsupported","question":"What is not documented?","expectedAnswerTraits":[],"expectedSources":[],"expectsRefusal":true,"metadata":{"spaceId":"business"}}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evaluation_runner, "config", _real_settings(), raising=False)
+    monkeypatch.setattr(
+        evaluation_runner,
+        "os_environ",
+        {"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "ls-key", "LANGSMITH_PROJECT": "ragqs"},
+        raising=False,
+    )
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(dataset_path),
+            "--mode",
+            "service",
+            "--preflight-only",
+            "--min-examples",
+            "3",
+        ]
+    )
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "error DATASET: include at least 3 golden examples" in output
 
 
 def test_model_judge_uses_configured_chat_provider_container(monkeypatch):

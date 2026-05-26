@@ -435,6 +435,8 @@ def test_phase8_docs_cover_extension_and_second_business_templates():
         "RETRIEVAL_AUDIT_STORE_PROVIDER",
         "CHECKPOINT_PROVIDER",
         "RETRIEVAL_PROFILE",
+        "business.example.jsonl",
+        "MinExamples",
         "QUERY_REWRITER_PROVIDER",
         "RERANKER_PROVIDER",
         "CONTEXT_COMPRESSOR_PROVIDER",

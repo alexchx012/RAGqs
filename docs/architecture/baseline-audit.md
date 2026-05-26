@@ -120,10 +120,11 @@ The repository now has an initial deterministic evaluation foundation:
 
 - `app/evaluation/`: typed golden examples, agent run results, faithfulness verdicts, aggregate metrics, JSONL dataset loading, a fake-provider runner, an async service runner for traced RAG services, and an HTTP client for running against `/chat` on a live FastAPI server.
 - `data/evaluation/golden.jsonl`: a small default golden dataset covering grounded answers and unsupported-question refusal.
+- `data/evaluation/business.example.jsonl` and `docs/business-samples/`: a stronger space-scoped business example dataset with matching Markdown sample sources.
 - `scripts/run-evaluation.ps1`: a local evaluation command with `fake`, `service`, and `http` modes plus `-ReportPath` JSON artifact output. The baseline uses `fake` mode so it runs without DashScope, Milvus, or network access.
 - `scripts/validate-baseline.ps1`: now includes the evaluation unit tests and fake evaluation command as regression gates.
 
-Current metrics cover retrieval hit rate, expected answer trait coverage, answer faithfulness verdict score, citation accuracy, no-answer refusal rate, and average latency. The `FaithfulnessJudge` boundary exists with static deterministic and optional LLM-backed implementations; model judging now uses the configured chat provider container instead of a DashScope-only path. `service` and `http` evaluation propagate per-example `metadata.spaceId`, so golden datasets can target isolated knowledge spaces. LangSmith tracing can be enabled through environment variables for real service evaluation, and CI can collect the JSON report written by `-ReportPath`.
+Current metrics cover retrieval hit rate, expected answer trait coverage, answer faithfulness verdict score, citation accuracy, no-answer refusal rate, and average latency. The `FaithfulnessJudge` boundary exists with static deterministic and optional LLM-backed implementations; model judging now uses the configured chat provider container instead of a DashScope-only path. `service` and `http` evaluation propagate per-example `metadata.spaceId`, so golden datasets can target isolated knowledge spaces. Business dataset quality checks reject duplicate ids, unscoped examples, grounded examples without traits or sources, and refusal examples that define answer traits or sources. LangSmith tracing can be enabled through environment variables for real service evaluation, and CI can collect the JSON report written by `-ReportPath`.
 
 ## Phase 7 Progress
 
