@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -134,6 +135,26 @@ def use_upload_ingestion_provider(monkeypatch, provider):
         raising=False,
     )
     monkeypatch.setattr(file_api, "vector_index_service", DirectIndexServiceShouldNotBeUsed())
+
+
+def test_upload_security_policy_prefers_grouped_upload_settings():
+    assert hasattr(file_api, "build_upload_security_policy")
+    settings = SimpleNamespace(
+        upload=SimpleNamespace(
+            allowed_extensions="md,json",
+            max_bytes=512,
+            prompt_injection_scan_enabled=False,
+        ),
+        upload_allowed_extensions="txt",
+        upload_max_bytes=2048,
+        upload_prompt_injection_scan_enabled=True,
+    )
+
+    policy = file_api.build_upload_security_policy(settings)
+
+    assert policy.allowed_extensions == {"md", "json"}
+    assert policy.max_bytes == 512
+    assert policy.prompt_injection_scan_enabled is False
 
 
 @pytest.mark.asyncio

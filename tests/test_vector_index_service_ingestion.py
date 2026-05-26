@@ -7,10 +7,19 @@ from app.ingestion import (
     DocumentLoaderRegistry,
     IndexingJobStatus,
     InMemoryIndexingJobStore,
+    PostgresIndexingJobStore,
     SQLiteIndexingJobStore,
 )
-from app.knowledge.catalog import InMemoryKnowledgeCatalog
-from app.services.vector_index_service import VectorIndexService
+from app.knowledge.catalog import (
+    InMemoryKnowledgeCatalog,
+    PostgresKnowledgeCatalog,
+    SQLiteKnowledgeCatalog,
+)
+from app.services.vector_index_service import (
+    VectorIndexService,
+    _build_default_document_catalog,
+    _build_default_job_store,
+)
 
 
 class RecordingSplitter:
@@ -146,6 +155,68 @@ def test_vector_index_service_can_select_sqlite_job_store_by_config(tmp_path):
     )
 
     assert isinstance(service.job_store, SQLiteIndexingJobStore)
+
+
+def test_vector_index_service_default_job_store_prefers_grouped_storage_settings(tmp_path):
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(
+            indexing_job_store_provider="sqlite",
+            indexing_job_store_sqlite_path=str(tmp_path / "grouped-indexing-jobs.db"),
+            indexing_job_store_postgres_dsn="postgresql://rag:secret@db/ragqs-indexing",
+        )
+    )
+
+    store = _build_default_job_store(settings)
+
+    assert isinstance(store, SQLiteIndexingJobStore)
+    assert store.db_path == tmp_path / "grouped-indexing-jobs.db"
+
+
+def test_vector_index_service_default_job_store_supports_grouped_postgres_settings():
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(
+            indexing_job_store_provider="postgres",
+            indexing_job_store_sqlite_path="data/ignored.sqlite3",
+            indexing_job_store_postgres_dsn="postgresql://rag:secret@db/ragqs-indexing",
+        )
+    )
+
+    store = _build_default_job_store(settings)
+
+    assert isinstance(store, PostgresIndexingJobStore)
+    assert store.dsn == "postgresql://rag:secret@db/ragqs-indexing"
+
+
+def test_vector_index_service_default_document_catalog_prefers_grouped_storage_settings(
+    tmp_path,
+):
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(
+            document_catalog_provider="sqlite",
+            document_catalog_sqlite_path=str(tmp_path / "grouped-document-catalog.db"),
+            document_catalog_postgres_dsn="postgresql://rag:secret@db/ragqs-documents",
+        )
+    )
+
+    catalog = _build_default_document_catalog(settings)
+
+    assert isinstance(catalog, SQLiteKnowledgeCatalog)
+    assert catalog.db_path == tmp_path / "grouped-document-catalog.db"
+
+
+def test_vector_index_service_default_document_catalog_supports_grouped_postgres_settings():
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(
+            document_catalog_provider="postgres",
+            document_catalog_sqlite_path="data/ignored.sqlite3",
+            document_catalog_postgres_dsn="postgresql://rag:secret@db/ragqs-documents",
+        )
+    )
+
+    catalog = _build_default_document_catalog(settings)
+
+    assert isinstance(catalog, PostgresKnowledgeCatalog)
+    assert catalog.dsn == "postgresql://rag:secret@db/ragqs-documents"
 
 
 def test_vector_index_service_records_failed_single_file_jobs(tmp_path):
