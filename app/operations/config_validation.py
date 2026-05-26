@@ -66,6 +66,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
     milvus_config = getattr(settings, "milvus", settings)
     openai_config = getattr(settings, "openai_compatible", settings)
     rag_config = getattr(settings, "rag", settings)
+    runtime_config = getattr(settings, "runtime", settings)
     storage_config = getattr(settings, "storage", settings)
     upload_config = getattr(settings, "upload", settings)
 
@@ -88,6 +89,65 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
                 message=f"unsupported environment: {deployment_environment}",
             )
         )
+
+    runtime_controls_enabled = bool(
+        _group_value(
+            runtime_config,
+            settings,
+            "enabled",
+            "runtime_controls_enabled",
+            default=False,
+        )
+    )
+    if runtime_controls_enabled:
+        if (
+            _group_value(
+                runtime_config,
+                settings,
+                "max_concurrent_requests",
+                "runtime_max_concurrent_requests",
+                default=40,
+            )
+            < 1
+        ):
+            errors.append(
+                ConfigIssue(
+                    field="RUNTIME_MAX_CONCURRENT_REQUESTS",
+                    message="must be greater than or equal to 1 when runtime controls are enabled",
+                )
+            )
+        if (
+            _group_value(
+                runtime_config,
+                settings,
+                "queue_timeout_seconds",
+                "runtime_queue_timeout_seconds",
+                default=2.0,
+            )
+            <= 0
+        ):
+            errors.append(
+                ConfigIssue(
+                    field="RUNTIME_QUEUE_TIMEOUT_SECONDS",
+                    message="must be greater than 0 when runtime controls are enabled",
+                )
+            )
+        if (
+            _group_value(
+                runtime_config,
+                settings,
+                "request_timeout_seconds",
+                "runtime_request_timeout_seconds",
+                default=60.0,
+            )
+            <= 0
+        ):
+            errors.append(
+                ConfigIssue(
+                    field="RUNTIME_REQUEST_TIMEOUT_SECONDS",
+                    message="must be greater than 0 when runtime controls are enabled",
+                )
+            )
 
     uses_dashscope = (
         selection.chat_provider == "dashscope" or selection.embedding_provider == "dashscope"

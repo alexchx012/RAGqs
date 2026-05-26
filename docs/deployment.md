@@ -15,6 +15,15 @@ Production mode rejects debug mode, wildcard or localhost CORS origins, fake pro
 
 For background indexing, `INDEXING_QUEUE_PROVIDER=sqlite` is the local durable queue boundary. Use `INDEXING_QUEUE_PROVIDER=memory` only for throwaway tests. For multi-instance ingestion, set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` and use Postgres-backed indexing job and document catalog stores. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` lets FastAPI-managed workers recover persisted pending jobs on startup.
 
+For an 80-person internal trial, prefer multiple Uvicorn workers or multiple API
+instances behind a reverse proxy only after enabling shared durable stores for
+session, retrieval audit, checkpoint, indexing queue, indexing jobs, and document
+catalog. Keep long RAG calls isolated with `RUNTIME_CONTROLS_ENABLED=true`,
+bounded `RUNTIME_MAX_CONCURRENT_REQUESTS`, and a finite
+`RUNTIME_REQUEST_TIMEOUT_SECONDS`. These settings are readiness guardrails; this
+repository has not validated real 80-user business traffic or multi-instance
+production data consistency.
+
 ## Start
 
 Start the default API and core Milvus services:
@@ -52,6 +61,17 @@ Add the API URL to combine both checks:
 ```
 
 The health gate fails if `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, or `sessionStore` is missing or unhealthy. The smoke gate checks configuration and Milvus without creating, deleting, starting, stopping, or restarting Milvus.
+
+Before running any local load path without real LLM credentials, start the API
+with fake providers and run:
+
+```powershell
+.\scripts\run-fake-load.ps1 -ApiUrl http://127.0.0.1:9900 -Concurrency 20 -Requests 40 -Json
+```
+
+This verifies local API concurrency, timeout, and error response behavior. A
+passing result is not evidence of real answer quality, 80-user capacity, or
+multi-instance production readiness.
 
 When using Postgres-backed runtime stores, run the non-destructive Postgres smoke gate before release:
 

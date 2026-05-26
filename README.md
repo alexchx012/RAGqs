@@ -53,6 +53,25 @@ curl -X POST http://localhost:9900/api/upload -F "file=@your-doc.md"
 
 后端会在 chat、upload、knowledge-space、document lifecycle、index-job 和 retrieval audit API 统一检查权限与知识空间访问，不能只依赖客户端传入的 `spaceId` 做隔离。
 
+## 内部试运行并发边界
+
+默认 `RUNTIME_CONTROLS_ENABLED=false`，避免影响本地开发。内部试运行前可启用进程内请求控制：
+
+```env
+RUNTIME_CONTROLS_ENABLED=true
+RUNTIME_MAX_CONCURRENT_REQUESTS=40
+RUNTIME_QUEUE_TIMEOUT_SECONDS=2.0
+RUNTIME_REQUEST_TIMEOUT_SECONDS=60.0
+```
+
+使用 fake provider 验证 API 并发、超时和错误响应路径：
+
+```powershell
+.\scripts\run-fake-load.ps1 -ApiUrl http://127.0.0.1:9900 -Concurrency 20 -Requests 40 -Json
+```
+
+该命令只证明软件路径可运行；不证明真实 80 人容量、真实业务答案质量或多实例生产数据层已经验证。
+
 ## API
 
 | 方法 | 路径 | 说明 |

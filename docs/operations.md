@@ -56,6 +56,37 @@ example `ragqs_http_requests_total`, `ragqs_http_status_codes_total`,
 `ragqs_rag_queries_total`, `ragqs_rag_space_queries_total`, and
 `ragqs_rag_token_usage_total`.
 
+## Runtime Request Controls
+
+`app.security.runtime_controls` can add a process-local concurrency and timeout
+guard around HTTP requests. It is disabled by default so local development keeps
+the previous behavior:
+
+```env
+RUNTIME_CONTROLS_ENABLED=false
+RUNTIME_MAX_CONCURRENT_REQUESTS=40
+RUNTIME_QUEUE_TIMEOUT_SECONDS=2.0
+RUNTIME_REQUEST_TIMEOUT_SECONDS=60.0
+RUNTIME_CONTROL_EXCLUDED_PATHS=/health,/static
+```
+
+When enabled, requests that cannot acquire a worker-local concurrency slot before
+`RUNTIME_QUEUE_TIMEOUT_SECONDS` return HTTP `429` with the standard envelope.
+Requests that exceed `RUNTIME_REQUEST_TIMEOUT_SECONDS` return HTTP `504`. These
+controls are a software guardrail for the current FastAPI process, not a capacity
+claim for multiple workers or multiple instances.
+
+Use the fake-provider load command after starting an API configured with
+`CHAT_PROVIDER=fake`, `EMBEDDING_PROVIDER=fake`, and `VECTOR_STORE_PROVIDER=fake`:
+
+```powershell
+.\scripts\run-fake-load.ps1 -ApiUrl http://127.0.0.1:9900 -Concurrency 20 -Requests 40 -Json
+```
+
+The command reports `verified`, `skipped`, or `failed`. It validates API
+concurrency, timeout, and error response paths only; it does not prove real
+80-user capacity, real answer quality, or production multi-instance behavior.
+
 ## Retrieval Audit
 
 Successful traced RAG answers are written to the configured retrieval audit store. The development default is local SQLite:
