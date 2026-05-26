@@ -98,67 +98,117 @@ class HealthChecker:
         return payload, status_code
 
 
-def create_default_health_checker() -> HealthChecker:
+def create_default_health_checker(
+    *,
+    settings: Any | None = None,
+    milvus_manager: Any | None = None,
+    session_store_provider: Any | None = None,
+) -> HealthChecker:
     """Create health checks for the default local RAG stack."""
 
+    active_settings = settings or config
+    service_name = _settings_value(active_settings, "app", "name", "app_name", "RAGqs")
+    service_version = _settings_value(active_settings, "app", "version", "app_version", "0.0.0")
     return HealthChecker(
         checks=[
             DependencyHealthCheck(
                 name="app",
                 check=lambda: HealthCheckResult.healthy(
                     "ready",
-                    {"service": config.app_name, "version": config.app_version},
+                    {"service": service_name, "version": service_version},
                 ),
             ),
-            DependencyHealthCheck(name="modelProvider", check=_model_provider_health),
-            DependencyHealthCheck(name="embeddingProvider", check=_embedding_provider_health),
-            DependencyHealthCheck(name="vectorStore", check=_vector_store_health),
-            DependencyHealthCheck(name="sessionStore", check=_session_store_health),
+            DependencyHealthCheck(
+                name="modelProvider",
+                check=lambda: _model_provider_health(active_settings),
+            ),
+            DependencyHealthCheck(
+                name="embeddingProvider",
+                check=lambda: _embedding_provider_health(active_settings),
+            ),
+            DependencyHealthCheck(
+                name="vectorStore",
+                check=lambda: _vector_store_health(active_settings, milvus_manager),
+            ),
+            DependencyHealthCheck(
+                name="sessionStore",
+                check=lambda: _session_store_health(session_store_provider),
+            ),
         ],
-        metadata={"service": config.app_name, "version": config.app_version},
+        metadata={"service": service_name, "version": service_version},
     )
 
 
-def _model_provider_health() -> HealthCheckResult:
-    if _dashscope_configured():
-        return HealthCheckResult.healthy("configured", {"model": config.rag_model})
-    return HealthCheckResult.unhealthy("DASHSCOPE_API_KEY is not configured")
-
-
-def _embedding_provider_health() -> HealthCheckResult:
-    if _dashscope_configured():
+def _model_provider_health(settings: Any = config) -> HealthCheckResult:
+    if _dashscope_configured(settings):
         return HealthCheckResult.healthy(
             "configured",
-            {"model": config.dashscope_embedding_model},
+            {"model": _settings_value(settings, "rag", "model", "rag_model", "qwen-max")},
         )
     return HealthCheckResult.unhealthy("DASHSCOPE_API_KEY is not configured")
 
 
-def _vector_store_health() -> HealthCheckResult:
-    from app.core.milvus_client import milvus_manager
+def _embedding_provider_health(settings: Any = config) -> HealthCheckResult:
+    if _dashscope_configured(settings):
+        return HealthCheckResult.healthy(
+            "configured",
+            {
+                "model": _settings_value(
+                    settings,
+                    "dashscope",
+                    "embedding_model",
+                    "dashscope_embedding_model",
+                    "text-embedding-v4",
+                )
+            },
+        )
+    return HealthCheckResult.unhealthy("DASHSCOPE_API_KEY is not configured")
+
+
+def _vector_store_health(
+    settings: Any = config,
+    milvus_manager: Any | None = None,
+) -> HealthCheckResult:
+    if milvus_manager is None:
+        from app.core.milvus_client import milvus_manager as default_milvus_manager
+
+        milvus_manager = default_milvus_manager
 
     healthy = milvus_manager.health_check()
+    details = {
+        "host": _settings_value(settings, "milvus", "host", "milvus_host", "localhost"),
+        "port": _settings_value(settings, "milvus", "port", "milvus_port", 19530),
+    }
     if healthy:
-        return HealthCheckResult.healthy(
-            "connected",
-            {"host": config.milvus_host, "port": config.milvus_port},
-        )
-    return HealthCheckResult.unhealthy(
-        "disconnected",
-        {"host": config.milvus_host, "port": config.milvus_port},
-    )
+        return HealthCheckResult.healthy("connected", details)
+    return HealthCheckResult.unhealthy("disconnected", details)
 
 
-def _session_store_health() -> HealthCheckResult:
-    from app.providers.factory import get_default_provider_container
+def _session_store_health(session_store_provider: Any | None = None) -> HealthCheckResult:
+    if session_store_provider is None:
+        from app.providers.factory import get_default_provider_container
 
-    provider = get_default_provider_container().session_store_provider
+        session_store_provider = get_default_provider_container().session_store_provider
+
     return HealthCheckResult.healthy(
         "available",
-        {"provider": provider.__class__.__name__},
+        {"provider": session_store_provider.__class__.__name__},
     )
 
 
-def _dashscope_configured() -> bool:
-    api_key = config.dashscope_api_key.strip()
+def _dashscope_configured(settings: Any = config) -> bool:
+    api_key = _settings_value(settings, "dashscope", "api_key", "dashscope_api_key", "").strip()
     return bool(api_key and api_key != "your-api-key-here")
+
+
+def _settings_value(
+    settings: Any,
+    group_name: str,
+    group_field_name: str,
+    flat_field_name: str,
+    default: Any,
+) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, group_field_name):
+        return getattr(group, group_field_name)
+    return getattr(settings, flat_field_name, default)
