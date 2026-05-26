@@ -27,6 +27,26 @@ Space-scoped example:
 {"id":"hr-pto","question":"What is the PTO policy?","expectedAnswerTraits":["pto"],"expectedSources":["hr-policy.md"],"expectsRefusal":false,"metadata":{"spaceId":"hr"}}
 ```
 
+## Real Provider Readiness
+
+Before running a service or HTTP evaluation against real providers, run the preflight:
+
+```powershell
+.\scripts\run-evaluation.ps1 -Mode service -FaithfulnessJudge model -PreflightOnly
+```
+
+For an already-started API:
+
+```powershell
+.\scripts\run-evaluation.ps1 -Mode http -BaseUrl http://127.0.0.1:9900 -PreflightOnly
+```
+
+The preflight rejects `fake` mode, weak golden datasets, fake service providers,
+missing model-judge credentials, invalid HTTP targets, and incomplete LangSmith
+settings when tracing is enabled. A real dataset should include at least one
+grounded answer example with `expectedAnswerTraits` and `expectedSources`, plus
+one unsupported-question example with `expectsRefusal=true`.
+
 ## Local Command
 
 Run the deterministic fake-provider evaluation:

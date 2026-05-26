@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 import app.evaluation.runner as evaluation_runner
+from app.config import Settings
 from app.evaluation import (
     AgentRunResult,
     FaithfulnessVerdict,
@@ -18,6 +19,36 @@ from app.evaluation import (
     run_service_evaluation,
 )
 from app.evaluation.runner import build_arg_parser, main
+
+
+def _real_settings(**overrides):
+    values = {
+        "dashscope_api_key": "sk-real-dashscope",
+        "chat_provider": "dashscope",
+        "embedding_provider": "dashscope",
+        "vector_store_provider": "milvus",
+        "ingestion_provider": "vector_index",
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+def _real_golden_examples():
+    return [
+        GoldenExample(
+            id="grounded",
+            question="What is the policy?",
+            expected_answer_traits=["policy"],
+            expected_sources=["policy.md"],
+            metadata={"spaceId": "business"},
+        ),
+        GoldenExample(
+            id="unsupported",
+            question="What is not documented?",
+            expects_refusal=True,
+            metadata={"spaceId": "business"},
+        ),
+    ]
 
 
 def test_load_golden_dataset_validates_jsonl_records(tmp_path: Path):
@@ -150,6 +181,152 @@ def test_evaluation_cli_accepts_http_mode_and_base_url():
 
     assert args.mode == "http"
     assert args.base_url == "http://127.0.0.1:8000"
+
+
+def test_evaluation_cli_accepts_real_preflight_only_mode():
+    args = build_arg_parser().parse_args(
+        ["--mode", "service", "--preflight-only", "--faithfulness-judge", "model"]
+    )
+
+    assert args.preflight_only is True
+    assert args.mode == "service"
+    assert args.faithfulness_judge == "model"
+
+
+def test_real_evaluation_readiness_rejects_fake_mode():
+    from app.evaluation.readiness import validate_real_evaluation_readiness
+
+    report = validate_real_evaluation_readiness(
+        _real_golden_examples(),
+        settings=_real_settings(),
+        mode="fake",
+        faithfulness_judge="static",
+    )
+
+    assert report.ready is False
+    assert ("EVALUATION_MODE", "use service or http mode for real-provider evaluation") in [
+        (issue.field, issue.message) for issue in report.errors
+    ]
+
+
+def test_real_evaluation_readiness_validates_dataset_quality():
+    from app.evaluation.readiness import validate_real_evaluation_readiness
+
+    report = validate_real_evaluation_readiness(
+        [
+            GoldenExample(
+                id="weak",
+                question="What is documented?",
+                expected_answer_traits=[],
+                expected_sources=[],
+            )
+        ],
+        settings=_real_settings(),
+        mode="service",
+        faithfulness_judge="static",
+    )
+
+    assert report.ready is False
+    assert "DATASET" in {issue.field for issue in report.errors}
+    assert "DATASET[weak].expectedAnswerTraits" in {issue.field for issue in report.errors}
+    assert "DATASET[weak].expectedSources" in {issue.field for issue in report.errors}
+
+
+def test_real_evaluation_readiness_rejects_fake_service_providers():
+    from app.evaluation.readiness import validate_real_evaluation_readiness
+
+    report = validate_real_evaluation_readiness(
+        _real_golden_examples(),
+        settings=_real_settings(
+            chat_provider="fake",
+            embedding_provider="fake",
+            vector_store_provider="fake",
+            ingestion_provider="fake",
+        ),
+        mode="service",
+        faithfulness_judge="static",
+    )
+
+    assert report.ready is False
+    assert {
+        "CHAT_PROVIDER",
+        "EMBEDDING_PROVIDER",
+        "VECTOR_STORE_PROVIDER",
+        "INGESTION_PROVIDER",
+    }.issubset({issue.field for issue in report.errors})
+
+
+def test_real_evaluation_readiness_checks_http_base_url_and_model_judge_provider():
+    from app.evaluation.readiness import validate_real_evaluation_readiness
+
+    report = validate_real_evaluation_readiness(
+        _real_golden_examples(),
+        settings=_real_settings(chat_provider="fake"),
+        mode="http",
+        faithfulness_judge="model",
+        base_url="",
+    )
+
+    assert report.ready is False
+    assert "BASE_URL" in {issue.field for issue in report.errors}
+    assert "CHAT_PROVIDER" in {issue.field for issue in report.errors}
+
+
+def test_real_evaluation_readiness_warns_when_langsmith_is_disabled():
+    from app.evaluation.readiness import validate_real_evaluation_readiness
+
+    report = validate_real_evaluation_readiness(
+        _real_golden_examples(),
+        settings=_real_settings(),
+        mode="service",
+        faithfulness_judge="static",
+        env={"LANGSMITH_TRACING": "false"},
+    )
+
+    assert report.ready is True
+    assert ("LANGSMITH_TRACING", "enable LangSmith tracing for real-provider diagnostics") in [
+        (issue.field, issue.message) for issue in report.warnings
+    ]
+
+
+def test_real_evaluation_cli_preflight_only_outputs_readiness_report(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    dataset_path = tmp_path / "business-golden.jsonl"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                '{"id":"grounded","question":"What is the policy?","expectedAnswerTraits":["policy"],"expectedSources":["policy.md"],"expectsRefusal":false,"metadata":{"spaceId":"business"}}',
+                '{"id":"unsupported","question":"What is not documented?","expectedAnswerTraits":[],"expectedSources":[],"expectsRefusal":true,"metadata":{"spaceId":"business"}}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evaluation_runner, "config", _real_settings(), raising=False)
+    monkeypatch.setattr(
+        evaluation_runner,
+        "os_environ",
+        {"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "ls-key", "LANGSMITH_PROJECT": "ragqs"},
+        raising=False,
+    )
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(dataset_path),
+            "--mode",
+            "service",
+            "--preflight-only",
+            "--output-json",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert '"ready": true' in output
+    assert '"datasetExamples": 2' in output
 
 
 def test_model_judge_uses_configured_chat_provider_container(monkeypatch):
