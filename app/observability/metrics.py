@@ -160,6 +160,94 @@ def normalize_token_usage(token_usage: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+def render_prometheus_metrics(snapshot: Mapping[str, Any]) -> str:
+    """Render a runtime metrics snapshot as Prometheus text exposition."""
+
+    http = _mapping(snapshot.get("http"))
+    rag = _mapping(snapshot.get("rag"))
+    lines: list[str] = []
+
+    _append_metric(
+        lines,
+        "ragqs_http_requests_total",
+        "Total HTTP requests handled by this process.",
+        "counter",
+        _number(http.get("totalRequests")),
+    )
+    _append_labeled_metrics(
+        lines,
+        "ragqs_http_status_codes_total",
+        "HTTP requests by status code.",
+        "counter",
+        _mapping(http.get("statusCodes")),
+        "status_code",
+    )
+    _append_route_metrics(lines, _mapping(http.get("routes")))
+    _append_labeled_metrics(
+        lines,
+        "ragqs_http_latency_bucket_count",
+        "HTTP request latency bucket counts in milliseconds.",
+        "gauge",
+        _mapping(http.get("latencyBucketsMs")),
+        "bucket",
+    )
+    _append_metric(
+        lines,
+        "ragqs_http_latency_average_ms",
+        "Average HTTP request latency in milliseconds.",
+        "gauge",
+        _number(http.get("averageLatencyMs")),
+    )
+
+    _append_metric(
+        lines,
+        "ragqs_rag_queries_total",
+        "Total RAG queries handled by this process.",
+        "counter",
+        _number(rag.get("totalQueries")),
+    )
+    _append_metric(
+        lines,
+        "ragqs_rag_query_success_total",
+        "Successful RAG queries handled by this process.",
+        "counter",
+        _number(rag.get("successes")),
+    )
+    _append_metric(
+        lines,
+        "ragqs_rag_query_failure_total",
+        "Failed RAG queries handled by this process.",
+        "counter",
+        _number(rag.get("failures")),
+    )
+    _append_labeled_metrics(
+        lines,
+        "ragqs_rag_space_queries_total",
+        "RAG queries by knowledge space.",
+        "counter",
+        _mapping(rag.get("spaces")),
+        "space_id",
+    )
+    _append_labeled_metrics(
+        lines,
+        "ragqs_rag_latency_bucket_count",
+        "RAG query latency bucket counts in milliseconds.",
+        "gauge",
+        _mapping(rag.get("latencyBucketsMs")),
+        "bucket",
+    )
+    _append_metric(
+        lines,
+        "ragqs_rag_latency_average_ms",
+        "Average RAG query latency in milliseconds.",
+        "gauge",
+        _number(rag.get("averageLatencyMs")),
+    )
+    _append_token_usage_metrics(lines, _mapping(rag.get("tokenUsage")))
+
+    return "\n".join(lines) + "\n"
+
+
 def _token_value(token_usage: Mapping[str, Any], *keys: str) -> int:
     for key in keys:
         value = token_usage.get(key)
@@ -169,6 +257,103 @@ def _token_value(token_usage: Mapping[str, Any], *keys: str) -> int:
             except (TypeError, ValueError):
                 return 0
     return 0
+
+
+def _append_route_metrics(lines: list[str], routes: Mapping[str, Any]) -> None:
+    lines.extend(
+        [
+            "# HELP ragqs_http_route_requests_total HTTP requests by route.",
+            "# TYPE ragqs_http_route_requests_total counter",
+        ]
+    )
+    for route, values in _sorted_metric_items(routes):
+        route_values = _mapping(values)
+        lines.append(
+            f'ragqs_http_route_requests_total{{route="{_escape_label_value(route)}"}} '
+            f'{_number(route_values.get("count"))}'
+        )
+
+    lines.extend(
+        [
+            "# HELP ragqs_http_route_latency_average_ms Average HTTP route latency in milliseconds.",
+            "# TYPE ragqs_http_route_latency_average_ms gauge",
+        ]
+    )
+    for route, values in _sorted_metric_items(routes):
+        route_values = _mapping(values)
+        lines.append(
+            f'ragqs_http_route_latency_average_ms{{route="{_escape_label_value(route)}"}} '
+            f'{_number(route_values.get("averageLatencyMs"))}'
+        )
+
+
+def _append_token_usage_metrics(lines: list[str], token_usage: Mapping[str, Any]) -> None:
+    token_types = {
+        "prompt": token_usage.get("promptTokens", 0),
+        "completion": token_usage.get("completionTokens", 0),
+        "total": token_usage.get("totalTokens", 0),
+    }
+    _append_labeled_metrics(
+        lines,
+        "ragqs_rag_token_usage_total",
+        "Total RAG token usage reported by providers.",
+        "counter",
+        token_types,
+        "type",
+    )
+
+
+def _append_metric(
+    lines: list[str],
+    name: str,
+    help_text: str,
+    metric_type: str,
+    value: int | float,
+) -> None:
+    lines.extend([f"# HELP {name} {help_text}", f"# TYPE {name} {metric_type}", f"{name} {value}"])
+
+
+def _append_labeled_metrics(
+    lines: list[str],
+    name: str,
+    help_text: str,
+    metric_type: str,
+    values: Mapping[str, Any],
+    label_name: str,
+) -> None:
+    lines.extend([f"# HELP {name} {help_text}", f"# TYPE {name} {metric_type}"])
+    for label_value, value in _sorted_metric_items(values):
+        lines.append(
+            f'{name}{{{label_name}="{_escape_label_value(label_value)}"}} {_number(value)}'
+        )
+
+
+def _sorted_metric_items(values: Mapping[str, Any]) -> list[tuple[Any, Any]]:
+    return sorted(values.items(), key=lambda item: str(item[0]))
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _number(value: Any) -> int | float:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if number.is_integer():
+        return int(number)
+    return number
+
+
+def _escape_label_value(value: Any) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 def _rounded_latency(value: int | float) -> float:
