@@ -1,5 +1,6 @@
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -16,7 +17,12 @@ from app.observability.request_context import (
 )
 from app.operations.config_validation import main as config_validation_main
 from app.operations.config_validation import validate_settings
-from app.operations.health import DependencyHealthCheck, HealthChecker, HealthCheckResult
+from app.operations.health import (
+    DependencyHealthCheck,
+    HealthChecker,
+    HealthCheckResult,
+    create_default_health_checker,
+)
 from app.security.cors import build_cors_options, parse_cors_origins
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -288,6 +294,60 @@ def test_health_router_uses_injected_checker_and_keeps_response_envelope():
                 }
             },
         },
+    }
+
+
+def test_default_health_checker_prefers_grouped_settings_and_injected_dependencies():
+    class FakeMilvusManager:
+        def health_check(self):
+            return True
+
+    class FakeSessionStore:
+        pass
+
+    settings = SimpleNamespace(
+        app=SimpleNamespace(name="Grouped RAG", version="2.0.0"),
+        rag=SimpleNamespace(model="group-rag-model"),
+        dashscope=SimpleNamespace(
+            api_key="sk-grouped",
+            embedding_model="group-embedding",
+        ),
+        milvus=SimpleNamespace(host="milvus.grouped", port=19630),
+        app_name="Flat RAG",
+        app_version="1.0.0",
+        rag_model="flat-rag-model",
+        dashscope_api_key="sk-flat",
+        dashscope_embedding_model="flat-embedding",
+        milvus_host="flat-host",
+        milvus_port=19530,
+    )
+    checker = create_default_health_checker(
+        settings=settings,
+        milvus_manager=FakeMilvusManager(),
+        session_store_provider=FakeSessionStore(),
+    )
+
+    payload, status_code = checker.as_response()
+
+    assert status_code == 200
+    assert payload["service"] == "Grouped RAG"
+    assert payload["version"] == "2.0.0"
+    assert payload["dependencies"]["app"]["details"] == {
+        "service": "Grouped RAG",
+        "version": "2.0.0",
+    }
+    assert payload["dependencies"]["modelProvider"]["details"] == {
+        "model": "group-rag-model"
+    }
+    assert payload["dependencies"]["embeddingProvider"]["details"] == {
+        "model": "group-embedding"
+    }
+    assert payload["dependencies"]["vectorStore"]["details"] == {
+        "host": "milvus.grouped",
+        "port": 19630,
+    }
+    assert payload["dependencies"]["sessionStore"]["details"] == {
+        "provider": "FakeSessionStore"
     }
 
 
