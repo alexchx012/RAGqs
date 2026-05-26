@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from fastapi.responses import PlainTextResponse
 
-from app.observability.metrics import RuntimeMetrics, runtime_metrics
+from app.observability.metrics import (
+    RuntimeMetrics,
+    render_prometheus_metrics,
+    runtime_metrics,
+)
 
 
 def create_metrics_router(metrics_collector: RuntimeMetrics | None = None) -> APIRouter:
@@ -20,6 +25,10 @@ def create_metrics_router(metrics_collector: RuntimeMetrics | None = None) -> AP
             "message": "success",
             "data": active_metrics.snapshot(),
         }
+
+    @router.get("/metrics/prometheus", response_class=PlainTextResponse)
+    async def get_prometheus_metrics():
+        return render_prometheus_metrics(active_metrics.snapshot())
 
     return router
 

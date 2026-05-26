@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.api.health import create_health_router
 from app.api.metrics import create_metrics_router
 from app.config import Settings
-from app.observability.metrics import RuntimeMetrics
+from app.observability.metrics import RuntimeMetrics, render_prometheus_metrics
 from app.observability.request_context import (
     get_current_trace_id,
     install_request_context_middleware,
@@ -177,6 +177,55 @@ def test_metrics_router_exposes_runtime_metrics_snapshot():
             },
         },
     }
+
+
+def test_runtime_metrics_can_render_prometheus_text_exposition():
+    metrics = RuntimeMetrics(latency_buckets_ms=[100])
+    metrics.record_http_request(
+        method="GET",
+        path="/health",
+        status_code=200,
+        latency_ms=80.0,
+    )
+    metrics.record_rag_query(
+        session_id="s1",
+        space_id="finance",
+        success=True,
+        latency_ms=420.0,
+        token_usage={"promptTokens": 12, "completionTokens": 8, "totalTokens": 20},
+    )
+
+    text = render_prometheus_metrics(metrics.snapshot())
+
+    assert "# HELP ragqs_http_requests_total Total HTTP requests handled by this process." in text
+    assert "# TYPE ragqs_http_requests_total counter" in text
+    assert 'ragqs_http_status_codes_total{status_code="200"} 1' in text
+    assert 'ragqs_http_route_requests_total{route="GET /health"} 1' in text
+    assert 'ragqs_http_latency_bucket_count{bucket="<=100"} 1' in text
+    assert "ragqs_rag_queries_total 1" in text
+    assert "ragqs_rag_query_success_total 1" in text
+    assert 'ragqs_rag_space_queries_total{space_id="finance"} 1' in text
+    assert 'ragqs_rag_token_usage_total{type="prompt"} 12' in text
+
+
+def test_metrics_router_exposes_prometheus_text_endpoint():
+    metrics = RuntimeMetrics(latency_buckets_ms=[100])
+    metrics.record_rag_query(
+        session_id="s1",
+        space_id="support",
+        success=False,
+        latency_ms=180.0,
+    )
+    app = FastAPI()
+    app.include_router(create_metrics_router(metrics_collector=metrics), prefix="/api")
+
+    response = TestClient(app).get("/api/metrics/prometheus")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "ragqs_rag_queries_total 1" in response.text
+    assert "ragqs_rag_query_failure_total 1" in response.text
+    assert 'ragqs_rag_space_queries_total{space_id="support"} 1' in response.text
 
 
 def test_health_checker_splits_dependency_statuses_and_overall_status():
@@ -513,6 +562,9 @@ def test_operations_docs_describe_runtime_metrics_endpoint():
     for phrase in [
         "Runtime Metrics",
         "GET /api/metrics",
+        "GET /api/metrics/prometheus",
+        "Prometheus",
+        "ragqs_rag_queries_total",
         "latencyBucketsMs",
         "tokenUsage",
         "totalQueries",

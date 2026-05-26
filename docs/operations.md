@@ -45,6 +45,12 @@ The response includes:
 Use this endpoint for local smoke checks and dashboards. For production,
 scrape or export the same fields into the chosen central observability system.
 
+`GET /api/metrics/prometheus` exposes the same snapshot as Prometheus-compatible
+plain text for pull-based collectors. Metric names use the `ragqs_` prefix, for
+example `ragqs_http_requests_total`, `ragqs_http_status_codes_total`,
+`ragqs_rag_queries_total`, `ragqs_rag_space_queries_total`, and
+`ragqs_rag_token_usage_total`.
+
 ## Retrieval Audit
 
 Successful traced RAG answers are written to the configured retrieval audit store. The development default is local SQLite:
