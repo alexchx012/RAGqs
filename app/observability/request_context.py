@@ -12,6 +12,8 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from loguru import logger
 
+from app.observability.metrics import RuntimeMetrics, runtime_metrics
+
 TRACE_ID_HEADER = "X-Trace-Id"
 
 _current_trace_id: ContextVar[str | None] = ContextVar("current_trace_id", default=None)
@@ -37,6 +39,7 @@ def install_request_context_middleware(
     *,
     access_log_sink: AccessLogSink = emit_access_log,
     clock: Clock = perf_counter,
+    metrics_collector: RuntimeMetrics | None = runtime_metrics,
 ) -> None:
     """Install trace id propagation and request access logging middleware."""
 
@@ -55,6 +58,13 @@ def install_request_context_middleware(
             return response
         finally:
             latency_ms = round((clock() - start_time) * 1000, 3)
+            if metrics_collector is not None:
+                metrics_collector.record_http_request(
+                    method=request.method,
+                    path=request.url.path,
+                    status_code=status_code,
+                    latency_ms=latency_ms,
+                )
             access_log_sink(
                 {
                     "event": "http_request",

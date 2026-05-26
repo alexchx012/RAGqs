@@ -7,7 +7,9 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app.api.health import create_health_router
+from app.api.metrics import create_metrics_router
 from app.config import Settings
+from app.observability.metrics import RuntimeMetrics
 from app.observability.request_context import (
     get_current_trace_id,
     install_request_context_middleware,
@@ -70,6 +72,111 @@ def test_request_context_middleware_generates_trace_id_when_missing():
     generated_trace_id = response.headers["X-Trace-Id"]
     assert response.json()["traceId"] == generated_trace_id
     assert UUID(generated_trace_id)
+
+
+def test_request_context_middleware_records_http_runtime_metrics():
+    metrics = RuntimeMetrics(latency_buckets_ms=[100, 250])
+    ticks = iter([1.0, 1.12])
+    app = FastAPI()
+    install_request_context_middleware(
+        app,
+        access_log_sink=lambda record: None,
+        clock=lambda: next(ticks),
+        metrics_collector=metrics,
+    )
+
+    @app.get("/metrics-probe")
+    async def metrics_probe():
+        return {"ok": True}
+
+    response = TestClient(app).get("/metrics-probe")
+    snapshot = metrics.snapshot()
+
+    assert response.status_code == 200
+    assert snapshot["http"]["totalRequests"] == 1
+    assert snapshot["http"]["statusCodes"] == {"200": 1}
+    assert snapshot["http"]["routes"]["GET /metrics-probe"]["count"] == 1
+    assert snapshot["http"]["routes"]["GET /metrics-probe"]["averageLatencyMs"] == 120.0
+    assert snapshot["http"]["latencyBucketsMs"] == {
+        "<=100": 0,
+        "<=250": 1,
+        ">250": 0,
+    }
+
+
+def test_runtime_metrics_aggregates_rag_latency_and_token_usage():
+    metrics = RuntimeMetrics(latency_buckets_ms=[100, 500])
+
+    metrics.record_rag_query(
+        session_id="s1",
+        space_id="finance",
+        success=True,
+        latency_ms=420.0,
+        token_usage={"promptTokens": 12, "completionTokens": 8, "totalTokens": 20},
+    )
+    metrics.record_rag_query(
+        session_id="s2",
+        space_id="finance",
+        success=False,
+        latency_ms=750.0,
+        token_usage={"prompt_tokens": 3, "completion_tokens": 0, "total_tokens": 3},
+    )
+
+    snapshot = metrics.snapshot()
+
+    assert snapshot["rag"]["totalQueries"] == 2
+    assert snapshot["rag"]["successes"] == 1
+    assert snapshot["rag"]["failures"] == 1
+    assert snapshot["rag"]["spaces"] == {"finance": 2}
+    assert snapshot["rag"]["averageLatencyMs"] == 585.0
+    assert snapshot["rag"]["latencyBucketsMs"] == {"<=100": 0, "<=500": 1, ">500": 1}
+    assert snapshot["rag"]["tokenUsage"] == {
+        "promptTokens": 15,
+        "completionTokens": 8,
+        "totalTokens": 23,
+    }
+
+
+def test_metrics_router_exposes_runtime_metrics_snapshot():
+    metrics = RuntimeMetrics(latency_buckets_ms=[100])
+    metrics.record_http_request(
+        method="GET",
+        path="/health",
+        status_code=200,
+        latency_ms=80.0,
+    )
+    app = FastAPI()
+    app.include_router(create_metrics_router(metrics_collector=metrics), prefix="/api")
+
+    response = TestClient(app).get("/api/metrics")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "http": {
+                "totalRequests": 1,
+                "statusCodes": {"200": 1},
+                "routes": {"GET /health": {"count": 1, "averageLatencyMs": 80.0}},
+                "latencyBucketsMs": {"<=100": 1, ">100": 0},
+                "averageLatencyMs": 80.0,
+            },
+            "rag": {
+                "totalQueries": 0,
+                "successes": 0,
+                "failures": 0,
+                "spaces": {},
+                "latencyBucketsMs": {"<=100": 0, ">100": 0},
+                "averageLatencyMs": 0.0,
+                "tokenUsage": {
+                    "promptTokens": 0,
+                    "completionTokens": 0,
+                    "totalTokens": 0,
+                },
+            },
+        },
+    }
 
 
 def test_health_checker_splits_dependency_statuses_and_overall_status():
@@ -391,6 +498,26 @@ def test_main_uses_configured_cors_options():
 
     assert "build_cors_options(config)" in main_source
     assert 'allow_origins=["*"]' not in main_source
+
+
+def test_main_exposes_runtime_metrics_router():
+    main_source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+
+    assert "metrics.router" in main_source
+    assert 'prefix="/api"' in main_source
+
+
+def test_operations_docs_describe_runtime_metrics_endpoint():
+    docs = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
+
+    for phrase in [
+        "Runtime Metrics",
+        "GET /api/metrics",
+        "latencyBucketsMs",
+        "tokenUsage",
+        "totalQueries",
+    ]:
+        assert phrase in docs
 
 
 def test_operations_docs_describe_docker_profiles():
