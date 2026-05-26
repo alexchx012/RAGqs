@@ -252,16 +252,31 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             settings,
             "indexing_queue_provider",
             "indexing_queue_provider",
-            default="memory",
+            default="sqlite",
         )
     )
-    if indexing_queue_provider not in {"memory", "postgres"}:
+    if indexing_queue_provider not in {"memory", "sqlite", "postgres"}:
         errors.append(
             ConfigIssue(
                 field="INDEXING_QUEUE_PROVIDER",
                 message=f"unsupported provider: {indexing_queue_provider}",
             )
         )
+    if indexing_queue_provider == "sqlite":
+        sqlite_path = _group_value(
+            storage_config,
+            settings,
+            "indexing_queue_sqlite_path",
+            "indexing_queue_sqlite_path",
+            default="data/indexing-queue.sqlite3",
+        )
+        if not sqlite_path.strip():
+            errors.append(
+                ConfigIssue(
+                    field="INDEXING_QUEUE_SQLITE_PATH",
+                    message="must be set when INDEXING_QUEUE_PROVIDER=sqlite",
+                )
+            )
     if indexing_queue_provider == "postgres":
         postgres_dsn = _group_value(
             storage_config,
