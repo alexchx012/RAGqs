@@ -69,10 +69,48 @@
                             </div>
                         </div>
                     </div>
-                    <input type="file" id="fileInput" accept=".txt,.md,.markdown" style="display: none;">
+                    <input type="file" id="fileInput" accept=".txt,.md,.markdown,.csv,.html,.htm,.json" style="display: none;">
                 </div>
             </div>
         </main>
+        <aside class="management-panel">
+            <section class="ops-section">
+                <div class="ops-section-header">
+                    <span>知识空间</span>
+                    <button type="button" class="ops-icon-btn" id="refreshSpacesBtn" title="刷新知识空间">↻</button>
+                </div>
+                <select id="spaceSelector" class="space-selector">
+                    <option value="default">default</option>
+                </select>
+                <form id="createSpaceForm" class="space-form">
+                    <input id="newSpaceIdInput" type="text" placeholder="space id">
+                    <input id="newSpaceNameInput" type="text" placeholder="显示名称">
+                    <button type="submit">创建</button>
+                </form>
+            </section>
+            <section class="ops-section">
+                <div class="ops-section-header">
+                    <span>文档</span>
+                    <button type="button" class="ops-icon-btn" id="refreshDocumentsBtn" title="刷新文档">↻</button>
+                </div>
+                <div id="documentList" class="ops-list">暂无文档</div>
+            </section>
+            <section class="ops-section">
+                <div class="ops-section-header">
+                    <span>索引任务</span>
+                    <button type="button" class="ops-icon-btn" id="refreshIndexJobsBtn" title="刷新任务">↻</button>
+                </div>
+                <div id="indexJobList" class="ops-list">暂无索引任务</div>
+            </section>
+            <section class="ops-section">
+                <div class="ops-section-header">
+                    <span>检索审计</span>
+                    <button type="button" class="ops-icon-btn" id="refreshAuditsBtn" title="刷新审计">↻</button>
+                </div>
+                <div id="auditList" class="ops-list">暂无审计记录</div>
+            </section>
+            <div id="managementStatus" class="management-status"></div>
+        </aside>
     </div>
     <script src="/static/app.js"></script>
 </body>

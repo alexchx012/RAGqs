@@ -27,6 +27,7 @@ function createElement() {
     dataset: {},
     disabled: false,
     innerHTML: '',
+    files: [],
     scrollHeight: 0,
     scrollTop: 0,
     style: {},
@@ -75,6 +76,15 @@ function loadApp(options = {}) {
     console,
     document,
     fetch: options.fetch,
+    FormData: class {
+      constructor() {
+        this.values = [];
+      }
+
+      append(key, value) {
+        this.values.push([key, value]);
+      }
+    },
     localStorage: createStorage(),
     marked: undefined,
   };
@@ -235,12 +245,154 @@ async function testLoadBackendHistoryFetchesTranscriptBeforeRendering() {
   ]);
 }
 
+async function testChatAndUploadSendSelectedKnowledgeSpace() {
+  const requests = [];
+  const { App } = loadApp({
+    fetch: async (url, options = {}) => {
+      requests.push({ url, options });
+      if (url === '/api/chat') {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 200,
+            data: {
+              success: true,
+              answer: 'answer',
+              sources: [],
+              retrieval: { debug: {} },
+            },
+          }),
+        };
+      }
+      if (String(url).startsWith('/api/upload')) {
+        return {
+          ok: true,
+          json: async () => ({ code: 200, data: { filename: 'guide.md' } }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ code: 200, data: { sessions: [] } }),
+      };
+    },
+  });
+  const app = new App();
+  await app.historyRefreshPromise;
+  app.selectedSpaceId = 'finance';
+  app.spaceSelector.value = 'finance';
+
+  await app.sendQuick('policy');
+  app.fileInput.files = [{ name: 'guide.md' }];
+  await app.handleFileUpload({ target: app.fileInput });
+
+  const chatBody = JSON.parse(requests.find((request) => request.url === '/api/chat').options.body);
+  assert.equal(chatBody.spaceId, 'finance');
+  assert.equal(
+    requests.find((request) => String(request.url).startsWith('/api/upload')).url,
+    '/api/upload?space_id=finance',
+  );
+}
+
+async function testManagementFlowsUseBackendSpaceAndLifecycleApis() {
+  const requested = [];
+  const { App } = loadApp({
+    fetch: async (url, options = {}) => {
+      requested.push({ url, method: options.method || 'GET' });
+      if (url === '/api/knowledge-spaces') {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 200,
+            data: { spaces: [{ space_id: 'finance', name: 'Finance' }] },
+          }),
+        };
+      }
+      if (url === '/api/knowledge-spaces/finance/documents') {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 200,
+            data: {
+              documents: [
+                {
+                  document_id: 'doc-1',
+                  file_name: 'guide.md',
+                  status: 'indexed',
+                  total_chunks: 2,
+                  indexed_chunks: 2,
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url === '/api/index-jobs') {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 200,
+            data: { jobs: [{ job_id: 'job-1', status: 'failed' }] },
+          }),
+        };
+      }
+      if (url === '/api/chat/audits?space_id=finance') {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 200,
+            data: { audits: [{ id: 'audit-1', question: 'q', answer: 'a' }] },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ code: 200, data: {} }),
+      };
+    },
+  });
+  const app = new App();
+  await app.refreshKnowledgeSpaces();
+  await app.refreshDocuments();
+  await app.deleteDocument('doc-1');
+  await app.rebuildDocument('doc-1');
+  await app.refreshIndexJobs();
+  await app.retryIndexJob('job-1');
+  await app.refreshRetrievalAudits();
+
+  assert.deepEqual(
+    requested.map((request) => `${request.method} ${request.url}`),
+    [
+      'GET /api/chat/sessions',
+      'GET /api/knowledge-spaces',
+      'GET /api/knowledge-spaces/finance/documents',
+      'GET /api/knowledge-spaces/finance/documents',
+      'DELETE /api/knowledge-spaces/finance/documents/doc-1',
+      'GET /api/knowledge-spaces/finance/documents',
+      'POST /api/knowledge-spaces/finance/documents/doc-1/rebuild',
+      'GET /api/knowledge-spaces/finance/documents',
+      'GET /api/index-jobs',
+      'POST /api/index-jobs/job-1/retry',
+      'GET /api/index-jobs',
+      'GET /api/chat/audits?space_id=finance',
+    ],
+  );
+}
+
+function testUploadAcceptsBackendAllowedTextFormats() {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
+
+  assert.match(html, /accept="\.txt,\.md,\.markdown,\.csv,\.html,\.htm,\.json"/);
+}
+
 async function run() {
   testNewChatDoesNotDuplicateLoadedHistory();
   testLoadChatHistoriesDeduplicatesStoredSessions();
   await testRefreshChatHistoriesLoadsBackendSummaries();
   await testRefreshChatHistoriesSearchesBackendWithQuery();
   await testLoadBackendHistoryFetchesTranscriptBeforeRendering();
+  await testChatAndUploadSendSelectedKnowledgeSpace();
+  await testManagementFlowsUseBackendSpaceAndLifecycleApis();
+  testUploadAcceptsBackendAllowedTextFormats();
   console.log('chat history tests passed');
 }
 

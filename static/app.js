@@ -7,6 +7,11 @@ class RAGApp {
         this.isStreaming = false;
         this.currentChatHistory = [];
         this.chatHistories = this.loadChatHistories();
+        this.selectedSpaceId = localStorage.getItem('ragSelectedSpaceId') || 'default';
+        this.knowledgeSpaces = [];
+        this.documents = [];
+        this.indexJobs = [];
+        this.retrievalAudits = [];
 
         this.initElements();
         this.bindEvents();
@@ -46,6 +51,18 @@ class RAGApp {
         this.welcomeGreeting = document.getElementById('welcomeGreeting');
         this.chatHistoryList = document.getElementById('chatHistoryList');
         this.historySearchInput = document.getElementById('historySearchInput');
+        this.spaceSelector = document.getElementById('spaceSelector');
+        this.refreshSpacesBtn = document.getElementById('refreshSpacesBtn');
+        this.createSpaceForm = document.getElementById('createSpaceForm');
+        this.newSpaceIdInput = document.getElementById('newSpaceIdInput');
+        this.newSpaceNameInput = document.getElementById('newSpaceNameInput');
+        this.documentList = document.getElementById('documentList');
+        this.refreshDocumentsBtn = document.getElementById('refreshDocumentsBtn');
+        this.indexJobList = document.getElementById('indexJobList');
+        this.refreshIndexJobsBtn = document.getElementById('refreshIndexJobsBtn');
+        this.auditList = document.getElementById('auditList');
+        this.refreshAuditsBtn = document.getElementById('refreshAuditsBtn');
+        this.managementStatus = document.getElementById('managementStatus');
     }
 
     bindEvents() {
@@ -63,6 +80,28 @@ class RAGApp {
                 );
             });
         }
+        if (this.spaceSelector) {
+            this.spaceSelector.value = this.selectedSpaceId;
+            this.spaceSelector.addEventListener('change', () => this.selectKnowledgeSpace(this.spaceSelector.value));
+        }
+        if (this.refreshSpacesBtn) {
+            this.refreshSpacesBtn.addEventListener('click', () => this.refreshKnowledgeSpaces());
+        }
+        if (this.createSpaceForm) {
+            this.createSpaceForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.createKnowledgeSpace();
+            });
+        }
+        if (this.refreshDocumentsBtn) {
+            this.refreshDocumentsBtn.addEventListener('click', () => this.refreshDocuments());
+        }
+        if (this.refreshIndexJobsBtn) {
+            this.refreshIndexJobsBtn.addEventListener('click', () => this.refreshIndexJobs());
+        }
+        if (this.refreshAuditsBtn) {
+            this.refreshAuditsBtn.addEventListener('click', () => this.refreshRetrievalAudits());
+        }
 
         this.modeSelectorBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -78,6 +117,220 @@ class RAGApp {
             });
         });
         document.addEventListener('click', () => this.modeDropdown.classList.remove('active'));
+    }
+
+    getSelectedSpaceId() {
+        return (this.spaceSelector?.value || this.selectedSpaceId || 'default').trim() || 'default';
+    }
+
+    async apiJson(path, options = {}) {
+        const res = await fetch(`${this.apiBaseUrl}${path}`, options);
+        const data = await res.json();
+        if (!res.ok || (data.code && data.code >= 400)) {
+            throw new Error(data.detail || data.message || '请求失败');
+        }
+        return data;
+    }
+
+    setManagementStatus(message, type = 'info') {
+        if (!this.managementStatus) return;
+        this.managementStatus.textContent = message || '';
+        this.managementStatus.className = `management-status ${type}`;
+    }
+
+    async refreshKnowledgeSpaces() {
+        const data = await this.apiJson('/knowledge-spaces');
+        this.knowledgeSpaces = Array.isArray(data.data?.spaces) ? data.data.spaces : [];
+        if (
+            this.knowledgeSpaces.length > 0
+            && !this.knowledgeSpaces.some(space => this.spaceIdOf(space) === this.selectedSpaceId)
+        ) {
+            this.selectedSpaceId = this.spaceIdOf(this.knowledgeSpaces[0]);
+        }
+        this.renderKnowledgeSpaces();
+        await this.refreshDocuments();
+        return this.knowledgeSpaces;
+    }
+
+    renderKnowledgeSpaces() {
+        if (!this.spaceSelector) return;
+        this.spaceSelector.innerHTML = '';
+        const spaces = this.knowledgeSpaces.length > 0
+            ? this.knowledgeSpaces
+            : [{ space_id: this.selectedSpaceId, name: this.selectedSpaceId }];
+        spaces.forEach(space => {
+            const option = document.createElement('option');
+            option.value = this.spaceIdOf(space);
+            option.textContent = space.name || this.spaceIdOf(space);
+            this.spaceSelector.appendChild(option);
+        });
+        this.spaceSelector.value = this.selectedSpaceId;
+    }
+
+    async selectKnowledgeSpace(spaceId) {
+        this.selectedSpaceId = (spaceId || 'default').trim() || 'default';
+        localStorage.setItem('ragSelectedSpaceId', this.selectedSpaceId);
+        if (this.spaceSelector) this.spaceSelector.value = this.selectedSpaceId;
+        await Promise.all([
+            this.refreshDocuments(),
+            this.refreshRetrievalAudits(),
+        ]);
+    }
+
+    async createKnowledgeSpace() {
+        const spaceId = (this.newSpaceIdInput?.value || '').trim();
+        if (!spaceId) return;
+        const name = (this.newSpaceNameInput?.value || '').trim() || spaceId;
+        await this.apiJson('/knowledge-spaces', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ space_id: spaceId, name }),
+        });
+        this.selectedSpaceId = spaceId;
+        if (this.newSpaceIdInput) this.newSpaceIdInput.value = '';
+        if (this.newSpaceNameInput) this.newSpaceNameInput.value = '';
+        await this.refreshKnowledgeSpaces();
+        this.setManagementStatus(`知识空间 ${spaceId} 已创建`, 'success');
+    }
+
+    async refreshDocuments() {
+        const spaceId = this.getSelectedSpaceId();
+        const data = await this.apiJson(`/knowledge-spaces/${encodeURIComponent(spaceId)}/documents`);
+        this.documents = Array.isArray(data.data?.documents) ? data.data.documents : [];
+        this.renderDocuments();
+        return this.documents;
+    }
+
+    renderDocuments() {
+        if (!this.documentList) return;
+        this.documentList.innerHTML = '';
+        if (this.documents.length === 0) {
+            this.documentList.textContent = '暂无文档';
+            return;
+        }
+        this.documents.forEach(documentRecord => {
+            const row = document.createElement('div');
+            row.className = 'ops-row';
+            const title = document.createElement('div');
+            title.className = 'ops-row-main';
+            title.textContent = `${documentRecord.file_name || documentRecord.document_id} · ${documentRecord.status || 'unknown'}`;
+            const meta = document.createElement('div');
+            meta.className = 'ops-row-meta';
+            meta.textContent = `${documentRecord.indexed_chunks ?? 0}/${documentRecord.total_chunks ?? 0} chunks`;
+            const actions = document.createElement('div');
+            actions.className = 'ops-row-actions';
+            const rebuild = document.createElement('button');
+            rebuild.type = 'button';
+            rebuild.textContent = '重建';
+            rebuild.addEventListener('click', () => this.rebuildDocument(documentRecord.document_id));
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = '删除';
+            remove.addEventListener('click', () => this.deleteDocument(documentRecord.document_id));
+            actions.appendChild(rebuild);
+            actions.appendChild(remove);
+            row.appendChild(title);
+            row.appendChild(meta);
+            row.appendChild(actions);
+            this.documentList.appendChild(row);
+        });
+    }
+
+    async deleteDocument(documentId) {
+        const spaceId = this.getSelectedSpaceId();
+        await this.apiJson(
+            `/knowledge-spaces/${encodeURIComponent(spaceId)}/documents/${encodeURIComponent(documentId)}`,
+            { method: 'DELETE' },
+        );
+        await this.refreshDocuments();
+        this.setManagementStatus('文档已删除', 'success');
+    }
+
+    async rebuildDocument(documentId) {
+        const spaceId = this.getSelectedSpaceId();
+        await this.apiJson(
+            `/knowledge-spaces/${encodeURIComponent(spaceId)}/documents/${encodeURIComponent(documentId)}/rebuild`,
+            { method: 'POST' },
+        );
+        await this.refreshDocuments();
+        this.setManagementStatus('重建任务已提交', 'success');
+    }
+
+    async refreshIndexJobs() {
+        const data = await this.apiJson('/index-jobs');
+        this.indexJobs = Array.isArray(data.data?.jobs) ? data.data.jobs : [];
+        this.renderIndexJobs();
+        return this.indexJobs;
+    }
+
+    renderIndexJobs() {
+        if (!this.indexJobList) return;
+        this.indexJobList.innerHTML = '';
+        if (this.indexJobs.length === 0) {
+            this.indexJobList.textContent = '暂无索引任务';
+            return;
+        }
+        this.indexJobs.forEach(job => {
+            const row = document.createElement('div');
+            row.className = 'ops-row';
+            const title = document.createElement('div');
+            title.className = 'ops-row-main';
+            title.textContent = `${job.job_id} · ${job.status}`;
+            const meta = document.createElement('div');
+            meta.className = 'ops-row-meta';
+            meta.textContent = job.document_id || job.source_path || '';
+            const actions = document.createElement('div');
+            actions.className = 'ops-row-actions';
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.textContent = '重试';
+            retry.addEventListener('click', () => this.retryIndexJob(job.job_id));
+            actions.appendChild(retry);
+            row.appendChild(title);
+            row.appendChild(meta);
+            row.appendChild(actions);
+            this.indexJobList.appendChild(row);
+        });
+    }
+
+    async retryIndexJob(jobId) {
+        await this.apiJson(`/index-jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' });
+        await this.refreshIndexJobs();
+        this.setManagementStatus('索引任务已重试', 'success');
+    }
+
+    async refreshRetrievalAudits() {
+        const spaceId = this.getSelectedSpaceId();
+        const data = await this.apiJson(`/chat/audits?space_id=${encodeURIComponent(spaceId)}`);
+        this.retrievalAudits = Array.isArray(data.data?.audits) ? data.data.audits : [];
+        this.renderRetrievalAudits();
+        return this.retrievalAudits;
+    }
+
+    renderRetrievalAudits() {
+        if (!this.auditList) return;
+        this.auditList.innerHTML = '';
+        if (this.retrievalAudits.length === 0) {
+            this.auditList.textContent = '暂无审计记录';
+            return;
+        }
+        this.retrievalAudits.forEach(audit => {
+            const row = document.createElement('div');
+            row.className = 'ops-row';
+            const title = document.createElement('div');
+            title.className = 'ops-row-main';
+            title.textContent = audit.question || audit.traceId || audit.id || 'audit';
+            const meta = document.createElement('div');
+            meta.className = 'ops-row-meta';
+            meta.textContent = `${(audit.sources || []).length} sources · ${audit.createdAt || ''}`;
+            row.appendChild(title);
+            row.appendChild(meta);
+            this.auditList.appendChild(row);
+        });
+    }
+
+    spaceIdOf(space) {
+        return space?.space_id || space?.spaceId || space?.id || 'default';
     }
 
     generateSessionId() {
@@ -114,7 +367,11 @@ class RAGApp {
     async sendQuick(message) {
         const res = await fetch(`${this.apiBaseUrl}/chat`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ Id: this.sessionId, Question: message }),
+            body: JSON.stringify({
+                Id: this.sessionId,
+                Question: message,
+                spaceId: this.getSelectedSpaceId(),
+            }),
         });
         const data = await res.json();
         if (data.code === 200 && data.data?.success) {
@@ -127,7 +384,11 @@ class RAGApp {
     async sendStream(message) {
         const res = await fetch(`${this.apiBaseUrl}/chat_stream`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ Id: this.sessionId, Question: message }),
+            body: JSON.stringify({
+                Id: this.sessionId,
+                Question: message,
+                spaceId: this.getSelectedSpaceId(),
+            }),
         });
         const el = this.addMessage('assistant', '', true);
         const contentEl = el.querySelector('.message-content');
@@ -186,10 +447,14 @@ class RAGApp {
         const formData = new FormData();
         formData.append('file', file);
         try {
-            const res = await fetch(`${this.apiBaseUrl}/upload`, { method: 'POST', body: formData });
+            const res = await fetch(
+                `${this.apiBaseUrl}/upload?space_id=${encodeURIComponent(this.getSelectedSpaceId())}`,
+                { method: 'POST', body: formData },
+            );
             const data = await res.json();
             if (data.code === 200) {
                 this.addMessage('assistant', `✅ 文件 "${file.name}" 上传成功，已建立向量索引。`);
+                await Promise.all([this.refreshDocuments(), this.refreshIndexJobs()]);
             } else {
                 this.addMessage('assistant', `❌ 上传失败: ${data.detail || data.message}`);
             }
@@ -359,4 +624,9 @@ class RAGApp {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => new RAGApp());
+document.addEventListener('DOMContentLoaded', () => {
+    const app = new RAGApp();
+    app.refreshKnowledgeSpaces().catch(() => app.renderKnowledgeSpaces());
+    app.refreshIndexJobs().catch(() => {});
+    app.refreshRetrievalAudits().catch(() => {});
+});
