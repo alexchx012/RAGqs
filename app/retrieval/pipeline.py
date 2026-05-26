@@ -274,6 +274,7 @@ class RetrievalPipeline:
             sources=sources,
             debug={
                 "top_k": top_k,
+                "profile": _profile_name(retriever_results),
                 "retriever_count": len(retriever_results),
                 "retrievers": [result.debug for result in retriever_results],
                 "deduplicated": deduplicated,
@@ -305,6 +306,14 @@ def _deduplicate_documents(documents) -> tuple[list[Document], int]:
         seen.add(key)
         unique.append(document)
     return unique, deduplicated
+
+
+def _profile_name(results: list[RetrievalResult]) -> str:
+    for result in results:
+        profile = result.debug.get("profile")
+        if profile:
+            return str(profile)
+    return "default"
 
 
 def _source_from_document(index: int, document: Document) -> RetrievalSource:

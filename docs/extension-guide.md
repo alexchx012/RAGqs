@@ -51,9 +51,9 @@ Add a profile by registering a `PromptProfile` with a unique name, description, 
 
 ## Retrieval Enhancers
 
-The default retriever runs vector search through `RetrievalPipeline`. Keep `QUERY_REWRITER_PROVIDER=none`, `RERANKER_PROVIDER=none`, and `CONTEXT_COMPRESSOR_PROVIDER=none` for low-latency local development. Set these values to `llm` when the configured chat model should rewrite user questions before retrieval, rerank retrieved chunks before truncation, or compress each retrieved chunk before answer generation.
+The default retriever runs vector search through `RetrievalPipeline`. Keep `RETRIEVAL_PROFILE=default`, `QUERY_REWRITER_PROVIDER=none`, `RERANKER_PROVIDER=none`, and `CONTEXT_COMPRESSOR_PROVIDER=none` for low-latency local development. Set `RETRIEVAL_PROFILE=high_recall` when a business needs wider recall: it increases per-branch top-k and adds a relaxed metadata-filter fallback while preserving space and tenant filter keys.
 
-Use `CONTEXT_COMPRESSOR_MAX_CHARACTERS` to cap each compressed chunk, for example `CONTEXT_COMPRESSOR_MAX_CHARACTERS=1200`. Treat these switches as business-profile choices: enable them for ambiguous natural-language questions, noisy vector matches, or long chunks, and keep evaluation reports before making them default for a new agent.
+Use `RETRIEVAL_HIGH_RECALL_TOP_K_MULTIPLIER` to tune widened recall and `RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS` to define filters that must never be relaxed, for example `space_id,tenant_id`. Set enhancer values to `llm` when the configured chat model should rewrite user questions before retrieval, rerank retrieved chunks before truncation, or compress each retrieved chunk before answer generation. Use `CONTEXT_COMPRESSOR_MAX_CHARACTERS` to cap each compressed chunk, for example `CONTEXT_COMPRESSOR_MAX_CHARACTERS=1200`. Treat these switches as business-profile choices and keep evaluation reports before making them default for a new agent.
 
 ## Second-Business Template
 

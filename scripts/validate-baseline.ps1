@@ -50,6 +50,7 @@ try {
                 tests\test_evaluation_foundation.py `
                 tests\test_retrieval_pipeline.py `
                 tests\test_retrieval_enhancers.py `
+                tests\test_retrieval_profiles.py `
                 tests\test_chat_retrieval_trace.py `
                 tests\test_rag_state_graph.py `
                 tests\test_rag_agent_graph_runtime.py `
