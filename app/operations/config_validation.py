@@ -62,6 +62,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
     chunking_config = getattr(settings, "chunking", settings)
     cors_config = getattr(settings, "cors", settings)
     dashscope_config = getattr(settings, "dashscope", settings)
+    deployment_config = getattr(settings, "deployment", settings)
     milvus_config = getattr(settings, "milvus", settings)
     openai_config = getattr(settings, "openai_compatible", settings)
     rag_config = getattr(settings, "rag", settings)
@@ -70,6 +71,23 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
 
     for field_name, message in validate_provider_selection(settings):
         errors.append(ConfigIssue(field=field_name, message=message))
+
+    deployment_environment = _normalize_config_id(
+        _group_value(
+            deployment_config,
+            settings,
+            "environment",
+            "deployment_environment",
+            default="local",
+        )
+    )
+    if deployment_environment not in {"local", "staging", "production"}:
+        errors.append(
+            ConfigIssue(
+                field="DEPLOYMENT_ENVIRONMENT",
+                message=f"unsupported environment: {deployment_environment}",
+            )
+        )
 
     uses_dashscope = (
         selection.chat_provider == "dashscope" or selection.embedding_provider == "dashscope"
@@ -571,6 +589,17 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             )
         )
 
+    if deployment_environment == "production":
+        _validate_production_settings(
+            errors,
+            settings=settings,
+            app_config=app_config,
+            cors_origins=cors_origins,
+            selection=selection,
+            indexing_job_store_provider=indexing_job_store_provider,
+            document_catalog_provider=document_catalog_provider,
+        )
+
     upload_extensions = parse_allowed_extensions(
         _group_value(upload_config, settings, "allowed_extensions", "upload_allowed_extensions")
     )
@@ -590,6 +619,58 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
         )
 
     return ConfigValidationReport(errors=errors)
+
+
+def _validate_production_settings(
+    errors: list[ConfigIssue],
+    *,
+    settings: Settings,
+    app_config: Any,
+    cors_origins: list[str],
+    selection: ProviderSelection,
+    indexing_job_store_provider: str,
+    document_catalog_provider: str,
+) -> None:
+    if _group_value(app_config, settings, "debug", "debug", default=False):
+        errors.append(
+            ConfigIssue(
+                field="DEBUG",
+                message="must be false when DEPLOYMENT_ENVIRONMENT=production",
+            )
+        )
+
+    if any(_is_local_or_wildcard_origin(origin) for origin in cors_origins):
+        errors.append(
+            ConfigIssue(
+                field="CORS_ALLOW_ORIGINS",
+                message="must not include localhost, 127.0.0.1, or '*' in production",
+            )
+        )
+
+    fake_provider_fields = {
+        "CHAT_PROVIDER": selection.chat_provider,
+        "EMBEDDING_PROVIDER": selection.embedding_provider,
+        "VECTOR_STORE_PROVIDER": selection.vector_store_provider,
+        "INGESTION_PROVIDER": selection.ingestion_provider,
+    }
+    for field_name, provider in fake_provider_fields.items():
+        if provider == "fake":
+            errors.append(
+                ConfigIssue(field=field_name, message="fake provider is not allowed in production")
+            )
+
+    memory_provider_fields = {
+        "SESSION_STORE_PROVIDER": selection.session_store_provider,
+        "RETRIEVAL_AUDIT_STORE_PROVIDER": selection.retrieval_audit_store_provider,
+        "INDEXING_JOB_STORE_PROVIDER": indexing_job_store_provider,
+        "DOCUMENT_CATALOG_PROVIDER": document_catalog_provider,
+        "CHECKPOINT_PROVIDER": selection.checkpoint_provider,
+    }
+    for field_name, provider in memory_provider_fields.items():
+        if provider == "memory":
+            errors.append(
+                ConfigIssue(field=field_name, message="memory provider is not allowed in production")
+            )
 
 
 def main(
@@ -621,6 +702,15 @@ def _is_placeholder_secret(value: str) -> bool:
     return any(
         marker in normalized
         for marker in ["your-api-key", "placeholder", "changeme"]
+    )
+
+
+def _is_local_or_wildcard_origin(origin: str) -> bool:
+    normalized = origin.strip().lower()
+    return (
+        normalized == "*"
+        or "://localhost" in normalized
+        or "://127.0.0.1" in normalized
     )
 
 

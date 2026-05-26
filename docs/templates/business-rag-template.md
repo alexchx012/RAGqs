@@ -12,6 +12,7 @@ EMBEDDING_PROVIDER=dashscope
 VECTOR_STORE_PROVIDER=milvus
 SESSION_STORE_PROVIDER=memory
 RETRIEVAL_AUDIT_STORE_PROVIDER=memory
+DEPLOYMENT_ENVIRONMENT=local
 SESSION_STORE_SQLITE_PATH=data/sessions.sqlite3
 SESSION_STORE_POSTGRES_DSN=
 RETRIEVAL_AUDIT_SQLITE_PATH=data/retrieval-audits.sqlite3
@@ -60,6 +61,8 @@ For multi-instance persistence, install the optional Postgres dependency group. 
 For local audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite` and keep `RETRIEVAL_AUDIT_SQLITE_PATH` under `data/`. This records selected sources, retrieval debug data, answer text, session id, space id, and trace id for `/api/chat/audits`.
 
 For multi-instance audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=postgres` plus `RETRIEVAL_AUDIT_POSTGRES_DSN` so every API instance writes retrieval audits to the same database.
+
+Before deployment, set `DEPLOYMENT_ENVIRONMENT=production`. The startup validator then rejects fake providers, process-memory stores, localhost CORS origins, and debug mode.
 
 For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while the in-process worker performs indexing. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
 

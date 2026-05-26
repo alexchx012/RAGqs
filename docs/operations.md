@@ -76,6 +76,16 @@ Startup uses the same Python config validation module as tests:
 
 The validator fails fast for unsafe startup values, including a missing or placeholder `DASHSCOPE_API_KEY`, invalid `RAG_TOP_K`, invalid `CHUNK_MAX_SIZE` / `CHUNK_OVERLAP`, invalid upload security settings, and out-of-range app or Milvus ports. `start.ps1` calls this module during preflight so the PowerShell script and application share one config validation boundary.
 
+## Deployment Environment
+
+`DEPLOYMENT_ENVIRONMENT` selects the validation profile:
+
+```env
+DEPLOYMENT_ENVIRONMENT=local
+```
+
+Supported values are `local`, `staging`, and `production`. Production mode rejects local/demo defaults: `DEBUG=true`, wildcard or localhost CORS origins, `fake` providers, and `memory` stores for sessions, retrieval audits, indexing jobs, document catalog, or checkpoints. Use production mode before staging a deployment so unsafe local settings fail during preflight instead of at runtime.
+
 ## Background Indexing
 
 Uploads use synchronous indexing by default:
