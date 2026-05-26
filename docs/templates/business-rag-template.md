@@ -10,8 +10,8 @@ Create a business-specific `.env` from `.env.example` and set:
 CHAT_PROVIDER=dashscope
 EMBEDDING_PROVIDER=dashscope
 VECTOR_STORE_PROVIDER=milvus
-SESSION_STORE_PROVIDER=memory
-RETRIEVAL_AUDIT_STORE_PROVIDER=memory
+SESSION_STORE_PROVIDER=sqlite
+RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite
 DEPLOYMENT_ENVIRONMENT=local
 SESSION_STORE_SQLITE_PATH=data/sessions.sqlite3
 SESSION_STORE_POSTGRES_DSN=
@@ -21,13 +21,13 @@ INGESTION_PROVIDER=vector_index
 INDEXING_EXECUTION_MODE=sync
 INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
 INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
-INDEXING_JOB_STORE_PROVIDER=memory
+INDEXING_JOB_STORE_PROVIDER=sqlite
 INDEXING_JOB_STORE_SQLITE_PATH=data/indexing-jobs.sqlite3
 INDEXING_JOB_STORE_POSTGRES_DSN=
-DOCUMENT_CATALOG_PROVIDER=memory
+DOCUMENT_CATALOG_PROVIDER=sqlite
 DOCUMENT_CATALOG_SQLITE_PATH=data/document-catalog.sqlite3
 DOCUMENT_CATALOG_POSTGRES_DSN=
-CHECKPOINT_PROVIDER=memory
+CHECKPOINT_PROVIDER=sqlite
 CHECKPOINT_SQLITE_PATH=data/checkpoints.sqlite3
 CHECKPOINT_POSTGRES_DSN=
 AGENT_RUNTIME=explicit_graph
@@ -58,7 +58,7 @@ For OpenAI-compatible endpoints, set `CHAT_PROVIDER=openai_compatible` or `EMBED
 
 For multi-instance persistence, install the optional Postgres dependency group. Use `SESSION_STORE_PROVIDER=postgres` plus `SESSION_STORE_POSTGRES_DSN` for chat history, `INDEXING_JOB_STORE_PROVIDER=postgres` plus `INDEXING_JOB_STORE_POSTGRES_DSN` for indexing job status, `DOCUMENT_CATALOG_PROVIDER=postgres` plus `DOCUMENT_CATALOG_POSTGRES_DSN` for knowledge-space document lifecycle metadata, and `CHECKPOINT_PROVIDER=postgres` plus `CHECKPOINT_POSTGRES_DSN` for LangGraph checkpoint state.
 
-For local audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite` and keep `RETRIEVAL_AUDIT_SQLITE_PATH` under `data/`. This records selected sources, retrieval debug data, answer text, session id, space id, and trace id for `/api/chat/audits`.
+Local development uses SQLite stores by default. Keep the `*_SQLITE_PATH` values under `data/` so chat history, selected sources, retrieval debug data, indexing jobs, document metadata, and checkpoints survive FastAPI restarts.
 
 For multi-instance audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=postgres` plus `RETRIEVAL_AUDIT_POSTGRES_DSN` so every API instance writes retrieval audits to the same database.
 

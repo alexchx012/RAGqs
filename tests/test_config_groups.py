@@ -17,6 +17,26 @@ from app.operations.config_validation import validate_settings
 from app.providers.selection import ProviderSelection
 
 
+def test_development_defaults_use_sqlite_for_runtime_state():
+    settings = Settings(_env_file=None, dashscope_api_key="sk-valid")
+    selection = ProviderSelection.from_settings(settings)
+
+    assert settings.session_store_provider == "sqlite"
+    assert settings.retrieval_audit_store_provider == "sqlite"
+    assert settings.indexing_job_store_provider == "sqlite"
+    assert settings.document_catalog_provider == "sqlite"
+    assert settings.checkpoint_provider == "sqlite"
+    assert settings.providers.session_store == "sqlite"
+    assert settings.providers.retrieval_audit_store == "sqlite"
+    assert settings.providers.checkpoint == "sqlite"
+    assert settings.storage.indexing_job_store_provider == "sqlite"
+    assert settings.storage.document_catalog_provider == "sqlite"
+    assert selection.session_store_provider == "sqlite"
+    assert selection.retrieval_audit_store_provider == "sqlite"
+    assert selection.checkpoint_provider == "sqlite"
+    assert validate_settings(settings).is_valid is True
+
+
 def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
     settings = Settings(
         _env_file=None,
