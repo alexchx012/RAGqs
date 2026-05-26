@@ -2,9 +2,9 @@
 
 ## Configuration
 
-Risk: settings now expose typed groups over the existing environment variables, production deployment guardrails reject unsafe local defaults, a real-Milvus integration smoke command exists, and Milvus host ports are configurable for Windows reserved-port cases, but some service modules still read flat global config fields directly.
+Risk: settings now expose typed groups over the existing environment variables, production deployment guardrails reject unsafe local defaults, real Milvus and Postgres smoke commands exist, and Milvus host ports are configurable for Windows reserved-port cases, but some service modules still read flat global config fields directly.
 
-Mitigation: keep grouped settings views for app, CORS, uploads, deployment environment, providers, storage, agent, model providers, Milvus, RAG, and chunking. Continue migrating runtime modules to these groups while keeping `.env.example` synchronized with `app/config.py`, and run `scripts/run-integration-smoke.ps1 -Json` before local or staged deployments that depend on Milvus.
+Mitigation: keep grouped settings views for app, CORS, uploads, deployment environment, providers, storage, agent, model providers, Milvus, RAG, and chunking. Continue migrating runtime modules to these groups while keeping `.env.example` synchronized with `app/config.py`, run `scripts/run-integration-smoke.ps1 -Json` before local or staged deployments that depend on Milvus, and run `scripts/run-postgres-smoke.ps1 -RequireConfigured -Json` before deployments that depend on Postgres-backed runtime state.
 
 ## Retrieval Quality
 
@@ -14,9 +14,9 @@ Mitigation: keep query rewrite, metadata filters, rerank, contextual compression
 
 ## Session Persistence
 
-Risk: backend sessions, indexing jobs, document catalog metadata, and LangGraph checkpoints can use memory, SQLite, or Postgres, but real Postgres integration still depends on deployed database credentials and schema setup at runtime.
+Risk: backend sessions, indexing jobs, document catalog metadata, retrieval audits, and LangGraph checkpoints can use memory, SQLite, or Postgres, and a Postgres smoke gate can verify configured DSN connectivity, but schema setup and full runtime write paths still depend on deployed database credentials at runtime.
 
-Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, document-catalog boundary, checkpoint boundary, SQLite/Postgres providers, and backend-first frontend history covered by tests; add environment-backed integration checks before production multi-instance use.
+Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, document-catalog boundary, retrieval-audit boundary, checkpoint boundary, SQLite/Postgres providers, and backend-first frontend history covered by tests; run the Postgres smoke gate before production multi-instance use and add deeper schema/write-path integration checks when deployment credentials are available.
 
 ## Indexing Reliability
 
@@ -26,7 +26,7 @@ Mitigation: keep ingestion jobs, idempotent document ids, delete/reindex operati
 
 ## Observability
 
-Risk: request trace ids, structured access logs, retrieval audit storage, health gates, and evaluation artifacts exist, but token usage, latency buckets, central trace collection, real Postgres audit integration checks, and LangGraph node transition analysis are still limited.
+Risk: request trace ids, structured access logs, retrieval audit storage, health gates, Milvus/Postgres smoke gates, and evaluation artifacts exist, but token usage, latency buckets, central trace collection, retrieval audit write-path validation against a real Postgres instance, and LangGraph node transition analysis are still limited.
 
 Mitigation: keep selected retrieval chunks, sources, answer text, session id, space id, and trace id in memory, SQLite, or Postgres retrieval audit stores; extend per-step timing, optional LangSmith tracing, CI collection, real database integration checks, and LangGraph event logs beyond the current request and health boundaries.
 

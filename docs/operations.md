@@ -164,6 +164,28 @@ MILVUS_HEALTH_PORT=19091
 `vector-database.yml` maps `${MILVUS_PORT}` to container port `19530`, so the application and Docker
 Compose must use the same `.env` value.
 
+## Postgres Smoke Checks
+
+Use `scripts/run-postgres-smoke.ps1` when one or more runtime stores are configured with
+`postgres` and you want to verify database reachability without touching data:
+
+```powershell
+.\scripts\run-postgres-smoke.ps1 -Json
+```
+
+The command checks the selected Postgres-backed stores for sessions, retrieval audits, indexing jobs,
+document catalog metadata, and LangGraph checkpoints. It opens each configured DSN, executes a
+read-only `SELECT 1`, redacts passwords in output, and does not create, delete, start, stop, or
+restart databases. When no Postgres-backed store is selected, it reports a skipped check and exits
+successfully so local SQLite development and CI baselines remain lightweight.
+
+Use `-RequireConfigured` in staging or production gates that must prove at least one Postgres-backed
+store is selected:
+
+```powershell
+.\scripts\run-postgres-smoke.ps1 -RequireConfigured -Json
+```
+
 ## Security Boundaries
 
 CORS is configured from environment variables instead of hard-coded wildcard settings:
