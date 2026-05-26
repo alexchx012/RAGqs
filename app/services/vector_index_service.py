@@ -270,31 +270,68 @@ class VectorIndexService:
 
 
 def _build_default_job_store(settings) -> IndexingJobStore:
-    provider = getattr(settings, "indexing_job_store_provider", "sqlite")
+    provider = _settings_group_value(
+        settings,
+        "storage",
+        "indexing_job_store_provider",
+        "sqlite",
+    )
     normalized_provider = str(provider).strip().lower().replace("-", "_")
     if normalized_provider == "sqlite":
         return SQLiteIndexingJobStore(
-            getattr(settings, "indexing_job_store_sqlite_path", "data/indexing-jobs.sqlite3")
+            _settings_group_value(
+                settings,
+                "storage",
+                "indexing_job_store_sqlite_path",
+                "data/indexing-jobs.sqlite3",
+            )
         )
     if normalized_provider == "postgres":
         return PostgresIndexingJobStore(
-            getattr(settings, "indexing_job_store_postgres_dsn", "")
+            _settings_group_value(
+                settings,
+                "storage",
+                "indexing_job_store_postgres_dsn",
+                "",
+            )
         )
     return InMemoryIndexingJobStore()
 
 
 def _build_default_document_catalog(settings):
-    provider = getattr(settings, "document_catalog_provider", "sqlite")
+    provider = _settings_group_value(
+        settings,
+        "storage",
+        "document_catalog_provider",
+        "sqlite",
+    )
     normalized_provider = str(provider).strip().lower().replace("-", "_")
     if normalized_provider == "sqlite":
         return SQLiteKnowledgeCatalog(
-            getattr(settings, "document_catalog_sqlite_path", "data/document-catalog.sqlite3")
+            _settings_group_value(
+                settings,
+                "storage",
+                "document_catalog_sqlite_path",
+                "data/document-catalog.sqlite3",
+            )
         )
     if normalized_provider == "postgres":
         return PostgresKnowledgeCatalog(
-            getattr(settings, "document_catalog_postgres_dsn", "")
+            _settings_group_value(
+                settings,
+                "storage",
+                "document_catalog_postgres_dsn",
+                "",
+            )
         )
     return InMemoryKnowledgeCatalog()
+
+
+def _settings_group_value(settings, group_name: str, field_name: str, default):
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, field_name):
+        return getattr(group, field_name)
+    return getattr(settings, field_name, default)
 
 
 vector_index_service = VectorIndexService()
