@@ -192,6 +192,8 @@ def test_evaluation_script_enforces_core_metric_thresholds():
         "base-url",
         "timeout-seconds",
         "faithfulness-judge",
+        "PreflightOnly",
+        "preflight-only",
         "min-retrieval-hit-rate",
         "min-answer-trait-coverage",
         "min-faithfulness",

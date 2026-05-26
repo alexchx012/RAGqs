@@ -16,11 +16,18 @@ from app.evaluation.models import (
     FaithfulnessVerdict,
     GoldenExample,
 )
+from app.evaluation.readiness import (
+    EvaluationReadinessIssue,
+    EvaluationReadinessReport,
+    validate_real_evaluation_readiness,
+)
 from app.evaluation.service import TracedRagService, run_service_evaluation
 
 __all__ = [
     "AgentRunResult",
     "EvaluationMetrics",
+    "EvaluationReadinessIssue",
+    "EvaluationReadinessReport",
     "EvaluationReport",
     "FaithfulnessJudge",
     "FaithfulnessVerdict",
@@ -34,4 +41,5 @@ __all__ = [
     "run_fake_evaluation",
     "run_http_evaluation",
     "run_service_evaluation",
+    "validate_real_evaluation_readiness",
 ]

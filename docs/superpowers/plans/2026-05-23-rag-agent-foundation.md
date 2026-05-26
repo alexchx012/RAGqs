@@ -85,10 +85,10 @@ Current progress: Phase 5 now has server-side session recording, searchable sess
 
 - [x] Add a golden dataset format for question, expected answer traits, expected sources, and refusal expectation.
 - [x] Add metrics for retrieval hit rate, answer faithfulness, citation accuracy, latency, and no-answer refusal quality. Current progress: deterministic metrics cover retrieval hit rate, expected answer trait coverage, answer faithfulness verdict score, citation accuracy, average latency, and no-answer refusal; `ModelFaithfulnessJudge` can score traced service or HTTP runs through the configured chat provider container.
-- [x] Add a local evaluation command that can run with fake providers and optional real providers. Current progress: `scripts/run-evaluation.ps1` supports `fake`, in-process `service`, and external FastAPI `http` modes against `data/evaluation/golden.jsonl`, with `none`, `static`, and `model` faithfulness judge modes, per-example `metadata.spaceId` routing, and JSON reports through `-ReportPath`.
+- [x] Add a local evaluation command that can run with fake providers and optional real providers. Current progress: `scripts/run-evaluation.ps1` supports `fake`, in-process `service`, and external FastAPI `http` modes against `data/evaluation/golden.jsonl`, with `none`, `static`, and `model` faithfulness judge modes, per-example `metadata.spaceId` routing, real-provider readiness checks through `-PreflightOnly`, and JSON reports through `-ReportPath`.
 - [x] Document how to enable LangSmith tracing and evaluation when credentials are available.
 
-Current progress: `app/evaluation/` now provides typed golden examples, run results, faithfulness verdicts, aggregate reports, JSONL loading, deterministic metric calculation, a `FaithfulnessJudge` boundary with static and model-backed implementations, a fake-provider runner, an async traced-service runner, provider-agnostic model judge selection, and a space-aware HTTP `/chat` evaluation client. `scripts/run-evaluation.ps1` is included in baseline validation so the evaluation harness itself cannot silently regress, and it writes CI-friendly JSON reports. `.env.example` and `docs/evaluation.md` document LangSmith tracing variables for real service evaluation.
+Current progress: `app/evaluation/` now provides typed golden examples, run results, faithfulness verdicts, aggregate reports, JSONL loading, deterministic metric calculation, a `FaithfulnessJudge` boundary with static and model-backed implementations, a fake-provider runner, an async traced-service runner, provider-agnostic model judge selection, a space-aware HTTP `/chat` evaluation client, and a real-provider readiness report that validates service/http mode, dataset strength, provider selection, model-judge credentials, HTTP targets, and LangSmith tracing settings before running expensive evaluations. `scripts/run-evaluation.ps1` is included in baseline validation so the evaluation harness itself cannot silently regress, and it writes CI-friendly JSON reports. `.env.example` and `docs/evaluation.md` document LangSmith tracing variables for real service evaluation.
 
 ## Phase 7: Operations
 
@@ -139,3 +139,4 @@ Current progress: Phase 8 has a tested extension layer for tool registration, op
 - [x] frontend state tests
 - [ ] startup preflight with real Milvus
 - [x] initial RAG evaluation suite with fake-provider command
+- [x] real-provider evaluation readiness preflight
