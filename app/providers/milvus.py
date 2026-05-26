@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Callable, cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from langchain_core.documents import Document
 from langchain_milvus import Milvus
@@ -65,7 +66,10 @@ class MilvusVectorStoreProvider:
             raise
 
     def delete_by_source(self, source: str) -> int:
-        return self._delete_by_metadata_field("_source", source, f"文件旧数据: {source}")
+        return sum(
+            self._delete_by_metadata_field(field_name, source, f"{field_name}旧数据: {source}")
+            for field_name in ("_source", "source_path", "source")
+        )
 
     def delete_by_document_id(self, document_id: str) -> int:
         return self._delete_by_metadata_field(
