@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.tools import tool
 
+from app.observability.retrieval_audit import SQLiteRetrievalAuditStore
 from app.operations.config_validation import validate_settings
 from app.providers import (
     CheckpointProvider,
@@ -126,6 +127,21 @@ def test_provider_factory_can_select_sqlite_session_store(tmp_path):
     container.session_store_provider.close()
 
 
+def test_provider_factory_can_select_sqlite_retrieval_audit_store(tmp_path):
+    settings = _settings(
+        chat_provider="fake",
+        embedding_provider="fake",
+        vector_store_provider="fake",
+        ingestion_provider="fake",
+        retrieval_audit_store_provider="sqlite",
+        retrieval_audit_sqlite_path=str(tmp_path / "retrieval-audits.db"),
+    )
+
+    container = create_default_provider_container(settings=settings, milvus_manager=object())
+
+    assert isinstance(container.retrieval_audit_store_provider, SQLiteRetrievalAuditStore)
+
+
 def test_provider_factory_can_select_postgres_session_store_without_connecting():
     settings = _settings(
         chat_provider="fake",
@@ -196,6 +212,22 @@ def test_config_validation_requires_sqlite_session_store_path():
     assert report.is_valid is False
     issues = {(issue.field, issue.message) for issue in report.errors}
     assert ("SESSION_STORE_SQLITE_PATH", "must be set when SESSION_STORE_PROVIDER=sqlite") in issues
+
+
+def test_config_validation_requires_sqlite_retrieval_audit_path():
+    report = validate_settings(
+        _settings(
+            retrieval_audit_store_provider="sqlite",
+            retrieval_audit_sqlite_path=" ",
+        )
+    )
+
+    assert report.is_valid is False
+    issues = {(issue.field, issue.message) for issue in report.errors}
+    assert (
+        "RETRIEVAL_AUDIT_SQLITE_PATH",
+        "must be set when RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite",
+    ) in issues
 
 
 def test_config_validation_requires_postgres_session_store_dsn():
@@ -365,6 +397,7 @@ def test_phase8_docs_cover_extension_and_second_business_templates():
         "TOOL_PLANNING_ENABLED",
         "PROMPT_PROFILE",
         "CHAT_PROVIDER",
+        "RETRIEVAL_AUDIT_STORE_PROVIDER",
         "CHECKPOINT_PROVIDER",
         "RETRIEVAL_PROFILE",
         "QUERY_REWRITER_PROVIDER",
@@ -388,6 +421,8 @@ def _settings(**overrides):
         "session_store_provider": "memory",
         "session_store_sqlite_path": "data/sessions.sqlite3",
         "session_store_postgres_dsn": "",
+        "retrieval_audit_store_provider": "memory",
+        "retrieval_audit_sqlite_path": "data/retrieval-audits.sqlite3",
         "indexing_job_store_provider": "memory",
         "indexing_job_store_sqlite_path": "data/indexing-jobs.sqlite3",
         "indexing_job_store_postgres_dsn": "",

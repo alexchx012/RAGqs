@@ -34,6 +34,7 @@ class ProviderConfig(FrozenConfigModel):
     embedding: str
     vector_store: str
     session_store: str
+    retrieval_audit_store: str
     ingestion: str
     checkpoint: str
 
@@ -41,6 +42,7 @@ class ProviderConfig(FrozenConfigModel):
 class StorageConfig(FrozenConfigModel):
     session_store_sqlite_path: str
     session_store_postgres_dsn: str
+    retrieval_audit_sqlite_path: str
     indexing_execution_mode: str
     indexing_worker_poll_interval_seconds: float
     indexing_worker_shutdown_timeout_seconds: float
@@ -125,8 +127,10 @@ class Settings(BaseSettings):
     embedding_provider: str = "dashscope"
     vector_store_provider: str = "milvus"
     session_store_provider: str = "memory"
+    retrieval_audit_store_provider: str = "memory"
     session_store_sqlite_path: str = "data/sessions.sqlite3"
     session_store_postgres_dsn: str = ""
+    retrieval_audit_sqlite_path: str = "data/retrieval-audits.sqlite3"
     ingestion_provider: str = "vector_index"
     indexing_execution_mode: str = "sync"
     indexing_worker_poll_interval_seconds: float = 0.25
@@ -209,6 +213,7 @@ class Settings(BaseSettings):
             embedding=self.embedding_provider,
             vector_store=self.vector_store_provider,
             session_store=self.session_store_provider,
+            retrieval_audit_store=self.retrieval_audit_store_provider,
             ingestion=self.ingestion_provider,
             checkpoint=self.checkpoint_provider,
         )
@@ -218,6 +223,7 @@ class Settings(BaseSettings):
         return StorageConfig(
             session_store_sqlite_path=self.session_store_sqlite_path,
             session_store_postgres_dsn=self.session_store_postgres_dsn,
+            retrieval_audit_sqlite_path=self.retrieval_audit_sqlite_path,
             indexing_execution_mode=self.indexing_execution_mode,
             indexing_worker_poll_interval_seconds=self.indexing_worker_poll_interval_seconds,
             indexing_worker_shutdown_timeout_seconds=self.indexing_worker_shutdown_timeout_seconds,

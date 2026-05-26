@@ -28,7 +28,7 @@
 - [x] Add `docs/architecture/baseline-audit.md` describing current modules, runtime dependencies, and Known Limitations.
 - [x] Add `docs/architecture/risk-register.md` with Configuration, Retrieval Quality, Session Persistence, Indexing Reliability, Observability, Security, and Extensibility risks.
 - [x] Add `tests/test_phase0_baseline.py` so these baseline artifacts remain present.
-- [ ] Run `scripts/validate-baseline.ps1 -SkipPreflight` after each foundation change. Current validation includes Phase 0 docs, provider contracts, provider container wiring, provider-backed knowledge retrieval, ingestion, retrieval trace, explicit graph skeleton/runtime tests, service-side session store/listing tests, frontend backend-first history state, and startup script checks.
+- [ ] Run `scripts/validate-baseline.ps1 -SkipPreflight` after each foundation change. Current validation includes Phase 0 docs, provider contracts, provider container wiring, provider-backed knowledge retrieval, ingestion, retrieval trace and audit tests, explicit graph skeleton/runtime tests, service-side session store/listing tests, frontend backend-first history state, and startup script checks.
 
 ## Phase 1: Provider Boundaries
 
@@ -92,7 +92,8 @@ Current progress: `app/evaluation/` now provides typed golden examples, run resu
 
 ## Phase 7: Operations
 
-- [x] Add structured JSON logs with trace id propagation. Current progress: request middleware propagates `X-Trace-Id`, stores it in request context, returns it in response headers, and emits structured `http_request` records with status and latency.
+- [x] Add structured JSON logs with trace id propagation. Current progress: request middleware propagates `X-Trace-Id`, stores it in request context, returns it in response headers, emits structured `http_request` records with status and latency, and RAG answers now carry the same trace id into retrieval audit records.
+- [x] Add selected retrieval audit storage. Current progress: `RetrievalAuditStoreProvider` covers memory and SQLite audit stores; `RagAgentService.query_with_trace()` and `query_stream_with_trace()` persist question, answer, sources, retrieval debug data, session id, knowledge-space id, trace id, and timestamp; `/api/chat/audits` exposes filtered inspection by session, space, trace, and limit.
 - [x] Split health checks into app, model provider, embedding provider, vector store, and session store. Current progress: `/health` uses a composable `HealthChecker` and reports `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, and `sessionStore` dependency states.
 - [x] Add Docker profiles for local development and optional persistence services. Current progress: `vector-database.yml` keeps core Milvus services in the default stack and gates Attu behind the optional `ui` profile, exposed through `start.ps1 -DockerProfile ui`.
 - [x] Add a configurable CORS security boundary. Current progress: FastAPI CORS settings come from `CORS_ALLOW_ORIGINS` and `CORS_ALLOW_CREDENTIALS`; startup validation rejects wildcard origins when credentialed browser requests are enabled.
@@ -100,7 +101,7 @@ Current progress: `app/evaluation/` now provides typed golden examples, run resu
 - [x] Harden uploads against unsafe files and prompt-injection content. Current progress: `app.security.uploads` normalizes uploaded filenames into the upload directory, enforces configured extensions and byte limits, rejects invalid UTF-8 text documents, and blocks high-risk prompt-injection patterns before files are written or indexed.
 - [x] Add deployment documentation and CI artifact reporting. Current progress: `docs/deployment.md` documents the deployment runbook, `scripts/check-api-health.ps1` checks a running API, `scripts/run-evaluation.ps1 -ReportPath` writes JSON reports for CI collection, and `.github/workflows/ci.yml` runs hosted baseline validation with an uploaded `evaluation-report` artifact.
 
-Current progress: `app/observability/`, `app/operations/`, and `app/security/` provide the first operations boundaries for request tracing, structured access logs, dependency health, configuration validation, running-API health preflight, CORS configuration, upload validation, and prompt-injection screening. `docs/operations.md` and `docs/deployment.md` document the runtime contract, including Docker profiles, health gates, security boundaries, hosted CI, and CI evaluation artifacts. Production secret management and durable operations state remain open.
+Current progress: `app/observability/`, `app/operations/`, and `app/security/` provide the first operations boundaries for request tracing, structured access logs, retrieval audit persistence, dependency health, configuration validation, running-API health preflight, CORS configuration, upload validation, and prompt-injection screening. `docs/operations.md` and `docs/deployment.md` document the runtime contract, including retrieval audits, Docker profiles, health gates, security boundaries, hosted CI, and CI evaluation artifacts. Production secret management, central log/trace collection, and multi-instance audit storage remain open.
 
 ## Phase 8: Foundation Templates
 
@@ -126,6 +127,7 @@ Current progress: Phase 8 has a tested extension layer for tool registration, op
 - [x] indexing job store, directory batch summary, status API, and retry API tests
 - [x] knowledge-space document lifecycle API tests
 - [x] retrieval pipeline and chat citation/trace API tests
+- [x] retrieval audit store and API tests
 - [x] retrieval profile tests
 - [x] explicit LangGraph StateGraph skeleton and service runtime tests
 - [x] service-side session store tests

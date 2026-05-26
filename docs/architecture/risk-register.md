@@ -26,9 +26,9 @@ Mitigation: keep ingestion jobs, idempotent document ids, delete/reindex operati
 
 ## Observability
 
-Risk: request trace ids, structured access logs, health gates, and evaluation artifacts exist, but retrieval inputs, selected chunks, token usage, latency buckets, and LangGraph node transitions are still limited.
+Risk: request trace ids, structured access logs, retrieval audit storage, health gates, and evaluation artifacts exist, but token usage, latency buckets, central trace collection, and LangGraph node transition analysis are still limited.
 
-Mitigation: extend per-step timing, retriever traces, optional LangSmith tracing, CI collection, and LangGraph event logs beyond the current request and health boundaries.
+Mitigation: keep selected retrieval chunks, sources, answer text, session id, space id, and trace id in the retrieval audit store; extend per-step timing, optional LangSmith tracing, CI collection, and LangGraph event logs beyond the current request and health boundaries.
 
 ## Security
 
