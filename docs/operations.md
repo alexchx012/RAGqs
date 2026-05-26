@@ -151,6 +151,19 @@ validates startup configuration, requires `VECTOR_STORE_PROVIDER=milvus`, opens 
 client, lists collections, and exits non-zero on failures. It does not create, delete, start, stop,
 or restart Milvus.
 
+On Windows, Docker cannot bind a port that appears in `netsh interface ipv4 show excludedportrange
+protocol=tcp`. If `19530` is reserved, set an alternate host port in `.env` and recreate the Milvus
+standalone container so Docker can apply the mapping:
+
+```env
+MILVUS_HOST=localhost
+MILVUS_PORT=19630
+MILVUS_HEALTH_PORT=19091
+```
+
+`vector-database.yml` maps `${MILVUS_PORT}` to container port `19530`, so the application and Docker
+Compose must use the same `.env` value.
+
 ## Security Boundaries
 
 CORS is configured from environment variables instead of hard-coded wildcard settings:

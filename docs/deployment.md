@@ -8,6 +8,8 @@ This runbook captures the current Phase 7 operating contract for local and stage
 - Keep `CORS_ALLOW_ORIGINS` explicit for deployed frontends, for example `https://rag.example.com`.
 - Set `DEPLOYMENT_ENVIRONMENT=production` for production-like validation before release.
 - Ensure Docker is running before starting the Milvus stack.
+- On Windows, if port `19530` is in an excluded TCP range, set an available `MILVUS_PORT`
+  such as `19630` in `.env`; recreate existing Milvus containers after changing host port mappings.
 
 Production mode rejects debug mode, wildcard or localhost CORS origins, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing, document catalog, checkpoint, and retrieval audit state.
 

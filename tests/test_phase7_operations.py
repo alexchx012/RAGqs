@@ -361,12 +361,27 @@ def test_vector_database_compose_exposes_optional_ui_profile():
     assert "- ui" in compose
 
 
+def test_vector_database_compose_allows_alternate_milvus_host_ports():
+    compose = (ROOT / "vector-database.yml").read_text(encoding="utf-8")
+
+    assert "${MILVUS_PORT:-19530}:19530" in compose
+    assert "${MILVUS_HEALTH_PORT:-9091}:9091" in compose
+
+
 def test_start_script_maps_docker_profile_to_compose_profile():
     script = (ROOT / "start.ps1").read_text(encoding="utf-8")
 
     assert "DockerProfile" in script
     assert '[ValidateSet("core", "ui")]' in script
     assert '"--profile", "ui"' in script
+
+
+def test_start_script_checks_windows_excluded_milvus_ports():
+    script = (ROOT / "start.ps1").read_text(encoding="utf-8")
+
+    assert "Assert-MilvusHostPortAvailable" in script
+    assert "netsh interface ipv4 show excludedportrange protocol=tcp" in script
+    assert "Set MILVUS_PORT to an available port" in script
 
 
 def test_main_uses_configured_cors_options():
