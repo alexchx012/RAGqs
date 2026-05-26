@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 from langchain_core.documents import Document
 
+from app.extensions.tools import ToolRegistry
 from app.providers import InMemorySessionStoreProvider, RetrievalResult, RetrievalSource
 from app.providers.checkpoints import SQLiteCheckpointProvider
 from app.services import rag_agent_service as rag_service_module
@@ -478,6 +481,53 @@ def test_rag_agent_service_builds_explicit_graph_with_model_tool_planning():
         "tool_request": {"name": "demo_tool", "args": {}},
     }
     assert state["answer"] == "tool answer"
+
+
+def test_rag_agent_service_prefers_grouped_agent_and_rag_settings():
+    from langchain_core.tools import tool
+
+    @tool("demo_tool")
+    def demo_tool() -> str:
+        """Return a demo tool response."""
+        return "demo"
+
+    @tool("excluded_tool")
+    def excluded_tool() -> str:
+        """Return an excluded tool response."""
+        return "excluded"
+
+    registry = ToolRegistry()
+    registry.register(demo_tool)
+    registry.register(excluded_tool)
+    settings = SimpleNamespace(
+        rag=SimpleNamespace(top_k=7, model="group-model"),
+        agent=SimpleNamespace(
+            runtime="explicit_graph",
+            enabled_tools="demo_tool,excluded_tool",
+            tool_planning_enabled=True,
+            tool_planning_excluded_tools="excluded_tool",
+            prompt_profile="strict",
+        ),
+    )
+
+    service = RagAgentService(
+        settings=settings,
+        streaming=False,
+        chat_model_provider=ToolPlanningChatProvider(),
+        agent_factory=failing_agent_factory,
+        checkpointer=object(),
+        tool_registry=registry,
+    )
+
+    assert service.model_name == "group-model"
+    assert service.prompt_profile == "strict"
+    assert service.retrieval_top_k == 7
+    assert service.agent_runtime == "explicit_graph"
+    assert service.use_explicit_graph is True
+    assert service.tool_planning_enabled is True
+    assert [tool.name for tool in service.tools] == ["demo_tool", "excluded_tool"]
+    assert service.tool_planner is not None
+    assert [tool.name for tool in service.tool_planner.tools] == ["demo_tool"]
 
 
 @pytest.mark.asyncio

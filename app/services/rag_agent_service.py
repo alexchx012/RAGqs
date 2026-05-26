@@ -49,6 +49,7 @@ class RagAgentService:
 
     def __init__(
         self,
+        settings: Any | None = None,
         streaming: bool = True,
         chat_model_provider: ChatModelProvider | None = None,
         agent_factory=create_agent,
@@ -72,21 +73,42 @@ class RagAgentService:
         metrics_collector: Any | None = None,
         metrics_clock=perf_counter,
     ):
-        self.model_name = config.rag_model
+        self.settings = settings or config
+        self.model_name = _settings_value(self.settings, "rag", "model", "rag_model", "qwen-max")
         self.streaming = streaming
-        self.prompt_profile = prompt_profile or config.prompt_profile
+        self.prompt_profile = prompt_profile or _settings_value(
+            self.settings,
+            "agent",
+            "prompt_profile",
+            "prompt_profile",
+            "default",
+        )
         self.system_prompt = system_prompt or self._build_system_prompt(self.prompt_profile)
 
         self.chat_model_provider = chat_model_provider or self._get_chat_model_provider()
         self.agent_factory = agent_factory
         self.model = None
         self.tools = tools if tools is not None else build_enabled_tools(
-            enabled_tool_names if enabled_tool_names is not None else config.enabled_tools,
+            enabled_tool_names
+            if enabled_tool_names is not None
+            else _settings_value(
+                self.settings,
+                "agent",
+                "enabled_tools",
+                "enabled_tools",
+                "retrieve_knowledge,get_current_time",
+            ),
             registry=tool_registry,
         )
         self.tool_executor = tool_executor or LangChainToolExecutor(self.tools)
         self.tool_planning_enabled = (
-            config.tool_planning_enabled
+            _settings_value(
+                self.settings,
+                "agent",
+                "tool_planning_enabled",
+                "tool_planning_enabled",
+                False,
+            )
             if tool_planning_enabled is None
             else tool_planning_enabled
         )
@@ -100,8 +122,23 @@ class RagAgentService:
         self.retriever_provider = retriever_provider
         self.session_store_provider = session_store_provider
         self.retrieval_audit_store_provider = retrieval_audit_store_provider
-        self.retrieval_top_k = retrieval_top_k or config.rag_top_k
-        self.agent_runtime = _normalize_agent_runtime(agent_runtime or config.agent_runtime)
+        self.retrieval_top_k = retrieval_top_k or _settings_value(
+            self.settings,
+            "rag",
+            "top_k",
+            "rag_top_k",
+            3,
+        )
+        self.agent_runtime = _normalize_agent_runtime(
+            agent_runtime
+            or _settings_value(
+                self.settings,
+                "agent",
+                "runtime",
+                "agent_runtime",
+                "explicit_graph",
+            )
+        )
         self.use_explicit_graph = (
             self.agent_runtime == "explicit_graph"
             if use_explicit_graph is None
@@ -126,7 +163,16 @@ class RagAgentService:
         logger.info(f"Agent 工具: {', '.join(tool_names)}")
 
     def _build_system_prompt(self, prompt_profile: str | None = None) -> str:
-        return build_system_prompt(prompt_profile or config.prompt_profile)
+        return build_system_prompt(
+            prompt_profile
+            or _settings_value(
+                self.settings,
+                "agent",
+                "prompt_profile",
+                "prompt_profile",
+                "default",
+            )
+        )
 
     async def query(self, question: str, session_id: str, space_id: str = "default") -> str:
         """非流式问答"""
@@ -485,7 +531,13 @@ class RagAgentService:
             return None
         planner_tools = _filter_tool_planning_tools(
             self.tools,
-            excluded_tool_names=config.tool_planning_excluded_tools,
+            excluded_tool_names=_settings_value(
+                self.settings,
+                "agent",
+                "tool_planning_excluded_tools",
+                "tool_planning_excluded_tools",
+                "retrieve_knowledge",
+            ),
         )
         return LangChainToolPlanner(
             chat_model_provider=self.chat_model_provider,
@@ -647,6 +699,19 @@ def _filter_tool_planning_tools(
         for tool in tools
         if (getattr(tool, "name", None) or getattr(tool, "__name__", "")) not in excluded
     ]
+
+
+def _settings_value(
+    settings: Any,
+    group_name: str,
+    group_field_name: str,
+    flat_field_name: str,
+    default: Any,
+) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, group_field_name):
+        return getattr(group, group_field_name)
+    return getattr(settings, flat_field_name, default)
 
 
 rag_agent_service = RagAgentService(streaming=True)
