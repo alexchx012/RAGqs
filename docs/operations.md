@@ -103,11 +103,13 @@ INDEXING_EXECUTION_MODE=sync
 Set `INDEXING_EXECUTION_MODE=background` when uploads should return a pending indexing job immediately and let the FastAPI process execute it through an in-process worker. The worker starts and stops in the FastAPI lifespan, uses persisted indexing job ids, and drains queued jobs during graceful shutdown.
 
 ```env
+INDEXING_QUEUE_PROVIDER=memory
 INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
 INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
+INDEXING_WORKER_RECOVER_PENDING_JOBS=true
 ```
 
-The development default SQLite job store preserves status lookups across FastAPI restarts. For multi-instance production ingestion, use Postgres plus an external queue or dedicated worker service instead of relying only on the in-process worker.
+`INDEXING_QUEUE_PROVIDER=memory` is the current queue implementation and defines the boundary for future external queue providers. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` re-enqueues persisted pending jobs when the worker starts, so a FastAPI restart does not strand jobs that were created before shutdown. The development default SQLite job store preserves status lookups across FastAPI restarts. For multi-instance production ingestion, use Postgres plus an external queue or dedicated worker service instead of relying only on the in-process worker.
 
 ## Docker Profiles
 

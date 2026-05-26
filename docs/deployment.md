@@ -13,6 +13,8 @@ This runbook captures the current Phase 7 operating contract for local and stage
 
 Production mode rejects debug mode, wildcard or localhost CORS origins, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing, document catalog, checkpoint, and retrieval audit state.
 
+For background indexing, `INDEXING_QUEUE_PROVIDER=memory` is the current local queue boundary and `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` lets the FastAPI-managed worker recover persisted pending jobs on startup. Multi-instance ingestion still needs a dedicated external queue implementation before production use.
+
 ## Start
 
 Start the default API and core Milvus services:

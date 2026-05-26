@@ -198,6 +198,7 @@ def test_config_validation_rejects_invalid_background_indexing_settings():
     report = validate_settings(
         _settings(
             indexing_execution_mode="invalid",
+            indexing_queue_provider="unsupported",
             indexing_worker_poll_interval_seconds=0,
             indexing_worker_shutdown_timeout_seconds=0,
         )
@@ -206,6 +207,7 @@ def test_config_validation_rejects_invalid_background_indexing_settings():
     assert report.is_valid is False
     issues = [(issue.field, issue.message) for issue in report.errors]
     assert ("INDEXING_EXECUTION_MODE", "unsupported mode: invalid") in issues
+    assert ("INDEXING_QUEUE_PROVIDER", "unsupported provider: unsupported") in issues
     assert (
         "INDEXING_WORKER_POLL_INTERVAL_SECONDS",
         "must be greater than 0",
