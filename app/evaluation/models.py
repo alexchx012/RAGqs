@@ -66,5 +66,18 @@ class EvaluationMetrics(BaseModel):
 class EvaluationReport(BaseModel):
     """Full evaluation output with aggregate metrics and failures."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
+    status: str = "completed"
+    quality_conclusion: str = Field(
+        default="not_real_quality_validated",
+        alias="qualityConclusion",
+    )
+    limitations: list[str] = Field(
+        default_factory=lambda: [
+            "fake/local evaluation is a software-interface check only",
+            "real business answer quality has not been validated",
+        ]
+    )
     metrics: EvaluationMetrics
     failures: list[dict[str, Any]] = Field(default_factory=list)

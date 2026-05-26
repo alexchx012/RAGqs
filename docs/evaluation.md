@@ -52,6 +52,11 @@ settings when tracing is enabled. A real dataset should include at least one
 grounded answer example with `expectedAnswerTraits` and `expectedSources`, plus
 one unsupported-question example with `expectsRefusal=true`.
 
+Preflight output is intentionally marked as not executed. JSON reports include
+`status: "not_run"` and `qualityConclusion: "not_assessed"` because the command
+only validates inputs, provider boundaries, and tracing settings. It does not
+execute examples and does not prove real business answer quality.
+
 For a business-owned dataset, raise the minimum example count:
 
 ```powershell
@@ -85,6 +90,13 @@ Run against an already-started FastAPI server:
 The command calls `python -m app.evaluation.runner` and fails if retrieval hit rate, answer trait coverage, answer faithfulness, citation accuracy, or refusal rate drops below `1.0` for the fake dataset.
 
 Use `-FaithfulnessJudge static` for the deterministic judge boundary. Use `-FaithfulnessJudge model` with `-Mode service` or `-Mode http` to score answers through the configured `CHAT_PROVIDER`; DashScope requires `DASHSCOPE_API_KEY` and `RAG_MODEL`, while OpenAI-compatible providers use `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_COMPATIBLE_MODEL`, and optional `OPENAI_COMPATIBLE_BASE_URL`.
+
+Evaluation JSON reports include `status`, `qualityConclusion`, and
+`limitations`. The default fake/local report uses
+`qualityConclusion: "not_real_quality_validated"` with a limitation that
+fake/local evaluation is a software-interface check only. Treat these reports as
+evidence that the evaluation harness, dataset schema, and provider boundary ran;
+do not treat them as real business quality approval.
 
 ## LangSmith Tracing
 

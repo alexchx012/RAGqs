@@ -140,8 +140,12 @@ def _build_faithfulness_judge(name: str) -> FaithfulnessJudge | None:
 
 def _print_readiness_report(report) -> None:
     print(f"ready={str(report.ready).lower()}")
+    print(f"status={report.status}")
+    print(f"quality_conclusion={report.quality_conclusion}")
     print(f"mode={report.mode}")
     print(f"dataset_examples={report.dataset_examples}")
+    for limitation in report.limitations:
+        print(f"limitation: {limitation}")
     for issue in report.errors:
         print(f"error {issue.field}: {issue.message}")
     for issue in report.warnings:

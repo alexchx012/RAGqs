@@ -264,6 +264,11 @@ serving traffic:
 
 This opt-in check creates a session-local temporary table, performs create, insert, select, and rollback operations, and reports `writePathValidated=true` without touching application tables.
 
+The Postgres smoke gate is a provider/configuration and database-access check. It has not validated
+real multi-instance production data behavior. Use it before trial deployment to catch missing DSNs,
+network failures, and insufficient write permissions, then run a separate multi-instance staging
+exercise before calling the data layer production-validated.
+
 ## Security Boundaries
 
 CORS is configured from environment variables instead of hard-coded wildcard settings:
