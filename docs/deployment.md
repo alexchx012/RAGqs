@@ -92,6 +92,31 @@ For staging gates that must prove database write permissions without touching ap
 .\scripts\run-postgres-smoke.ps1 -RequireConfigured -ValidateWritePath -Json
 ```
 
+## Multi-Instance Data Layer Gate
+
+Before any multi-worker or multi-instance internal trial, configure every runtime data boundary to
+use shared Postgres-backed providers:
+
+```env
+SESSION_STORE_PROVIDER=postgres
+RETRIEVAL_AUDIT_STORE_PROVIDER=postgres
+INDEXING_QUEUE_PROVIDER=postgres
+INDEXING_JOB_STORE_PROVIDER=postgres
+DOCUMENT_CATALOG_PROVIDER=postgres
+CHECKPOINT_PROVIDER=postgres
+```
+
+Then run the non-destructive staging gate:
+
+```powershell
+.\scripts\run-postgres-smoke.ps1 -RequireConfigured -ValidateWritePath -Json
+```
+
+This gate validates configuration, connection reachability, and a temporary-table write path only.
+It has not validated real multi-instance production data behavior. Treat a passing result as a
+readiness signal for the data-layer boundary, not as proof that multiple production instances have
+been exercised under real traffic.
+
 ## CI Artifacts
 
 Run the deterministic evaluation command and keep the JSON report as a CI artifact:

@@ -350,6 +350,19 @@ def test_business_example_dataset_sources_map_to_sample_documents():
                 assert trait.lower() in content
 
 
+def test_evaluation_docs_describe_status_fields_and_limits():
+    docs = (ROOT / "docs" / "evaluation.md").read_text(encoding="utf-8")
+
+    for phrase in [
+        "status",
+        "not_run",
+        "qualityConclusion",
+        "not_real_quality_validated",
+        "does not prove real business answer quality",
+    ]:
+        assert phrase in docs
+
+
 def test_real_evaluation_readiness_rejects_fake_service_providers():
     from app.evaluation.readiness import validate_real_evaluation_readiness
 
@@ -444,6 +457,8 @@ def test_real_evaluation_cli_preflight_only_outputs_readiness_report(
     assert exit_code == 0
     output = capsys.readouterr().out
     assert '"ready": true' in output
+    assert '"status": "not_run"' in output
+    assert '"qualityConclusion": "not_assessed"' in output
     assert '"datasetExamples": 2' in output
 
 
@@ -557,6 +572,9 @@ def test_evaluation_cli_writes_json_report_artifact(tmp_path: Path):
 
     assert exit_code == 0
     payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "completed"
+    assert payload["qualityConclusion"] == "not_real_quality_validated"
+    assert "fake/local evaluation is a software-interface check only" in payload["limitations"]
     assert payload["metrics"]["answerFaithfulness"] == 1.0
     assert payload["failures"] == []
 
