@@ -11,9 +11,9 @@ This runbook captures the current Phase 7 operating contract for local and stage
 - On Windows, if port `19530` is in an excluded TCP range, set an available `MILVUS_PORT`
   such as `19630` in `.env`; recreate existing Milvus containers after changing host port mappings.
 
-Production mode rejects debug mode, wildcard or localhost CORS origins, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing, document catalog, checkpoint, and retrieval audit state.
+Production mode rejects debug mode, wildcard or localhost CORS origins, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing queue, indexing status, document catalog, checkpoint, and retrieval audit state.
 
-For background indexing, `INDEXING_QUEUE_PROVIDER=memory` is the current local queue boundary and `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` lets the FastAPI-managed worker recover persisted pending jobs on startup. Multi-instance ingestion still needs a dedicated external queue implementation before production use.
+For background indexing, `INDEXING_QUEUE_PROVIDER=memory` is the local queue boundary. For multi-instance ingestion, set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` and use Postgres-backed indexing job and document catalog stores. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` lets FastAPI-managed workers recover persisted pending jobs on startup.
 
 ## Start
 
@@ -59,7 +59,7 @@ When using Postgres-backed runtime stores, run the non-destructive Postgres smok
 .\scripts\run-postgres-smoke.ps1 -RequireConfigured -Json
 ```
 
-This verifies that configured session, retrieval audit, indexing job, document catalog, and checkpoint DSNs are reachable with a read-only `SELECT 1`. Output redacts DSN passwords. Omit `-RequireConfigured` for local SQLite development; the command then skips cleanly when no Postgres-backed store is selected.
+This verifies that configured session, retrieval audit, indexing queue, indexing job, document catalog, and checkpoint DSNs are reachable with a read-only `SELECT 1`. Output redacts DSN passwords. Omit `-RequireConfigured` for local SQLite development; the command then skips cleanly when no Postgres-backed store is selected.
 
 ## CI Artifacts
 
