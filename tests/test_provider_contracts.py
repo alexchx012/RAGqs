@@ -147,6 +147,52 @@ def test_milvus_vector_store_provider_is_lazy_and_factory_backed():
     assert created[0].kwargs["connection_args"] == {"host": "127.0.0.1", "port": 19530}
 
 
+def test_milvus_client_manager_prefers_grouped_settings():
+    from app.core.milvus_client import MilvusClientManager
+
+    settings = SimpleNamespace(
+        milvus=SimpleNamespace(host="milvus.internal", port=19630, timeout=12345),
+        milvus_host="flat-host",
+        milvus_port=19530,
+        milvus_timeout=10000,
+    )
+
+    manager = MilvusClientManager(settings=settings)
+
+    assert manager.host == "milvus.internal"
+    assert manager.port == 19630
+    assert manager.timeout_ms == 12345
+    assert manager.uri == "http://milvus.internal:19630"
+
+
+def test_vector_store_manager_prefers_grouped_milvus_settings():
+    from app.services.vector_store_manager import VectorStoreManager
+
+    created = []
+
+    def provider_factory(**kwargs):
+        created.append(kwargs)
+        return FakeVectorStoreProvider()
+
+    settings = SimpleNamespace(
+        milvus=SimpleNamespace(host="milvus.grouped", port=19631),
+        milvus_host="flat-host",
+        milvus_port=19530,
+    )
+
+    manager = VectorStoreManager(
+        settings=settings,
+        embedding_provider=FakeEmbeddingProvider(),
+        milvus_manager=object(),
+        provider_factory=provider_factory,
+    )
+
+    assert manager.provider is not None
+    assert created[0]["host"] == "milvus.grouped"
+    assert created[0]["port"] == 19631
+    assert created[0]["collection_name"] == "biz"
+
+
 def test_milvus_vector_store_provider_deletes_by_document_id_expression():
     class DeleteResult:
         delete_count = 4
