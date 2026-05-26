@@ -20,7 +20,8 @@ RETRIEVAL_AUDIT_POSTGRES_DSN=
 UPLOAD_ALLOWED_EXTENSIONS=txt,md,csv,html,htm,json
 INGESTION_PROVIDER=vector_index
 INDEXING_EXECUTION_MODE=sync
-INDEXING_QUEUE_PROVIDER=memory
+INDEXING_QUEUE_PROVIDER=sqlite
+INDEXING_QUEUE_SQLITE_PATH=data/indexing-queue.sqlite3
 INDEXING_QUEUE_POSTGRES_DSN=
 INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS=300.0
 INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
@@ -63,7 +64,7 @@ For OpenAI-compatible endpoints, set `CHAT_PROVIDER=openai_compatible` or `EMBED
 
 For multi-instance persistence, install the optional Postgres dependency group. Use `SESSION_STORE_PROVIDER=postgres` plus `SESSION_STORE_POSTGRES_DSN` for chat history, `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` for shared background indexing claims, `INDEXING_JOB_STORE_PROVIDER=postgres` plus `INDEXING_JOB_STORE_POSTGRES_DSN` for indexing job status, `DOCUMENT_CATALOG_PROVIDER=postgres` plus `DOCUMENT_CATALOG_POSTGRES_DSN` for knowledge-space document lifecycle metadata, and `CHECKPOINT_PROVIDER=postgres` plus `CHECKPOINT_POSTGRES_DSN` for LangGraph checkpoint state.
 
-Local development uses SQLite stores by default. Keep the `*_SQLITE_PATH` values under `data/` so chat history, selected sources, retrieval debug data, indexing jobs, document metadata, and checkpoints survive FastAPI restarts.
+Local development uses SQLite stores by default. Keep the `*_SQLITE_PATH` values under `data/` so chat history, selected sources, retrieval debug data, indexing queue state, indexing jobs, document metadata, and checkpoints survive FastAPI restarts.
 
 The default loader registry supports TXT, Markdown, CSV, HTML/HTM, and JSON uploads. Keep `UPLOAD_ALLOWED_EXTENSIONS` aligned with registered loaders; do not enable a new extension until a loader and security review exist for that file type.
 
@@ -71,7 +72,7 @@ For multi-instance audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=postgre
 
 Before deployment, set `DEPLOYMENT_ENVIRONMENT=production`. The startup validator then rejects fake providers, process-memory stores, localhost CORS origins, and debug mode.
 
-For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while workers perform indexing. Keep `INDEXING_QUEUE_PROVIDER=memory` for local single-process deployments. Use `INDEXING_QUEUE_PROVIDER=postgres` plus Postgres job/catalog stores when multiple processes must share background indexing work. Keep `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` so persisted pending jobs are re-enqueued on startup. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
+For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while workers perform indexing. Keep `INDEXING_QUEUE_PROVIDER=sqlite` for local single-process deployments that should survive FastAPI restarts. Use `INDEXING_QUEUE_PROVIDER=memory` only for throwaway tests. Use `INDEXING_QUEUE_PROVIDER=postgres` plus Postgres job/catalog stores when multiple processes must share background indexing work. Keep `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` so persisted pending jobs are re-enqueued on startup. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
 
 For retrieval-quality profiles, set `RETRIEVAL_PROFILE=high_recall` when the business needs a wider recall path with relaxed non-isolation metadata filters. Keep `RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS` aligned with tenant and knowledge-space boundaries. Set `QUERY_REWRITER_PROVIDER=llm` to rewrite user questions into concise retrieval queries, `RERANKER_PROVIDER=llm` to rerank retrieved chunks before truncation, and `CONTEXT_COMPRESSOR_PROVIDER=llm` to compress retrieved chunks before answer generation. Tune these switches with evaluation data instead of enabling extra model calls blindly.
 

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
+from contextlib import contextmanager
+from pathlib import Path
 from queue import Empty, Queue
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from typing import Any, Protocol
 
 
@@ -53,6 +56,145 @@ class InMemoryIndexingQueue:
 
     def task_done(self, job_id: str) -> None:
         self._queue.task_done()
+
+
+class SQLiteIndexingQueue:
+    """SQLite-backed queue for durable single-node background indexing."""
+
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        lease_timeout_seconds: float = 300.0,
+        poll_interval_seconds: float = 0.05,
+    ):
+        self.db_path = db_path
+        self.lease_timeout_seconds = max(1.0, float(lease_timeout_seconds))
+        self.poll_interval_seconds = max(0.01, float(poll_interval_seconds))
+        self._schema_initialized = False
+
+    @property
+    def unfinished_count(self) -> int:
+        with self._connection() as connection:
+            self._ensure_schema(connection)
+            self._reclaim_expired_leases(connection, now=time())
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS unfinished_count
+                FROM indexing_queue_jobs
+                WHERE status IN ('pending', 'running')
+                """
+            ).fetchone()
+        return int(row["unfinished_count"] if row else 0)
+
+    def enqueue(self, job_id: str) -> bool:
+        normalized_job_id = str(job_id).strip()
+        if not normalized_job_id:
+            return False
+
+        with self._connection() as connection:
+            self._ensure_schema(connection)
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO indexing_queue_jobs (job_id, status, enqueued_at)
+                VALUES (?, 'pending', ?)
+                """,
+                (normalized_job_id, time()),
+            )
+        return cursor.rowcount > 0
+
+    def dequeue(self, *, timeout_seconds: float) -> str | None:
+        deadline = monotonic() + max(0.0, timeout_seconds)
+        while True:
+            job_id = self._claim_next_job()
+            if job_id is not None:
+                return job_id
+            if monotonic() >= deadline:
+                return None
+            sleep(min(self.poll_interval_seconds, max(0.0, deadline - monotonic())))
+
+    def task_done(self, job_id: str) -> None:
+        with self._connection() as connection:
+            self._ensure_schema(connection)
+            connection.execute("DELETE FROM indexing_queue_jobs WHERE job_id = ?", (job_id,))
+
+    def close(self) -> None:
+        """Compatibility hook for providers that keep open resources."""
+
+    def _claim_next_job(self) -> str | None:
+        with self._connection() as connection:
+            self._ensure_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            self._reclaim_expired_leases(connection, now=time())
+            row = connection.execute(
+                """
+                SELECT id, job_id
+                FROM indexing_queue_jobs
+                WHERE status = 'pending'
+                ORDER BY id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                """
+                UPDATE indexing_queue_jobs
+                SET status = 'running',
+                    claimed_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (time(), row["id"]),
+            )
+        return str(row["job_id"])
+
+    def _reclaim_expired_leases(self, connection: sqlite3.Connection, *, now: float) -> None:
+        connection.execute(
+            """
+            UPDATE indexing_queue_jobs
+            SET status = 'pending',
+                claimed_at = NULL
+            WHERE status = 'running'
+              AND claimed_at < ?
+            """,
+            (now - self.lease_timeout_seconds,),
+        )
+
+    @contextmanager
+    def _connection(self):
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.db_path, timeout=30.0, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _ensure_schema(self, connection: sqlite3.Connection) -> None:
+        if self._schema_initialized:
+            return
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS indexing_queue_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                enqueued_at REAL NOT NULL,
+                claimed_at REAL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_indexing_queue_jobs_status_id
+            ON indexing_queue_jobs(status, id)
+            """
+        )
+        self._schema_initialized = True
 
 
 PostgresConnector = Callable[[str], Any]

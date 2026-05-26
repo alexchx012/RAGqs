@@ -13,7 +13,7 @@ This runbook captures the current Phase 7 operating contract for local and stage
 
 Production mode rejects debug mode, wildcard or localhost CORS origins, fake providers, and process-memory stores for runtime state. Use SQLite for a single local durable deployment or Postgres for multi-instance session, indexing queue, indexing status, document catalog, checkpoint, and retrieval audit state.
 
-For background indexing, `INDEXING_QUEUE_PROVIDER=memory` is the local queue boundary. For multi-instance ingestion, set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` and use Postgres-backed indexing job and document catalog stores. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` lets FastAPI-managed workers recover persisted pending jobs on startup.
+For background indexing, `INDEXING_QUEUE_PROVIDER=sqlite` is the local durable queue boundary. Use `INDEXING_QUEUE_PROVIDER=memory` only for throwaway tests. For multi-instance ingestion, set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` and use Postgres-backed indexing job and document catalog stores. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` lets FastAPI-managed workers recover persisted pending jobs on startup.
 
 ## Start
 

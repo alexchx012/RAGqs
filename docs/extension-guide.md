@@ -34,9 +34,10 @@ Provider ids are configured by environment variables:
 - `RETRIEVAL_AUDIT_SQLITE_PATH`: SQLite database path when `RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite`.
 - `RETRIEVAL_AUDIT_POSTGRES_DSN`: PostgreSQL connection string when `RETRIEVAL_AUDIT_STORE_PROVIDER=postgres`.
 - `INGESTION_PROVIDER`: `vector_index` or `fake`.
-- `INDEXING_QUEUE_PROVIDER`: `memory` for local in-process queueing, or `postgres` for shared multi-instance background indexing.
+- `INDEXING_QUEUE_PROVIDER`: `sqlite` by default for local durable queueing, `memory` for throwaway tests, or `postgres` for shared multi-instance background indexing.
+- `INDEXING_QUEUE_SQLITE_PATH`: SQLite database path when `INDEXING_QUEUE_PROVIDER=sqlite`.
 - `INDEXING_QUEUE_POSTGRES_DSN`: PostgreSQL connection string when `INDEXING_QUEUE_PROVIDER=postgres`.
-- `INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS`: how long a Postgres-claimed indexing job can remain running before another worker may reclaim it.
+- `INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS`: how long a SQLite- or Postgres-claimed indexing job can remain running before another worker may reclaim it.
 - `INDEXING_WORKER_RECOVER_PENDING_JOBS`: `true` to re-enqueue persisted pending jobs when the background worker starts.
 - `INDEXING_JOB_STORE_PROVIDER`: `sqlite` by default for local durable indexing job status, `memory` for throwaway tests, or `postgres` for multi-instance ingestion status.
 - `INDEXING_JOB_STORE_SQLITE_PATH`: SQLite database path when `INDEXING_JOB_STORE_PROVIDER=sqlite`.

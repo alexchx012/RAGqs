@@ -10,7 +10,12 @@ from typing import Any
 from loguru import logger
 
 from app.ingestion.jobs import IndexingJobStatus
-from app.ingestion.queue import IndexingQueue, InMemoryIndexingQueue, PostgresIndexingQueue
+from app.ingestion.queue import (
+    IndexingQueue,
+    InMemoryIndexingQueue,
+    PostgresIndexingQueue,
+    SQLiteIndexingQueue,
+)
 
 
 @dataclass
@@ -151,17 +156,46 @@ def build_indexing_queue(settings: Any | None = None) -> IndexingQueue:
 
         settings = config
 
-    provider = _setting_id(getattr(settings, "indexing_queue_provider", "memory"))
+    provider = _setting_id(_settings_value(settings, "storage", "indexing_queue_provider", "sqlite"))
     if provider == "memory":
         return InMemoryIndexingQueue()
+    if provider == "sqlite":
+        return SQLiteIndexingQueue(
+            _settings_value(
+                settings,
+                "storage",
+                "indexing_queue_sqlite_path",
+                "data/indexing-queue.sqlite3",
+            ),
+            lease_timeout_seconds=float(
+                _settings_value(
+                    settings,
+                    "storage",
+                    "indexing_queue_lease_timeout_seconds",
+                    300.0,
+                )
+            ),
+        )
     if provider == "postgres":
         return PostgresIndexingQueue(
-            getattr(settings, "indexing_queue_postgres_dsn", ""),
+            _settings_value(settings, "storage", "indexing_queue_postgres_dsn", ""),
             lease_timeout_seconds=float(
-                getattr(settings, "indexing_queue_lease_timeout_seconds", 300.0)
+                _settings_value(
+                    settings,
+                    "storage",
+                    "indexing_queue_lease_timeout_seconds",
+                    300.0,
+                )
             ),
         )
     raise ValueError(f"unsupported indexing queue provider: {provider}")
+
+
+def _settings_value(settings: Any, group_name: str, field_name: str, default: Any) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, field_name):
+        return getattr(group, field_name)
+    return getattr(settings, field_name, default)
 
 
 def _setting_id(value: Any) -> str:
