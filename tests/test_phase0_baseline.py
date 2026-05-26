@@ -299,6 +299,8 @@ def test_operations_docs_cover_trace_ids_and_health_checks():
         "latencyMs",
         "Runtime Metrics",
         "/api/metrics",
+        "/api/metrics/prometheus",
+        "ragqs_rag_queries_total",
         "tokenUsage",
         "Retrieval Audit",
         "RETRIEVAL_AUDIT_STORE_PROVIDER",

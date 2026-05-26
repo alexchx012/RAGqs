@@ -1,6 +1,6 @@
 """Operational observability helpers."""
 
-from app.observability.metrics import RuntimeMetrics, runtime_metrics
+from app.observability.metrics import RuntimeMetrics, render_prometheus_metrics, runtime_metrics
 from app.observability.request_context import (
     get_current_trace_id,
     install_request_context_middleware,
@@ -20,5 +20,6 @@ __all__ = [
     "SQLiteRetrievalAuditStore",
     "get_current_trace_id",
     "install_request_context_middleware",
+    "render_prometheus_metrics",
     "runtime_metrics",
 ]

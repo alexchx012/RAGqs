@@ -26,9 +26,9 @@ Mitigation: keep ingestion jobs, idempotent document ids, delete/reindex operati
 
 ## Observability
 
-Risk: request trace ids, structured access logs, in-process HTTP/RAG metrics, retrieval audit storage, health gates, Milvus/Postgres smoke gates, and evaluation artifacts exist, but central metrics export, central trace collection, retrieval audit write-path validation against a real Postgres instance, and LangGraph node transition analysis are still limited.
+Risk: request trace ids, structured access logs, in-process HTTP/RAG metrics, Prometheus-compatible metrics export, retrieval audit storage, health gates, Milvus/Postgres smoke gates, and evaluation artifacts exist, but central metrics collection, central trace collection, retrieval audit write-path validation against a real Postgres instance, and LangGraph node transition analysis are still limited.
 
-Mitigation: keep selected retrieval chunks, sources, answer text, session id, space id, and trace id in memory, SQLite, or Postgres retrieval audit stores; use `GET /api/metrics` for local HTTP and RAG latency buckets, per-space query counts, and provider token usage when available; extend per-step timing, optional LangSmith tracing, CI collection, central metrics export, real database integration checks, and LangGraph event logs beyond the current process-local boundaries.
+Mitigation: keep selected retrieval chunks, sources, answer text, session id, space id, and trace id in memory, SQLite, or Postgres retrieval audit stores; use `GET /api/metrics` for local HTTP and RAG latency buckets, per-space query counts, and provider token usage when available; scrape `GET /api/metrics/prometheus` when an external collector is available; extend per-step timing, optional LangSmith tracing, CI collection, central metrics storage, real database integration checks, and LangGraph event logs beyond the current process-local boundaries.
 
 ## Security
 
