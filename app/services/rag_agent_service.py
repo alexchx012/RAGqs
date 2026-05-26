@@ -1,6 +1,7 @@
 """RAG Agent 服务 - 基于 LangGraph 的知识库问答"""
 
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from time import perf_counter
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -20,7 +21,8 @@ from app.agents import (
 )
 from app.config import config
 from app.extensions.tools import ToolRegistry, build_enabled_tools, parse_enabled_tool_names
-from app.observability import get_current_trace_id
+from app.observability import get_current_trace_id, runtime_metrics
+from app.observability.metrics import normalize_token_usage
 from app.observability.retrieval_audit import RetrievalAuditRecord
 from app.prompts.profiles import build_system_prompt
 from app.providers.contracts import (
@@ -67,6 +69,8 @@ class RagAgentService:
         tool_executor: ToolExecutor | None = None,
         tool_planner: ToolPlanner | None = None,
         tool_planning_enabled: bool | None = None,
+        metrics_collector: Any | None = None,
+        metrics_clock=perf_counter,
     ):
         self.model_name = config.rag_model
         self.streaming = streaming
@@ -104,6 +108,8 @@ class RagAgentService:
             else use_explicit_graph
         )
         self.explicit_graph = explicit_graph
+        self.metrics_collector = metrics_collector or runtime_metrics
+        self.metrics_clock = metrics_clock
         self.agent = None
         self._agent_initialized = False
 
@@ -150,13 +156,46 @@ class RagAgentService:
         space_id: str = "default",
     ) -> dict[str, Any]:
         """非流式问答，附带检索引用和调试信息。"""
-        if self.use_explicit_graph:
-            state = self._invoke_explicit_graph(question, session_id, space_id=space_id)
-            result = _serialize_graph_state(question, state)
+        start_time = self.metrics_clock()
+        try:
+            if self.use_explicit_graph:
+                state = self._invoke_explicit_graph(question, session_id, space_id=space_id)
+                result = _serialize_graph_state(question, state)
+                self._record_session_exchange(
+                    session_id=session_id,
+                    question=question,
+                    answer=result["answer"],
+                    assistant_metadata=_session_metadata_from_trace(result),
+                )
+                self._record_retrieval_audit(
+                    session_id=session_id,
+                    space_id=space_id,
+                    question=question,
+                    trace=result,
+                )
+                self._record_rag_query_metric(
+                    session_id=session_id,
+                    space_id=space_id,
+                    success=True,
+                    start_time=start_time,
+                    trace=result,
+                )
+                return result
+            retrieval_result = self.retrieve_context(question, space_id=space_id)
+            answer = await self._run_legacy_query(
+                question,
+                session_id=session_id,
+                space_id=space_id,
+            )
+            result = {
+                "answer": answer,
+                "sources": _serialize_sources(retrieval_result.sources),
+                "retrieval": _serialize_retrieval_result(retrieval_result),
+            }
             self._record_session_exchange(
                 session_id=session_id,
                 question=question,
-                answer=result["answer"],
+                answer=answer,
                 assistant_metadata=_session_metadata_from_trace(result),
             )
             self._record_retrieval_audit(
@@ -165,31 +204,23 @@ class RagAgentService:
                 question=question,
                 trace=result,
             )
+            self._record_rag_query_metric(
+                session_id=session_id,
+                space_id=space_id,
+                success=True,
+                start_time=start_time,
+                trace=result,
+            )
             return result
-        retrieval_result = self.retrieve_context(question, space_id=space_id)
-        answer = await self._run_legacy_query(
-            question,
-            session_id=session_id,
-            space_id=space_id,
-        )
-        result = {
-            "answer": answer,
-            "sources": _serialize_sources(retrieval_result.sources),
-            "retrieval": _serialize_retrieval_result(retrieval_result),
-        }
-        self._record_session_exchange(
-            session_id=session_id,
-            question=question,
-            answer=answer,
-            assistant_metadata=_session_metadata_from_trace(result),
-        )
-        self._record_retrieval_audit(
-            session_id=session_id,
-            space_id=space_id,
-            question=question,
-            trace=result,
-        )
-        return result
+        except Exception:
+            self._record_rag_query_metric(
+                session_id=session_id,
+                space_id=space_id,
+                success=False,
+                start_time=start_time,
+                trace={},
+            )
+            raise
 
     async def query_stream(
         self,
@@ -253,47 +284,73 @@ class RagAgentService:
         session_id: str,
         space_id: str = "default",
     ) -> AsyncGenerator[dict[str, Any], None]:
-        if self.use_explicit_graph:
-            state: dict[str, Any] = {}
-            for chunk in self._stream_explicit_graph(
-                question,
-                session_id,
-                space_id=space_id,
-                final_state=state,
-            ):
+        start_time = self.metrics_clock()
+        try:
+            if self.use_explicit_graph:
+                state: dict[str, Any] = {}
+                for chunk in self._stream_explicit_graph(
+                    question,
+                    session_id,
+                    space_id=space_id,
+                    final_state=state,
+                ):
+                    yield chunk
+                trace = _serialize_graph_state(question, state)
+                self._record_session_exchange(
+                    session_id=session_id,
+                    question=question,
+                    answer=trace["answer"],
+                    assistant_metadata=_session_metadata_from_trace(trace),
+                )
+                self._record_retrieval_audit(
+                    session_id=session_id,
+                    space_id=space_id,
+                    question=question,
+                    trace=trace,
+                )
+                self._record_rag_query_metric(
+                    session_id=session_id,
+                    space_id=space_id,
+                    success=True,
+                    start_time=start_time,
+                    trace=trace,
+                )
+                return
+            retrieval_result = self.retrieve_context(question, space_id=space_id)
+            retrieval = _serialize_retrieval_result(retrieval_result)
+            yield {"type": "retrieval", "data": retrieval}
+            answer_parts: list[str] = []
+            async for chunk in self.query_stream(question, session_id=session_id, space_id=space_id):
+                if chunk.get("type") in {"content", "token"} and isinstance(chunk.get("data"), str):
+                    answer_parts.append(chunk["data"])
                 yield chunk
-            trace = _serialize_graph_state(question, state)
-            self._record_session_exchange(
-                session_id=session_id,
-                question=question,
-                answer=trace["answer"],
-                assistant_metadata=_session_metadata_from_trace(trace),
-            )
+            trace = {
+                "answer": "".join(answer_parts),
+                "sources": retrieval["sources"],
+                "retrieval": retrieval,
+            }
             self._record_retrieval_audit(
                 session_id=session_id,
                 space_id=space_id,
                 question=question,
                 trace=trace,
             )
-            return
-        retrieval_result = self.retrieve_context(question, space_id=space_id)
-        retrieval = _serialize_retrieval_result(retrieval_result)
-        yield {"type": "retrieval", "data": retrieval}
-        answer_parts: list[str] = []
-        async for chunk in self.query_stream(question, session_id=session_id, space_id=space_id):
-            if chunk.get("type") in {"content", "token"} and isinstance(chunk.get("data"), str):
-                answer_parts.append(chunk["data"])
-            yield chunk
-        self._record_retrieval_audit(
-            session_id=session_id,
-            space_id=space_id,
-            question=question,
-            trace={
-                "answer": "".join(answer_parts),
-                "sources": retrieval["sources"],
-                "retrieval": retrieval,
-            },
-        )
+            self._record_rag_query_metric(
+                session_id=session_id,
+                space_id=space_id,
+                success=True,
+                start_time=start_time,
+                trace=trace,
+            )
+        except Exception:
+            self._record_rag_query_metric(
+                session_id=session_id,
+                space_id=space_id,
+                success=False,
+                start_time=start_time,
+                trace={},
+            )
+            raise
 
     def _invoke_explicit_graph(
         self,
@@ -491,6 +548,26 @@ class RagAgentService:
         except Exception as exc:
             logger.warning(f"记录检索审计失败: {exc}")
 
+    def _record_rag_query_metric(
+        self,
+        *,
+        session_id: str,
+        space_id: str,
+        success: bool,
+        start_time: float,
+        trace: dict[str, Any],
+    ) -> None:
+        try:
+            self.metrics_collector.record_rag_query(
+                session_id=session_id,
+                space_id=space_id,
+                success=success,
+                latency_ms=round((self.metrics_clock() - start_time) * 1000, 3),
+                token_usage=_extract_token_usage(trace),
+            )
+        except Exception as exc:
+            logger.warning(f"记录 RAG 指标失败: {exc}")
+
     def get_session_history(self, session_id: str) -> list:
         session_store = self._get_session_store_provider()
         stored_messages = session_store.get_messages(session_id)
@@ -616,7 +693,7 @@ def _serialize_stored_messages(messages: list[StoredMessage]) -> list[dict[str, 
 def _serialize_graph_state(question: str, state: dict[str, Any]) -> dict[str, Any]:
     sources = list(state.get("sources", []))
     retrieval_debug = dict(state.get("retrieval_debug", {}))
-    return {
+    result = {
         "answer": state.get("answer", ""),
         "sources": sources,
         "retrieval": {
@@ -626,6 +703,38 @@ def _serialize_graph_state(question: str, state: dict[str, Any]) -> dict[str, An
             "debug": retrieval_debug,
         },
     }
+    token_usage = _extract_token_usage(state)
+    if any(token_usage.values()):
+        result["tokenUsage"] = token_usage
+    return result
+
+
+def _extract_token_usage(payload: Mapping[str, Any]) -> dict[str, int]:
+    candidates: list[Any] = [
+        payload.get("tokenUsage"),
+        payload.get("token_usage"),
+        payload.get("usage"),
+        payload.get("usage_metadata"),
+    ]
+    retrieval = payload.get("retrieval")
+    if isinstance(retrieval, Mapping):
+        debug = retrieval.get("debug")
+        if isinstance(debug, Mapping):
+            candidates.extend(
+                [
+                    debug.get("tokenUsage"),
+                    debug.get("token_usage"),
+                    debug.get("usage"),
+                    debug.get("usage_metadata"),
+                ]
+            )
+
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            usage = normalize_token_usage(candidate)
+            if any(usage.values()):
+                return usage
+    return {}
 
 
 def _stream_chunks_from_graph_state(state: dict[str, Any]) -> list[dict[str, Any]]:

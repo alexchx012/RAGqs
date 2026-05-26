@@ -17,6 +17,14 @@ class FakeCompiledGraph:
         return self.state
 
 
+class RecordingMetrics:
+    def __init__(self):
+        self.rag_queries = []
+
+    def record_rag_query(self, **kwargs):
+        self.rag_queries.append(kwargs)
+
+
 def failing_agent_factory(model, tools, checkpointer):
     raise AssertionError("legacy create_agent path should not be used")
 
@@ -174,6 +182,42 @@ async def test_rag_agent_service_query_with_trace_can_use_explicit_graph_runtime
             "debug": {"stages": ["retrieve"]},
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_rag_agent_service_query_with_trace_records_runtime_metrics():
+    graph = FakeCompiledGraph(
+        {
+            "answer": "graph answer",
+            "sources": [{"index": 1, "fileName": "graph.md"}],
+            "retrieval_debug": {"stages": ["retrieve"]},
+            "tokenUsage": {"promptTokens": 7, "completionTokens": 5, "totalTokens": 12},
+            "events": [],
+        }
+    )
+    metrics = RecordingMetrics()
+    ticks = iter([10.0, 10.25])
+    service = RagAgentService(
+        streaming=False,
+        agent_factory=failing_agent_factory,
+        tools=[],
+        use_explicit_graph=True,
+        explicit_graph=graph,
+        metrics_collector=metrics,
+        metrics_clock=lambda: next(ticks),
+    )
+
+    await service.query_with_trace("What is graph RAG?", session_id="s1", space_id="finance")
+
+    assert metrics.rag_queries == [
+        {
+            "session_id": "s1",
+            "space_id": "finance",
+            "success": True,
+            "latency_ms": 250.0,
+            "token_usage": {"promptTokens": 7, "completionTokens": 5, "totalTokens": 12},
+        }
+    ]
 
 
 @pytest.mark.asyncio
