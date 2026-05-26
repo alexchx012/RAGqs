@@ -225,9 +225,9 @@ Use explicit origins for deployed frontends, for example `https://rag.example.co
 Uploads are validated by `app.security.uploads` before files are written or indexed:
 
 ```env
-UPLOAD_ALLOWED_EXTENSIONS=txt,md
+UPLOAD_ALLOWED_EXTENSIONS=txt,md,csv,html,htm,json
 UPLOAD_MAX_BYTES=10485760
 UPLOAD_PROMPT_INJECTION_SCAN_ENABLED=true
 ```
 
-The upload boundary normalizes filenames into the configured upload directory, rejects unsupported extensions and oversized files, requires valid UTF-8 for text documents, and blocks high-risk prompt-injection instructions such as requests to ignore prior instructions or reveal the system prompt.
+The upload boundary normalizes filenames into the configured upload directory, rejects unsupported extensions and oversized files, requires valid UTF-8 for text-like documents, and blocks high-risk prompt-injection instructions such as requests to ignore prior instructions or reveal the system prompt. The default loader registry supports TXT, Markdown, CSV, HTML/HTM, and JSON files; add a custom `DocumentLoader` before enabling additional extensions.
