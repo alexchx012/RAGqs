@@ -52,8 +52,8 @@ services:
       timeout: 20s
       retries: 3
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_HEALTH_PORT:-9091}:9091"
     depends_on:
       - "etcd"
       - "minio"
@@ -71,3 +71,4 @@ services:
 networks:
   default:
     name: milvus
+    external: true
