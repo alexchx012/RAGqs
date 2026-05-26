@@ -51,6 +51,14 @@ Add the API URL to combine both checks:
 
 The health gate fails if `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, or `sessionStore` is missing or unhealthy. The smoke gate checks configuration and Milvus without creating, deleting, starting, stopping, or restarting Milvus.
 
+When using Postgres-backed runtime stores, run the non-destructive Postgres smoke gate before release:
+
+```powershell
+.\scripts\run-postgres-smoke.ps1 -RequireConfigured -Json
+```
+
+This verifies that configured session, retrieval audit, indexing job, document catalog, and checkpoint DSNs are reachable with a read-only `SELECT 1`. Output redacts DSN passwords. Omit `-RequireConfigured` for local SQLite development; the command then skips cleanly when no Postgres-backed store is selected.
+
 ## CI Artifacts
 
 Run the deterministic evaluation command and keep the JSON report as a CI artifact:
@@ -68,6 +76,8 @@ Hosted CI is defined in `.github/workflows/ci.yml`. The workflow runs on `window
 ```powershell
 .\scripts\validate-baseline.ps1 -SkipPreflight
 ```
+
+That baseline includes `run-postgres-smoke.ps1` without `-RequireConfigured`, so hosted CI verifies the smoke command itself while still allowing SQLite defaults.
 
 It then writes `artifacts\evaluation-report.json` with:
 
