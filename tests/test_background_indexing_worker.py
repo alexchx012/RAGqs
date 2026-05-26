@@ -1,3 +1,5 @@
+from app.ingestion import IndexingJob, IndexingJobStatus
+from app.ingestion.queue import InMemoryIndexingQueue
 from app.ingestion.worker import BackgroundIndexingWorker
 
 
@@ -10,6 +12,23 @@ class RecordingIndexService:
         self.ran_job_ids.append(job_id)
         if job_id in self.fail_job_ids:
             raise RuntimeError(f"failed {job_id}")
+
+
+class RecoverableIndexService(RecordingIndexService):
+    def __init__(self, pending_jobs: list[IndexingJob]):
+        super().__init__()
+        self.job_store = RecoverableJobStore(pending_jobs)
+
+
+class RecoverableJobStore:
+    def __init__(self, pending_jobs: list[IndexingJob]):
+        self.pending_jobs = pending_jobs
+        self.list_calls = []
+
+    def list(self, *, status=None, **filters):
+        self.list_calls.append((status, filters))
+        status_value = status.value if isinstance(status, IndexingJobStatus) else status
+        return [job for job in self.pending_jobs if job.status.value == status_value]
 
 
 def test_background_indexing_worker_processes_one_queued_job():
@@ -54,3 +73,44 @@ def test_background_indexing_worker_starts_processes_and_stops_gracefully():
 
     assert index_service.ran_job_ids == ["job-1"]
     assert worker.is_running is False
+
+
+def test_background_indexing_worker_recovers_persisted_pending_jobs_before_processing():
+    pending = [
+        IndexingJob.create(document_id="doc-1", source_path="/docs/a.md", job_id="job-1"),
+        IndexingJob.create(document_id="doc-2", source_path="/docs/b.md", job_id="job-2"),
+    ]
+    index_service = RecoverableIndexService(pending)
+    indexing_queue = InMemoryIndexingQueue()
+    worker = BackgroundIndexingWorker(
+        index_service=index_service,
+        indexing_queue=indexing_queue,
+        recover_pending_jobs_on_start=True,
+    )
+
+    assert worker.recover_pending_jobs() == 2
+    assert index_service.job_store.list_calls == [
+        (IndexingJobStatus.PENDING, {}),
+    ]
+    assert indexing_queue.unfinished_count == 2
+    assert worker.run_once(timeout_seconds=0) is True
+    assert worker.run_once(timeout_seconds=0) is True
+    assert index_service.ran_job_ids == ["job-1", "job-2"]
+
+
+def test_background_indexing_worker_start_recovers_persisted_pending_jobs():
+    pending = [
+        IndexingJob.create(document_id="doc-1", source_path="/docs/a.md", job_id="job-1"),
+    ]
+    index_service = RecoverableIndexService(pending)
+    worker = BackgroundIndexingWorker(
+        index_service=index_service,
+        poll_interval_seconds=0.01,
+        recover_pending_jobs_on_start=True,
+    )
+
+    worker.start()
+
+    assert worker.wait_until_idle(timeout_seconds=1) is True
+    worker.stop(timeout_seconds=1)
+    assert index_service.ran_job_ids == ["job-1"]

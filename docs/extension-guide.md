@@ -34,6 +34,8 @@ Provider ids are configured by environment variables:
 - `RETRIEVAL_AUDIT_SQLITE_PATH`: SQLite database path when `RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite`.
 - `RETRIEVAL_AUDIT_POSTGRES_DSN`: PostgreSQL connection string when `RETRIEVAL_AUDIT_STORE_PROVIDER=postgres`.
 - `INGESTION_PROVIDER`: `vector_index` or `fake`.
+- `INDEXING_QUEUE_PROVIDER`: `memory` for the current in-process queue boundary.
+- `INDEXING_WORKER_RECOVER_PENDING_JOBS`: `true` to re-enqueue persisted pending jobs when the background worker starts.
 - `INDEXING_JOB_STORE_PROVIDER`: `sqlite` by default for local durable indexing job status, `memory` for throwaway tests, or `postgres` for multi-instance ingestion status.
 - `INDEXING_JOB_STORE_SQLITE_PATH`: SQLite database path when `INDEXING_JOB_STORE_PROVIDER=sqlite`.
 - `INDEXING_JOB_STORE_POSTGRES_DSN`: PostgreSQL connection string when `INDEXING_JOB_STORE_PROVIDER=postgres`.
@@ -45,7 +47,7 @@ Provider ids are configured by environment variables:
 - `CHECKPOINT_POSTGRES_DSN`: PostgreSQL connection string when `CHECKPOINT_PROVIDER=postgres`.
 - `AGENT_RUNTIME`: `explicit_graph` by default, or `legacy` for the old `create_agent` compatibility path.
 
-Use `fake` providers for local tests and demos that must not call DashScope, Milvus, or external APIs. Use `openai_compatible` for chat or embedding endpoints that implement OpenAI-compatible APIs. Install the optional `postgres` dependency group before enabling Postgres-backed session, indexing job, document catalog, or checkpoint storage.
+Use `fake` providers for local tests and demos that must not call DashScope, Milvus, or external APIs. Use `openai_compatible` for chat or embedding endpoints that implement OpenAI-compatible APIs. Install the optional `postgres` dependency group before enabling Postgres-backed session, indexing job, document catalog, or checkpoint storage. For multi-instance ingestion, keep the queue provider boundary in place and add an external queue implementation instead of coupling API handlers to a specific broker.
 
 Retrieval audits are exposed through `GET /api/chat/audits` and can be filtered by session, knowledge space, trace id, and limit. Enable SQLite audit storage when a business needs local post-answer review of selected chunks and retrieval debug data; use Postgres when multiple API instances need to share the same audit trail.
 

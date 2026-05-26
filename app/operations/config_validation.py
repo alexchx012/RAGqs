@@ -246,6 +246,23 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             )
         )
 
+    indexing_queue_provider = _normalize_config_id(
+        _group_value(
+            storage_config,
+            settings,
+            "indexing_queue_provider",
+            "indexing_queue_provider",
+            default="memory",
+        )
+    )
+    if indexing_queue_provider not in {"memory"}:
+        errors.append(
+            ConfigIssue(
+                field="INDEXING_QUEUE_PROVIDER",
+                message=f"unsupported provider: {indexing_queue_provider}",
+            )
+        )
+
     if (
         _group_value(
             storage_config,
