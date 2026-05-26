@@ -110,6 +110,30 @@ def test_request_context_middleware_records_http_runtime_metrics():
     }
 
 
+def test_logger_setup_prefers_grouped_app_debug_settings(monkeypatch):
+    from app.utils import logger as logger_module
+
+    calls = []
+
+    class FakeLogger:
+        def remove(self):
+            calls.append(("remove", {}))
+
+        def add(self, *args, **kwargs):
+            calls.append(("add", kwargs))
+
+    monkeypatch.setattr(logger_module, "logger", FakeLogger())
+    settings = SimpleNamespace(app=SimpleNamespace(debug=False), debug=True)
+
+    logger_module.setup_logger(settings=settings)
+
+    stdout_sink = calls[1][1]
+    file_sink = calls[2][1]
+    assert stdout_sink["level"] == "INFO"
+    assert stdout_sink["diagnose"] is False
+    assert file_sink["diagnose"] is False
+
+
 def test_runtime_metrics_aggregates_rag_latency_and_token_usage():
     metrics = RuntimeMetrics(latency_buckets_ms=[100, 500])
 
