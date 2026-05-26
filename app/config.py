@@ -33,6 +33,18 @@ class DeploymentConfig(FrozenConfigModel):
     environment: str
 
 
+class AuthConfig(FrozenConfigModel):
+    enabled: bool
+    provider: str
+    user_header: str
+    roles_header: str
+    spaces_header: str
+    dev_users: str
+    default_user_id: str
+    default_roles: str
+    default_spaces: str
+
+
 class ProviderConfig(FrozenConfigModel):
     chat: str
     embedding: str
@@ -132,6 +144,15 @@ class Settings(BaseSettings):
     upload_max_bytes: int = 10 * 1024 * 1024
     upload_prompt_injection_scan_enabled: bool = True
     deployment_environment: str = "local"
+    auth_enabled: bool = False
+    auth_provider: str = "dev_header"
+    auth_user_header: str = "X-RAG-User"
+    auth_roles_header: str = "X-RAG-Roles"
+    auth_spaces_header: str = "X-RAG-Spaces"
+    auth_dev_users: str = "local-admin:admin:*"
+    auth_default_user_id: str = "local-admin"
+    auth_default_roles: str = "admin"
+    auth_default_spaces: str = "*"
 
     # 扩展配置
     chat_provider: str = "dashscope"
@@ -226,6 +247,20 @@ class Settings(BaseSettings):
     @property
     def deployment(self) -> DeploymentConfig:
         return DeploymentConfig(environment=self.deployment_environment)
+
+    @property
+    def auth(self) -> AuthConfig:
+        return AuthConfig(
+            enabled=self.auth_enabled,
+            provider=self.auth_provider,
+            user_header=self.auth_user_header,
+            roles_header=self.auth_roles_header,
+            spaces_header=self.auth_spaces_header,
+            dev_users=self.auth_dev_users,
+            default_user_id=self.auth_default_user_id,
+            default_roles=self.auth_default_roles,
+            default_spaces=self.auth_default_spaces,
+        )
 
     @property
     def providers(self) -> ProviderConfig:
