@@ -395,6 +395,22 @@ def test_config_validation_rejects_postgres_indexing_queue_without_dsn():
     ) in [(issue.field, issue.message) for issue in report.errors]
 
 
+def test_config_validation_rejects_sqlite_indexing_queue_without_path():
+    report = validate_settings(
+        _settings(
+            indexing_execution_mode="background",
+            indexing_queue_provider="sqlite",
+            indexing_queue_sqlite_path=" ",
+        )
+    )
+
+    assert report.is_valid is False
+    assert (
+        "INDEXING_QUEUE_SQLITE_PATH",
+        "must be set when INDEXING_QUEUE_PROVIDER=sqlite",
+    ) in [(issue.field, issue.message) for issue in report.errors]
+
+
 def test_config_validation_rejects_unknown_deployment_environment():
     report = validate_settings(_settings(deployment_environment="qa"))
 

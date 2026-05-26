@@ -31,6 +31,28 @@ def test_in_memory_indexing_queue_deduplicates_queued_job_ids():
     assert queue.dequeue(timeout_seconds=0) is None
 
 
+def test_sqlite_indexing_queue_persists_pending_jobs_across_instances(tmp_path):
+    import app.ingestion.queue as queue_module
+
+    assert hasattr(queue_module, "SQLiteIndexingQueue")
+    db_path = tmp_path / "indexing-queue.sqlite3"
+    queue = queue_module.SQLiteIndexingQueue(str(db_path))
+
+    assert queue.enqueue("job-1") is True
+    assert queue.enqueue("job-1") is False
+    assert queue.enqueue("job-2") is True
+
+    reopened = queue_module.SQLiteIndexingQueue(str(db_path))
+
+    assert reopened.unfinished_count == 2
+    assert reopened.dequeue(timeout_seconds=0) == "job-1"
+    reopened.task_done("job-1")
+    assert reopened.unfinished_count == 1
+    assert reopened.dequeue(timeout_seconds=0) == "job-2"
+    reopened.task_done("job-2")
+    assert reopened.unfinished_count == 0
+
+
 def test_postgres_indexing_queue_claims_jobs_once_and_deletes_completed_items():
     import app.ingestion.queue as queue_module
 
@@ -72,6 +94,23 @@ def test_build_indexing_queue_selects_postgres_provider_without_connecting():
 
     assert queue.__class__.__name__ == "PostgresIndexingQueue"
     assert queue.dsn == "postgresql://rag:secret@db/ragqs"
+
+
+def test_build_indexing_queue_selects_sqlite_provider_for_development(tmp_path):
+    import app.ingestion.queue as queue_module
+    import app.ingestion.worker as worker_module
+
+    assert hasattr(queue_module, "SQLiteIndexingQueue")
+    db_path = tmp_path / "indexing-queue.sqlite3"
+    queue = worker_module.build_indexing_queue(
+        SimpleNamespace(
+            indexing_queue_provider="sqlite",
+            indexing_queue_sqlite_path=str(db_path),
+        )
+    )
+
+    assert isinstance(queue, queue_module.SQLiteIndexingQueue)
+    assert queue.db_path == str(db_path)
 
 
 class FakePostgresQueueDatabase:

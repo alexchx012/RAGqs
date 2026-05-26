@@ -129,7 +129,8 @@ INDEXING_EXECUTION_MODE=sync
 Set `INDEXING_EXECUTION_MODE=background` when uploads should return a pending indexing job immediately and let the FastAPI process execute it through an in-process worker. The worker starts and stops in the FastAPI lifespan, uses persisted indexing job ids, and drains queued jobs during graceful shutdown.
 
 ```env
-INDEXING_QUEUE_PROVIDER=memory
+INDEXING_QUEUE_PROVIDER=sqlite
+INDEXING_QUEUE_SQLITE_PATH=data/indexing-queue.sqlite3
 INDEXING_QUEUE_POSTGRES_DSN=
 INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS=300.0
 INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
@@ -137,7 +138,7 @@ INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
 INDEXING_WORKER_RECOVER_PENDING_JOBS=true
 ```
 
-`INDEXING_QUEUE_PROVIDER=memory` is the local in-process queue. Set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` when multiple API or worker processes must claim background indexing jobs from the same queue. The Postgres queue uses row locking and lease reclaiming so a crashed worker does not permanently strand a claimed job; tune `INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS` to exceed expected indexing duration. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` re-enqueues persisted pending jobs when the worker starts, so a FastAPI restart does not strand jobs that were created before shutdown. The development default SQLite job store preserves status lookups across FastAPI restarts; for multi-instance ingestion, pair the Postgres queue with Postgres indexing job and document catalog stores.
+`INDEXING_QUEUE_PROVIDER=sqlite` is the development default and persists queued background indexing job ids under `data/`. Use `INDEXING_QUEUE_PROVIDER=memory` only for throwaway tests. Set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` when multiple API or worker processes must claim background indexing jobs from the same queue. SQLite and Postgres queues reclaim expired running jobs; tune `INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS` to exceed expected indexing duration. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` re-enqueues persisted pending jobs when the worker starts, so a FastAPI restart does not strand jobs that were created before shutdown. The development default SQLite queue, job store, and document catalog preserve background indexing state across FastAPI restarts; for multi-instance ingestion, pair the Postgres queue with Postgres indexing job and document catalog stores.
 
 ## Docker Profiles
 
