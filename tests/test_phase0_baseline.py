@@ -25,6 +25,11 @@ def test_phase0_baseline_artifacts_exist():
         "scripts/check-api-health.ps1",
         ".github/workflows/ci.yml",
         "data/evaluation/golden.jsonl",
+        "data/evaluation/business.example.jsonl",
+        "docs/business-samples/hr-handbook.md",
+        "docs/business-samples/benefits-guide.md",
+        "docs/business-samples/expense-policy.md",
+        "docs/business-samples/support-sla.md",
     ]
 
     missing = [path for path in expected_paths if not (ROOT / path).exists()]
@@ -210,6 +215,8 @@ def test_evaluation_script_enforces_core_metric_thresholds():
         "min-refusal-rate",
         "ReportPath",
         "report-path",
+        "MinExamples",
+        "min-examples",
     ]:
         assert phrase in script
 
@@ -274,6 +281,13 @@ def test_evaluation_docs_explain_langsmith_tracing_setup():
     ]:
         assert f"{key}=" in env_example
         assert key in docs
+
+    for phrase in [
+        "data/evaluation/business.example.jsonl",
+        "MinExamples",
+        "metadata.spaceId",
+    ]:
+        assert phrase in docs
 
 
 def test_operations_docs_cover_trace_ids_and_health_checks():
