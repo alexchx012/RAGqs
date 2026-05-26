@@ -216,6 +216,93 @@ def test_config_validation_rejects_invalid_background_indexing_settings():
     ) in issues
 
 
+def test_config_validation_rejects_unknown_deployment_environment():
+    report = validate_settings(_settings(deployment_environment="qa"))
+
+    assert report.is_valid is False
+    issues = {(issue.field, issue.message) for issue in report.errors}
+    assert ("DEPLOYMENT_ENVIRONMENT", "unsupported environment: qa") in issues
+
+
+def test_config_validation_rejects_unsafe_production_defaults():
+    report = validate_settings(
+        _settings(
+            deployment_environment="production",
+            debug=True,
+            cors_allow_origins="http://localhost:9900,https://rag.example.com",
+            chat_provider="fake",
+            embedding_provider="fake",
+            vector_store_provider="fake",
+            session_store_provider="memory",
+            retrieval_audit_store_provider="memory",
+            indexing_job_store_provider="memory",
+            document_catalog_provider="memory",
+            checkpoint_provider="memory",
+            ingestion_provider="fake",
+        )
+    )
+
+    assert report.is_valid is False
+    issues = {(issue.field, issue.message) for issue in report.errors}
+    assert ("DEBUG", "must be false when DEPLOYMENT_ENVIRONMENT=production") in issues
+    assert (
+        "CORS_ALLOW_ORIGINS",
+        "must not include localhost, 127.0.0.1, or '*' in production",
+    ) in issues
+    assert ("CHAT_PROVIDER", "fake provider is not allowed in production") in issues
+    assert ("EMBEDDING_PROVIDER", "fake provider is not allowed in production") in issues
+    assert ("VECTOR_STORE_PROVIDER", "fake provider is not allowed in production") in issues
+    assert ("INGESTION_PROVIDER", "fake provider is not allowed in production") in issues
+    assert (
+        "SESSION_STORE_PROVIDER",
+        "memory provider is not allowed in production",
+    ) in issues
+    assert (
+        "RETRIEVAL_AUDIT_STORE_PROVIDER",
+        "memory provider is not allowed in production",
+    ) in issues
+    assert (
+        "INDEXING_JOB_STORE_PROVIDER",
+        "memory provider is not allowed in production",
+    ) in issues
+    assert (
+        "DOCUMENT_CATALOG_PROVIDER",
+        "memory provider is not allowed in production",
+    ) in issues
+    assert ("CHECKPOINT_PROVIDER", "memory provider is not allowed in production") in issues
+
+
+def test_config_validation_accepts_hardened_production_settings():
+    report = validate_settings(
+        _settings(
+            deployment_environment="production",
+            debug=False,
+            cors_allow_origins="https://rag.example.com",
+            cors_allow_credentials=True,
+            chat_provider="openai_compatible",
+            embedding_provider="openai_compatible",
+            vector_store_provider="milvus",
+            session_store_provider="postgres",
+            session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
+            retrieval_audit_store_provider="postgres",
+            retrieval_audit_postgres_dsn="postgresql://rag:secret@db/ragqs-audits",
+            indexing_job_store_provider="postgres",
+            indexing_job_store_postgres_dsn="postgresql://rag:secret@db/ragqs-indexing",
+            document_catalog_provider="postgres",
+            document_catalog_postgres_dsn="postgresql://rag:secret@db/ragqs-documents",
+            checkpoint_provider="postgres",
+            checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
+            ingestion_provider="vector_index",
+            openai_compatible_api_key="sk-compatible",
+            openai_compatible_model="compatible-chat",
+            openai_compatible_embedding_model="compatible-embedding",
+        )
+    )
+
+    assert report.is_valid is True
+    assert report.errors == []
+
+
 def test_config_validation_cli_returns_nonzero_and_actionable_output():
     output = StringIO()
 

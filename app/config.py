@@ -29,6 +29,10 @@ class UploadConfig(FrozenConfigModel):
     prompt_injection_scan_enabled: bool
 
 
+class DeploymentConfig(FrozenConfigModel):
+    environment: str
+
+
 class ProviderConfig(FrozenConfigModel):
     chat: str
     embedding: str
@@ -122,6 +126,7 @@ class Settings(BaseSettings):
     upload_allowed_extensions: str = "txt,md"
     upload_max_bytes: int = 10 * 1024 * 1024
     upload_prompt_injection_scan_enabled: bool = True
+    deployment_environment: str = "local"
 
     # 扩展配置
     chat_provider: str = "dashscope"
@@ -207,6 +212,10 @@ class Settings(BaseSettings):
             max_bytes=self.upload_max_bytes,
             prompt_injection_scan_enabled=self.upload_prompt_injection_scan_enabled,
         )
+
+    @property
+    def deployment(self) -> DeploymentConfig:
+        return DeploymentConfig(environment=self.deployment_environment)
 
     @property
     def providers(self) -> ProviderConfig:
