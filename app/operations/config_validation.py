@@ -255,11 +255,42 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             default="memory",
         )
     )
-    if indexing_queue_provider not in {"memory"}:
+    if indexing_queue_provider not in {"memory", "postgres"}:
         errors.append(
             ConfigIssue(
                 field="INDEXING_QUEUE_PROVIDER",
                 message=f"unsupported provider: {indexing_queue_provider}",
+            )
+        )
+    if indexing_queue_provider == "postgres":
+        postgres_dsn = _group_value(
+            storage_config,
+            settings,
+            "indexing_queue_postgres_dsn",
+            "indexing_queue_postgres_dsn",
+        )
+        if not postgres_dsn.strip():
+            errors.append(
+                ConfigIssue(
+                    field="INDEXING_QUEUE_POSTGRES_DSN",
+                    message="must be set when INDEXING_QUEUE_PROVIDER=postgres",
+                )
+            )
+
+    if (
+        _group_value(
+            storage_config,
+            settings,
+            "indexing_queue_lease_timeout_seconds",
+            "indexing_queue_lease_timeout_seconds",
+            default=300.0,
+        )
+        <= 0
+    ):
+        errors.append(
+            ConfigIssue(
+                field="INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS",
+                message="must be greater than 0",
             )
         )
 
@@ -613,6 +644,8 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             app_config=app_config,
             cors_origins=cors_origins,
             selection=selection,
+            indexing_execution_mode=indexing_execution_mode,
+            indexing_queue_provider=indexing_queue_provider,
             indexing_job_store_provider=indexing_job_store_provider,
             document_catalog_provider=document_catalog_provider,
         )
@@ -645,6 +678,8 @@ def _validate_production_settings(
     app_config: Any,
     cors_origins: list[str],
     selection: ProviderSelection,
+    indexing_execution_mode: str,
+    indexing_queue_provider: str,
     indexing_job_store_provider: str,
     document_catalog_provider: str,
 ) -> None:
@@ -688,6 +723,14 @@ def _validate_production_settings(
             errors.append(
                 ConfigIssue(field=field_name, message="memory provider is not allowed in production")
             )
+
+    if indexing_execution_mode == "background" and indexing_queue_provider == "memory":
+        errors.append(
+            ConfigIssue(
+                field="INDEXING_QUEUE_PROVIDER",
+                message="memory provider is not allowed for production background indexing",
+            )
+        )
 
 
 def main(

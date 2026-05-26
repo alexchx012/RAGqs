@@ -355,6 +355,7 @@ def test_config_validation_rejects_invalid_background_indexing_settings():
         _settings(
             indexing_execution_mode="invalid",
             indexing_queue_provider="unsupported",
+            indexing_queue_lease_timeout_seconds=0,
             indexing_worker_poll_interval_seconds=0,
             indexing_worker_shutdown_timeout_seconds=0,
         )
@@ -365,6 +366,10 @@ def test_config_validation_rejects_invalid_background_indexing_settings():
     assert ("INDEXING_EXECUTION_MODE", "unsupported mode: invalid") in issues
     assert ("INDEXING_QUEUE_PROVIDER", "unsupported provider: unsupported") in issues
     assert (
+        "INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS",
+        "must be greater than 0",
+    ) in issues
+    assert (
         "INDEXING_WORKER_POLL_INTERVAL_SECONDS",
         "must be greater than 0",
     ) in issues
@@ -372,6 +377,22 @@ def test_config_validation_rejects_invalid_background_indexing_settings():
         "INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS",
         "must be greater than 0",
     ) in issues
+
+
+def test_config_validation_rejects_postgres_indexing_queue_without_dsn():
+    report = validate_settings(
+        _settings(
+            indexing_execution_mode="background",
+            indexing_queue_provider="postgres",
+            indexing_queue_postgres_dsn=" ",
+        )
+    )
+
+    assert report.is_valid is False
+    assert (
+        "INDEXING_QUEUE_POSTGRES_DSN",
+        "must be set when INDEXING_QUEUE_PROVIDER=postgres",
+    ) in [(issue.field, issue.message) for issue in report.errors]
 
 
 def test_config_validation_rejects_unknown_deployment_environment():
@@ -761,6 +782,8 @@ def test_deployment_docs_describe_hosted_ci_workflow():
         ".github/workflows/ci.yml",
         "validate-baseline.ps1 -SkipPreflight",
         "run-postgres-smoke.ps1",
+        "INDEXING_QUEUE_PROVIDER=postgres",
+        "INDEXING_QUEUE_POSTGRES_DSN",
         "evaluation-report",
     ]:
         assert phrase in docs
