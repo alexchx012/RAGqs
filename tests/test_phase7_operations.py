@@ -642,7 +642,7 @@ def test_start_script_checks_windows_excluded_milvus_ports():
 def test_main_uses_configured_cors_options():
     main_source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
 
-    assert "build_cors_options(config)" in main_source
+    assert "build_cors_options(settings)" in main_source
     assert 'allow_origins=["*"]' not in main_source
 
 
@@ -651,6 +651,46 @@ def test_main_exposes_runtime_metrics_router():
 
     assert "metrics.router" in main_source
     assert 'prefix="/api"' in main_source
+
+
+def test_main_app_factory_prefers_grouped_app_settings(tmp_path):
+    from app.main import create_app
+
+    settings = SimpleNamespace(
+        app=SimpleNamespace(name="Grouped RAG API", version="2.5.0"),
+        cors=SimpleNamespace(
+            allow_origins="http://localhost:9900",
+            allow_credentials=True,
+        ),
+        storage=SimpleNamespace(indexing_execution_mode="sync"),
+        app_name="Flat API",
+        app_version="1.0.0",
+    )
+
+    app = create_app(settings=settings, static_dir=str(tmp_path / "missing-static"))
+    response = TestClient(app).get("/")
+
+    assert app.title == "Grouped RAG API"
+    assert app.version == "2.5.0"
+    assert response.status_code == 200
+    assert response.json() == {"message": "Grouped RAG API API", "docs": "/docs"}
+
+
+def test_main_uvicorn_options_prefer_grouped_app_settings():
+    from app.main import build_uvicorn_options
+
+    settings = SimpleNamespace(
+        app=SimpleNamespace(host="127.0.0.7", port=7777, debug=True),
+        host="0.0.0.0",
+        port=9900,
+        debug=False,
+    )
+
+    assert build_uvicorn_options(settings) == {
+        "host": "127.0.0.7",
+        "port": 7777,
+        "reload": True,
+    }
 
 
 def test_operations_docs_describe_runtime_metrics_endpoint():
