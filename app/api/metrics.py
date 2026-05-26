@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
+from app.models.response import success_envelope
 from app.observability.metrics import (
     RuntimeMetrics,
     render_prometheus_metrics,
@@ -20,11 +21,7 @@ def create_metrics_router(metrics_collector: RuntimeMetrics | None = None) -> AP
 
     @router.get("/metrics")
     async def get_metrics():
-        return {
-            "code": 200,
-            "message": "success",
-            "data": active_metrics.snapshot(),
-        }
+        return success_envelope(active_metrics.snapshot())
 
     @router.get("/metrics/prometheus", response_class=PlainTextResponse)
     async def get_prometheus_metrics():
