@@ -74,6 +74,7 @@ def test_env_example_documents_all_current_settings():
         "RAG_TOP_K",
         "RAG_MODEL",
         "QUERY_REWRITER_PROVIDER",
+        "RERANKER_PROVIDER",
         "CONTEXT_COMPRESSOR_PROVIDER",
         "CONTEXT_COMPRESSOR_MAX_CHARACTERS",
         "CHUNK_MAX_SIZE",
@@ -230,6 +231,7 @@ def test_extension_docs_cover_phase8_foundation_templates():
         "PROMPT_PROFILE",
         "CHAT_PROVIDER",
         "QUERY_REWRITER_PROVIDER",
+        "RERANKER_PROVIDER",
         "CONTEXT_COMPRESSOR_PROVIDER",
         "do not modify core code",
     ]:

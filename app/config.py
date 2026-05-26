@@ -85,6 +85,7 @@ class RagConfig(FrozenConfigModel):
     top_k: int
     model: str
     query_rewriter_provider: str
+    reranker_provider: str
     context_compressor_provider: str
     context_compressor_max_characters: int
 
@@ -162,6 +163,7 @@ class Settings(BaseSettings):
     rag_top_k: int = 3
     rag_model: str = "qwen-max"
     query_rewriter_provider: str = "none"
+    reranker_provider: str = "none"
     context_compressor_provider: str = "none"
     context_compressor_max_characters: int = 1200
 
@@ -264,6 +266,7 @@ class Settings(BaseSettings):
             top_k=self.rag_top_k,
             model=self.rag_model,
             query_rewriter_provider=self.query_rewriter_provider,
+            reranker_provider=self.reranker_provider,
             context_compressor_provider=self.context_compressor_provider,
             context_compressor_max_characters=self.context_compressor_max_characters,
         )

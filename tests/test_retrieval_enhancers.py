@@ -32,6 +32,36 @@ def test_llm_query_rewriter_and_context_compressor_use_chat_provider_outputs():
     assert "Compress the document chunk" in provider.model.messages[1][0][1]
 
 
+def test_llm_reranker_reorders_documents_by_model_identifiers():
+    provider = RecordingChatModelProvider(["chunk-b, chunk-a"])
+    reranker = _class("LLMReranker")(provider)
+    documents = [
+        Document(page_content="alpha evidence", metadata={"chunk_id": "chunk-a"}),
+        Document(page_content="beta evidence", metadata={"chunk_id": "chunk-b"}),
+        Document(page_content="gamma evidence", metadata={"chunk_id": "chunk-c"}),
+    ]
+
+    reranked = reranker.rerank("which evidence matters?", documents)
+
+    assert [document.metadata["chunk_id"] for document in reranked] == [
+        "chunk-b",
+        "chunk-a",
+        "chunk-c",
+    ]
+    assert "Rerank the document chunks" in provider.model.messages[0][0][1]
+
+
+def test_llm_reranker_fallbacks_to_original_order_on_unusable_output():
+    provider = RecordingChatModelProvider(["missing-chunk"])
+    reranker = _class("LLMReranker")(provider)
+    documents = [
+        Document(page_content="alpha evidence", metadata={"chunk_id": "chunk-a"}),
+        Document(page_content="beta evidence", metadata={"chunk_id": "chunk-b"}),
+    ]
+
+    assert reranker.rerank("query", documents) == documents
+
+
 def test_llm_retrieval_enhancers_fallback_to_original_content_on_empty_model_output():
     provider = RecordingChatModelProvider([" ", ""])
     rewriter = _class("LLMQueryRewriter")(provider)
@@ -69,6 +99,32 @@ def test_provider_factory_wires_configured_llm_rewrite_and_compression():
     assert result.rewritten_query == "rewritten policy"
     assert result.documents[0].page_content == "compressed policy"
     assert result.debug["stages"] == ["rewrite", "retrieve", "deduplicate", "compress", "sources"]
+
+
+def test_provider_factory_wires_configured_llm_reranker():
+    chat_provider = RecordingChatModelProvider(["chunk-b, chunk-a"])
+    vector_store = RecordingVectorStore(
+        [
+            Document(page_content="alpha policy", metadata={"chunk_id": "chunk-a"}),
+            Document(page_content="beta policy", metadata={"chunk_id": "chunk-b"}),
+        ]
+    )
+    settings = _settings(reranker_provider="llm")
+
+    container = create_default_provider_container(
+        settings=settings,
+        milvus_manager=object(),
+        chat_model_provider=chat_provider,
+        vector_store_provider=vector_store,
+    )
+    result = container.retriever_provider.retrieve(RetrievalRequest(query="policy", top_k=2))
+
+    assert isinstance(container.retriever_provider.reranker, _class("LLMReranker"))
+    assert [document.metadata["chunk_id"] for document in result.documents] == [
+        "chunk-b",
+        "chunk-a",
+    ]
+    assert result.debug["stages"] == ["retrieve", "deduplicate", "rerank", "sources"]
 
 
 def test_fake_chat_model_supports_configured_llm_retrieval_enhancers():
@@ -151,6 +207,7 @@ def _settings(**overrides):
         "ingestion_provider": "fake",
         "checkpoint_provider": "memory",
         "query_rewriter_provider": "none",
+        "reranker_provider": "none",
         "context_compressor_provider": "none",
         "context_compressor_max_characters": 1200,
     }

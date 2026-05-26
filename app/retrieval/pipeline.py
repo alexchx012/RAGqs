@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Protocol
@@ -98,6 +99,70 @@ class LLMQueryRewriter:
         )
         rewritten = _message_content(response).strip()
         return rewritten or query
+
+
+@dataclass
+class LLMReranker:
+    """Chat-model-backed listwise reranker for retrieved document chunks."""
+
+    chat_model_provider: ChatModelProvider
+    max_content_characters: int = 700
+
+    def rerank(self, query: str, documents: list[Document]) -> list[Document]:
+        if len(documents) <= 1:
+            return documents
+
+        identifiers = [
+            _rerank_identifier(index, document)
+            for index, document in enumerate(documents, start=1)
+        ]
+        model = self.chat_model_provider.create_chat_model(streaming=False)
+        response = model.invoke(
+            [
+                (
+                    "system",
+                    "Rerank the document chunks for the user's question. "
+                    "Return only the chunk identifiers in descending relevance order, "
+                    "separated by commas. Do not explain.",
+                ),
+                (
+                    "human",
+                    _rerank_prompt(
+                        query=query,
+                        documents=documents,
+                        identifiers=identifiers,
+                        max_content_characters=self.max_content_characters,
+                    ),
+                ),
+            ]
+        )
+        requested_order = _parse_rerank_identifiers(_message_content(response))
+        if not requested_order:
+            return documents
+
+        lookup: dict[str, Document] = {}
+        for index, (identifier, document) in enumerate(zip(identifiers, documents), start=1):
+            lookup[identifier] = document
+            lookup[str(index)] = document
+
+        selected: list[Document] = []
+        selected_ids: set[int] = set()
+        for identifier in requested_order:
+            document = lookup.get(identifier)
+            if document is None:
+                continue
+            document_identity = id(document)
+            if document_identity in selected_ids:
+                continue
+            selected.append(document)
+            selected_ids.add(document_identity)
+
+        if not selected:
+            return documents
+
+        selected_ids = {id(document) for document in selected}
+        selected.extend(document for document in documents if id(document) not in selected_ids)
+        return selected
 
 
 @dataclass
@@ -264,6 +329,49 @@ def _heading_path(metadata: dict) -> str:
 
 def _elapsed_ms(started: float) -> float:
     return round((perf_counter() - started) * 1000, 3)
+
+
+def _rerank_identifier(index: int, document: Document) -> str:
+    for key in ("chunk_id", "document_id"):
+        value = document.metadata.get(key)
+        if value:
+            return str(value)
+    return str(index)
+
+
+def _rerank_prompt(
+    *,
+    query: str,
+    documents: list[Document],
+    identifiers: list[str],
+    max_content_characters: int,
+) -> str:
+    chunks = []
+    for identifier, document in zip(identifiers, documents):
+        content = " ".join(document.page_content.split())
+        chunks.append(f"[{identifier}]\n{content[:max_content_characters]}")
+    return "Question:\n" + query + "\n\nDocument chunks:\n" + "\n\n".join(chunks)
+
+
+def _parse_rerank_identifiers(content: str) -> list[str]:
+    stripped = content.strip()
+    if not stripped:
+        return []
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        data = None
+
+    if isinstance(data, list):
+        return [str(item).strip() for item in data if str(item).strip()]
+
+    normalized = stripped.replace("\n", ",").replace(";", ",")
+    identifiers: list[str] = []
+    for item in normalized.split(","):
+        identifier = item.strip().strip("[](){}\"'` ")
+        if identifier:
+            identifiers.append(identifier)
+    return identifiers
 
 
 def _message_content(message: Any) -> str:
