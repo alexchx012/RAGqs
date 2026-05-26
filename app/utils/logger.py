@@ -1,23 +1,25 @@
 """日志配置模块"""
 
 import sys
+from typing import Any
 
 from loguru import logger
 
 from app.config import config
 
 
-def setup_logger():
+def setup_logger(settings: Any = config):
     """配置日志系统"""
+    debug_enabled = bool(_settings_value(settings, "app", "debug", "debug", False))
     logger.remove()
 
     logger.add(
         sys.stdout,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{module}</cyan>.<cyan>{function}</cyan>:<cyan>{line}</cyan> | <level>{message}</level>",
-        level="DEBUG" if config.debug else "INFO",
+        level="DEBUG" if debug_enabled else "INFO",
         colorize=True,
         backtrace=True,
-        diagnose=config.debug,
+        diagnose=debug_enabled,
     )
 
     logger.add(
@@ -28,10 +30,23 @@ def setup_logger():
         encoding="utf-8",
         enqueue=True,
         backtrace=True,
-        diagnose=True,
+        diagnose=debug_enabled,
         level="INFO",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {module}.{function}:{line} | {message}",
     )
+
+
+def _settings_value(
+    settings: Any,
+    group_name: str,
+    group_field_name: str,
+    flat_field_name: str,
+    default: Any,
+) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, group_field_name):
+        return getattr(group, group_field_name)
+    return getattr(settings, flat_field_name, default)
 
 
 setup_logger()
