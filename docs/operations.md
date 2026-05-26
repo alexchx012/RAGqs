@@ -217,6 +217,15 @@ store is selected:
 .\scripts\run-postgres-smoke.ps1 -RequireConfigured -Json
 ```
 
+Use `-ValidateWritePath` in staging gates when the database user must prove write permissions before
+serving traffic:
+
+```powershell
+.\scripts\run-postgres-smoke.ps1 -RequireConfigured -ValidateWritePath -Json
+```
+
+This opt-in check creates a session-local temporary table, performs create, insert, select, and rollback operations, and reports `writePathValidated=true` without touching application tables.
+
 ## Security Boundaries
 
 CORS is configured from environment variables instead of hard-coded wildcard settings:

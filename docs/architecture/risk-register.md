@@ -14,9 +14,9 @@ Mitigation: keep query rewrite, metadata filters, rerank, contextual compression
 
 ## Session Persistence
 
-Risk: backend sessions, indexing jobs, document catalog metadata, retrieval audits, and LangGraph checkpoints can use memory, SQLite, or Postgres, and a Postgres smoke gate can verify configured DSN connectivity, but schema setup and full runtime write paths still depend on deployed database credentials at runtime.
+Risk: backend sessions, indexing jobs, document catalog metadata, retrieval audits, and LangGraph checkpoints can use memory, SQLite, or Postgres, and a Postgres smoke gate can verify configured DSN connectivity plus opt-in temporary-table write permissions, but full provider-specific schema migration coverage still depends on deployed database credentials at runtime.
 
-Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, document-catalog boundary, retrieval-audit boundary, checkpoint boundary, SQLite/Postgres providers, and backend-first frontend history covered by tests; run the Postgres smoke gate before production multi-instance use and add deeper schema/write-path integration checks when deployment credentials are available.
+Mitigation: keep the `SessionStore` boundary, indexing-job store boundary, document-catalog boundary, retrieval-audit boundary, checkpoint boundary, SQLite/Postgres providers, and backend-first frontend history covered by tests; run `scripts/run-postgres-smoke.ps1 -RequireConfigured -ValidateWritePath -Json` before production multi-instance use and add deeper provider-schema integration checks when deployment credentials are available.
 
 ## Indexing Reliability
 
@@ -26,7 +26,7 @@ Mitigation: keep ingestion jobs, idempotent document ids, delete/reindex operati
 
 ## Observability
 
-Risk: request trace ids, structured access logs, in-process HTTP/RAG metrics, Prometheus-compatible metrics export, retrieval audit storage, health gates, Milvus/Postgres smoke gates, and evaluation artifacts exist, but central metrics collection, central trace collection, retrieval audit write-path validation against a real Postgres instance, and LangGraph node transition analysis are still limited.
+Risk: request trace ids, structured access logs, in-process HTTP/RAG metrics, Prometheus-compatible metrics export, retrieval audit storage, health gates, Milvus/Postgres smoke gates, and evaluation artifacts exist, but central metrics collection, central trace collection, real Postgres audit provider schema validation, and LangGraph node transition analysis are still limited.
 
 Mitigation: keep selected retrieval chunks, sources, answer text, session id, space id, and trace id in memory, SQLite, or Postgres retrieval audit stores; use `GET /api/metrics` for local HTTP and RAG latency buckets, per-space query counts, and provider token usage when available; scrape `GET /api/metrics/prometheus` when an external collector is available; extend per-step timing, optional LangSmith tracing, CI collection, central metrics storage, real database integration checks, and LangGraph event logs beyond the current process-local boundaries.
 

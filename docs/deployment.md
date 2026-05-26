@@ -61,6 +61,13 @@ When using Postgres-backed runtime stores, run the non-destructive Postgres smok
 
 This verifies that configured session, retrieval audit, indexing queue, indexing job, document catalog, and checkpoint DSNs are reachable with a read-only `SELECT 1`. Output redacts DSN passwords. Omit `-RequireConfigured` for local SQLite development; the command then skips cleanly when no Postgres-backed store is selected.
 
+For staging gates that must prove database write permissions without touching application tables, add
+`-ValidateWritePath`. The command uses a temporary table and rollback:
+
+```powershell
+.\scripts\run-postgres-smoke.ps1 -RequireConfigured -ValidateWritePath -Json
+```
+
 ## CI Artifacts
 
 Run the deterministic evaluation command and keep the JSON report as a CI artifact:
