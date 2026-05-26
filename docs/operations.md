@@ -125,12 +125,14 @@ Set `INDEXING_EXECUTION_MODE=background` when uploads should return a pending in
 
 ```env
 INDEXING_QUEUE_PROVIDER=memory
+INDEXING_QUEUE_POSTGRES_DSN=
+INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS=300.0
 INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
 INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
 INDEXING_WORKER_RECOVER_PENDING_JOBS=true
 ```
 
-`INDEXING_QUEUE_PROVIDER=memory` is the current queue implementation and defines the boundary for future external queue providers. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` re-enqueues persisted pending jobs when the worker starts, so a FastAPI restart does not strand jobs that were created before shutdown. The development default SQLite job store preserves status lookups across FastAPI restarts. For multi-instance production ingestion, use Postgres plus an external queue or dedicated worker service instead of relying only on the in-process worker.
+`INDEXING_QUEUE_PROVIDER=memory` is the local in-process queue. Set `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` when multiple API or worker processes must claim background indexing jobs from the same queue. The Postgres queue uses row locking and lease reclaiming so a crashed worker does not permanently strand a claimed job; tune `INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS` to exceed expected indexing duration. `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` re-enqueues persisted pending jobs when the worker starts, so a FastAPI restart does not strand jobs that were created before shutdown. The development default SQLite job store preserves status lookups across FastAPI restarts; for multi-instance ingestion, pair the Postgres queue with Postgres indexing job and document catalog stores.
 
 ## Docker Profiles
 
@@ -196,8 +198,8 @@ Use `scripts/run-postgres-smoke.ps1` when one or more runtime stores are configu
 .\scripts\run-postgres-smoke.ps1 -Json
 ```
 
-The command checks the selected Postgres-backed stores for sessions, retrieval audits, indexing jobs,
-document catalog metadata, and LangGraph checkpoints. It opens each configured DSN, executes a
+The command checks the selected Postgres-backed stores for sessions, retrieval audits, indexing queue,
+indexing jobs, document catalog metadata, and LangGraph checkpoints. It opens each configured DSN, executes a
 read-only `SELECT 1`, redacts passwords in output, and does not create, delete, start, stop, or
 restart databases. When no Postgres-backed store is selected, it reports a skipped check and exits
 successfully so local SQLite development and CI baselines remain lightweight.

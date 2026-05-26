@@ -47,6 +47,8 @@ def test_postgres_smoke_checks_each_configured_postgres_store_without_leaking_pa
             session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
             retrieval_audit_store_provider="postgres",
             retrieval_audit_postgres_dsn="postgresql://rag:secret@db/ragqs-audits",
+            indexing_queue_provider="postgres",
+            indexing_queue_postgres_dsn="postgresql://rag:secret@db/ragqs-queue",
             indexing_job_store_provider="postgres",
             indexing_job_store_postgres_dsn="postgresql://rag:secret@db/ragqs-indexing",
             document_catalog_provider="postgres",
@@ -62,6 +64,7 @@ def test_postgres_smoke_checks_each_configured_postgres_store_without_leaking_pa
     assert calls == [
         ("postgresql://rag:secret@db/ragqs", 2.5),
         ("postgresql://rag:secret@db/ragqs-audits", 2.5),
+        ("postgresql://rag:secret@db/ragqs-queue", 2.5),
         ("postgresql://rag:secret@db/ragqs-indexing", 2.5),
         ("postgresql://rag:secret@db/ragqs-documents", 2.5),
         ("postgresql://rag:secret@db/ragqs-checkpoints", 2.5),
@@ -69,6 +72,7 @@ def test_postgres_smoke_checks_each_configured_postgres_store_without_leaking_pa
     assert [(check.name, check.status) for check in report.checks] == [
         ("sessionStore", "healthy"),
         ("retrievalAuditStore", "healthy"),
+        ("indexingQueue", "healthy"),
         ("indexingJobStore", "healthy"),
         ("documentCatalog", "healthy"),
         ("checkpointStore", "healthy"),
@@ -144,6 +148,8 @@ def _settings(**overrides):
         "session_store_postgres_dsn": "",
         "retrieval_audit_store_provider": "sqlite",
         "retrieval_audit_postgres_dsn": "",
+        "indexing_queue_provider": "memory",
+        "indexing_queue_postgres_dsn": "",
         "indexing_job_store_provider": "sqlite",
         "indexing_job_store_postgres_dsn": "",
         "document_catalog_provider": "sqlite",

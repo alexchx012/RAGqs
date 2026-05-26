@@ -10,7 +10,7 @@ from typing import Any
 from loguru import logger
 
 from app.ingestion.jobs import IndexingJobStatus
-from app.ingestion.queue import IndexingQueue, InMemoryIndexingQueue
+from app.ingestion.queue import IndexingQueue, InMemoryIndexingQueue, PostgresIndexingQueue
 
 
 @dataclass
@@ -127,6 +127,7 @@ def get_background_indexing_worker(
         )
         _default_worker = BackgroundIndexingWorker(
             index_service=index_service,
+            indexing_queue=build_indexing_queue(settings),
             poll_interval_seconds=poll_interval,
             recover_pending_jobs_on_start=recover_pending_jobs,
         )
@@ -140,3 +141,28 @@ def reset_background_indexing_worker() -> None:
     if _default_worker is not None:
         _default_worker.stop()
     _default_worker = None
+
+
+def build_indexing_queue(settings: Any | None = None) -> IndexingQueue:
+    """Build the configured background indexing queue provider."""
+
+    if settings is None:
+        from app.config import config
+
+        settings = config
+
+    provider = _setting_id(getattr(settings, "indexing_queue_provider", "memory"))
+    if provider == "memory":
+        return InMemoryIndexingQueue()
+    if provider == "postgres":
+        return PostgresIndexingQueue(
+            getattr(settings, "indexing_queue_postgres_dsn", ""),
+            lease_timeout_seconds=float(
+                getattr(settings, "indexing_queue_lease_timeout_seconds", 300.0)
+            ),
+        )
+    raise ValueError(f"unsupported indexing queue provider: {provider}")
+
+
+def _setting_id(value: Any) -> str:
+    return str(value).strip().lower().replace("-", "_")

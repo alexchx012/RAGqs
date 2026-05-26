@@ -50,6 +50,8 @@ class StorageConfig(FrozenConfigModel):
     retrieval_audit_postgres_dsn: str
     indexing_execution_mode: str
     indexing_queue_provider: str
+    indexing_queue_postgres_dsn: str
+    indexing_queue_lease_timeout_seconds: float
     indexing_worker_poll_interval_seconds: float
     indexing_worker_shutdown_timeout_seconds: float
     indexing_worker_recover_pending_jobs: bool
@@ -143,6 +145,8 @@ class Settings(BaseSettings):
     ingestion_provider: str = "vector_index"
     indexing_execution_mode: str = "sync"
     indexing_queue_provider: str = "memory"
+    indexing_queue_postgres_dsn: str = ""
+    indexing_queue_lease_timeout_seconds: float = 300.0
     indexing_worker_poll_interval_seconds: float = 0.25
     indexing_worker_shutdown_timeout_seconds: float = 5.0
     indexing_worker_recover_pending_jobs: bool = True
@@ -242,6 +246,8 @@ class Settings(BaseSettings):
             retrieval_audit_postgres_dsn=self.retrieval_audit_postgres_dsn,
             indexing_execution_mode=self.indexing_execution_mode,
             indexing_queue_provider=self.indexing_queue_provider,
+            indexing_queue_postgres_dsn=self.indexing_queue_postgres_dsn,
+            indexing_queue_lease_timeout_seconds=self.indexing_queue_lease_timeout_seconds,
             indexing_worker_poll_interval_seconds=self.indexing_worker_poll_interval_seconds,
             indexing_worker_shutdown_timeout_seconds=self.indexing_worker_shutdown_timeout_seconds,
             indexing_worker_recover_pending_jobs=self.indexing_worker_recover_pending_jobs,

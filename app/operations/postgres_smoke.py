@@ -72,6 +72,13 @@ POSTGRES_STORE_TARGETS = (
         dsn_env="RETRIEVAL_AUDIT_POSTGRES_DSN",
     ),
     PostgresStoreTarget(
+        name="indexingQueue",
+        provider_attr="indexing_queue_provider",
+        dsn_attr="indexing_queue_postgres_dsn",
+        provider_env="INDEXING_QUEUE_PROVIDER",
+        dsn_env="INDEXING_QUEUE_POSTGRES_DSN",
+    ),
+    PostgresStoreTarget(
         name="indexingJobStore",
         provider_attr="indexing_job_store_provider",
         dsn_attr="indexing_job_store_postgres_dsn",

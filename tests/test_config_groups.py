@@ -25,6 +25,8 @@ def test_development_defaults_use_sqlite_for_runtime_state():
     assert settings.retrieval_audit_store_provider == "sqlite"
     assert settings.indexing_job_store_provider == "sqlite"
     assert settings.indexing_queue_provider == "memory"
+    assert settings.indexing_queue_postgres_dsn == ""
+    assert settings.indexing_queue_lease_timeout_seconds == 300.0
     assert settings.indexing_worker_recover_pending_jobs is True
     assert settings.document_catalog_provider == "sqlite"
     assert settings.checkpoint_provider == "sqlite"
@@ -65,7 +67,9 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         retrieval_audit_sqlite_path="data/test-retrieval-audits.sqlite3",
         retrieval_audit_postgres_dsn="postgresql://rag:secret@db/ragqs-audits",
         indexing_execution_mode="background",
-        indexing_queue_provider="memory",
+        indexing_queue_provider="postgres",
+        indexing_queue_postgres_dsn="postgresql://rag:secret@db/ragqs-queue",
+        indexing_queue_lease_timeout_seconds=120.0,
         indexing_worker_poll_interval_seconds=0.5,
         indexing_worker_shutdown_timeout_seconds=3.0,
         indexing_worker_recover_pending_jobs=False,
@@ -137,7 +141,9 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         retrieval_audit_sqlite_path="data/test-retrieval-audits.sqlite3",
         retrieval_audit_postgres_dsn="postgresql://rag:secret@db/ragqs-audits",
         indexing_execution_mode="background",
-        indexing_queue_provider="memory",
+        indexing_queue_provider="postgres",
+        indexing_queue_postgres_dsn="postgresql://rag:secret@db/ragqs-queue",
+        indexing_queue_lease_timeout_seconds=120.0,
         indexing_worker_poll_interval_seconds=0.5,
         indexing_worker_shutdown_timeout_seconds=3.0,
         indexing_worker_recover_pending_jobs=False,
