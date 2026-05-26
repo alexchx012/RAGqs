@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,20 @@ from app.ingestion import (
     InMemoryIndexingJobStore,
     SQLiteIndexingJobStore,
 )
+from app.services.document_splitter_service import DocumentSplitterService
+
+
+def test_document_splitter_prefers_grouped_chunking_settings():
+    settings = SimpleNamespace(
+        chunking=SimpleNamespace(max_size=321, overlap=32),
+        chunk_max_size=999,
+        chunk_overlap=99,
+    )
+
+    splitter = DocumentSplitterService(settings=settings)
+
+    assert splitter.chunk_size == 321
+    assert splitter.chunk_overlap == 32
 
 
 def test_loader_registry_reads_utf8_text_and_markdown_files(tmp_path):

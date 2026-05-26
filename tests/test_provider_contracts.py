@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
@@ -50,6 +52,24 @@ def test_vector_embedding_service_is_lazy_provider_backed():
 
     assert hasattr(module, "get_vector_embedding_service")
     assert isinstance(module.vector_embedding_service, EmbeddingProvider)
+
+
+def test_vector_embedding_service_builder_prefers_grouped_dashscope_settings():
+    from app.services.vector_embedding_service import build_vector_embedding_service
+
+    settings = SimpleNamespace(
+        dashscope=SimpleNamespace(
+            api_key="sk-grouped",
+            embedding_model="grouped-embedding",
+        ),
+        dashscope_api_key="sk-flat",
+        dashscope_embedding_model="flat-embedding",
+    )
+
+    provider = build_vector_embedding_service(settings=settings)
+
+    assert provider.model == "grouped-embedding"
+    assert provider.dimensions == 1024
 
 
 def test_fake_vector_store_provider_adds_searches_and_deletes_by_source():

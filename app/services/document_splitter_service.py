@@ -1,6 +1,7 @@
 """文档分割服务 - 基于 LangChain 的智能文档分割"""
 
 from pathlib import Path
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -12,9 +13,22 @@ from app.config import config
 class DocumentSplitterService:
     """文档分割服务"""
 
-    def __init__(self):
-        self.chunk_size = config.chunk_max_size
-        self.chunk_overlap = config.chunk_overlap
+    def __init__(self, settings: Any | None = None):
+        self.settings = settings or config
+        self.chunk_size = _settings_value(
+            self.settings,
+            "chunking",
+            "max_size",
+            "chunk_max_size",
+            800,
+        )
+        self.chunk_overlap = _settings_value(
+            self.settings,
+            "chunking",
+            "overlap",
+            "chunk_overlap",
+            100,
+        )
 
         self.markdown_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=[("#", "h1"), ("##", "h2")],
@@ -78,6 +92,19 @@ class DocumentSplitterService:
         if current_doc is not None:
             merged_docs.append(current_doc)
         return merged_docs
+
+
+def _settings_value(
+    settings: Any,
+    group_name: str,
+    group_field_name: str,
+    flat_field_name: str,
+    default: Any,
+) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, group_field_name):
+        return getattr(group, group_field_name)
+    return getattr(settings, flat_field_name, default)
 
 
 document_splitter_service = DocumentSplitterService()
