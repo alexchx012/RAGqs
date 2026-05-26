@@ -31,6 +31,45 @@ def test_loader_registry_reads_utf8_text_and_markdown_files(tmp_path):
     assert markdown_docs[0].metadata["extension"] == ".md"
 
 
+def test_loader_registry_reads_csv_html_and_json_files(tmp_path):
+    csv_path = tmp_path / "policies.csv"
+    html_path = tmp_path / "handbook.html"
+    json_path = tmp_path / "faqs.json"
+    csv_path.write_text(
+        "category,policy\nFinance,Receipts required\nHR,Remote work allowed\n",
+        encoding="utf-8",
+    )
+    html_path.write_text(
+        "<html><head><title>Employee Handbook</title></head>"
+        "<body><h1>Benefits</h1><p>Coverage starts on day one.</p>"
+        "<script>ignore me</script></body></html>",
+        encoding="utf-8",
+    )
+    json_path.write_text(
+        '[{"question": "What is SLA?", "answer": "Four hours"}, '
+        '{"question": "Who owns billing?", "answer": "Finance"}]',
+        encoding="utf-8",
+    )
+
+    registry = DocumentLoaderRegistry.default()
+
+    csv_docs = registry.load(csv_path)
+    html_docs = registry.load(html_path)
+    json_docs = registry.load(json_path)
+
+    assert len(csv_docs) == 2
+    assert csv_docs[0].page_content == "category: Finance\npolicy: Receipts required"
+    assert csv_docs[0].metadata["extension"] == ".csv"
+    assert csv_docs[0].metadata["row_number"] == 1
+    assert "Employee Handbook" in html_docs[0].page_content
+    assert "Benefits" in html_docs[0].page_content
+    assert "ignore me" not in html_docs[0].page_content
+    assert html_docs[0].metadata["title"] == "Employee Handbook"
+    assert len(json_docs) == 2
+    assert '"question": "What is SLA?"' in json_docs[0].page_content
+    assert json_docs[0].metadata["json_pointer"] == "$[0]"
+
+
 def test_loader_registry_rejects_unsupported_file_types(tmp_path):
     pdf_path = tmp_path / "unsupported.pdf"
     pdf_path.write_text("not supported yet", encoding="utf-8")

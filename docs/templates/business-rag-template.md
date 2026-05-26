@@ -17,6 +17,7 @@ SESSION_STORE_SQLITE_PATH=data/sessions.sqlite3
 SESSION_STORE_POSTGRES_DSN=
 RETRIEVAL_AUDIT_SQLITE_PATH=data/retrieval-audits.sqlite3
 RETRIEVAL_AUDIT_POSTGRES_DSN=
+UPLOAD_ALLOWED_EXTENSIONS=txt,md,csv,html,htm,json
 INGESTION_PROVIDER=vector_index
 INDEXING_EXECUTION_MODE=sync
 INDEXING_QUEUE_PROVIDER=memory
@@ -63,6 +64,8 @@ For OpenAI-compatible endpoints, set `CHAT_PROVIDER=openai_compatible` or `EMBED
 For multi-instance persistence, install the optional Postgres dependency group. Use `SESSION_STORE_PROVIDER=postgres` plus `SESSION_STORE_POSTGRES_DSN` for chat history, `INDEXING_QUEUE_PROVIDER=postgres` plus `INDEXING_QUEUE_POSTGRES_DSN` for shared background indexing claims, `INDEXING_JOB_STORE_PROVIDER=postgres` plus `INDEXING_JOB_STORE_POSTGRES_DSN` for indexing job status, `DOCUMENT_CATALOG_PROVIDER=postgres` plus `DOCUMENT_CATALOG_POSTGRES_DSN` for knowledge-space document lifecycle metadata, and `CHECKPOINT_PROVIDER=postgres` plus `CHECKPOINT_POSTGRES_DSN` for LangGraph checkpoint state.
 
 Local development uses SQLite stores by default. Keep the `*_SQLITE_PATH` values under `data/` so chat history, selected sources, retrieval debug data, indexing jobs, document metadata, and checkpoints survive FastAPI restarts.
+
+The default loader registry supports TXT, Markdown, CSV, HTML/HTM, and JSON uploads. Keep `UPLOAD_ALLOWED_EXTENSIONS` aligned with registered loaders; do not enable a new extension until a loader and security review exist for that file type.
 
 For multi-instance audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=postgres` plus `RETRIEVAL_AUDIT_POSTGRES_DSN` so every API instance writes retrieval audits to the same database.
 

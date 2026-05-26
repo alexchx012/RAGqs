@@ -6,7 +6,7 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 
 - `app/main.py`: FastAPI entry point, static file mount, router registration, Milvus startup check.
 - `app/api/chat.py`: non-streaming and SSE chat endpoints plus session history, list, and search APIs.
-- `app/api/file.py`: upload endpoint for configured text/Markdown files with upload security validation before indexing.
+- `app/api/file.py`: upload endpoint for configured TXT, Markdown, CSV, HTML, and JSON files with upload security validation before indexing.
 - `app/services/rag_agent_service.py`: default explicit LangGraph `StateGraph` RAG runtime with a legacy `create_agent` compatibility mode.
 - `app/tools/knowledge_tool.py`: retrieval tool that calls the vector store retriever.
 - `app/services/vector_index_service.py`: file indexing from uploads, with synchronous execution by default and optional background job execution.
@@ -60,7 +60,7 @@ Current Phase 1 test coverage includes grouped settings, provider protocols, fak
 
 The repository now has an initial `app/ingestion/` foundation:
 
-- `loaders.py`: UTF-8 text and Markdown loader interfaces plus an extension-based registry.
+- `loaders.py`: UTF-8 TXT, Markdown, CSV, HTML/HTM, and JSON loader interfaces plus an extension-based registry.
 - `metadata.py`: stable document metadata and chunk metadata normalization, including document id, chunk id, source path, content hash, extension, file name, heading path, and legacy `_source` fields.
 - `jobs.py`: `IndexingJob` status model with pending, running, succeeded, failed, and partial terminal states.
 - `job_store.py`: process-local and SQLite indexing job stores with job id, document id, source path, and status filters.
