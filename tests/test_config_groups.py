@@ -21,6 +21,7 @@ def test_development_defaults_use_sqlite_for_runtime_state():
     settings = Settings(_env_file=None, dashscope_api_key="sk-valid")
     selection = ProviderSelection.from_settings(settings)
 
+    assert settings.upload_allowed_extensions == "txt,md,csv,html,htm,json"
     assert settings.session_store_provider == "sqlite"
     assert settings.retrieval_audit_store_provider == "sqlite"
     assert settings.indexing_job_store_provider == "sqlite"
