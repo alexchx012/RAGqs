@@ -47,6 +47,7 @@ try {
                 tests\test_postgres_indexing_job_store.py `
                 tests\test_postgres_document_catalog.py `
                 tests\test_postgres_checkpoint_provider.py `
+                tests\test_postgres_smoke.py `
                 tests\test_vector_index_service_ingestion.py `
                 tests\test_file_upload_ingestion.py `
                 tests\test_upload_security.py `
@@ -83,6 +84,10 @@ try {
 
     Invoke-Step "powershell scripts\run-evaluation.ps1" {
         powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-evaluation.ps1
+    }
+
+    Invoke-Step "powershell scripts\run-postgres-smoke.ps1" {
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-postgres-smoke.ps1
     }
 
     Write-Host "[skip] run-integration-smoke.ps1 requires live Milvus and real local credentials" -ForegroundColor Yellow

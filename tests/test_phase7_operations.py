@@ -579,6 +579,7 @@ def test_deployment_docs_describe_hosted_ci_workflow():
         "GitHub Actions",
         ".github/workflows/ci.yml",
         "validate-baseline.ps1 -SkipPreflight",
+        "run-postgres-smoke.ps1",
         "evaluation-report",
     ]:
         assert phrase in docs
@@ -610,5 +611,17 @@ def test_integration_smoke_script_documents_no_stop_default():
         "ApiUrl",
         "Milvus",
         "does not stop Milvus",
+    ]:
+        assert phrase in script
+
+
+def test_postgres_smoke_script_documents_non_destructive_checks():
+    script = (ROOT / "scripts" / "run-postgres-smoke.ps1").read_text(encoding="utf-8")
+
+    for phrase in [
+        "app.operations.postgres_smoke",
+        "RequireConfigured",
+        "Postgres",
+        "does not create, delete, start, stop, or restart databases",
     ]:
         assert phrase in script
