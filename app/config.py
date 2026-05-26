@@ -45,6 +45,14 @@ class AuthConfig(FrozenConfigModel):
     default_spaces: str
 
 
+class RuntimeConfig(FrozenConfigModel):
+    enabled: bool
+    max_concurrent_requests: int
+    queue_timeout_seconds: float
+    request_timeout_seconds: float
+    control_excluded_paths: str
+
+
 class ProviderConfig(FrozenConfigModel):
     chat: str
     embedding: str
@@ -153,6 +161,11 @@ class Settings(BaseSettings):
     auth_default_user_id: str = "local-admin"
     auth_default_roles: str = "admin"
     auth_default_spaces: str = "*"
+    runtime_controls_enabled: bool = False
+    runtime_max_concurrent_requests: int = 40
+    runtime_queue_timeout_seconds: float = 2.0
+    runtime_request_timeout_seconds: float = 60.0
+    runtime_control_excluded_paths: str = "/health,/static"
 
     # 扩展配置
     chat_provider: str = "dashscope"
@@ -260,6 +273,16 @@ class Settings(BaseSettings):
             default_user_id=self.auth_default_user_id,
             default_roles=self.auth_default_roles,
             default_spaces=self.auth_default_spaces,
+        )
+
+    @property
+    def runtime(self) -> RuntimeConfig:
+        return RuntimeConfig(
+            enabled=self.runtime_controls_enabled,
+            max_concurrent_requests=self.runtime_max_concurrent_requests,
+            queue_timeout_seconds=self.runtime_queue_timeout_seconds,
+            request_timeout_seconds=self.runtime_request_timeout_seconds,
+            control_excluded_paths=self.runtime_control_excluded_paths,
         )
 
     @property
