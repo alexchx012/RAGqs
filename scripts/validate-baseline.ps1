@@ -56,6 +56,7 @@ try {
                 tests\test_retrieval_enhancers.py `
                 tests\test_retrieval_profiles.py `
                 tests\test_chat_retrieval_trace.py `
+                tests\test_retrieval_audit.py `
                 tests\test_rag_state_graph.py `
                 tests\test_rag_agent_graph_runtime.py `
                 tests\test_session_store_service.py `

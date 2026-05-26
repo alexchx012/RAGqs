@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from langchain_core.documents import Document
 
 from app.ingestion.worker import reset_background_indexing_worker
+from app.observability.retrieval_audit import SQLiteRetrievalAuditStore
 from app.providers import (
     ChatModelProvider,
     CheckpointProvider,
@@ -10,6 +11,7 @@ from app.providers import (
     FakeIngestionProvider,
     IngestionProvider,
     InMemorySessionStoreProvider,
+    RetrievalAuditStoreProvider,
     RetrieverProvider,
     SessionStoreProvider,
     VectorStoreProvider,
@@ -52,6 +54,7 @@ def test_default_provider_container_wires_all_boundaries_without_connecting():
     assert isinstance(container.retriever_provider, RetrieverProvider)
     assert isinstance(container.retriever_provider, RetrievalPipeline)
     assert isinstance(container.session_store_provider, SessionStoreProvider)
+    assert isinstance(container.retrieval_audit_store_provider, RetrievalAuditStoreProvider)
     assert isinstance(container.ingestion_provider, IngestionProvider)
     assert isinstance(container.checkpoint_provider, CheckpointProvider)
     assert container.checkpoint_provider.create_checkpointer() is (
@@ -87,6 +90,28 @@ def test_default_provider_container_can_enable_background_indexing_mode():
         assert container.ingestion_provider.background_worker is not None
     finally:
         reset_background_indexing_worker()
+
+
+def test_default_provider_container_can_use_sqlite_retrieval_audit_store(tmp_path):
+    settings = SimpleNamespace(
+        dashscope_api_key="unit-test-key",
+        rag_model="qwen-max",
+        rag_top_k=5,
+        milvus_host="127.0.0.1",
+        milvus_port=19530,
+        chat_provider="fake",
+        embedding_provider="fake",
+        vector_store_provider="fake",
+        session_store_provider="memory",
+        retrieval_audit_store_provider="sqlite",
+        retrieval_audit_sqlite_path=str(tmp_path / "retrieval-audits.sqlite3"),
+        ingestion_provider="fake",
+        checkpoint_provider="memory",
+    )
+
+    container = create_default_provider_container(settings=settings, milvus_manager=object())
+
+    assert isinstance(container.retrieval_audit_store_provider, SQLiteRetrievalAuditStore)
 
 
 def test_vector_store_retriever_provider_returns_structured_debug_output():

@@ -33,10 +33,12 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         embedding_provider="fake",
         vector_store_provider="fake",
         session_store_provider="sqlite",
+        retrieval_audit_store_provider="sqlite",
         ingestion_provider="fake",
         checkpoint_provider="sqlite",
         session_store_sqlite_path="data/test-sessions.sqlite3",
         session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
+        retrieval_audit_sqlite_path="data/test-retrieval-audits.sqlite3",
         indexing_execution_mode="background",
         indexing_worker_poll_interval_seconds=0.5,
         indexing_worker_shutdown_timeout_seconds=3.0,
@@ -97,12 +99,14 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         embedding="fake",
         vector_store="fake",
         session_store="sqlite",
+        retrieval_audit_store="sqlite",
         ingestion="fake",
         checkpoint="sqlite",
     )
     assert settings.storage == StorageConfig(
         session_store_sqlite_path="data/test-sessions.sqlite3",
         session_store_postgres_dsn="postgresql://rag:secret@db/ragqs",
+        retrieval_audit_sqlite_path="data/test-retrieval-audits.sqlite3",
         indexing_execution_mode="background",
         indexing_worker_poll_interval_seconds=0.5,
         indexing_worker_shutdown_timeout_seconds=3.0,
@@ -153,6 +157,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
 
     assert settings.app_name == settings.app.name
     assert settings.chat_provider == settings.providers.chat
+    assert settings.retrieval_audit_store_provider == settings.providers.retrieval_audit_store
     assert settings.rag_top_k == settings.rag.top_k
 
 
@@ -165,6 +170,8 @@ def test_provider_selection_and_validation_use_grouped_settings():
         vector_store_provider="fake",
         session_store_provider="sqlite",
         session_store_sqlite_path="data/sessions.sqlite3",
+        retrieval_audit_store_provider="sqlite",
+        retrieval_audit_sqlite_path="data/retrieval-audits.sqlite3",
         ingestion_provider="fake",
         checkpoint_provider="sqlite",
         checkpoint_sqlite_path="data/checkpoints.sqlite3",
@@ -178,5 +185,6 @@ def test_provider_selection_and_validation_use_grouped_settings():
     report = validate_settings(settings)
 
     assert selection.session_store_provider == "sqlite"
+    assert selection.retrieval_audit_store_provider == "sqlite"
     assert selection.checkpoint_provider == "sqlite"
     assert report.is_valid is True

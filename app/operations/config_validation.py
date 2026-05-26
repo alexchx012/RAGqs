@@ -153,6 +153,24 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
                 )
             )
 
+    retrieval_audit_store_provider = _normalize_config_id(
+        getattr(selection, "retrieval_audit_store_provider", "memory")
+    )
+    if retrieval_audit_store_provider == "sqlite":
+        sqlite_path = _group_value(
+            storage_config,
+            settings,
+            "retrieval_audit_sqlite_path",
+            "retrieval_audit_sqlite_path",
+        )
+        if not sqlite_path.strip():
+            errors.append(
+                ConfigIssue(
+                    field="RETRIEVAL_AUDIT_SQLITE_PATH",
+                    message="must be set when RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite",
+                )
+            )
+
     if selection.checkpoint_provider == "sqlite":
         sqlite_path = _group_value(
             storage_config, settings, "checkpoint_sqlite_path", "checkpoint_sqlite_path"

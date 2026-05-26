@@ -24,6 +24,23 @@ The request middleware emits one structured `http_request` record per request. C
 
 These records are emitted as JSON payloads through Loguru. Keep business logs concise and include the current trace id when debugging a request path.
 
+## Retrieval Audit
+
+Successful traced RAG answers are written to the configured retrieval audit store. The default is process memory:
+
+```env
+RETRIEVAL_AUDIT_STORE_PROVIDER=memory
+```
+
+Use local SQLite when selected chunks, sources, and retrieval debug data should survive a FastAPI restart:
+
+```env
+RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite
+RETRIEVAL_AUDIT_SQLITE_PATH=data/retrieval-audits.sqlite3
+```
+
+`GET /api/chat/audits` returns recent audit records and accepts `session_id`, `space_id`, `trace_id`, and `limit` query parameters. Each record includes the request trace id, session id, knowledge-space id, question, answer, serialized sources, and retrieval debug payload.
+
 ## Health Checks
 
 `GET /health` returns the existing response envelope:

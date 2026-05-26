@@ -135,6 +135,32 @@ async def list_sessions(query: str | None = None):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.get("/chat/audits")
+async def list_retrieval_audits(
+    session_id: str | None = None,
+    space_id: str | None = None,
+    trace_id: str | None = None,
+    limit: int = 50,
+):
+    """查询最近的检索审计记录"""
+    try:
+        normalized_limit = max(0, min(limit, 500))
+        audits = rag_agent_service.list_retrieval_audits(
+            session_id=session_id,
+            space_id=space_id,
+            trace_id=trace_id,
+            limit=normalized_limit,
+        )
+        serialized = [_serialize_retrieval_audit(audit) for audit in audits]
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"count": len(serialized), "audits": serialized},
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @router.get("/chat/session/{session_id}", response_model=SessionInfoResponse)
 async def get_session_info(session_id: str) -> SessionInfoResponse:
     """查询会话历史"""
@@ -152,4 +178,18 @@ def _serialize_session_summary(summary) -> dict:
         "messageCount": summary.message_count,
         "updatedAt": summary.updated_at,
         "lastMessage": summary.last_message,
+    }
+
+
+def _serialize_retrieval_audit(audit) -> dict:
+    return {
+        "id": getattr(audit, "audit_id", ""),
+        "traceId": getattr(audit, "trace_id", ""),
+        "sessionId": getattr(audit, "session_id", ""),
+        "spaceId": getattr(audit, "space_id", ""),
+        "question": getattr(audit, "question", ""),
+        "answer": getattr(audit, "answer", ""),
+        "sources": list(getattr(audit, "sources", [])),
+        "retrieval": dict(getattr(audit, "retrieval", {})),
+        "createdAt": getattr(audit, "created_at", ""),
     }

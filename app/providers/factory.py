@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.observability.retrieval_audit import (
+    InMemoryRetrievalAuditStore,
+    SQLiteRetrievalAuditStore,
+)
 from app.providers.checkpoints import (
     InMemoryCheckpointProvider,
     PostgresCheckpointProvider,
@@ -15,6 +19,7 @@ from app.providers.contracts import (
     CheckpointProvider,
     EmbeddingProvider,
     IngestionProvider,
+    RetrievalAuditStoreProvider,
     RetrieverProvider,
     SessionStoreProvider,
     VectorStoreProvider,
@@ -56,6 +61,7 @@ class ProviderContainer:
     vector_store_provider: VectorStoreProvider
     retriever_provider: RetrieverProvider
     session_store_provider: SessionStoreProvider
+    retrieval_audit_store_provider: RetrievalAuditStoreProvider
     ingestion_provider: IngestionProvider
     checkpoint_provider: CheckpointProvider
 
@@ -72,6 +78,7 @@ def create_default_provider_container(
     vector_store_provider: VectorStoreProvider | None = None,
     retriever_provider: RetrieverProvider | None = None,
     session_store_provider: SessionStoreProvider | None = None,
+    retrieval_audit_store_provider: RetrievalAuditStoreProvider | None = None,
     ingestion_provider: IngestionProvider | None = None,
     checkpoint_provider: CheckpointProvider | None = None,
 ) -> ProviderContainer:
@@ -198,6 +205,14 @@ def create_default_provider_container(
         else:
             session_store_provider = InMemorySessionStoreProvider()
 
+    if retrieval_audit_store_provider is None:
+        if selection.retrieval_audit_store_provider == "sqlite":
+            retrieval_audit_store_provider = SQLiteRetrievalAuditStore(
+                settings.retrieval_audit_sqlite_path
+            )
+        else:
+            retrieval_audit_store_provider = InMemoryRetrievalAuditStore()
+
     if ingestion_provider is None:
         if selection.ingestion_provider == "fake":
             ingestion_provider = FakeIngestionProvider()
@@ -232,6 +247,7 @@ def create_default_provider_container(
         vector_store_provider=vector_store_provider,
         retriever_provider=retriever_provider,
         session_store_provider=session_store_provider,
+        retrieval_audit_store_provider=retrieval_audit_store_provider,
         ingestion_provider=ingestion_provider,
         checkpoint_provider=checkpoint_provider,
     )

@@ -9,6 +9,7 @@ SUPPORTED_CHAT_PROVIDERS = {"dashscope", "openai_compatible", "fake"}
 SUPPORTED_EMBEDDING_PROVIDERS = {"dashscope", "openai_compatible", "fake"}
 SUPPORTED_VECTOR_STORE_PROVIDERS = {"milvus", "fake"}
 SUPPORTED_SESSION_STORE_PROVIDERS = {"memory", "sqlite", "postgres"}
+SUPPORTED_RETRIEVAL_AUDIT_STORE_PROVIDERS = {"memory", "sqlite"}
 SUPPORTED_INGESTION_PROVIDERS = {"vector_index", "fake"}
 SUPPORTED_CHECKPOINT_PROVIDERS = {"memory", "sqlite", "postgres"}
 
@@ -19,6 +20,7 @@ class ProviderSelection:
     embedding_provider: str = "dashscope"
     vector_store_provider: str = "milvus"
     session_store_provider: str = "memory"
+    retrieval_audit_store_provider: str = "memory"
     ingestion_provider: str = "vector_index"
     checkpoint_provider: str = "memory"
 
@@ -56,6 +58,15 @@ class ProviderSelection:
                     cls.session_store_provider,
                 )
             ),
+            retrieval_audit_store_provider=_normalize(
+                _setting_value(
+                    settings,
+                    providers,
+                    "retrieval_audit_store_provider",
+                    "retrieval_audit_store",
+                    cls.retrieval_audit_store_provider,
+                )
+            ),
             ingestion_provider=_normalize(
                 _setting_value(
                     settings,
@@ -84,6 +95,11 @@ def validate_provider_selection(settings: Any) -> list[tuple[str, str]]:
         ("EMBEDDING_PROVIDER", selection.embedding_provider, SUPPORTED_EMBEDDING_PROVIDERS),
         ("VECTOR_STORE_PROVIDER", selection.vector_store_provider, SUPPORTED_VECTOR_STORE_PROVIDERS),
         ("SESSION_STORE_PROVIDER", selection.session_store_provider, SUPPORTED_SESSION_STORE_PROVIDERS),
+        (
+            "RETRIEVAL_AUDIT_STORE_PROVIDER",
+            selection.retrieval_audit_store_provider,
+            SUPPORTED_RETRIEVAL_AUDIT_STORE_PROVIDERS,
+        ),
         ("INGESTION_PROVIDER", selection.ingestion_provider, SUPPORTED_INGESTION_PROVIDERS),
         ("CHECKPOINT_PROVIDER", selection.checkpoint_provider, SUPPORTED_CHECKPOINT_PROVIDERS),
     ]
