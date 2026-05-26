@@ -14,6 +14,12 @@ uv pip install -e .
 cp .env.example .env
 # 编辑 .env，填入 DASHSCOPE_API_KEY
 
+# 开发环境运行态状态默认写入本地 SQLite：
+# SESSION_STORE_PROVIDER=sqlite
+# INDEXING_QUEUE_PROVIDER=sqlite
+# CHECKPOINT_PROVIDER=sqlite
+# SQLite 文件默认位于 data/*.sqlite3
+
 # 3. 一键启动（默认启动/检查 Milvus，退出时不停止数据库）
 .\start.ps1
 
@@ -36,6 +42,10 @@ curl -X POST http://localhost:9900/api/upload -F "file=@your-doc.md"
 
 - Web 界面: http://localhost:9900
 - API 文档: http://localhost:9900/docs
+
+## 开发环境状态存储
+
+默认配置使用本地 SQLite 保存会话、检索审计、索引队列、索引任务、文档目录和 LangGraph checkpoint，数据库文件位于 `data/*.sqlite3`。保持 `.env.example` 中的 `SESSION_STORE_PROVIDER=sqlite`、`RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite`、`INDEXING_QUEUE_PROVIDER=sqlite`、`INDEXING_JOB_STORE_PROVIDER=sqlite`、`DOCUMENT_CATALOG_PROVIDER=sqlite` 和 `CHECKPOINT_PROVIDER=sqlite` 即可获得可重启的本地开发状态。`memory` provider 仅用于显式配置的临时测试，不作为开发默认数据库。
 
 ## API
 
