@@ -19,8 +19,10 @@ RETRIEVAL_AUDIT_SQLITE_PATH=data/retrieval-audits.sqlite3
 RETRIEVAL_AUDIT_POSTGRES_DSN=
 INGESTION_PROVIDER=vector_index
 INDEXING_EXECUTION_MODE=sync
+INDEXING_QUEUE_PROVIDER=memory
 INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
 INDEXING_WORKER_SHUTDOWN_TIMEOUT_SECONDS=5.0
+INDEXING_WORKER_RECOVER_PENDING_JOBS=true
 INDEXING_JOB_STORE_PROVIDER=sqlite
 INDEXING_JOB_STORE_SQLITE_PATH=data/indexing-jobs.sqlite3
 INDEXING_JOB_STORE_POSTGRES_DSN=
@@ -64,7 +66,7 @@ For multi-instance audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=postgre
 
 Before deployment, set `DEPLOYMENT_ENVIRONMENT=production`. The startup validator then rejects fake providers, process-memory stores, localhost CORS origins, and debug mode.
 
-For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while the in-process worker performs indexing. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
+For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while the in-process worker performs indexing. Keep `INDEXING_QUEUE_PROVIDER=memory` for local deployments, and keep `INDEXING_WORKER_RECOVER_PENDING_JOBS=true` so persisted pending jobs are re-enqueued on startup. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
 
 For retrieval-quality profiles, set `RETRIEVAL_PROFILE=high_recall` when the business needs a wider recall path with relaxed non-isolation metadata filters. Keep `RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS` aligned with tenant and knowledge-space boundaries. Set `QUERY_REWRITER_PROVIDER=llm` to rewrite user questions into concise retrieval queries, `RERANKER_PROVIDER=llm` to rerank retrieved chunks before truncation, and `CONTEXT_COMPRESSOR_PROVIDER=llm` to compress retrieved chunks before answer generation. Tune these switches with evaluation data instead of enabling extra model calls blindly.
 
@@ -88,4 +90,4 @@ Add a business golden dataset under `data/evaluation/`, then run:
 
 ## Rule
 
-Business-specific work should use configuration, provider selection, indexing execution mode, retrieval profiles, retrieval enhancer switches, tool registration, prompt profiles, and evaluation data. As a default rule, do not modify core code unless a reusable extension point is missing.
+Business-specific work should use configuration, provider selection, indexing execution mode, queue provider selection, retrieval profiles, retrieval enhancer switches, tool registration, prompt profiles, and evaluation data. As a default rule, do not modify core code unless a reusable extension point is missing.

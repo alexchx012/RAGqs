@@ -14,6 +14,7 @@ from app.ingestion.loaders import (
     TextDocumentLoader,
 )
 from app.ingestion.metadata import DocumentMetadataNormalizer
+from app.ingestion.queue import IndexingQueue, InMemoryIndexingQueue
 from app.ingestion.worker import BackgroundIndexingWorker, BackgroundIndexingWorkerStats
 
 __all__ = [
@@ -23,9 +24,11 @@ __all__ = [
     "DocumentLoaderRegistry",
     "DocumentMetadataNormalizer",
     "InMemoryIndexingJobStore",
+    "InMemoryIndexingQueue",
     "IndexingJob",
     "IndexingJobStore",
     "IndexingJobStatus",
+    "IndexingQueue",
     "MarkdownDocumentLoader",
     "PostgresIndexingJobStore",
     "SQLiteIndexingJobStore",

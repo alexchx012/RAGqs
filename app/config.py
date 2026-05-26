@@ -49,8 +49,10 @@ class StorageConfig(FrozenConfigModel):
     retrieval_audit_sqlite_path: str
     retrieval_audit_postgres_dsn: str
     indexing_execution_mode: str
+    indexing_queue_provider: str
     indexing_worker_poll_interval_seconds: float
     indexing_worker_shutdown_timeout_seconds: float
+    indexing_worker_recover_pending_jobs: bool
     indexing_job_store_provider: str
     indexing_job_store_sqlite_path: str
     indexing_job_store_postgres_dsn: str
@@ -140,8 +142,10 @@ class Settings(BaseSettings):
     retrieval_audit_postgres_dsn: str = ""
     ingestion_provider: str = "vector_index"
     indexing_execution_mode: str = "sync"
+    indexing_queue_provider: str = "memory"
     indexing_worker_poll_interval_seconds: float = 0.25
     indexing_worker_shutdown_timeout_seconds: float = 5.0
+    indexing_worker_recover_pending_jobs: bool = True
     indexing_job_store_provider: str = "sqlite"
     indexing_job_store_sqlite_path: str = "data/indexing-jobs.sqlite3"
     indexing_job_store_postgres_dsn: str = ""
@@ -237,8 +241,10 @@ class Settings(BaseSettings):
             retrieval_audit_sqlite_path=self.retrieval_audit_sqlite_path,
             retrieval_audit_postgres_dsn=self.retrieval_audit_postgres_dsn,
             indexing_execution_mode=self.indexing_execution_mode,
+            indexing_queue_provider=self.indexing_queue_provider,
             indexing_worker_poll_interval_seconds=self.indexing_worker_poll_interval_seconds,
             indexing_worker_shutdown_timeout_seconds=self.indexing_worker_shutdown_timeout_seconds,
+            indexing_worker_recover_pending_jobs=self.indexing_worker_recover_pending_jobs,
             indexing_job_store_provider=self.indexing_job_store_provider,
             indexing_job_store_sqlite_path=self.indexing_job_store_sqlite_path,
             indexing_job_store_postgres_dsn=self.indexing_job_store_postgres_dsn,
