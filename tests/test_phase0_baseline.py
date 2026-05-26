@@ -51,6 +51,7 @@ def test_env_example_documents_all_current_settings():
         "RETRIEVAL_AUDIT_STORE_PROVIDER",
         "SESSION_STORE_POSTGRES_DSN",
         "RETRIEVAL_AUDIT_SQLITE_PATH",
+        "RETRIEVAL_AUDIT_POSTGRES_DSN",
         "INGESTION_PROVIDER",
         "INDEXING_EXECUTION_MODE",
         "INDEXING_WORKER_POLL_INTERVAL_SECONDS",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -195,6 +195,150 @@ class SQLiteRetrievalAuditStore:
         return connection
 
 
+PostgresConnector = Callable[[str], Any]
+
+
+class PostgresRetrievalAuditStore:
+    """Durable multi-instance retrieval audit store backed by PostgreSQL."""
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        connector: PostgresConnector | None = None,
+    ):
+        self.dsn = dsn
+        self.connector = connector or _default_postgres_connector
+        self._schema_initialized = False
+
+    def append(self, record: RetrievalAuditRecord) -> RetrievalAuditRecord:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                self._ensure_schema(cursor)
+                cursor.execute(
+                    """
+                    INSERT INTO retrieval_audits (
+                        audit_id,
+                        trace_id,
+                        session_id,
+                        space_id,
+                        question,
+                        answer,
+                        sources_json,
+                        retrieval_json,
+                        created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record.audit_id,
+                        record.trace_id,
+                        record.session_id,
+                        record.space_id,
+                        record.question,
+                        record.answer,
+                        json.dumps(record.sources, ensure_ascii=False),
+                        json.dumps(record.retrieval, ensure_ascii=False),
+                        record.created_at,
+                    ),
+                )
+        return record
+
+    def list_records(
+        self,
+        *,
+        session_id: str | None = None,
+        space_id: str | None = None,
+        trace_id: str | None = None,
+        limit: int = 50,
+    ) -> list[RetrievalAuditRecord]:
+        if limit <= 0:
+            return []
+
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("session_id", session_id),
+            ("space_id", space_id),
+            ("trace_id", trace_id),
+        ):
+            if value:
+                where_clauses.append(f"{column} = %s")
+                params.append(value)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        params.append(limit)
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                self._ensure_schema(cursor)
+                cursor.execute(
+                    f"""
+                    SELECT
+                        audit_id,
+                        trace_id,
+                        session_id,
+                        space_id,
+                        question,
+                        answer,
+                        sources_json,
+                        retrieval_json,
+                        created_at
+                    FROM retrieval_audits
+                    {where_sql}
+                    ORDER BY id DESC
+                    LIMIT %s
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+
+        return [_record_from_row(row) for row in rows]
+
+    def close(self) -> None:
+        """Compatibility hook for providers that keep open resources."""
+
+    def _connect(self) -> Any:
+        return self.connector(self.dsn)
+
+    def _ensure_schema(self, cursor: Any) -> None:
+        if self._schema_initialized:
+            return
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS retrieval_audits (
+                id BIGSERIAL PRIMARY KEY,
+                audit_id TEXT NOT NULL UNIQUE,
+                trace_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                space_id TEXT NOT NULL,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                sources_json TEXT NOT NULL,
+                retrieval_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_retrieval_audits_session_id
+            ON retrieval_audits(session_id, id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_retrieval_audits_space_id
+            ON retrieval_audits(space_id, id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_retrieval_audits_trace_id
+            ON retrieval_audits(trace_id)
+            """
+        )
+        self._schema_initialized = True
+
+
 def _filter_records(
     records: Iterable[RetrievalAuditRecord],
     *,
@@ -211,7 +355,20 @@ def _filter_records(
     ]
 
 
-def _record_from_row(row: sqlite3.Row) -> RetrievalAuditRecord:
+def _default_postgres_connector(dsn: str) -> Any:
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as exc:
+        raise RuntimeError(
+            "RETRIEVAL_AUDIT_STORE_PROVIDER=postgres requires installing psycopg, "
+            'for example: pip install "psycopg[binary]>=3.1"'
+        ) from exc
+
+    return psycopg.connect(dsn, row_factory=dict_row)
+
+
+def _record_from_row(row: Any) -> RetrievalAuditRecord:
     return RetrievalAuditRecord(
         audit_id=row["audit_id"],
         trace_id=row["trace_id"],

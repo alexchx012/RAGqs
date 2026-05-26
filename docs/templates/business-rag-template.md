@@ -15,6 +15,7 @@ RETRIEVAL_AUDIT_STORE_PROVIDER=memory
 SESSION_STORE_SQLITE_PATH=data/sessions.sqlite3
 SESSION_STORE_POSTGRES_DSN=
 RETRIEVAL_AUDIT_SQLITE_PATH=data/retrieval-audits.sqlite3
+RETRIEVAL_AUDIT_POSTGRES_DSN=
 INGESTION_PROVIDER=vector_index
 INDEXING_EXECUTION_MODE=sync
 INDEXING_WORKER_POLL_INTERVAL_SECONDS=0.25
@@ -57,6 +58,8 @@ For OpenAI-compatible endpoints, set `CHAT_PROVIDER=openai_compatible` or `EMBED
 For multi-instance persistence, install the optional Postgres dependency group. Use `SESSION_STORE_PROVIDER=postgres` plus `SESSION_STORE_POSTGRES_DSN` for chat history, `INDEXING_JOB_STORE_PROVIDER=postgres` plus `INDEXING_JOB_STORE_POSTGRES_DSN` for indexing job status, `DOCUMENT_CATALOG_PROVIDER=postgres` plus `DOCUMENT_CATALOG_POSTGRES_DSN` for knowledge-space document lifecycle metadata, and `CHECKPOINT_PROVIDER=postgres` plus `CHECKPOINT_POSTGRES_DSN` for LangGraph checkpoint state.
 
 For local audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite` and keep `RETRIEVAL_AUDIT_SQLITE_PATH` under `data/`. This records selected sources, retrieval debug data, answer text, session id, space id, and trace id for `/api/chat/audits`.
+
+For multi-instance audit inspection, set `RETRIEVAL_AUDIT_STORE_PROVIDER=postgres` plus `RETRIEVAL_AUDIT_POSTGRES_DSN` so every API instance writes retrieval audits to the same database.
 
 For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while the in-process worker performs indexing. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
 

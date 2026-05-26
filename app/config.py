@@ -43,6 +43,7 @@ class StorageConfig(FrozenConfigModel):
     session_store_sqlite_path: str
     session_store_postgres_dsn: str
     retrieval_audit_sqlite_path: str
+    retrieval_audit_postgres_dsn: str
     indexing_execution_mode: str
     indexing_worker_poll_interval_seconds: float
     indexing_worker_shutdown_timeout_seconds: float
@@ -131,6 +132,7 @@ class Settings(BaseSettings):
     session_store_sqlite_path: str = "data/sessions.sqlite3"
     session_store_postgres_dsn: str = ""
     retrieval_audit_sqlite_path: str = "data/retrieval-audits.sqlite3"
+    retrieval_audit_postgres_dsn: str = ""
     ingestion_provider: str = "vector_index"
     indexing_execution_mode: str = "sync"
     indexing_worker_poll_interval_seconds: float = 0.25
@@ -224,6 +226,7 @@ class Settings(BaseSettings):
             session_store_sqlite_path=self.session_store_sqlite_path,
             session_store_postgres_dsn=self.session_store_postgres_dsn,
             retrieval_audit_sqlite_path=self.retrieval_audit_sqlite_path,
+            retrieval_audit_postgres_dsn=self.retrieval_audit_postgres_dsn,
             indexing_execution_mode=self.indexing_execution_mode,
             indexing_worker_poll_interval_seconds=self.indexing_worker_poll_interval_seconds,
             indexing_worker_shutdown_timeout_seconds=self.indexing_worker_shutdown_timeout_seconds,

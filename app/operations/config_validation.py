@@ -170,6 +170,20 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
                     message="must be set when RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite",
                 )
             )
+    if retrieval_audit_store_provider == "postgres":
+        postgres_dsn = _group_value(
+            storage_config,
+            settings,
+            "retrieval_audit_postgres_dsn",
+            "retrieval_audit_postgres_dsn",
+        )
+        if not postgres_dsn.strip():
+            errors.append(
+                ConfigIssue(
+                    field="RETRIEVAL_AUDIT_POSTGRES_DSN",
+                    message="must be set when RETRIEVAL_AUDIT_STORE_PROVIDER=postgres",
+                )
+            )
 
     if selection.checkpoint_provider == "sqlite":
         sqlite_path = _group_value(
