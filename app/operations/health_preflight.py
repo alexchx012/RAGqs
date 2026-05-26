@@ -17,6 +17,11 @@ REQUIRED_DEPENDENCIES = [
     "embeddingProvider",
     "vectorStore",
     "sessionStore",
+    "checkpointStore",
+    "retrievalAuditStore",
+    "indexingQueue",
+    "indexingJobStore",
+    "documentCatalog",
 ]
 
 

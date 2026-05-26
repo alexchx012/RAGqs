@@ -122,10 +122,15 @@ RETRIEVAL_AUDIT_POSTGRES_DSN=postgresql://rag:secret@db/ragqs
 The `dependencies` object is split by runtime boundary:
 
 - `app`: application metadata and liveness.
-- `modelProvider`: chat model configuration status.
-- `embeddingProvider`: embedding model configuration status.
-- `vectorStore`: Milvus connectivity status.
-- `sessionStore`: backend session store availability.
+- `modelProvider`: DashScope, OpenAI-compatible, or fake chat provider configuration status.
+- `embeddingProvider`: DashScope, OpenAI-compatible, or fake embedding provider configuration status.
+- `vectorStore`: Milvus connectivity status or fake vector-store boundary status.
+- `sessionStore`: backend session store configuration.
+- `checkpointStore`: LangGraph checkpoint provider configuration.
+- `retrievalAuditStore`: retrieval audit provider configuration.
+- `indexingQueue`: background indexing queue provider configuration.
+- `indexingJobStore`: indexing status provider configuration.
+- `documentCatalog`: knowledge-space/document catalog provider configuration.
 
 The route returns HTTP `503` when any required dependency is unhealthy. Use this endpoint as a readiness check; keep startup preflight and Docker health checks aligned with the same dependency names.
 
@@ -198,6 +203,8 @@ Use `scripts/check-api-health.ps1` after FastAPI is up, or when `start.ps1` dete
 ```
 
 The script calls `app.operations.health_preflight`, parses the `/health` response envelope, and fails when any required dependency is missing or unhealthy. Required dependency names currently match the health endpoint: `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, and `sessionStore`.
+The provider-aware preflight also requires `checkpointStore`, `retrievalAuditStore`,
+`indexingQueue`, `indexingJobStore`, and `documentCatalog`.
 
 ## Integration Smoke Checks
 

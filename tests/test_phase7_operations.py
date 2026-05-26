@@ -361,12 +361,15 @@ def test_default_health_checker_prefers_grouped_settings_and_injected_dependenci
         "version": "2.0.0",
     }
     assert payload["dependencies"]["modelProvider"]["details"] == {
-        "model": "group-rag-model"
+        "provider": "dashscope",
+        "model": "group-rag-model",
     }
     assert payload["dependencies"]["embeddingProvider"]["details"] == {
-        "model": "group-embedding"
+        "provider": "dashscope",
+        "model": "group-embedding",
     }
     assert payload["dependencies"]["vectorStore"]["details"] == {
+        "provider": "milvus",
         "host": "milvus.grouped",
         "port": 19630,
     }
@@ -575,6 +578,8 @@ def test_config_validation_accepts_hardened_production_settings():
             openai_compatible_api_key="sk-compatible",
             openai_compatible_model="compatible-chat",
             openai_compatible_embedding_model="compatible-embedding",
+            auth_enabled=True,
+            runtime_controls_enabled=True,
         )
     )
 
@@ -753,15 +758,20 @@ def test_health_preflight_accepts_healthy_dependency_payload():
             "code": 200,
             "data": {
                 "status": "healthy",
-                "dependencies": {
-                    "app": {"status": "healthy"},
-                    "modelProvider": {"status": "healthy"},
-                    "embeddingProvider": {"status": "healthy"},
-                    "vectorStore": {"status": "healthy"},
-                    "sessionStore": {"status": "healthy"},
+                    "dependencies": {
+                        "app": {"status": "healthy"},
+                        "modelProvider": {"status": "healthy"},
+                        "embeddingProvider": {"status": "healthy"},
+                        "vectorStore": {"status": "healthy"},
+                        "sessionStore": {"status": "healthy"},
+                        "checkpointStore": {"status": "healthy"},
+                        "retrievalAuditStore": {"status": "healthy"},
+                        "indexingQueue": {"status": "healthy"},
+                        "indexingJobStore": {"status": "healthy"},
+                        "documentCatalog": {"status": "healthy"},
+                    },
                 },
             },
-        },
         http_status=200,
     )
 
@@ -772,6 +782,11 @@ def test_health_preflight_accepts_healthy_dependency_payload():
         "embeddingProvider",
         "vectorStore",
         "sessionStore",
+        "checkpointStore",
+        "retrievalAuditStore",
+        "indexingQueue",
+        "indexingJobStore",
+        "documentCatalog",
     ]
 
 
