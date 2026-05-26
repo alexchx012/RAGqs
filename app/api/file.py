@@ -4,12 +4,12 @@ import inspect
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel
 
 from app.config import config
 from app.ingestion import IndexingJob
+from app.models.response import envelope_json_response
 from app.providers.contracts import IngestionResult
 from app.providers.factory import get_default_provider_container
 from app.security.uploads import (
@@ -58,15 +58,14 @@ async def upload_file(file: UploadFile = File(...), space_id: str = "default"):
             logger.error(f"向量索引创建失败: {e}")
             raise HTTPException(status_code=500, detail=f"向量索引创建失败: {e}") from e
 
-        return JSONResponse(status_code=200, content={
-            "code": 200, "message": "success",
-            "data": {
+        return envelope_json_response(
+            {
                 "filename": upload.safe_filename,
                 "size": len(upload.content),
                 "spaceId": indexing_job.space_id,
                 "indexing": _serialize_indexing_job(indexing_job),
-            },
-        })
+            }
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -76,14 +75,7 @@ async def upload_file(file: UploadFile = File(...), space_id: str = "default"):
 @router.get("/knowledge-spaces")
 async def list_knowledge_spaces():
     spaces = vector_index_service.list_knowledge_spaces()
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {"spaces": [_serialize_knowledge_space(space) for space in spaces]},
-        },
-    )
+    return envelope_json_response({"spaces": [_serialize_knowledge_space(space) for space in spaces]})
 
 
 @router.post("/knowledge-spaces")
@@ -93,30 +85,18 @@ async def create_knowledge_space(request: KnowledgeSpaceCreateRequest):
         name=request.name,
         description=request.description,
     )
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {"space": _serialize_knowledge_space(space)},
-        },
-    )
+    return envelope_json_response({"space": _serialize_knowledge_space(space)})
 
 
 @router.get("/knowledge-spaces/{space_id}/documents")
 async def list_documents(space_id: str):
     documents = vector_index_service.list_documents(space_id=space_id)
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {
-                "space_id": space_id,
-                "count": len(documents),
-                "documents": [_serialize_document_record(document) for document in documents],
-            },
-        },
+    return envelope_json_response(
+        {
+            "space_id": space_id,
+            "count": len(documents),
+            "documents": [_serialize_document_record(document) for document in documents],
+        }
     )
 
 
@@ -125,14 +105,7 @@ async def get_document(space_id: str, document_id: str):
     document = vector_index_service.get_document(space_id=space_id, document_id=document_id)
     if document is None:
         raise HTTPException(status_code=404, detail=f"文档不存在: {space_id}/{document_id}")
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {"document": _serialize_document_record(document)},
-        },
-    )
+    return envelope_json_response({"document": _serialize_document_record(document)})
 
 
 @router.delete("/knowledge-spaces/{space_id}/documents/{document_id}")
@@ -141,14 +114,7 @@ async def delete_document(space_id: str, document_id: str):
         document = vector_index_service.delete_document(space_id=space_id, document_id=document_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {"document": _serialize_document_record(document)},
-        },
-    )
+    return envelope_json_response({"document": _serialize_document_record(document)})
 
 
 @router.post("/knowledge-spaces/{space_id}/documents/{document_id}/rebuild")
@@ -157,14 +123,7 @@ async def rebuild_document(space_id: str, document_id: str):
         job = vector_index_service.rebuild_document(space_id=space_id, document_id=document_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {"indexing": _serialize_indexing_job(job, include_source_path=True)},
-        },
-    )
+    return envelope_json_response({"indexing": _serialize_indexing_job(job, include_source_path=True)})
 
 
 @router.get("/index-jobs")
@@ -178,16 +137,11 @@ async def list_indexing_jobs(
         source_path=source_path,
         status=status,
     )
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {
-                "count": len(jobs),
-                "jobs": [_serialize_indexing_job(job, include_source_path=True) for job in jobs],
-            },
-        },
+    return envelope_json_response(
+        {
+            "count": len(jobs),
+            "jobs": [_serialize_indexing_job(job, include_source_path=True) for job in jobs],
+        }
     )
 
 
@@ -196,14 +150,7 @@ async def get_indexing_job(job_id: str):
     job = vector_index_service.get_indexing_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"索引任务不存在: {job_id}")
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {"indexing": _serialize_indexing_job(job, include_source_path=True)},
-        },
-    )
+    return envelope_json_response({"indexing": _serialize_indexing_job(job, include_source_path=True)})
 
 
 @router.post("/index-jobs/{job_id}/retry")
@@ -212,14 +159,7 @@ async def retry_indexing_job(job_id: str):
         job = vector_index_service.retry_indexing_job(job_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return JSONResponse(
-        status_code=200,
-        content={
-            "code": 200,
-            "message": "success",
-            "data": {"indexing": _serialize_indexing_job(job, include_source_path=True)},
-        },
-    )
+    return envelope_json_response({"indexing": _serialize_indexing_job(job, include_source_path=True)})
 
 
 def _serialize_indexing_job(job, include_source_path: bool = False) -> dict | None:

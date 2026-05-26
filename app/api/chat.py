@@ -8,7 +8,7 @@ from loguru import logger
 from sse_starlette.sse import EventSourceResponse
 
 from app.models.request import ChatRequest, ClearRequest
-from app.models.response import ApiResponse, SessionInfoResponse
+from app.models.response import ApiResponse, SessionInfoResponse, error_envelope, success_envelope
 from app.services.rag_agent_service import rag_agent_service
 
 router = APIRouter()
@@ -50,25 +50,22 @@ async def chat(request: ChatRequest):
             session_id=request.id,
             space_id=request.space_id,
         )
-        return {
-            "code": 200,
-            "message": "success",
-            "data": {
+        return success_envelope(
+            {
                 "success": True,
                 "answer": result["answer"],
                 "sources": result["sources"],
                 "retrievalDebug": result["retrieval"]["debug"],
                 "retrieval": result["retrieval"],
                 "errorMessage": None,
-            },
-        }
+            }
+        ).model_dump(mode="json")
     except Exception as e:
         logger.error(f"对话接口错误: {e}")
-        return {
-            "code": 500,
-            "message": "error",
-            "data": {"success": False, "answer": None, "errorMessage": str(e)},
-        }
+        return error_envelope(
+            "error",
+            data={"success": False, "answer": None, "errorMessage": str(e)},
+        ).model_dump(mode="json")
 
 
 async def _call_query_with_trace(question: str, *, session_id: str, space_id: str):
@@ -126,11 +123,9 @@ async def list_sessions(query: str | None = None):
     try:
         summaries = rag_agent_service.list_sessions(query=query)
         sessions = [_serialize_session_summary(summary) for summary in summaries]
-        return {
-            "code": 200,
-            "message": "success",
-            "data": {"count": len(sessions), "sessions": sessions},
-        }
+        return success_envelope({"count": len(sessions), "sessions": sessions}).model_dump(
+            mode="json"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -152,11 +147,9 @@ async def list_retrieval_audits(
             limit=normalized_limit,
         )
         serialized = [_serialize_retrieval_audit(audit) for audit in audits]
-        return {
-            "code": 200,
-            "message": "success",
-            "data": {"count": len(serialized), "audits": serialized},
-        }
+        return success_envelope({"count": len(serialized), "audits": serialized}).model_dump(
+            mode="json"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
