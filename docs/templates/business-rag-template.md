@@ -33,6 +33,7 @@ TOOL_PLANNING_EXCLUDED_TOOLS=retrieve_knowledge
 PROMPT_PROFILE=strict
 RAG_TOP_K=3
 QUERY_REWRITER_PROVIDER=none
+RERANKER_PROVIDER=none
 CONTEXT_COMPRESSOR_PROVIDER=none
 CONTEXT_COMPRESSOR_MAX_CHARACTERS=1200
 ```
@@ -52,7 +53,7 @@ For multi-instance persistence, install the optional Postgres dependency group. 
 
 For larger uploads, set `INDEXING_EXECUTION_MODE=background` so upload responses return a pending job while the in-process worker performs indexing. Keep `sync` for simple local deployments where callers should receive immediate indexing success or failure.
 
-For retrieval-quality profiles, set `QUERY_REWRITER_PROVIDER=llm` to rewrite user questions into concise retrieval queries and `CONTEXT_COMPRESSOR_PROVIDER=llm` to compress retrieved chunks before answer generation. Tune `CONTEXT_COMPRESSOR_MAX_CHARACTERS` with evaluation data instead of enabling compression blindly.
+For retrieval-quality profiles, set `QUERY_REWRITER_PROVIDER=llm` to rewrite user questions into concise retrieval queries, `RERANKER_PROVIDER=llm` to rerank retrieved chunks before truncation, and `CONTEXT_COMPRESSOR_PROVIDER=llm` to compress retrieved chunks before answer generation. Tune these switches with evaluation data instead of enabling extra model calls blindly.
 
 ## Tools
 

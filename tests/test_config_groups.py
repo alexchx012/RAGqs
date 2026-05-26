@@ -66,6 +66,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         rag_top_k=8,
         rag_model="qwen-plus",
         query_rewriter_provider="llm",
+        reranker_provider="llm",
         context_compressor_provider="llm",
         context_compressor_max_characters=600,
         chunk_max_size=1200,
@@ -138,6 +139,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         top_k=8,
         model="qwen-plus",
         query_rewriter_provider="llm",
+        reranker_provider="llm",
         context_compressor_provider="llm",
         context_compressor_max_characters=600,
     )

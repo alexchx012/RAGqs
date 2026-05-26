@@ -378,6 +378,23 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             )
         )
 
+    reranker_provider = _normalize_config_id(
+        _group_value(
+            rag_config,
+            settings,
+            "reranker_provider",
+            "reranker_provider",
+            default="none",
+        )
+    )
+    if reranker_provider not in {"none", "llm"}:
+        errors.append(
+            ConfigIssue(
+                field="RERANKER_PROVIDER",
+                message=f"unsupported provider: {reranker_provider}",
+            )
+        )
+
     context_compressor_provider = _normalize_config_id(
         _group_value(
             rag_config,
