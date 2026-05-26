@@ -18,6 +18,7 @@ from app.ingestion.worker import get_background_indexing_worker
 from app.observability import install_request_context_middleware
 from app.operations.health import create_default_health_checker
 from app.security import build_cors_options
+from app.security.runtime_controls import install_runtime_controls_middleware
 
 
 def create_lifespan(
@@ -95,6 +96,7 @@ def create_app(
     )
 
     install_request_context_middleware(application)
+    install_runtime_controls_middleware(application, settings=settings)
 
     application.add_middleware(
         CORSMiddleware,
