@@ -5,6 +5,7 @@ import pytest
 from app.api import chat as chat_api
 from app.models.request import ChatRequest
 from app.providers import RetrievalRequest, RetrievalResult, RetrievalSource
+from app.services import rag_agent_service as rag_service_module
 from app.services.rag_agent_service import RagAgentService
 
 
@@ -44,6 +45,15 @@ class FakeAgent:
         yield AIMessageChunk(), {"langgraph_node": "agent"}
 
 
+class ConfigCapturingAgent:
+    def __init__(self):
+        self.configs = []
+
+    async def ainvoke(self, input, config):
+        self.configs.append(config)
+        return {"messages": [SimpleNamespace(content="answer with sources")]}
+
+
 def fake_agent_factory(model, tools, checkpointer):
     return FakeAgent()
 
@@ -80,6 +90,40 @@ async def test_rag_agent_service_query_with_trace_returns_answer_sources_and_deb
         }
     ]
     assert result["retrieval"]["debug"]["stages"] == ["rewrite", "retrieve", "sources"]
+
+
+@pytest.mark.asyncio
+async def test_rag_agent_service_attaches_trace_metadata_to_legacy_agent_config(monkeypatch):
+    monkeypatch.setattr(rag_service_module, "get_current_trace_id", lambda: "trace-legacy")
+    agent = ConfigCapturingAgent()
+
+    def agent_factory(model, tools, checkpointer):
+        return agent
+
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=SimpleNamespace(create_chat_model=lambda streaming: object()),
+        agent_factory=agent_factory,
+        tools=[],
+        retriever_provider=StaticRetriever(),
+        retrieval_top_k=4,
+        agent_runtime="legacy",
+        prompt_profile="concise",
+    )
+
+    await service.query_with_trace("what is rag", session_id="s1", space_id="finance")
+
+    assert agent.configs[0]["configurable"] == {"thread_id": "s1"}
+    assert agent.configs[0]["metadata"] == {
+        "traceId": "trace-legacy",
+        "sessionId": "s1",
+        "spaceId": "finance",
+        "agentRuntime": "legacy",
+        "promptProfile": "concise",
+    }
+    assert "ragqs" in agent.configs[0]["tags"]
+    assert "runtime:legacy" in agent.configs[0]["tags"]
+    assert "space:finance" in agent.configs[0]["tags"]
 
 
 @pytest.mark.asyncio

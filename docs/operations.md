@@ -11,6 +11,12 @@ Every HTTP request is assigned a trace id by `app.observability.request_context`
 - The response always includes `X-Trace-Id` for successful FastAPI responses.
 - Code running inside the request can call `get_current_trace_id()` to attach the same id to downstream logs or events.
 
+RAG agent execution passes the same request context into LangChain/LangGraph runtime config. The
+config includes metadata for `traceId`, `sessionId`, `spaceId`, `agentRuntime`, and `promptProfile`,
+with tags such as `ragqs`, `runtime:<runtime>`, `space:<space_id>`, and `prompt:<profile>`. When
+LangSmith tracing is enabled, these fields let you correlate a trace with access logs and retrieval
+audit records.
+
 ## Structured Access Logs
 
 The request middleware emits one structured `http_request` record per request. Current fields:

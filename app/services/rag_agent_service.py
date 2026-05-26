@@ -70,7 +70,8 @@ class RagAgentService:
     ):
         self.model_name = config.rag_model
         self.streaming = streaming
-        self.system_prompt = system_prompt or self._build_system_prompt(prompt_profile)
+        self.prompt_profile = prompt_profile or config.prompt_profile
+        self.system_prompt = system_prompt or self._build_system_prompt(self.prompt_profile)
 
         self.chat_model_provider = chat_model_provider or self._get_chat_model_provider()
         self.agent_factory = agent_factory
@@ -216,7 +217,7 @@ class RagAgentService:
                 return
             await self._initialize_agent()
             messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=question)]
-            config_dict = {"configurable": {"thread_id": session_id}}
+            config_dict = self._build_runtime_config(session_id=session_id, space_id=space_id)
             answer_parts: list[str] = []
 
             with enforce_knowledge_space(space_id):
@@ -304,7 +305,7 @@ class RagAgentService:
             self.explicit_graph = self._build_default_explicit_graph()
         return self.explicit_graph.invoke(
             {"question": question, "session_id": session_id, "space_id": space_id},
-            {"configurable": {"thread_id": session_id}},
+            self._build_runtime_config(session_id=session_id, space_id=space_id),
         )
 
     def _stream_explicit_graph(
@@ -318,7 +319,7 @@ class RagAgentService:
             self.explicit_graph = self._build_default_explicit_graph()
 
         input_payload = {"question": question, "session_id": session_id, "space_id": space_id}
-        config_dict = {"configurable": {"thread_id": session_id}}
+        config_dict = self._build_runtime_config(session_id=session_id, space_id=space_id)
         target_state = final_state if final_state is not None else {}
 
         if not hasattr(self.explicit_graph, "stream"):
@@ -378,7 +379,7 @@ class RagAgentService:
     ) -> str:
         await self._initialize_agent()
         messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=question)]
-        config_dict = {"configurable": {"thread_id": session_id}}
+        config_dict = self._build_runtime_config(session_id=session_id, space_id=space_id)
         with enforce_knowledge_space(space_id):
             result = await self.agent.ainvoke(input={"messages": messages}, config=config_dict)
         messages_result = result.get("messages", [])
@@ -434,6 +435,27 @@ class RagAgentService:
             tools=planner_tools,
             system_prompt=self.system_prompt,
         )
+
+    def _build_runtime_config(self, *, session_id: str, space_id: str) -> dict[str, Any]:
+        metadata = {
+            "sessionId": session_id,
+            "spaceId": space_id,
+            "agentRuntime": self.agent_runtime,
+            "promptProfile": self.prompt_profile,
+        }
+        trace_id = get_current_trace_id()
+        if trace_id:
+            metadata["traceId"] = trace_id
+        return {
+            "configurable": {"thread_id": session_id},
+            "metadata": metadata,
+            "tags": [
+                "ragqs",
+                f"runtime:{self.agent_runtime}",
+                f"space:{space_id}",
+                f"prompt:{self.prompt_profile}",
+            ],
+        }
 
     def _record_session_exchange(
         self,

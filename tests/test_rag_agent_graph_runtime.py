@@ -3,6 +3,7 @@ from langchain_core.documents import Document
 
 from app.providers import InMemorySessionStoreProvider, RetrievalResult, RetrievalSource
 from app.providers.checkpoints import SQLiteCheckpointProvider
+from app.services import rag_agent_service as rag_service_module
 from app.services.rag_agent_service import RagAgentService
 
 
@@ -157,12 +158,12 @@ async def test_rag_agent_service_query_with_trace_can_use_explicit_graph_runtime
 
     result = await service.query_with_trace("What is graph RAG?", session_id="s1")
 
-    assert graph.calls == [
-        (
-            {"question": "What is graph RAG?", "session_id": "s1", "space_id": "default"},
-            {"configurable": {"thread_id": "s1"}},
-        )
-    ]
+    assert graph.calls[0][0] == {
+        "question": "What is graph RAG?",
+        "session_id": "s1",
+        "space_id": "default",
+    }
+    assert graph.calls[0][1]["configurable"] == {"thread_id": "s1"}
     assert result == {
         "answer": "graph answer",
         "sources": [{"index": 1, "fileName": "graph.md"}],
@@ -173,6 +174,42 @@ async def test_rag_agent_service_query_with_trace_can_use_explicit_graph_runtime
             "debug": {"stages": ["retrieve"]},
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_rag_agent_service_attaches_trace_metadata_to_explicit_graph_config(monkeypatch):
+    monkeypatch.setattr(rag_service_module, "get_current_trace_id", lambda: "trace-graph")
+    graph = FakeCompiledGraph(
+        {
+            "answer": "graph answer",
+            "sources": [],
+            "retrieval_debug": {},
+            "events": [],
+        }
+    )
+    service = RagAgentService(
+        streaming=False,
+        agent_factory=failing_agent_factory,
+        tools=[],
+        use_explicit_graph=True,
+        explicit_graph=graph,
+        prompt_profile="strict",
+    )
+
+    await service.query_with_trace("What is graph RAG?", session_id="s1", space_id="finance")
+
+    config = graph.calls[0][1]
+    assert config["configurable"] == {"thread_id": "s1"}
+    assert config["metadata"] == {
+        "traceId": "trace-graph",
+        "sessionId": "s1",
+        "spaceId": "finance",
+        "agentRuntime": "explicit_graph",
+        "promptProfile": "strict",
+    }
+    assert "ragqs" in config["tags"]
+    assert "runtime:explicit_graph" in config["tags"]
+    assert "space:finance" in config["tags"]
 
 
 @pytest.mark.asyncio
