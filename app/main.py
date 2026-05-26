@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from app.api import chat, file, health
+from app.api import chat, file, health, metrics
 from app.config import config
 from app.core.milvus_client import milvus_manager
 from app.ingestion.worker import get_background_indexing_worker
@@ -61,6 +61,7 @@ app.add_middleware(
 app.include_router(health.router, tags=["健康检查"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
+app.include_router(metrics.router, prefix="/api", tags=["运行指标"])
 
 static_dir = "static"
 if os.path.isdir(static_dir):

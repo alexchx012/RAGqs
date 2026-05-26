@@ -30,6 +30,21 @@ The request middleware emits one structured `http_request` record per request. C
 
 These records are emitted as JSON payloads through Loguru. Keep business logs concise and include the current trace id when debugging a request path.
 
+## Runtime Metrics
+
+`GET /api/metrics` returns an in-process operational snapshot for the current
+FastAPI worker. This is a lightweight local signal, not a replacement for a
+central metrics backend in multi-instance deployments.
+
+The response includes:
+
+- `http.totalRequests`, `statusCodes`, per-route counts, `averageLatencyMs`, and `latencyBucketsMs`.
+- `rag.totalQueries`, `successes`, `failures`, per-space counts, RAG `averageLatencyMs`, and `latencyBucketsMs`.
+- `rag.tokenUsage` with `promptTokens`, `completionTokens`, and `totalTokens` when providers expose usage metadata.
+
+Use this endpoint for local smoke checks and dashboards. For production,
+scrape or export the same fields into the chosen central observability system.
+
 ## Retrieval Audit
 
 Successful traced RAG answers are written to the configured retrieval audit store. The development default is local SQLite:
