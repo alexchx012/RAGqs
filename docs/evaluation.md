@@ -65,6 +65,11 @@ $env:LANGSMITH_PROJECT = "ragqs-local"
 
 Keep `LANGSMITH_TRACING=false` for the deterministic baseline path.
 
+RAG runtime calls attach LangSmith metadata and tags from the request context:
+`traceId`, `sessionId`, `spaceId`, `agentRuntime`, and `promptProfile`, plus tags such as
+`ragqs`, `runtime:explicit_graph`, `space:default`, and `prompt:default`. Use `traceId` to
+correlate an evaluation run with `GET /api/chat/audits` records and structured access logs.
+
 ## Metrics
 
 - `retrievalHitRate`: at least one expected source appears in retrieved sources.
