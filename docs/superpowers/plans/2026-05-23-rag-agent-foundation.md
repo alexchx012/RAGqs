@@ -49,8 +49,9 @@ Current progress: `app/config.py` now exposes typed grouped settings for app, CO
 - [x] Return indexing errors to API callers instead of only logging them.
 - [x] Add process-local indexing job storage, per-file directory job summaries, indexing status APIs, and failed-job retry.
 - [x] Add durable indexing job storage when a persistence backend is selected. Current progress: `SQLiteIndexingJobStore` persists indexing jobs locally when `INDEXING_JOB_STORE_PROVIDER=sqlite`, and `PostgresIndexingJobStore` persists indexing jobs for multi-instance deployments when `INDEXING_JOB_STORE_PROVIDER=postgres`.
+- [x] Add optional background job execution for uploads. Current progress: `INDEXING_EXECUTION_MODE=background` creates pending jobs and enqueues them for an in-process FastAPI lifespan worker; `sync` remains the default compatibility mode.
 
-Current progress: `app/ingestion/` now contains UTF-8 text/Markdown loaders, metadata normalization, an indexing job state model, in-memory, SQLite, and Postgres job stores. `VectorIndexService` accepts loader, splitter, vector store, normalizer, job store, and document catalog dependencies; can select SQLite/Postgres job storage and memory/SQLite/Postgres document catalog storage from configuration; deletes previous chunks by stable `document_id`; enriches chunks with normalized metadata; records successful and failed jobs; and returns per-file job summaries for directory indexing. Upload responses include indexing status, indexing failures return HTTP 500 details, and `/index-jobs` APIs support list, detail, and retry. Remaining work includes historical index migration for chunks created before `document_id`.
+Current progress: `app/ingestion/` now contains UTF-8 text/Markdown loaders, metadata normalization, an indexing job state model, in-memory, SQLite, and Postgres job stores, and an in-process background worker. `VectorIndexService` accepts loader, splitter, vector store, normalizer, job store, and document catalog dependencies; can select SQLite/Postgres job storage and memory/SQLite/Postgres document catalog storage from configuration; deletes previous chunks by stable `document_id`; enriches chunks with normalized metadata; records successful and failed jobs; creates pending jobs for queued execution; and returns per-file job summaries for directory indexing. Upload responses include indexing status, synchronous indexing failures return HTTP 500 details, background indexing returns pending jobs, and `/index-jobs` APIs support list, detail, and retry. Remaining work includes historical index migration for chunks created before `document_id` and an external/distributed queue for multi-instance production ingestion.
 
 ## Phase 3: Retrieval Foundation
 
@@ -108,13 +109,14 @@ Current progress: `app/observability/`, `app/operations/`, and `app/security/` p
 - [x] Add provider switching examples for DashScope, OpenAI-compatible APIs, and local test doubles. Current progress: provider ids are configurable through `CHAT_PROVIDER`, `EMBEDDING_PROVIDER`, `VECTOR_STORE_PROVIDER`, `SESSION_STORE_PROVIDER`, and `INGESTION_PROVIDER`; `dashscope`, `openai_compatible`, `fake`, SQLite session, and Postgres session provider paths are covered by tests and docs.
 - [x] Add a second-business-template guide showing how to fork configuration without changing core code. Current progress: `docs/extension-guide.md` and `docs/templates/business-rag-template.md` document tool registration, provider switching, prompt profiles, evaluation setup, and the no-core-code customization rule.
 
-Current progress: Phase 8 has a tested extension layer for tool registration, optional model tool planning, prompt profile selection, provider switching, retrieval enhancer switches, local test doubles, SQLite session/job/document/checkpoint storage, Postgres session/indexing-job/document/checkpoint storage, configurable agent runtime, and second-business documentation. Remaining foundation work after this plan includes deeper production capabilities such as real provider evaluation, background indexing workers, and hosted CI wiring.
+Current progress: Phase 8 has a tested extension layer for tool registration, optional model tool planning, prompt profile selection, provider switching, indexing execution mode, retrieval enhancer switches, local test doubles, SQLite session/job/document/checkpoint storage, Postgres session/indexing-job/document/checkpoint storage, configurable agent runtime, and second-business documentation. Remaining foundation work after this plan includes deeper production capabilities such as real provider evaluation, distributed indexing queues, and hosted CI wiring.
 
 ## Verification Gates
 
 - [ ] `scripts/validate-baseline.ps1 -SkipPreflight`
 - [x] backend unit tests with fake providers
 - [x] provider container and provider-backed knowledge retrieval tests
+- [x] background indexing worker tests
 - [x] ingestion loader, metadata, job, and vector indexing service tests
 - [x] Postgres indexing job store tests
 - [x] Postgres document catalog tests

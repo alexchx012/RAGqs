@@ -9,7 +9,7 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - `app/api/file.py`: upload endpoint for configured text/Markdown files with upload security validation before indexing.
 - `app/services/rag_agent_service.py`: default explicit LangGraph `StateGraph` RAG runtime with a legacy `create_agent` compatibility mode.
 - `app/tools/knowledge_tool.py`: retrieval tool that calls the vector store retriever.
-- `app/services/vector_index_service.py`: synchronous file indexing from uploads.
+- `app/services/vector_index_service.py`: file indexing from uploads, with synchronous execution by default and optional background job execution.
 - `app/services/document_splitter_service.py`: Markdown header splitting and recursive text splitting.
 - `app/services/vector_store_manager.py`: Milvus LangChain vector store wrapper, currently bound to collection `biz`.
 - `app/core/milvus_client.py`: low-level Milvus connection and collection initialization.
@@ -27,7 +27,7 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - Settings now expose typed groups over the existing `.env` variables, but some runtime modules still read flat global config fields directly.
 - Most runtime dependencies are now behind provider interfaces, but production collection selection and some document-management APIs are still tied to the current vector index service.
 - Session state defaults to process-local backend memory; SQLite can persist local transcripts, Postgres is available for multi-instance chat history, and the browser uses localStorage only as a fallback cache.
-- Indexing is synchronous and has retry, idempotent document ids, optional SQLite/Postgres job state, and optional SQLite/Postgres document catalog storage.
+- Indexing defaults to synchronous execution and has retry, idempotent document ids, optional SQLite/Postgres job state, optional SQLite/Postgres document catalog storage, and an in-process background worker mode for queued uploads.
 - Retrieval still defaults to basic top-k vector search, but metadata filters, citation extraction, and debug trace data are now on the default path. LLM-backed query rewrite and context compression can be enabled by configuration; rerank and multi-retriever production tuning remain extension work.
 - Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, with memory, SQLite, and Postgres checkpoint providers behind `CHECKPOINT_PROVIDER`.
 - API responses are inconsistent: chat endpoints return ad hoc dictionaries while other routes use Pydantic response models.
@@ -64,9 +64,10 @@ The repository now has an initial `app/ingestion/` foundation:
 - `metadata.py`: stable document metadata and chunk metadata normalization, including document id, chunk id, source path, content hash, extension, file name, heading path, and legacy `_source` fields.
 - `jobs.py`: `IndexingJob` status model with pending, running, succeeded, failed, and partial terminal states.
 - `job_store.py`: process-local and SQLite indexing job stores with job id, document id, source path, and status filters.
+- `worker.py`: in-process background indexing worker that executes persisted pending jobs and shuts down through the FastAPI lifespan.
 - `app/knowledge/catalog.py`: process-local, SQLite, and Postgres knowledge-space/document catalog implementations.
 
-`app/services/vector_index_service.py` now accepts injectable loader, splitter, vector store, metadata normalizer, job store, and document catalog dependencies. Single-file indexing uses the loader registry, deletes previous chunks by stable `document_id`, enriches chunks with normalized metadata, records successful and failed jobs, and returns an `IndexingJob`. Directory indexing now returns per-file job summaries. `app/api/file.py` includes indexing status in successful upload responses, validates upload filename, extension, size, UTF-8 content, and prompt-injection risk before writing files, returns HTTP 500 details when indexing fails, and exposes `/index-jobs` endpoints for list, detail, and retry. `INDEXING_JOB_STORE_PROVIDER=sqlite` enables local durable job status, `INDEXING_JOB_STORE_PROVIDER=postgres` enables multi-instance job status, `DOCUMENT_CATALOG_PROVIDER=sqlite` enables local durable document lifecycle metadata, and `DOCUMENT_CATALOG_PROVIDER=postgres` enables multi-instance document lifecycle metadata. Historical chunks created before `document_id` metadata still need a rebuild before they can be managed by the new delete path.
+`app/services/vector_index_service.py` now accepts injectable loader, splitter, vector store, metadata normalizer, job store, and document catalog dependencies. Single-file indexing uses the loader registry, deletes previous chunks by stable `document_id`, enriches chunks with normalized metadata, records successful and failed jobs, and returns an `IndexingJob`. Directory indexing now returns per-file job summaries. `INDEXING_EXECUTION_MODE=background` makes upload ingestion create a pending job and enqueue it for the FastAPI-managed background worker; `sync` remains the default compatibility mode. `app/api/file.py` includes indexing status in successful upload responses, validates upload filename, extension, size, UTF-8 content, and prompt-injection risk before writing files, returns HTTP 500 details when synchronous indexing fails, and exposes `/index-jobs` endpoints for list, detail, and retry. `INDEXING_JOB_STORE_PROVIDER=sqlite` enables local durable job status, `INDEXING_JOB_STORE_PROVIDER=postgres` enables multi-instance job status, `DOCUMENT_CATALOG_PROVIDER=sqlite` enables local durable document lifecycle metadata, and `DOCUMENT_CATALOG_PROVIDER=postgres` enables multi-instance document lifecycle metadata. Historical chunks created before `document_id` metadata still need a rebuild before they can be managed by the new delete path.
 
 ## Phase 3 Progress
 
@@ -156,4 +157,4 @@ The repository now has an initial extension-template layer:
 - `app/knowledge/catalog.py`: memory, SQLite, and Postgres document catalog implementations selected through `DOCUMENT_CATALOG_PROVIDER`.
 - `docs/extension-guide.md` and `docs/templates/business-rag-template.md`: second-development guidance for adding business tools, prompt profiles, provider settings, and evaluation data without modifying core API code.
 
-This completes the first reusable base-agent extension surface. Open product work still includes real provider evaluation, background indexing workers, real reranker and multi-retriever retrieval profiles, and production security hardening.
+This completes the first reusable base-agent extension surface. Open product work still includes real provider evaluation, distributed indexing queues beyond the in-process worker, real reranker and multi-retriever retrieval profiles, and production security hardening.

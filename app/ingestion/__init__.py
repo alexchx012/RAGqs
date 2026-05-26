@@ -14,8 +14,11 @@ from app.ingestion.loaders import (
     TextDocumentLoader,
 )
 from app.ingestion.metadata import DocumentMetadataNormalizer
+from app.ingestion.worker import BackgroundIndexingWorker, BackgroundIndexingWorkerStats
 
 __all__ = [
+    "BackgroundIndexingWorker",
+    "BackgroundIndexingWorkerStats",
     "DocumentLoader",
     "DocumentLoaderRegistry",
     "DocumentMetadataNormalizer",

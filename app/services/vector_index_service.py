@@ -121,31 +121,48 @@ class VectorIndexService:
             result.end_time = datetime.now()
             return result
 
-    def index_single_file(self, file_path: str, *, space_id: str = DEFAULT_SPACE_ID) -> IndexingJob:
-        path = Path(file_path).resolve()
-        if not path.exists() or not path.is_file():
-            raise ValueError(f"文件不存在: {file_path}")
-        logger.info(f"开始索引文件: {path}")
-        loaded_documents = self.loader_registry.load(path)
-        content = "\n\n".join(document.page_content for document in loaded_documents)
-        loaded_metadata = loaded_documents[0].metadata if loaded_documents else {}
-        normalized_path = loaded_metadata.get("source_path", path.as_posix())
-        self.document_catalog.ensure_space(space_id)
-        document_metadata = self.metadata_normalizer.document_metadata(
-            normalized_path,
-            content,
+    def create_pending_indexing_job(
+        self,
+        file_path: str,
+        *,
+        space_id: str = DEFAULT_SPACE_ID,
+    ) -> IndexingJob:
+        _, _, normalized_path, document_metadata = self._load_document_metadata(
+            file_path,
             space_id=space_id,
         )
+        self.document_catalog.ensure_space(document_metadata["space_id"])
         job = IndexingJob.create(
             document_id=document_metadata["document_id"],
             source_path=normalized_path,
             space_id=document_metadata["space_id"],
         )
         self.job_store.save(job)
+        return job
+
+    def index_single_file(self, file_path: str, *, space_id: str = DEFAULT_SPACE_ID) -> IndexingJob:
+        job = self.create_pending_indexing_job(file_path, space_id=space_id)
+        return self.run_indexing_job(job.job_id)
+
+    def run_indexing_job(self, job_id: str) -> IndexingJob:
+        job = self.get_indexing_job(job_id)
+        if job is None:
+            raise ValueError(f"索引任务不存在: {job_id}")
+        if job.status is not IndexingJobStatus.PENDING:
+            raise ValueError(f"索引任务状态不可执行: {job.status.value}")
+
+        logger.info(f"开始索引文件: {job.source_path}")
         job.start()
         self.job_store.save(job)
 
         try:
+            _, content, normalized_path, document_metadata = self._load_document_metadata(
+                job.source_path,
+                space_id=job.space_id,
+            )
+            if document_metadata["document_id"] != job.document_id:
+                raise ValueError("索引任务 document_id 与文件元数据不匹配")
+
             self.vector_store.delete_by_document_id(document_metadata["document_id"])
             documents = self.document_splitter.split_document(content, normalized_path)
             for index, document in enumerate(documents):
@@ -162,7 +179,7 @@ class VectorIndexService:
 
             if documents:
                 self.vector_store.add_documents(documents)
-                logger.info(f"文件索引完成: {file_path}, 共 {len(documents)} 个分片")
+                logger.info(f"文件索引完成: {job.source_path}, 共 {len(documents)} 个分片")
 
             job.complete(total_chunks=len(documents), indexed_chunks=len(documents))
             self.job_store.save(job)
@@ -173,6 +190,26 @@ class VectorIndexService:
             self.job_store.save(job)
             self.document_catalog.upsert_from_job(job)
             raise
+
+    def _load_document_metadata(
+        self,
+        file_path: str,
+        *,
+        space_id: str,
+    ) -> tuple[Path, str, str, dict[str, Any]]:
+        path = Path(file_path).resolve()
+        if not path.exists() or not path.is_file():
+            raise ValueError(f"文件不存在: {file_path}")
+        loaded_documents = self.loader_registry.load(path)
+        content = "\n\n".join(document.page_content for document in loaded_documents)
+        loaded_metadata = loaded_documents[0].metadata if loaded_documents else {}
+        normalized_path = loaded_metadata.get("source_path", path.as_posix())
+        document_metadata = self.metadata_normalizer.document_metadata(
+            normalized_path,
+            content,
+            space_id=space_id,
+        )
+        return path, content, normalized_path, document_metadata
 
     def get_indexing_job(self, job_id: str) -> IndexingJob | None:
         return self.job_store.get(job_id)
