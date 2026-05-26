@@ -85,6 +85,8 @@ try {
         powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-evaluation.ps1
     }
 
+    Write-Host "[skip] run-integration-smoke.ps1 requires live Milvus and real local credentials" -ForegroundColor Yellow
+
     if (-not $SkipPreflight) {
         Invoke-Step "start.ps1 -PreflightOnly" {
             & .\start.ps1 -PreflightOnly

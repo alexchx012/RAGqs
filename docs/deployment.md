@@ -29,13 +29,25 @@ Milvus stays running by default after FastAPI exits. Use `-StopMilvusOnExit` onl
 
 ## Health Gate
 
+Before starting the API, run the non-destructive integration smoke gate when Milvus should already be available:
+
+```powershell
+.\scripts\run-integration-smoke.ps1 -Json
+```
+
 After FastAPI is reachable, run the dependency health gate:
 
 ```powershell
 .\scripts\check-api-health.ps1 -Url http://127.0.0.1:9900/health
 ```
 
-The gate fails if `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, or `sessionStore` is missing or unhealthy.
+Add the API URL to combine both checks:
+
+```powershell
+.\scripts\run-integration-smoke.ps1 -ApiUrl http://127.0.0.1:9900/health -Json
+```
+
+The health gate fails if `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, or `sessionStore` is missing or unhealthy. The smoke gate checks configuration and Milvus without creating, deleting, starting, stopping, or restarting Milvus.
 
 ## CI Artifacts
 

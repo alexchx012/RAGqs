@@ -443,6 +443,93 @@ def test_health_preflight_rejects_unhealthy_dependencies():
         )
 
 
+def test_integration_smoke_requires_milvus_vector_store_provider():
+    from app.operations.integration_smoke import run_integration_smoke
+
+    report = run_integration_smoke(
+        settings=_settings(vector_store_provider="fake"),
+        milvus_probe=lambda settings: {"collections": 0},
+    )
+
+    assert report.ready is False
+    assert ("VECTOR_STORE_PROVIDER", "must be milvus for integration smoke") in [
+        (issue.field, issue.message) for issue in report.errors
+    ]
+
+
+def test_integration_smoke_reports_config_and_milvus_checks():
+    from app.operations.integration_smoke import run_integration_smoke
+
+    report = run_integration_smoke(
+        settings=_settings(),
+        milvus_probe=lambda settings: {"collections": 3, "host": settings.milvus_host},
+    )
+
+    assert report.ready is True
+    assert [(check.name, check.status) for check in report.checks] == [
+        ("configuration", "healthy"),
+        ("milvus", "healthy"),
+    ]
+    assert report.checks[1].details["collections"] == 3
+    assert report.errors == []
+
+
+def test_integration_smoke_marks_milvus_failure_unready():
+    from app.operations.integration_smoke import IntegrationSmokeError, run_integration_smoke
+
+    def failing_probe(settings):
+        raise IntegrationSmokeError("could not connect to milvus")
+
+    report = run_integration_smoke(settings=_settings(), milvus_probe=failing_probe)
+
+    assert report.ready is False
+    assert ("MILVUS", "could not connect to milvus") in [
+        (issue.field, issue.message) for issue in report.errors
+    ]
+    assert ("milvus", "unhealthy") in [(check.name, check.status) for check in report.checks]
+
+
+def test_integration_smoke_can_validate_running_api_health():
+    from app.operations.integration_smoke import run_integration_smoke
+
+    calls = []
+
+    def api_health_probe(url: str, timeout_seconds: float):
+        calls.append((url, timeout_seconds))
+        return {"status": "healthy", "dependencies": ["app", "vectorStore"]}
+
+    report = run_integration_smoke(
+        settings=_settings(),
+        milvus_probe=lambda settings: {"collections": 0},
+        api_url="http://127.0.0.1:9900/health",
+        api_health_probe=api_health_probe,
+        timeout_seconds=2.5,
+    )
+
+    assert report.ready is True
+    assert calls == [("http://127.0.0.1:9900/health", 2.5)]
+    assert [(check.name, check.status) for check in report.checks] == [
+        ("configuration", "healthy"),
+        ("milvus", "healthy"),
+        ("apiHealth", "healthy"),
+    ]
+
+
+def test_integration_smoke_cli_outputs_json_report(capsys):
+    from app.operations.integration_smoke import main
+
+    exit_code = main(
+        ["--json"],
+        settings=_settings(),
+        milvus_probe=lambda settings: {"collections": 1},
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert '"ready": true' in output
+    assert '"milvus"' in output
+
+
 def test_start_script_runs_health_preflight_for_existing_api():
     script = (ROOT / "start.ps1").read_text(encoding="utf-8")
 
@@ -498,3 +585,15 @@ def test_hosted_ci_workflow_runs_baseline_and_uploads_evaluation_report():
         "artifacts/evaluation-report.json",
     ]:
         assert phrase in workflow
+
+
+def test_integration_smoke_script_documents_no_stop_default():
+    script = (ROOT / "scripts" / "run-integration-smoke.ps1").read_text(encoding="utf-8")
+
+    for phrase in [
+        "app.operations.integration_smoke",
+        "ApiUrl",
+        "Milvus",
+        "does not stop Milvus",
+    ]:
+        assert phrase in script

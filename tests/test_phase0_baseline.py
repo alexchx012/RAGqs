@@ -20,6 +20,7 @@ def test_phase0_baseline_artifacts_exist():
         "docs/superpowers/plans/2026-05-23-rag-agent-foundation.md",
         "scripts/validate-baseline.ps1",
         "scripts/run-evaluation.ps1",
+        "scripts/run-integration-smoke.ps1",
         "scripts/check-api-health.ps1",
         ".github/workflows/ci.yml",
         "data/evaluation/golden.jsonl",
@@ -176,6 +177,7 @@ def test_baseline_validation_script_runs_core_checks():
         "node tests\\chat-history.test.js",
         "tests\\start-script.validation.ps1",
         "run-evaluation.ps1",
+        "run-integration-smoke.ps1",
         "start.ps1 -PreflightOnly",
     ]:
         assert phrase in script
@@ -213,6 +215,7 @@ def test_deployment_docs_cover_phase7_operational_runbook():
         "start.ps1",
         "DockerProfile",
         "check-api-health.ps1",
+        "run-integration-smoke.ps1",
         "run-evaluation.ps1",
         "ReportPath",
         ".github/workflows/ci.yml",

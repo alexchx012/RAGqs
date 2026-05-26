@@ -137,6 +137,20 @@ Use `scripts/check-api-health.ps1` after FastAPI is up, or when `start.ps1` dete
 
 The script calls `app.operations.health_preflight`, parses the `/health` response envelope, and fails when any required dependency is missing or unhealthy. Required dependency names currently match the health endpoint: `app`, `modelProvider`, `embeddingProvider`, `vectorStore`, and `sessionStore`.
 
+## Integration Smoke Checks
+
+Use `scripts/run-integration-smoke.ps1` when Milvus should already be reachable and you want a
+non-destructive real-dependency gate:
+
+```powershell
+.\scripts\run-integration-smoke.ps1 -Json
+```
+
+Add `-ApiUrl http://127.0.0.1:9900/health` to include a running FastAPI health check. The command
+validates startup configuration, requires `VECTOR_STORE_PROVIDER=milvus`, opens a read-only Milvus
+client, lists collections, and exits non-zero on failures. It does not create, delete, start, stop,
+or restart Milvus.
+
 ## Security Boundaries
 
 CORS is configured from environment variables instead of hard-coded wildcard settings:
