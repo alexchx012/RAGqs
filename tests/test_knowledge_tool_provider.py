@@ -1,7 +1,13 @@
+from types import SimpleNamespace
+
 from langchain_core.documents import Document
 
 from app.providers import FakeRetrieverProvider, FakeVectorStoreProvider, RetrievalResult
-from app.tools.knowledge_tool import enforce_knowledge_space, retrieve_knowledge_with_provider
+from app.tools.knowledge_tool import (
+    enforce_knowledge_space,
+    retrieve_knowledge_with_provider,
+    retrieve_knowledge_with_settings,
+)
 
 
 def test_retrieve_knowledge_with_provider_uses_structured_retriever_result():
@@ -64,3 +70,24 @@ def test_retrieve_knowledge_enforces_request_scoped_space_over_tool_argument():
         {"space_id": "finance"},
         {"space_id": "sales"},
     ]
+
+
+def test_retrieve_knowledge_with_settings_prefers_grouped_rag_top_k():
+    class RecordingRetriever:
+        def __init__(self):
+            self.requests = []
+
+        def retrieve(self, request):
+            self.requests.append(request)
+            return RetrievalResult(query=request.query, documents=[])
+
+    settings = SimpleNamespace(rag=SimpleNamespace(top_k=9), rag_top_k=3)
+    retriever = RecordingRetriever()
+
+    retrieve_knowledge_with_settings(
+        query="policy",
+        retriever_provider=retriever,
+        settings=settings,
+    )
+
+    assert retriever.requests[0].top_k == 9

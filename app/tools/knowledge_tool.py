@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.tools import tool
@@ -32,10 +33,10 @@ def retrieve_knowledge(query: str, space_id: str = "default") -> tuple[str, list
     """
     try:
         container = get_default_provider_container()
-        return retrieve_knowledge_with_provider(
+        return retrieve_knowledge_with_settings(
             query=query,
             retriever_provider=container.retriever_provider,
-            top_k=config.rag_top_k,
+            settings=config,
             space_id=space_id,
         )
     except Exception as e:
@@ -66,6 +67,20 @@ def retrieve_knowledge_with_provider(
     return context, docs
 
 
+def retrieve_knowledge_with_settings(
+    query: str,
+    retriever_provider: RetrieverProvider,
+    settings: Any,
+    space_id: str = "default",
+) -> tuple[str, list[Document]]:
+    return retrieve_knowledge_with_provider(
+        query=query,
+        retriever_provider=retriever_provider,
+        top_k=_settings_value(settings, "rag", "top_k", "rag_top_k", 3),
+        space_id=space_id,
+    )
+
+
 @contextmanager
 def enforce_knowledge_space(space_id: str):
     """Force knowledge retrieval tools to use the request-selected space."""
@@ -88,6 +103,19 @@ def resolve_knowledge_space_id(space_id: str = "default") -> str:
 def _normalize_space_id(space_id: str) -> str:
     normalized = (space_id or "default").strip()
     return normalized or "default"
+
+
+def _settings_value(
+    settings: Any,
+    group_name: str,
+    group_field_name: str,
+    flat_field_name: str,
+    default: Any,
+) -> Any:
+    group = getattr(settings, group_name, None)
+    if group is not None and hasattr(group, group_field_name):
+        return getattr(group, group_field_name)
+    return getattr(settings, flat_field_name, default)
 
 
 def _format_docs(docs: list[Document]) -> str:
