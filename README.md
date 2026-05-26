@@ -72,6 +72,23 @@ RUNTIME_REQUEST_TIMEOUT_SECONDS=60.0
 
 该命令只证明软件路径可运行；不证明真实 80 人容量、真实业务答案质量或多实例生产数据层已经验证。
 
+## 试运行前门禁
+
+评测基座用于验证 golden dataset schema、provider 边界、报告 JSON 和 CI artifact 输出。默认 fake evaluation 只证明评测软件接口可运行，不证明真实业务答案质量：
+
+```powershell
+.\scripts\run-evaluation.ps1
+.\scripts\run-evaluation.ps1 -Dataset data\evaluation\business.example.jsonl -Mode service -FaithfulnessJudge model -PreflightOnly -MinExamples 6
+```
+
+多实例数据层在本仓库中只提供配置、初始化边界和 smoke/preflight 命令；尚未完成真实多实例生产数据行为验证。试运行前将 session、retrieval audit、indexing queue、indexing job、document catalog 和 checkpoint 全部切到 Postgres 后运行：
+
+```powershell
+.\scripts\run-postgres-smoke.ps1 -RequireConfigured -ValidateWritePath -Json
+```
+
+详细说明见 `docs/evaluation.md`、`docs/operations.md` 和 `docs/deployment.md`。
+
 ## API
 
 | 方法 | 路径 | 说明 |

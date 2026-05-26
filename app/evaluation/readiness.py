@@ -29,8 +29,17 @@ class EvaluationReadinessReport(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     ready: bool
+    status: str = "not_run"
+    quality_conclusion: str = Field(default="not_assessed", alias="qualityConclusion")
     mode: str
     dataset_examples: int = Field(alias="datasetExamples")
+    limitations: list[str] = Field(
+        default_factory=lambda: [
+            "preflight validates inputs and provider boundaries only",
+            "evaluation examples were not executed",
+            "real answer quality conclusion has not been reached",
+        ]
+    )
     errors: list[EvaluationReadinessIssue] = Field(default_factory=list)
     warnings: list[EvaluationReadinessIssue] = Field(default_factory=list)
 
