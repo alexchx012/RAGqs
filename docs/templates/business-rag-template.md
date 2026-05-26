@@ -82,10 +82,22 @@ Add a new `PromptProfile` for domain tone and grounding rules. Keep source citat
 
 ## Evaluation
 
-Add a business golden dataset under `data/evaluation/`, then run:
+Start from `data/evaluation/business.example.jsonl` and the matching sample
+corpus in `docs/business-samples/`. Replace the sample HR, finance, and support
+examples with business-specific questions, and keep each record scoped with
+`metadata.spaceId`. Grounded examples need expected answer traits and expected
+sources; refusal examples should leave both arrays empty.
+
+Run the readiness gate before spending model calls:
 
 ```powershell
-.\scripts\run-evaluation.ps1 -Dataset data\evaluation\golden.jsonl -ReportPath artifacts\evaluation-report.json
+.\scripts\run-evaluation.ps1 -Dataset data\evaluation\business.example.jsonl -Mode service -FaithfulnessJudge model -PreflightOnly -MinExamples 6
+```
+
+Then run the evaluation and keep the report artifact:
+
+```powershell
+.\scripts\run-evaluation.ps1 -Dataset data\evaluation\business.example.jsonl -Mode service -FaithfulnessJudge model -MinExamples 6 -ReportPath artifacts\evaluation-report.json
 ```
 
 ## Rule

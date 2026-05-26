@@ -4,7 +4,7 @@ This repository includes a local evaluation harness for regression checks and st
 
 ## Golden Dataset
 
-Golden examples are stored as UTF-8 JSONL records. The default dataset is `data/evaluation/golden.jsonl`.
+Golden examples are stored as UTF-8 JSONL records. The default dataset is `data/evaluation/golden.jsonl`. A stronger business-shaped starter dataset is available at `data/evaluation/business.example.jsonl`.
 
 Required fields:
 
@@ -27,18 +27,23 @@ Space-scoped example:
 {"id":"hr-pto","question":"What is the PTO policy?","expectedAnswerTraits":["pto"],"expectedSources":["hr-policy.md"],"expectsRefusal":false,"metadata":{"spaceId":"hr"}}
 ```
 
+For real-provider evaluation, treat `metadata.spaceId` as required. Each grounded
+example should define non-empty `expectedAnswerTraits` and `expectedSources`.
+Refusal examples should set `expectsRefusal=true` and leave traits and sources
+empty. The readiness gate also rejects duplicate example ids.
+
 ## Real Provider Readiness
 
 Before running a service or HTTP evaluation against real providers, run the preflight:
 
 ```powershell
-.\scripts\run-evaluation.ps1 -Mode service -FaithfulnessJudge model -PreflightOnly
+.\scripts\run-evaluation.ps1 -Dataset data\evaluation\business.example.jsonl -Mode service -FaithfulnessJudge model -PreflightOnly -MinExamples 6
 ```
 
 For an already-started API:
 
 ```powershell
-.\scripts\run-evaluation.ps1 -Mode http -BaseUrl http://127.0.0.1:9900 -PreflightOnly
+.\scripts\run-evaluation.ps1 -Dataset data\evaluation\business.example.jsonl -Mode http -BaseUrl http://127.0.0.1:9900 -PreflightOnly -MinExamples 6
 ```
 
 The preflight rejects `fake` mode, weak golden datasets, fake service providers,
@@ -46,6 +51,16 @@ missing model-judge credentials, invalid HTTP targets, and incomplete LangSmith
 settings when tracing is enabled. A real dataset should include at least one
 grounded answer example with `expectedAnswerTraits` and `expectedSources`, plus
 one unsupported-question example with `expectsRefusal=true`.
+
+For a business-owned dataset, raise the minimum example count:
+
+```powershell
+.\scripts\run-evaluation.ps1 -Dataset data\evaluation\business.example.jsonl -Mode service -FaithfulnessJudge model -PreflightOnly -MinExamples 6
+```
+
+The example dataset maps to Markdown sample documents under
+`docs/business-samples/`. Index those files into the matching `metadata.spaceId`
+knowledge spaces before using `service` or `http` mode as a real quality gate.
 
 ## Local Command
 

@@ -33,6 +33,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-json", action="store_true")
     parser.add_argument("--report-path", default="")
+    parser.add_argument("--min-examples", type=int, default=2)
     parser.add_argument(
         "--preflight-only",
         action="store_true",
@@ -59,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
             faithfulness_judge=args.faithfulness_judge,
             base_url=args.base_url,
             env=os_environ,
+            min_examples=args.min_examples,
         )
         report_json = report.model_dump_json(by_alias=True, indent=2)
         if args.report_path:

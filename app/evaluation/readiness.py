@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings, config
+from app.evaluation.dataset_quality import validate_business_golden_dataset
 from app.evaluation.models import GoldenExample
 from app.operations.config_validation import validate_settings
 from app.providers.selection import ProviderSelection
@@ -104,46 +105,15 @@ def _validate_dataset(
     *,
     min_examples: int,
 ) -> None:
-    if len(examples) < min_examples:
-        errors.append(
-            EvaluationReadinessIssue(
-                field="DATASET",
-                message=f"include at least {min_examples} golden examples",
-            )
-        )
-
-    grounded_examples = [example for example in examples if not example.expects_refusal]
-    refusal_examples = [example for example in examples if example.expects_refusal]
-    if not grounded_examples:
-        errors.append(
-            EvaluationReadinessIssue(
-                field="DATASET",
-                message="include at least one grounded answer example",
-            )
-        )
-    if not refusal_examples:
-        errors.append(
-            EvaluationReadinessIssue(
-                field="DATASET",
-                message="include at least one unsupported-question refusal example",
-            )
-        )
-
-    for example in grounded_examples:
-        if not example.expected_answer_traits:
-            errors.append(
-                EvaluationReadinessIssue(
-                    field=f"DATASET[{example.id}].expectedAnswerTraits",
-                    message="grounded examples must define expected answer traits",
-                )
-            )
-        if not example.expected_sources:
-            errors.append(
-                EvaluationReadinessIssue(
-                    field=f"DATASET[{example.id}].expectedSources",
-                    message="grounded examples must define expected sources",
-                )
-            )
+    report = validate_business_golden_dataset(
+        examples,
+        min_examples=min_examples,
+        min_grounded_examples=1,
+        min_refusal_examples=1,
+        require_space_id=True,
+    )
+    for issue in report.errors:
+        errors.append(EvaluationReadinessIssue(field=issue.field, message=issue.message))
 
 
 def _validate_service_providers(

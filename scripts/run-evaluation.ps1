@@ -8,6 +8,7 @@ param(
     [string]$BaseUrl = "http://127.0.0.1:8000",
     [double]$TimeoutSeconds = 30.0,
     [string]$ReportPath = "artifacts\evaluation-report.json",
+    [int]$MinExamples = 2,
     [switch]$PreflightOnly
 )
 
@@ -31,6 +32,7 @@ try {
         "--timeout-seconds", $TimeoutSeconds,
         "--faithfulness-judge", $FaithfulnessJudge,
         "--report-path", $ReportPath,
+        "--min-examples", $MinExamples,
         "--output-json",
         "--min-retrieval-hit-rate", "1.0",
         "--min-answer-trait-coverage", "1.0",
