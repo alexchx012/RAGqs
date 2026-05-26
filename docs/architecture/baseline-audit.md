@@ -28,7 +28,7 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - Most runtime dependencies are now behind provider interfaces, but production collection selection and some document-management APIs are still tied to the current vector index service.
 - Session state defaults to process-local backend memory; SQLite can persist local transcripts, Postgres is available for multi-instance chat history, and the browser uses localStorage only as a fallback cache.
 - Indexing defaults to synchronous execution and has retry, idempotent document ids, optional SQLite/Postgres job state, optional SQLite/Postgres document catalog storage, and an in-process background worker mode for queued uploads.
-- Retrieval still defaults to basic top-k vector search, but metadata filters, citation extraction, and debug trace data are now on the default path. LLM-backed query rewrite, rerank, and context compression can be enabled by configuration; multi-retriever production tuning remains extension work.
+- Retrieval still defaults to basic top-k vector search, but metadata filters, citation extraction, and debug trace data are now on the default path. `RETRIEVAL_PROFILE=high_recall` enables multi-retriever recall widening with protected space and tenant filters, and LLM-backed query rewrite, rerank, and context compression can be enabled by configuration.
 - Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, with memory, SQLite, and Postgres checkpoint providers behind `CHECKPOINT_PROVIDER`.
 - API responses are inconsistent: chat endpoints return ad hoc dictionaries while other routes use Pydantic response models.
 - Observability and operations now include request trace id propagation, structured access logs, running API health preflight, upload security validation, hosted CI baseline validation, and evaluation JSON artifacts.
@@ -77,7 +77,7 @@ The repository now has an initial `app/retrieval/` foundation:
 - `RetrievalResult` now includes citation-friendly `sources` alongside retrieved documents and debug metadata.
 - `ProviderContainer` now wraps the default vector-store retriever in `RetrievalPipeline`, so the knowledge tool uses the pipeline path without changing its public behavior.
 
-`ProviderContainer` can enable `LLMQueryRewriter` with `QUERY_REWRITER_PROVIDER=llm`, `LLMReranker` with `RERANKER_PROVIDER=llm`, and `LLMContextCompressor` with `CONTEXT_COMPRESSOR_PROVIDER=llm`; `CONTEXT_COMPRESSOR_MAX_CHARACTERS` bounds compressed chunk size before answer generation. `RagAgentService` now has `query_with_trace()` and `query_stream_with_trace()` methods backed by the explicit graph by default. `/chat` keeps the existing `answer` field and adds `sources`, `retrievalDebug`, and full `retrieval` metadata. `/chat_stream` emits graph events and a final `done` payload. Remaining retrieval-quality work includes multi-retriever profiles and real-provider evaluation against business datasets.
+`ProviderContainer` can select `RETRIEVAL_PROFILE=default` or `high_recall`, enable `LLMQueryRewriter` with `QUERY_REWRITER_PROVIDER=llm`, `LLMReranker` with `RERANKER_PROVIDER=llm`, and `LLMContextCompressor` with `CONTEXT_COMPRESSOR_PROVIDER=llm`; `CONTEXT_COMPRESSOR_MAX_CHARACTERS` bounds compressed chunk size before answer generation. `RagAgentService` now has `query_with_trace()` and `query_stream_with_trace()` methods backed by the explicit graph by default. `/chat` keeps the existing `answer` field and adds `sources`, `retrievalDebug`, and full `retrieval` metadata. `/chat_stream` emits graph events and a final `done` payload. Remaining retrieval-quality work includes real-provider evaluation against business datasets.
 
 ## Phase 4 Progress
 
@@ -157,4 +157,4 @@ The repository now has an initial extension-template layer:
 - `app/knowledge/catalog.py`: memory, SQLite, and Postgres document catalog implementations selected through `DOCUMENT_CATALOG_PROVIDER`.
 - `docs/extension-guide.md` and `docs/templates/business-rag-template.md`: second-development guidance for adding business tools, prompt profiles, provider settings, and evaluation data without modifying core API code.
 
-This completes the first reusable base-agent extension surface. Open product work still includes real provider evaluation, distributed indexing queues beyond the in-process worker, multi-retriever retrieval profiles, and production security hardening.
+This completes the first reusable base-agent extension surface. Open product work still includes real provider evaluation, distributed indexing queues beyond the in-process worker, and production security hardening.

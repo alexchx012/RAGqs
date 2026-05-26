@@ -37,7 +37,14 @@ from app.providers.postgres_session import PostgresSessionStoreProvider
 from app.providers.retrieval import VectorStoreRetrieverProvider
 from app.providers.selection import ProviderSelection, validate_provider_selection
 from app.providers.sqlite_session import SQLiteSessionStoreProvider
-from app.retrieval import LLMContextCompressor, LLMQueryRewriter, LLMReranker, RetrievalPipeline
+from app.retrieval import (
+    LLMContextCompressor,
+    LLMQueryRewriter,
+    LLMReranker,
+    RetrievalPipeline,
+    build_default_retrieval_profile_registry,
+    build_retrievers_for_profile,
+)
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,30 @@ def create_default_provider_container(
             vector_store_provider=vector_store_provider,
             default_top_k=settings.rag_top_k,
         )
+        retrieval_profile_registry = build_default_retrieval_profile_registry(
+            high_recall_top_k_multiplier=getattr(
+                settings,
+                "retrieval_high_recall_top_k_multiplier",
+                2,
+            ),
+            relaxed_filter_preserve_keys=getattr(
+                settings,
+                "retrieval_relaxed_filter_preserve_keys",
+                "space_id,spaceId,tenant_id,tenantId",
+            ),
+        )
+        retrieval_profile_name = _setting_id(settings, "retrieval_profile", "default")
+        try:
+            retrieval_profile = retrieval_profile_registry.get(retrieval_profile_name)
+        except KeyError as exc:
+            raise ValueError(
+                f"RETRIEVAL_PROFILE: unsupported profile: {retrieval_profile_name}"
+            ) from exc
+        primary_retriever, additional_retrievers = build_retrievers_for_profile(
+            base_retriever_provider,
+            retrieval_profile,
+        )
+
         query_rewriter = None
         if _setting_id(settings, "query_rewriter_provider", "none") == "llm":
             query_rewriter = LLMQueryRewriter(chat_model_provider)
@@ -147,7 +178,8 @@ def create_default_provider_container(
             )
 
         retriever_provider = RetrievalPipeline(
-            primary_retriever=base_retriever_provider,
+            primary_retriever=primary_retriever,
+            additional_retrievers=additional_retrievers,
             query_rewriter=query_rewriter,
             reranker=reranker,
             compressor=compressor,

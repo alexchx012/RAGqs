@@ -84,6 +84,9 @@ class MilvusConfig(FrozenConfigModel):
 class RagConfig(FrozenConfigModel):
     top_k: int
     model: str
+    retrieval_profile: str
+    retrieval_high_recall_top_k_multiplier: int
+    retrieval_relaxed_filter_preserve_keys: str
     query_rewriter_provider: str
     reranker_provider: str
     context_compressor_provider: str
@@ -162,6 +165,9 @@ class Settings(BaseSettings):
     # RAG 配置
     rag_top_k: int = 3
     rag_model: str = "qwen-max"
+    retrieval_profile: str = "default"
+    retrieval_high_recall_top_k_multiplier: int = 2
+    retrieval_relaxed_filter_preserve_keys: str = "space_id,spaceId,tenant_id,tenantId"
     query_rewriter_provider: str = "none"
     reranker_provider: str = "none"
     context_compressor_provider: str = "none"
@@ -265,6 +271,9 @@ class Settings(BaseSettings):
         return RagConfig(
             top_k=self.rag_top_k,
             model=self.rag_model,
+            retrieval_profile=self.retrieval_profile,
+            retrieval_high_recall_top_k_multiplier=self.retrieval_high_recall_top_k_multiplier,
+            retrieval_relaxed_filter_preserve_keys=self.retrieval_relaxed_filter_preserve_keys,
             query_rewriter_provider=self.query_rewriter_provider,
             reranker_provider=self.reranker_provider,
             context_compressor_provider=self.context_compressor_provider,
