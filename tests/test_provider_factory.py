@@ -3,7 +3,10 @@ from types import SimpleNamespace
 from langchain_core.documents import Document
 
 from app.ingestion.worker import reset_background_indexing_worker
-from app.observability.retrieval_audit import SQLiteRetrievalAuditStore
+from app.observability.retrieval_audit import (
+    PostgresRetrievalAuditStore,
+    SQLiteRetrievalAuditStore,
+)
 from app.providers import (
     ChatModelProvider,
     CheckpointProvider,
@@ -112,6 +115,32 @@ def test_default_provider_container_can_use_sqlite_retrieval_audit_store(tmp_pat
     container = create_default_provider_container(settings=settings, milvus_manager=object())
 
     assert isinstance(container.retrieval_audit_store_provider, SQLiteRetrievalAuditStore)
+
+
+def test_default_provider_container_can_use_postgres_retrieval_audit_store():
+    settings = SimpleNamespace(
+        dashscope_api_key="unit-test-key",
+        rag_model="qwen-max",
+        rag_top_k=5,
+        milvus_host="127.0.0.1",
+        milvus_port=19530,
+        chat_provider="fake",
+        embedding_provider="fake",
+        vector_store_provider="fake",
+        session_store_provider="memory",
+        retrieval_audit_store_provider="postgres",
+        retrieval_audit_postgres_dsn="postgresql://rag:secret@db/ragqs-audit",
+        ingestion_provider="fake",
+        checkpoint_provider="memory",
+    )
+
+    container = create_default_provider_container(settings=settings, milvus_manager=object())
+
+    assert isinstance(container.retrieval_audit_store_provider, PostgresRetrievalAuditStore)
+    assert (
+        container.retrieval_audit_store_provider.dsn
+        == "postgresql://rag:secret@db/ragqs-audit"
+    )
 
 
 def test_vector_store_retriever_provider_returns_structured_debug_output():

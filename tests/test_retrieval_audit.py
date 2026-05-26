@@ -4,6 +4,7 @@ import pytest
 
 from app.api import chat as chat_api
 from app.models.request import ChatRequest
+from app.observability import retrieval_audit
 from app.observability.retrieval_audit import (
     InMemoryRetrievalAuditStore,
     RetrievalAuditRecord,
@@ -70,6 +71,42 @@ def test_sqlite_retrieval_audit_store_persists_json_payloads(tmp_path):
     assert records[0].space_id == "finance"
     assert records[0].sources == [{"index": 1, "fileName": "rag.md"}]
     assert records[0].retrieval == {"debug": {"stages": ["retrieve"]}}
+
+
+def test_postgres_retrieval_audit_store_persists_and_filters_records():
+    database = FakePostgresRetrievalAuditDatabase()
+    store = retrieval_audit.PostgresRetrievalAuditStore(
+        "postgresql://rag:secret@db/ragqs",
+        connector=database.connect,
+    )
+    first = _record(session_id="s1", space_id="finance", trace_id="trace-a")
+    store.append(first)
+    store.append(_record(session_id="s2", space_id="hr", trace_id="trace-b"))
+
+    assert database.dsns == ["postgresql://rag:secret@db/ragqs"]
+    assert store.list_records(session_id="s1") == [first]
+    assert store.list_records(space_id="finance") == [first]
+    assert store.list_records(trace_id="trace-a") == [first]
+    assert store.list_records(session_id="s2", limit=0) == []
+    assert store.list_records(session_id="s1")[0].sources == [{"index": 1, "fileName": "rag.md"}]
+    assert store.list_records(session_id="s1")[0].retrieval == {
+        "debug": {"stages": ["retrieve"]}
+    }
+
+
+def test_postgres_retrieval_audit_store_defers_connection_until_first_operation():
+    database = FakePostgresRetrievalAuditDatabase()
+
+    store = retrieval_audit.PostgresRetrievalAuditStore(
+        "postgresql://rag:secret@db/ragqs",
+        connector=database.connect,
+    )
+
+    assert database.connect_count == 0
+
+    store.list_records()
+
+    assert database.connect_count == 1
 
 
 @pytest.mark.asyncio
@@ -161,3 +198,101 @@ async def test_chat_api_records_audit_when_request_has_trace_header(monkeypatch)
 
     assert response["data"]["success"] is True
     assert audit_store.list_records(trace_id="trace-api")[0].space_id == "finance"
+
+
+class FakePostgresRetrievalAuditDatabase:
+    def __init__(self):
+        self.rows = []
+        self.connect_count = 0
+        self.dsns = []
+        self.next_id = 1
+
+    def connect(self, dsn: str):
+        self.connect_count += 1
+        if dsn not in self.dsns:
+            self.dsns.append(dsn)
+        return FakeConnection(self)
+
+
+class FakeConnection:
+    def __init__(self, database: FakePostgresRetrievalAuditDatabase):
+        self.database = database
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def cursor(self):
+        return FakeCursor(self.database)
+
+
+class FakeCursor:
+    def __init__(self, database: FakePostgresRetrievalAuditDatabase):
+        self.database = database
+        self.results = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def execute(self, sql: str, params=()):
+        normalized = " ".join(sql.lower().split())
+        if normalized.startswith("create table") or normalized.startswith("create index"):
+            self.results = []
+            return self
+        if normalized.startswith("insert into retrieval_audits"):
+            (
+                audit_id,
+                trace_id,
+                session_id,
+                space_id,
+                question,
+                answer,
+                sources_json,
+                retrieval_json,
+                created_at,
+            ) = params
+            self.database.rows.append(
+                {
+                    "id": self.database.next_id,
+                    "audit_id": audit_id,
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "space_id": space_id,
+                    "question": question,
+                    "answer": answer,
+                    "sources_json": sources_json,
+                    "retrieval_json": retrieval_json,
+                    "created_at": created_at,
+                }
+            )
+            self.database.next_id += 1
+            self.results = []
+            return self
+        if normalized.startswith("select audit_id"):
+            self.results = self._filter_audits(normalized, params)
+            return self
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+    def fetchall(self):
+        return list(self.results)
+
+    def _filter_audits(self, normalized: str, params):
+        rows = sorted(self.database.rows, key=lambda row: row["id"], reverse=True)
+        if " where " not in normalized:
+            limit = params[0]
+            return rows[:limit]
+
+        filtered = rows
+        param_index = 0
+        for field in ("session_id", "space_id", "trace_id"):
+            if f"{field} = %s" in normalized:
+                expected = params[param_index]
+                param_index += 1
+                filtered = [row for row in filtered if row[field] == expected]
+        limit = params[param_index]
+        return filtered[:limit]
