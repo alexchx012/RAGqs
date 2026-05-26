@@ -20,16 +20,16 @@ RAGqs is a FastAPI application with a static browser UI, a LangChain/LangGraph R
 - FastAPI serves the API and browser UI.
 - Milvus, etcd, and MinIO are started by the default `vector-database.yml` stack; Attu is available through the optional `ui` Docker profile.
 - DashScope is the default real chat and embedding provider; fake and OpenAI-compatible providers are selectable for tests or alternate deployments.
-- LangGraph checkpoints default to process-local memory, with `CHECKPOINT_PROVIDER=sqlite` for local durable checkpoints and `CHECKPOINT_PROVIDER=postgres` for multi-instance checkpoints.
+- LangGraph checkpoints default to local SQLite, with `CHECKPOINT_PROVIDER=memory` available for throwaway tests and `CHECKPOINT_PROVIDER=postgres` for multi-instance checkpoints.
 
 ## Known Limitations
 
 - Settings now expose typed groups over the existing `.env` variables, but some runtime modules still read flat global config fields directly.
 - Most runtime dependencies are now behind provider interfaces, but production collection selection and some document-management APIs are still tied to the current vector index service.
-- Session state defaults to process-local backend memory; SQLite can persist local transcripts, Postgres is available for multi-instance chat history, and the browser uses localStorage only as a fallback cache.
+- Session state defaults to local SQLite so transcripts survive FastAPI restarts; memory remains available for throwaway tests, Postgres is available for multi-instance chat history, and the browser uses localStorage only as a fallback cache.
 - Indexing defaults to synchronous execution and has retry, idempotent document ids, optional SQLite/Postgres job state, optional SQLite/Postgres document catalog storage, and an in-process background worker mode for queued uploads.
 - Retrieval still defaults to basic top-k vector search, but metadata filters, citation extraction, and debug trace data are now on the default path. `RETRIEVAL_PROFILE=high_recall` enables multi-retriever recall widening with protected space and tenant filters, and LLM-backed query rewrite, rerank, and context compression can be enabled by configuration.
-- Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, with memory, SQLite, and Postgres checkpoint providers behind `CHECKPOINT_PROVIDER`.
+- Agent orchestration now defaults to explicit `StateGraph`; model-driven tool planning and token streaming are available, with SQLite, memory, and Postgres checkpoint providers behind `CHECKPOINT_PROVIDER`.
 - API responses are inconsistent: chat endpoints return ad hoc dictionaries while other routes use Pydantic response models.
 - Observability and operations now include request trace id propagation, structured access logs, retrieval audit storage, production deployment guardrails, running API health preflight, upload security validation, hosted CI baseline validation, and evaluation JSON artifacts.
 - Tests now cover provider boundaries, ingestion, upload security, retrieval traces and audit storage, session storage/listing, SQLite session and indexing job persistence, frontend history state, startup scripts, and evaluation scaffolding.
@@ -67,7 +67,7 @@ The repository now has an initial `app/ingestion/` foundation:
 - `worker.py`: in-process background indexing worker that executes persisted pending jobs and shuts down through the FastAPI lifespan.
 - `app/knowledge/catalog.py`: process-local, SQLite, and Postgres knowledge-space/document catalog implementations.
 
-`app/services/vector_index_service.py` now accepts injectable loader, splitter, vector store, metadata normalizer, job store, and document catalog dependencies. Single-file indexing uses the loader registry, deletes previous chunks by stable `document_id`, clears legacy source-only chunks by source path, enriches chunks with normalized metadata, records successful and failed jobs, and returns an `IndexingJob`. Directory indexing now returns per-file job summaries. `INDEXING_EXECUTION_MODE=background` makes upload ingestion create a pending job and enqueue it for the FastAPI-managed background worker; `sync` remains the default compatibility mode. `app/api/file.py` includes indexing status in successful upload responses, validates upload filename, extension, size, UTF-8 content, and prompt-injection risk before writing files, returns HTTP 500 details when synchronous indexing fails, and exposes `/index-jobs` endpoints for list, detail, and retry. `INDEXING_JOB_STORE_PROVIDER=sqlite` enables local durable job status, `INDEXING_JOB_STORE_PROVIDER=postgres` enables multi-instance job status, `DOCUMENT_CATALOG_PROVIDER=sqlite` enables local durable document lifecycle metadata, and `DOCUMENT_CATALOG_PROVIDER=postgres` enables multi-instance document lifecycle metadata. Milvus and fake vector store providers delete source-scoped chunks across `_source`, `source_path`, and `source` metadata keys for historical index compatibility.
+`app/services/vector_index_service.py` now accepts injectable loader, splitter, vector store, metadata normalizer, job store, and document catalog dependencies. Single-file indexing uses the loader registry, deletes previous chunks by stable `document_id`, clears legacy source-only chunks by source path, enriches chunks with normalized metadata, records successful and failed jobs, and returns an `IndexingJob`. Directory indexing now returns per-file job summaries. `INDEXING_EXECUTION_MODE=background` makes upload ingestion create a pending job and enqueue it for the FastAPI-managed background worker; `sync` remains the default compatibility mode. `app/api/file.py` includes indexing status in successful upload responses, validates upload filename, extension, size, UTF-8 content, and prompt-injection risk before writing files, returns HTTP 500 details when synchronous indexing fails, and exposes `/index-jobs` endpoints for list, detail, and retry. `INDEXING_JOB_STORE_PROVIDER=sqlite` is the local durable default, `INDEXING_JOB_STORE_PROVIDER=postgres` enables multi-instance job status, `DOCUMENT_CATALOG_PROVIDER=sqlite` is the local durable document lifecycle metadata default, and `DOCUMENT_CATALOG_PROVIDER=postgres` enables multi-instance document lifecycle metadata. Milvus and fake vector store providers delete source-scoped chunks across `_source`, `source_path`, and `source` metadata keys for historical index compatibility.
 
 ## Phase 3 Progress
 
@@ -143,7 +143,7 @@ The repository now has an initial operations foundation:
 - `vector-database.yml`: Attu is now behind the optional Docker Compose `ui` profile, while the core Milvus services remain the default stack.
 - `docs/operations.md` and `docs/deployment.md`: document trace id, access log, retrieval audit store, health check, config validation, Docker profile, CORS security-boundary, deployment runbook, and CI artifact behavior.
 
-Durable retrieval audit storage is available through local SQLite and Postgres, and production mode now blocks local/demo defaults before startup. Production secret management, central log/trace collection, and real database integration validation remain open.
+Durable retrieval audit storage now defaults to local SQLite and can switch to Postgres, while production mode still blocks explicit process-memory stores before startup. Production secret management, central log/trace collection, and real database integration validation remain open.
 
 ## Phase 8 Progress
 

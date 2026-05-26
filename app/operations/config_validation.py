@@ -172,7 +172,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             )
 
     retrieval_audit_store_provider = _normalize_config_id(
-        getattr(selection, "retrieval_audit_store_provider", "memory")
+        getattr(selection, "retrieval_audit_store_provider", "sqlite")
     )
     if retrieval_audit_store_provider == "sqlite":
         sqlite_path = _group_value(
@@ -286,7 +286,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             settings,
             "indexing_job_store_provider",
             "indexing_job_store_provider",
-            default="memory",
+            default="sqlite",
         )
     )
     if indexing_job_store_provider not in {"memory", "sqlite", "postgres"}:
@@ -331,7 +331,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             settings,
             "document_catalog_provider",
             "document_catalog_provider",
-            default="memory",
+            default="sqlite",
         )
     )
     if document_catalog_provider not in {"memory", "sqlite", "postgres"}:

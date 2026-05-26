@@ -27,20 +27,20 @@ Provider ids are configured by environment variables:
 - `CHAT_PROVIDER`: `dashscope`, `openai_compatible`, or `fake`.
 - `EMBEDDING_PROVIDER`: `dashscope`, `openai_compatible`, or `fake`.
 - `VECTOR_STORE_PROVIDER`: `milvus` or `fake`.
-- `SESSION_STORE_PROVIDER`: `memory` by default, `sqlite` for local durable chat history, or `postgres` for multi-instance deployments.
+- `SESSION_STORE_PROVIDER`: `sqlite` by default for local durable chat history, `memory` for throwaway tests, or `postgres` for multi-instance deployments.
 - `SESSION_STORE_SQLITE_PATH`: SQLite database path when `SESSION_STORE_PROVIDER=sqlite`.
 - `SESSION_STORE_POSTGRES_DSN`: PostgreSQL connection string when `SESSION_STORE_PROVIDER=postgres`.
-- `RETRIEVAL_AUDIT_STORE_PROVIDER`: `memory` by default, `sqlite` for local durable retrieval audits, or `postgres` for multi-instance audit storage.
+- `RETRIEVAL_AUDIT_STORE_PROVIDER`: `sqlite` by default for local durable retrieval audits, `memory` for throwaway tests, or `postgres` for multi-instance audit storage.
 - `RETRIEVAL_AUDIT_SQLITE_PATH`: SQLite database path when `RETRIEVAL_AUDIT_STORE_PROVIDER=sqlite`.
 - `RETRIEVAL_AUDIT_POSTGRES_DSN`: PostgreSQL connection string when `RETRIEVAL_AUDIT_STORE_PROVIDER=postgres`.
 - `INGESTION_PROVIDER`: `vector_index` or `fake`.
-- `INDEXING_JOB_STORE_PROVIDER`: `memory` by default, `sqlite` for local durable indexing job status, or `postgres` for multi-instance ingestion status.
+- `INDEXING_JOB_STORE_PROVIDER`: `sqlite` by default for local durable indexing job status, `memory` for throwaway tests, or `postgres` for multi-instance ingestion status.
 - `INDEXING_JOB_STORE_SQLITE_PATH`: SQLite database path when `INDEXING_JOB_STORE_PROVIDER=sqlite`.
 - `INDEXING_JOB_STORE_POSTGRES_DSN`: PostgreSQL connection string when `INDEXING_JOB_STORE_PROVIDER=postgres`.
-- `DOCUMENT_CATALOG_PROVIDER`: `memory` by default, `sqlite` for local durable document lifecycle metadata, or `postgres` for multi-instance document lifecycle metadata.
+- `DOCUMENT_CATALOG_PROVIDER`: `sqlite` by default for local durable document lifecycle metadata, `memory` for throwaway tests, or `postgres` for multi-instance document lifecycle metadata.
 - `DOCUMENT_CATALOG_SQLITE_PATH`: SQLite database path when `DOCUMENT_CATALOG_PROVIDER=sqlite`.
 - `DOCUMENT_CATALOG_POSTGRES_DSN`: PostgreSQL connection string when `DOCUMENT_CATALOG_PROVIDER=postgres`.
-- `CHECKPOINT_PROVIDER`: `memory` by default, `sqlite` for local durable LangGraph checkpoints, or `postgres` for multi-instance graph state.
+- `CHECKPOINT_PROVIDER`: `sqlite` by default for local durable LangGraph checkpoints, `memory` for throwaway tests, or `postgres` for multi-instance graph state.
 - `CHECKPOINT_SQLITE_PATH`: SQLite database path when `CHECKPOINT_PROVIDER=sqlite`.
 - `CHECKPOINT_POSTGRES_DSN`: PostgreSQL connection string when `CHECKPOINT_PROVIDER=postgres`.
 - `AGENT_RUNTIME`: `explicit_graph` by default, or `legacy` for the old `create_agent` compatibility path.
@@ -49,7 +49,7 @@ Use `fake` providers for local tests and demos that must not call DashScope, Mil
 
 Retrieval audits are exposed through `GET /api/chat/audits` and can be filtered by session, knowledge space, trace id, and limit. Enable SQLite audit storage when a business needs local post-answer review of selected chunks and retrieval debug data; use Postgres when multiple API instances need to share the same audit trail.
 
-When `DEPLOYMENT_ENVIRONMENT=production`, the validator rejects fake providers, memory-backed stores, debug mode, and wildcard or localhost CORS origins. Keep business templates production-ready by switching all runtime state to SQLite or Postgres before deployment.
+When `DEPLOYMENT_ENVIRONMENT=production`, the validator rejects fake providers, memory-backed stores, debug mode, and wildcard or localhost CORS origins. Keep production templates on SQLite only for single-instance durable deployments; use Postgres for multi-instance deployments.
 
 ## Prompt Profiles
 

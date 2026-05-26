@@ -270,7 +270,7 @@ class VectorIndexService:
 
 
 def _build_default_job_store(settings) -> IndexingJobStore:
-    provider = getattr(settings, "indexing_job_store_provider", "memory")
+    provider = getattr(settings, "indexing_job_store_provider", "sqlite")
     normalized_provider = str(provider).strip().lower().replace("-", "_")
     if normalized_provider == "sqlite":
         return SQLiteIndexingJobStore(
@@ -284,7 +284,7 @@ def _build_default_job_store(settings) -> IndexingJobStore:
 
 
 def _build_default_document_catalog(settings):
-    provider = getattr(settings, "document_catalog_provider", "memory")
+    provider = getattr(settings, "document_catalog_provider", "sqlite")
     normalized_provider = str(provider).strip().lower().replace("-", "_")
     if normalized_provider == "sqlite":
         return SQLiteKnowledgeCatalog(
