@@ -406,6 +406,16 @@ def test_config_validation_rejects_placeholder_secret_and_invalid_chunking():
     ]
 
 
+def test_config_validation_rejects_env_example_dashscope_placeholder():
+    report = validate_settings(_settings(dashscope_api_key="your-dashscope-api-key"))
+
+    assert report.is_valid is False
+    assert (
+        "DASHSCOPE_API_KEY",
+        "must be set to a non-placeholder value",
+    ) in [(issue.field, issue.message) for issue in report.errors]
+
+
 def test_config_validation_rejects_wildcard_cors_with_credentials():
     report = validate_settings(
         _settings(cors_allow_origins="*", cors_allow_credentials=True)
