@@ -357,7 +357,7 @@ def _store_provider_health(
     sqlite_env: str,
     postgres_env: str,
 ) -> HealthCheckResult:
-    provider = _setting_id(_settings_storage_value(settings, provider_attr, "sqlite"))
+    provider = _setting_id(_settings_provider_value(settings, provider_attr, "sqlite"))
     if provider == "memory":
         return HealthCheckResult.healthy(
             "process memory selected",
@@ -394,7 +394,19 @@ def _store_provider_health(
 
 def _dashscope_configured(settings: Any = config) -> bool:
     api_key = _settings_value(settings, "dashscope", "api_key", "dashscope_api_key", "").strip()
-    return bool(api_key and api_key != "your-api-key-here")
+    return not _is_placeholder_secret(api_key)
+
+
+def _is_placeholder_secret(value: str) -> bool:
+    normalized = value.strip().strip('"').strip("'").lower()
+    if not normalized:
+        return True
+    if normalized.startswith("your-") and "key" in normalized:
+        return True
+    return any(
+        marker in normalized
+        for marker in ["your-api-key", "placeholder", "changeme"]
+    )
 
 
 def _settings_value(
@@ -415,6 +427,13 @@ def _settings_storage_value(settings: Any, flat_field_name: str, default: Any) -
     if group is not None and hasattr(group, flat_field_name):
         return getattr(group, flat_field_name)
     return getattr(settings, flat_field_name, default)
+
+
+def _settings_provider_value(settings: Any, flat_field_name: str, default: Any) -> Any:
+    selection = ProviderSelection.from_settings(settings)
+    if hasattr(selection, flat_field_name):
+        return getattr(selection, flat_field_name)
+    return _settings_storage_value(settings, flat_field_name, default)
 
 
 def _setting_id(value: Any) -> str:
