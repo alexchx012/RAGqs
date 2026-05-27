@@ -122,7 +122,7 @@ def run_postgres_smoke(
     configured_targets = [
         target
         for target in POSTGRES_STORE_TARGETS
-        if _setting_id(getattr(settings, target.provider_attr, "sqlite")) == "postgres"
+        if _setting_id(_provider_setting_value(settings, target)) == "postgres"
     ]
 
     if not configured_targets:
@@ -276,7 +276,7 @@ def _append_store_check(
     checks: list[PostgresSmokeCheck],
     errors: list[PostgresSmokeIssue],
 ) -> None:
-    dsn = str(getattr(settings, target.dsn_attr, "")).strip()
+    dsn = str(_storage_setting_value(settings, target.dsn_attr, "")).strip()
     if not dsn:
         message = f"must be set when {target.provider_env}=postgres"
         checks.append(PostgresSmokeCheck(name=target.name, status="unhealthy", message=message))
@@ -330,6 +330,29 @@ def _redact_dsn(dsn: str) -> str:
 
 def _setting_id(value: Any) -> str:
     return str(value).strip().lower().replace("-", "_")
+
+
+def _provider_setting_value(settings: Any, target: PostgresStoreTarget) -> Any:
+    providers = getattr(settings, "providers", None)
+    providers_attr_by_flat_attr = {
+        "session_store_provider": "session_store",
+        "retrieval_audit_store_provider": "retrieval_audit_store",
+        "checkpoint_provider": "checkpoint",
+    }
+    provider_group_attr = providers_attr_by_flat_attr.get(target.provider_attr)
+    if provider_group_attr and providers is not None and hasattr(providers, provider_group_attr):
+        return getattr(providers, provider_group_attr)
+    storage = getattr(settings, "storage", None)
+    if storage is not None and hasattr(storage, target.provider_attr):
+        return getattr(storage, target.provider_attr)
+    return getattr(settings, target.provider_attr, "sqlite")
+
+
+def _storage_setting_value(settings: Any, field_name: str, default: Any) -> Any:
+    storage = getattr(settings, "storage", None)
+    if storage is not None and hasattr(storage, field_name):
+        return getattr(storage, field_name)
+    return getattr(settings, field_name, default)
 
 
 def _probe_failure_message(details: dict[str, Any]) -> str:
