@@ -207,6 +207,7 @@ class RagAgentService:
             if self.use_explicit_graph:
                 state = self._invoke_explicit_graph(question, session_id, space_id=space_id)
                 result = _serialize_graph_state(question, state)
+                success = _trace_success(result)
                 self._record_session_exchange(
                     session_id=session_id,
                     question=question,
@@ -222,7 +223,7 @@ class RagAgentService:
                 self._record_rag_query_metric(
                     session_id=session_id,
                     space_id=space_id,
-                    success=True,
+                    success=success,
                     start_time=start_time,
                     trace=result,
                 )
@@ -342,6 +343,7 @@ class RagAgentService:
                 ):
                     yield chunk
                 trace = _serialize_graph_state(question, state)
+                success = _trace_success(trace)
                 self._record_session_exchange(
                     session_id=session_id,
                     question=question,
@@ -357,7 +359,7 @@ class RagAgentService:
                 self._record_rag_query_metric(
                     session_id=session_id,
                     space_id=space_id,
-                    success=True,
+                    success=success,
                     start_time=start_time,
                     trace=trace,
                 )
@@ -768,6 +770,18 @@ def _serialize_graph_state(question: str, state: dict[str, Any]) -> dict[str, An
             "debug": retrieval_debug,
         },
     }
+    final_response = state.get("final_response")
+    errors = []
+    success = None
+    if isinstance(final_response, Mapping):
+        success = bool(final_response.get("success", True))
+        errors = [str(error) for error in final_response.get("errors", [])]
+    elif state.get("errors"):
+        errors = [str(error) for error in state.get("errors", [])]
+        success = False
+    if errors or success is False:
+        result["success"] = bool(success) if success is not None else False
+        result["errors"] = errors
     token_usage = _extract_token_usage(state)
     if any(token_usage.values()):
         result["tokenUsage"] = token_usage
@@ -800,6 +814,12 @@ def _extract_token_usage(payload: Mapping[str, Any]) -> dict[str, int]:
             if any(usage.values()):
                 return usage
     return {}
+
+
+def _trace_success(trace: Mapping[str, Any]) -> bool:
+    if "success" in trace:
+        return bool(trace["success"])
+    return not bool(trace.get("errors"))
 
 
 def _stream_chunks_from_graph_state(state: dict[str, Any]) -> list[dict[str, Any]]:

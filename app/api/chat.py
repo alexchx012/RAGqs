@@ -62,14 +62,17 @@ async def chat(
             session_id=request.id,
             space_id=request.space_id,
         )
+        retrieval = result.get("retrieval") or {}
+        errors = [str(error) for error in result.get("errors", [])]
+        success = bool(result.get("success", True)) and not errors
         return success_envelope(
             {
-                "success": True,
+                "success": success,
                 "answer": result["answer"],
-                "sources": result["sources"],
-                "retrievalDebug": result["retrieval"]["debug"],
-                "retrieval": result["retrieval"],
-                "errorMessage": None,
+                "sources": result.get("sources", []),
+                "retrievalDebug": retrieval.get("debug", {}),
+                "retrieval": retrieval,
+                "errorMessage": None if success else "; ".join(errors),
             }
         ).model_dump(mode="json")
     except HTTPException:
