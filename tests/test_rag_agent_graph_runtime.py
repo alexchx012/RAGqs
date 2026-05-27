@@ -224,6 +224,40 @@ async def test_rag_agent_service_query_with_trace_records_runtime_metrics():
 
 
 @pytest.mark.asyncio
+async def test_rag_agent_service_query_with_trace_preserves_explicit_graph_failures():
+    graph = FakeCompiledGraph(
+        {
+            "answer": "",
+            "sources": [],
+            "retrieval_debug": {},
+            "final_response": {
+                "answer": "",
+                "success": False,
+                "errors": ["retrieve: vector store unavailable"],
+            },
+            "events": [],
+        }
+    )
+    metrics = RecordingMetrics()
+    ticks = iter([10.0, 10.1])
+    service = RagAgentService(
+        streaming=False,
+        agent_factory=failing_agent_factory,
+        tools=[],
+        use_explicit_graph=True,
+        explicit_graph=graph,
+        metrics_collector=metrics,
+        metrics_clock=lambda: next(ticks),
+    )
+
+    result = await service.query_with_trace("What is graph RAG?", session_id="s1")
+
+    assert result["success"] is False
+    assert result["errors"] == ["retrieve: vector store unavailable"]
+    assert metrics.rag_queries[0]["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_rag_agent_service_attaches_trace_metadata_to_explicit_graph_config(monkeypatch):
     monkeypatch.setattr(rag_service_module, "get_current_trace_id", lambda: "trace-graph")
     graph = FakeCompiledGraph(
