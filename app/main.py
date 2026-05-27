@@ -32,8 +32,22 @@ def create_lifespan(
         app_name = _settings_value(settings, "app", "name", "app_name", "RAG Knowledge Agent")
         app_version = _settings_value(settings, "app", "version", "app_version", "1.0.0")
         logger.info(f"🚀 {app_name} v{app_version} 启动中...")
-        milvus_manager.connect()
-        logger.info("✅ Milvus 连接成功")
+        vector_store_provider = _config_id(
+            _settings_value(
+                settings,
+                "providers",
+                "vector_store",
+                "vector_store_provider",
+                "milvus",
+            )
+        )
+        milvus_connected = False
+        if vector_store_provider == "milvus":
+            milvus_manager.connect()
+            milvus_connected = True
+            logger.info("✅ Milvus 连接成功")
+        else:
+            logger.info(f"跳过 Milvus 连接, vector_store_provider={vector_store_provider}")
         indexing_worker = None
         if (
             _config_id(
@@ -69,7 +83,8 @@ def create_lifespan(
                     logger.info("✅ 后台索引 worker 已停止")
                 else:
                     logger.warning("后台索引 worker 未在超时时间内停止")
-            milvus_manager.close()
+            if milvus_connected:
+                milvus_manager.close()
             logger.info(f"👋 {app_name} 关闭")
 
     return lifespan

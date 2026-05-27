@@ -918,6 +918,35 @@ def test_main_lifespan_controls_background_indexing_worker():
     assert "indexing_worker.stop(" in main_source
 
 
+@pytest.mark.asyncio
+async def test_main_lifespan_skips_milvus_connection_for_fake_vector_store_provider():
+    from app.main import create_lifespan
+
+    class RecordingMilvusManager:
+        def __init__(self):
+            self.connect_count = 0
+            self.close_count = 0
+
+        def connect(self):
+            self.connect_count += 1
+
+        def close(self):
+            self.close_count += 1
+
+    settings = SimpleNamespace(
+        app=SimpleNamespace(name="Fake RAG API", version="1.0.0"),
+        providers=SimpleNamespace(vector_store="fake"),
+        storage=SimpleNamespace(indexing_execution_mode="sync"),
+    )
+    manager = RecordingMilvusManager()
+
+    async with create_lifespan(settings=settings, milvus_manager=manager)(FastAPI()):
+        pass
+
+    assert manager.connect_count == 0
+    assert manager.close_count == 0
+
+
 def test_operations_docs_describe_dependency_health_preflight():
     docs = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
 
