@@ -40,8 +40,20 @@ def test_dashscope_embedding_provider_validates_api_key_before_client_use():
         DashScopeEmbeddingProvider(api_key="")
 
 
+def test_dashscope_embedding_provider_rejects_env_example_placeholder():
+    with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
+        DashScopeEmbeddingProvider(api_key="your-dashscope-api-key")
+
+
 def test_dashscope_chat_model_provider_validates_api_key_when_creating_model():
     provider = DashScopeChatModelProvider(api_key="")
+
+    with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
+        provider.create_chat_model(streaming=False)
+
+
+def test_dashscope_chat_model_provider_rejects_env_example_placeholder():
+    provider = DashScopeChatModelProvider(api_key="your-dashscope-api-key")
 
     with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
         provider.create_chat_model(streaming=False)

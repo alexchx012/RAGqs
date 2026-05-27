@@ -21,7 +21,7 @@ class DashScopeChatModelProvider:
         self.temperature = temperature
 
     def create_chat_model(self, streaming: bool = True) -> ChatQwen:
-        if not self.api_key or self.api_key == "your-api-key-here":
+        if _is_placeholder_api_key(self.api_key):
             raise ValueError("请设置环境变量 DASHSCOPE_API_KEY")
 
         return ChatQwen(
@@ -42,7 +42,7 @@ class DashScopeEmbeddingProvider:
         dimensions: int = 1024,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ):
-        if not api_key or api_key == "your-api-key-here":
+        if _is_placeholder_api_key(api_key):
             raise ValueError("请设置环境变量 DASHSCOPE_API_KEY")
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -79,3 +79,15 @@ class DashScopeEmbeddingProvider:
         except Exception as e:
             logger.error(f"查询嵌入失败: {e}")
             raise RuntimeError(f"查询嵌入失败: {e}") from e
+
+
+def _is_placeholder_api_key(value: str) -> bool:
+    normalized = value.strip().strip('"').strip("'").lower()
+    if not normalized:
+        return True
+    if normalized.startswith("your-") and "key" in normalized:
+        return True
+    return any(
+        marker in normalized
+        for marker in ("your-api-key", "placeholder", "changeme")
+    )
