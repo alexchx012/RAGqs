@@ -165,6 +165,27 @@ async def test_chat_api_returns_sources_and_retrieval_debug(monkeypatch):
     assert response["data"]["retrievalDebug"] == {"stages": ["retrieve"]}
 
 
+@pytest.mark.asyncio
+async def test_chat_api_preserves_graph_failure_status(monkeypatch):
+    class FakeRagService:
+        async def query_with_trace(self, question: str, session_id: str):
+            return {
+                "answer": "",
+                "success": False,
+                "errors": ["retrieve: vector store unavailable"],
+                "sources": [],
+                "retrieval": {"debug": {}},
+            }
+
+    monkeypatch.setattr(chat_api, "rag_agent_service", FakeRagService())
+
+    response = await chat_api.chat(ChatRequest(Id="s1", Question="question"))
+
+    assert response["data"]["success"] is False
+    assert response["data"]["answer"] == ""
+    assert response["data"]["errorMessage"] == "retrieve: vector store unavailable"
+
+
 def test_chat_stream_chunk_formatter_preserves_structured_error_data():
     payload = chat_api.format_stream_chunk(
         {
