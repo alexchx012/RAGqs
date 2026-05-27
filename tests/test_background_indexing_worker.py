@@ -1,6 +1,10 @@
 from app.ingestion import IndexingJob, IndexingJobStatus
 from app.ingestion.queue import InMemoryIndexingQueue
-from app.ingestion.worker import BackgroundIndexingWorker
+from app.ingestion.worker import (
+    BackgroundIndexingWorker,
+    get_background_indexing_worker,
+    reset_background_indexing_worker,
+)
 
 
 class RecordingIndexService:
@@ -114,3 +118,27 @@ def test_background_indexing_worker_start_recovers_persisted_pending_jobs():
     assert worker.wait_until_idle(timeout_seconds=1) is True
     worker.stop(timeout_seconds=1)
     assert index_service.ran_job_ids == ["job-1"]
+
+
+def test_default_background_indexing_worker_prefers_grouped_storage_settings():
+    from types import SimpleNamespace
+
+    reset_background_indexing_worker()
+    try:
+        settings = SimpleNamespace(
+            storage=SimpleNamespace(
+                indexing_queue_provider="memory",
+                indexing_worker_poll_interval_seconds=0.05,
+                indexing_worker_recover_pending_jobs=False,
+            )
+        )
+        worker = get_background_indexing_worker(
+            index_service=RecordingIndexService(),
+            settings=settings,
+        )
+
+        assert isinstance(worker.indexing_queue, InMemoryIndexingQueue)
+        assert worker.poll_interval_seconds == 0.05
+        assert worker.recover_pending_jobs_on_start is False
+    finally:
+        reset_background_indexing_worker()
