@@ -151,6 +151,10 @@ class DocumentLoaderRegistry:
         extension = file_path.suffix.lower() or "<none>"
         raise ValueError(f"Unsupported document extension: {extension}")
 
+    def supports(self, path: str | Path) -> bool:
+        file_path = Path(path)
+        return any(loader.supports(file_path) for loader in self.loaders)
+
 
 def _ensure_file(path: str | Path) -> Path:
     file_path = Path(path)

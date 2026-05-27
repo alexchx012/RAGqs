@@ -278,6 +278,40 @@ def test_vector_index_service_index_directory_returns_per_file_jobs(tmp_path):
     assert len(job_store.list(status=IndexingJobStatus.FAILED)) == 1
 
 
+def test_vector_index_service_index_directory_includes_all_supported_loader_extensions(tmp_path):
+    txt_file = tmp_path / "note.txt"
+    csv_file = tmp_path / "policies.csv"
+    json_file = tmp_path / "faqs.json"
+    unsupported_file = tmp_path / "ignored.pdf"
+    txt_file.write_text("plain text", encoding="utf-8")
+    csv_file.write_text("team,policy\nHR,Remote work\n", encoding="utf-8")
+    json_file.write_text('{"question": "What is covered?", "answer": "Benefits"}', encoding="utf-8")
+    unsupported_file.write_text("not indexed", encoding="utf-8")
+
+    splitter = RecordingSplitter()
+    job_store = InMemoryIndexingJobStore()
+    service = VectorIndexService(
+        upload_path=str(tmp_path),
+        document_splitter=splitter,
+        vector_store=RecordingVectorStore(),
+        loader_registry=DocumentLoaderRegistry.default(),
+        job_store=job_store,
+    )
+
+    result = service.index_directory(str(tmp_path))
+
+    indexed_sources = {job.source_path for job in result.jobs}
+    assert result.success is True
+    assert result.total_files == 3
+    assert result.success_count == 3
+    assert indexed_sources == {
+        txt_file.resolve().as_posix(),
+        csv_file.resolve().as_posix(),
+        json_file.resolve().as_posix(),
+    }
+    assert unsupported_file.resolve().as_posix() not in indexed_sources
+
+
 def test_vector_index_service_delete_document_cleans_legacy_source_chunks(tmp_path):
     file_path = tmp_path / "legacy.md"
     file_path.write_text("# Legacy\n\nold metadata", encoding="utf-8")
