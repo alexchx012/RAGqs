@@ -426,7 +426,7 @@ class RAGApp {
     addMessage(type, content, isStreaming = false) {
         if (this.welcomeGreeting) this.welcomeGreeting.style.display = 'none';
         const div = document.createElement('div');
-        div.className = `message ${type}-message`;
+        div.className = `message ${type} ${type}-message`;
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
         contentDiv.innerHTML = type === 'user' ? this.escapeHtml(content) : this.renderMarkdown(content);
@@ -577,7 +577,7 @@ class RAGApp {
         if (this.welcomeGreeting) this.welcomeGreeting.style.display = 'none';
         loadedHistory.messages.forEach(m => {
             const div = document.createElement('div');
-            div.className = `message ${m.type}-message`;
+            div.className = `message ${m.type} ${m.type}-message`;
             const c = document.createElement('div');
             c.className = 'message-content';
             c.innerHTML = m.type === 'user' ? this.escapeHtml(m.content) : this.renderMarkdown(m.content);

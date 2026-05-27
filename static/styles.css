@@ -954,7 +954,8 @@ body {
     z-index: 1000;
 }
 
-.mode-selector-wrapper.active .mode-dropdown {
+.mode-selector-wrapper.active .mode-dropdown,
+.mode-dropdown.active {
     opacity: 1;
     visibility: visible;
     transform: translateY(0);
