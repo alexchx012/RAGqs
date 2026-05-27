@@ -126,9 +126,21 @@ def get_background_indexing_worker(
             from app.services.vector_index_service import vector_index_service
 
             index_service = vector_index_service
-        poll_interval = float(getattr(settings, "indexing_worker_poll_interval_seconds", 0.25))
-        recover_pending_jobs = bool(
-            getattr(settings, "indexing_worker_recover_pending_jobs", True)
+        poll_interval = float(
+            _settings_value(
+                settings,
+                "storage",
+                "indexing_worker_poll_interval_seconds",
+                0.25,
+            )
+        )
+        recover_pending_jobs = _settings_bool(
+            _settings_value(
+                settings,
+                "storage",
+                "indexing_worker_recover_pending_jobs",
+                True,
+            )
         )
         _default_worker = BackgroundIndexingWorker(
             index_service=index_service,
@@ -196,6 +208,12 @@ def _settings_value(settings: Any, group_name: str, field_name: str, default: An
     if group is not None and hasattr(group, field_name):
         return getattr(group, field_name)
     return getattr(settings, field_name, default)
+
+
+def _settings_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _setting_id(value: Any) -> str:
