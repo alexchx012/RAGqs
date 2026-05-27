@@ -283,7 +283,7 @@ Use explicit origins for deployed frontends, for example `https://rag.example.co
 Uploads are validated by `app.security.uploads` before files are written or indexed:
 
 ```env
-UPLOAD_ALLOWED_EXTENSIONS=txt,md,csv,html,htm,json
+UPLOAD_ALLOWED_EXTENSIONS=txt,md,markdown,csv,html,htm,json
 UPLOAD_MAX_BYTES=10485760
 UPLOAD_PROMPT_INJECTION_SCAN_ENABLED=true
 ```
