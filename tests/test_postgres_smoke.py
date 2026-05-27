@@ -84,6 +84,51 @@ def test_postgres_smoke_checks_each_configured_postgres_store_without_leaking_pa
     assert "secret" not in report.model_dump_json()
 
 
+def test_postgres_smoke_prefers_grouped_provider_and_storage_settings():
+    from app.operations.postgres_smoke import run_postgres_smoke
+
+    calls = []
+
+    def probe(dsn: str, timeout_seconds: float):
+        calls.append((dsn, timeout_seconds))
+        return {"serverReachable": True}
+
+    settings = SimpleNamespace(
+        providers=SimpleNamespace(
+            session_store="postgres",
+            retrieval_audit_store="postgres",
+            checkpoint="postgres",
+        ),
+        storage=SimpleNamespace(
+            session_store_postgres_dsn="postgresql://rag:secret@db/sessions",
+            retrieval_audit_postgres_dsn="postgresql://rag:secret@db/audits",
+            indexing_queue_provider="postgres",
+            indexing_queue_postgres_dsn="postgresql://rag:secret@db/queue",
+            indexing_job_store_provider="postgres",
+            indexing_job_store_postgres_dsn="postgresql://rag:secret@db/jobs",
+            document_catalog_provider="postgres",
+            document_catalog_postgres_dsn="postgresql://rag:secret@db/catalog",
+            checkpoint_postgres_dsn="postgresql://rag:secret@db/checkpoints",
+        ),
+    )
+
+    report = run_postgres_smoke(
+        settings=settings,
+        postgres_probe=probe,
+        timeout_seconds=1.5,
+    )
+
+    assert report.ready is True
+    assert calls == [
+        ("postgresql://rag:secret@db/sessions", 1.5),
+        ("postgresql://rag:secret@db/audits", 1.5),
+        ("postgresql://rag:secret@db/queue", 1.5),
+        ("postgresql://rag:secret@db/jobs", 1.5),
+        ("postgresql://rag:secret@db/catalog", 1.5),
+        ("postgresql://rag:secret@db/checkpoints", 1.5),
+    ]
+
+
 def test_postgres_smoke_reports_missing_dsn_for_selected_postgres_store():
     from app.operations.postgres_smoke import run_postgres_smoke
 
