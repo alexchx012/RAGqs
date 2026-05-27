@@ -93,7 +93,11 @@ class VectorIndexService:
             if not dir_path.exists() or not dir_path.is_dir():
                 raise ValueError(f"目录不存在: {target_path}")
             result.directory_path = str(dir_path)
-            files = sorted(list(dir_path.glob("*.txt")) + list(dir_path.glob("*.md")))
+            files = sorted(
+                path
+                for path in dir_path.iterdir()
+                if path.is_file() and self.loader_registry.supports(path)
+            )
             if not files:
                 result.total_files = 0
                 result.success = True
