@@ -61,6 +61,60 @@ def test_health_checker_rejects_incomplete_openai_compatible_provider_configurat
     )
 
 
+def test_health_checker_rejects_env_example_dashscope_placeholder():
+    checker = create_default_health_checker(
+        settings=_settings(dashscope_api_key="your-dashscope-api-key"),
+        milvus_manager=SimpleNamespace(health_check=lambda: True),
+    )
+
+    payload, status_code = checker.as_response()
+
+    assert status_code == 503
+    assert payload["dependencies"]["modelProvider"]["message"] == (
+        "DASHSCOPE_API_KEY is not configured"
+    )
+    assert payload["dependencies"]["embeddingProvider"]["message"] == (
+        "DASHSCOPE_API_KEY is not configured"
+    )
+
+
+def test_health_checker_uses_grouped_provider_selection_for_runtime_stores():
+    settings = SimpleNamespace(
+        providers=SimpleNamespace(
+            chat="fake",
+            embedding="fake",
+            vector_store="fake",
+            session_store="postgres",
+            retrieval_audit_store="postgres",
+            ingestion="fake",
+            checkpoint="postgres",
+        ),
+        storage=SimpleNamespace(
+            session_store_postgres_dsn="postgresql://rag:secret@db/sessions",
+            retrieval_audit_postgres_dsn="postgresql://rag:secret@db/audits",
+            checkpoint_postgres_dsn="postgresql://rag:secret@db/checkpoints",
+            indexing_queue_provider="postgres",
+            indexing_queue_postgres_dsn="postgresql://rag:secret@db/queue",
+            indexing_job_store_provider="postgres",
+            indexing_job_store_postgres_dsn="postgresql://rag:secret@db/jobs",
+            document_catalog_provider="postgres",
+            document_catalog_postgres_dsn="postgresql://rag:secret@db/catalog",
+        ),
+    )
+    checker = create_default_health_checker(settings=settings)
+
+    payload, status_code = checker.as_response()
+
+    assert status_code == 200
+    dependencies = payload["dependencies"]
+    assert dependencies["sessionStore"]["details"]["provider"] == "postgres"
+    assert dependencies["retrievalAuditStore"]["details"]["provider"] == "postgres"
+    assert dependencies["checkpointStore"]["details"]["provider"] == "postgres"
+    assert dependencies["indexingQueue"]["details"]["provider"] == "postgres"
+    assert dependencies["indexingJobStore"]["details"]["provider"] == "postgres"
+    assert dependencies["documentCatalog"]["details"]["provider"] == "postgres"
+
+
 def test_health_preflight_requires_runtime_data_boundaries():
     summary = validate_health_payload(
         {

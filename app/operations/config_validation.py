@@ -877,6 +877,8 @@ def _is_placeholder_secret(value: str) -> bool:
     normalized = value.strip().strip('"').strip("'").lower()
     if not normalized:
         return True
+    if normalized.startswith("your-") and "key" in normalized:
+        return True
     return any(
         marker in normalized
         for marker in ["your-api-key", "placeholder", "changeme"]
