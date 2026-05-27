@@ -49,9 +49,10 @@ class DocumentSplitterService:
             md_docs = self.markdown_splitter.split_text(content)
             docs_after_split = self.text_splitter.split_documents(md_docs)
             final_docs = self._merge_small_chunks(docs_after_split, min_size=300)
+            extension = Path(file_path).suffix or ".md"
             for doc in final_docs:
                 doc.metadata["_source"] = file_path
-                doc.metadata["_extension"] = ".md"
+                doc.metadata["_extension"] = extension
                 doc.metadata["_file_name"] = Path(file_path).name
             return final_docs
         except Exception as e:
@@ -72,7 +73,7 @@ class DocumentSplitterService:
             raise
 
     def split_document(self, content: str, file_path: str = "") -> list[Document]:
-        if file_path.endswith(".md"):
+        if Path(file_path).suffix.lower() in {".md", ".markdown"}:
             return self.split_markdown(content, file_path)
         return self.split_text(content, file_path)
 

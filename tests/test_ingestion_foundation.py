@@ -30,13 +30,16 @@ def test_document_splitter_prefers_grouped_chunking_settings():
 def test_loader_registry_reads_utf8_text_and_markdown_files(tmp_path):
     text_path = tmp_path / "guide.txt"
     markdown_path = tmp_path / "playbook.md"
+    long_markdown_path = tmp_path / "handbook.markdown"
     text_path.write_text("知识库文本内容", encoding="utf-8")
     markdown_path.write_text("# Title\n\nMarkdown body", encoding="utf-8")
+    long_markdown_path.write_text("# Handbook\n\nMarkdown body", encoding="utf-8")
 
     registry = DocumentLoaderRegistry.default()
 
     text_docs = registry.load(text_path)
     markdown_docs = registry.load(markdown_path)
+    long_markdown_docs = registry.load(long_markdown_path)
 
     assert text_docs[0].page_content == "知识库文本内容"
     assert text_docs[0].metadata["source_path"] == text_path.resolve().as_posix()
@@ -44,6 +47,20 @@ def test_loader_registry_reads_utf8_text_and_markdown_files(tmp_path):
     assert markdown_docs[0].page_content == "# Title\n\nMarkdown body"
     assert markdown_docs[0].metadata["source_path"] == markdown_path.resolve().as_posix()
     assert markdown_docs[0].metadata["extension"] == ".md"
+    assert long_markdown_docs[0].page_content == "# Handbook\n\nMarkdown body"
+    assert long_markdown_docs[0].metadata["source_path"] == long_markdown_path.resolve().as_posix()
+    assert long_markdown_docs[0].metadata["extension"] == ".markdown"
+
+
+def test_document_splitter_treats_markdown_extension_as_markdown(tmp_path):
+    path = tmp_path / "handbook.markdown"
+    splitter = DocumentSplitterService()
+
+    documents = splitter.split_document("# Handbook\n\nPolicy body", path.as_posix())
+
+    assert documents
+    assert documents[0].metadata["h1"] == "Handbook"
+    assert documents[0].metadata["_extension"] == ".markdown"
 
 
 def test_loader_registry_reads_csv_html_and_json_files(tmp_path):

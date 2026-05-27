@@ -44,7 +44,7 @@ class TextDocumentLoader:
 class MarkdownDocumentLoader(TextDocumentLoader):
     """UTF-8 Markdown file loader."""
 
-    extensions = (".md",)
+    extensions = (".md", ".markdown")
 
 
 class CSVDocumentLoader:
