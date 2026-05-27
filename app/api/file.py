@@ -301,7 +301,7 @@ def build_upload_security_policy(settings=config) -> UploadSecurityPolicy:
                 settings,
                 "allowed_extensions",
                 "upload_allowed_extensions",
-                "txt,md,csv,html,htm,json",
+                "txt,md,markdown,csv,html,htm,json",
             )
         ),
         max_bytes=_settings_group_value(

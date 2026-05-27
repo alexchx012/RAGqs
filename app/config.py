@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     port: int = 9900
     cors_allow_origins: str = "http://127.0.0.1:9900,http://localhost:9900"
     cors_allow_credentials: bool = True
-    upload_allowed_extensions: str = "txt,md,csv,html,htm,json"
+    upload_allowed_extensions: str = "txt,md,markdown,csv,html,htm,json"
     upload_max_bytes: int = 10 * 1024 * 1024
     upload_prompt_injection_scan_enabled: bool = True
     deployment_environment: str = "local"
