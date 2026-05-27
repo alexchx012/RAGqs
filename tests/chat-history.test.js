@@ -89,7 +89,7 @@ function loadApp(options = {}) {
     marked: undefined,
   };
   vm.runInNewContext(code, sandbox, { filename: appPath });
-  return { App: sandbox.RAGAppForTest, localStorage: sandbox.localStorage };
+  return { App: sandbox.RAGAppForTest, elements, localStorage: sandbox.localStorage };
 }
 
 function testNewChatDoesNotDuplicateLoadedHistory() {
@@ -384,6 +384,30 @@ function testUploadAcceptsBackendAllowedTextFormats() {
   assert.match(html, /accept="\.txt,\.md,\.markdown,\.csv,\.html,\.htm,\.json"/);
 }
 
+function testRenderedMessagesKeepRoleClassesUsedByCss() {
+  const { App, elements } = loadApp();
+  const app = new App();
+
+  app.addMessage('user', 'hello');
+  app.addMessage('assistant', 'world');
+
+  const [userMessage, assistantMessage] = elements.get('chatMessages').children;
+  const userClasses = new Set(userMessage.className.split(/\s+/));
+  const assistantClasses = new Set(assistantMessage.className.split(/\s+/));
+  assert.ok(userClasses.has('message'));
+  assert.ok(userClasses.has('user'));
+  assert.ok(userClasses.has('user-message'));
+  assert.ok(assistantClasses.has('message'));
+  assert.ok(assistantClasses.has('assistant'));
+  assert.ok(assistantClasses.has('assistant-message'));
+}
+
+function testModeDropdownActiveClassHasVisibleCssRule() {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'static', 'styles.css'), 'utf8');
+
+  assert.match(css, /\.mode-dropdown\.active\s*\{/);
+}
+
 async function run() {
   testNewChatDoesNotDuplicateLoadedHistory();
   testLoadChatHistoriesDeduplicatesStoredSessions();
@@ -393,6 +417,8 @@ async function run() {
   await testChatAndUploadSendSelectedKnowledgeSpace();
   await testManagementFlowsUseBackendSpaceAndLifecycleApis();
   testUploadAcceptsBackendAllowedTextFormats();
+  testRenderedMessagesKeepRoleClassesUsedByCss();
+  testModeDropdownActiveClassHasVisibleCssRule();
   console.log('chat history tests passed');
 }
 
