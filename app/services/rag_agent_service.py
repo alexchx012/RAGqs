@@ -182,6 +182,7 @@ class RagAgentService:
                 answer = state.get("answer", "")
                 self._record_session_exchange(
                     session_id=session_id,
+                    space_id=space_id,
                     question=question,
                     answer=answer,
                     assistant_metadata=_session_metadata_from_graph_state(state),
@@ -189,7 +190,12 @@ class RagAgentService:
                 return answer
 
             answer = await self._run_legacy_query(question, session_id, space_id=space_id)
-            self._record_session_exchange(session_id=session_id, question=question, answer=answer)
+            self._record_session_exchange(
+                session_id=session_id,
+                space_id=space_id,
+                question=question,
+                answer=answer,
+            )
             return answer
         except Exception as e:
             logger.error(f"[会话 {session_id}] 查询失败: {e}")
@@ -210,6 +216,7 @@ class RagAgentService:
                 success = _trace_success(result)
                 self._record_session_exchange(
                     session_id=session_id,
+                    space_id=space_id,
                     question=question,
                     answer=result["answer"],
                     assistant_metadata=_session_metadata_from_trace(result),
@@ -241,6 +248,7 @@ class RagAgentService:
             }
             self._record_session_exchange(
                 session_id=session_id,
+                space_id=space_id,
                 question=question,
                 answer=answer,
                 assistant_metadata=_session_metadata_from_trace(result),
@@ -288,6 +296,7 @@ class RagAgentService:
                     yield chunk
                 self._record_session_exchange(
                     session_id=session_id,
+                    space_id=space_id,
                     question=question,
                     answer=state.get("answer", ""),
                     assistant_metadata=_session_metadata_from_graph_state(state),
@@ -317,6 +326,7 @@ class RagAgentService:
             yield {"type": "complete"}
             self._record_session_exchange(
                 session_id=session_id,
+                space_id=space_id,
                 question=question,
                 answer="".join(answer_parts),
             )
@@ -346,6 +356,7 @@ class RagAgentService:
                 success = _trace_success(trace)
                 self._record_session_exchange(
                     session_id=session_id,
+                    space_id=space_id,
                     question=question,
                     answer=trace["answer"],
                     assistant_metadata=_session_metadata_from_trace(trace),
@@ -572,13 +583,19 @@ class RagAgentService:
         self,
         *,
         session_id: str,
+        space_id: str = "default",
         question: str,
         answer: str,
         assistant_metadata: dict[str, Any] | None = None,
     ) -> None:
         session_store = self._get_session_store_provider()
-        session_store.append_message(session_id, "user", question)
-        session_store.append_message(session_id, "assistant", answer, assistant_metadata)
+        session_store.append_message(session_id, "user", question, _space_metadata(space_id))
+        session_store.append_message(
+            session_id,
+            "assistant",
+            answer,
+            _metadata_with_space(assistant_metadata, space_id),
+        )
 
     def _record_retrieval_audit(
         self,
@@ -651,9 +668,25 @@ class RagAgentService:
             logger.error(f"获取会话历史失败: {session_id}, 错误: {e}")
             return []
 
-    def list_sessions(self, query: str | None = None) -> list[SessionSummary]:
+    def list_sessions(
+        self,
+        query: str | None = None,
+        allowed_space_ids: set[str] | None = None,
+    ) -> list[SessionSummary]:
         session_store = self._get_session_store_provider()
-        return session_store.list_sessions(query=query)
+        summaries = session_store.list_sessions(query=query)
+        if allowed_space_ids is None or "*" in allowed_space_ids:
+            return summaries
+        normalized_allowed = {_normalize_space_id(space_id) for space_id in allowed_space_ids}
+        return [
+            summary
+            for summary in summaries
+            if self.session_space_ids(summary.session_id).issubset(normalized_allowed)
+        ]
+
+    def session_space_ids(self, session_id: str) -> set[str]:
+        session_store = self._get_session_store_provider()
+        return _session_space_ids_from_messages(session_store.get_messages(session_id))
 
     def list_retrieval_audits(
         self,
@@ -714,6 +747,31 @@ def _settings_value(
     if group is not None and hasattr(group, group_field_name):
         return getattr(group, group_field_name)
     return getattr(settings, flat_field_name, default)
+
+
+def _space_metadata(space_id: str) -> dict[str, str]:
+    return {"spaceId": _normalize_space_id(space_id)}
+
+
+def _metadata_with_space(metadata: dict[str, Any] | None, space_id: str) -> dict[str, Any]:
+    enriched = dict(metadata or {})
+    enriched.setdefault("spaceId", _normalize_space_id(space_id))
+    return enriched
+
+
+def _session_space_ids_from_messages(messages: list[StoredMessage]) -> set[str]:
+    spaces: set[str] = set()
+    for message in messages:
+        metadata = dict(message.metadata or {})
+        for key in ("spaceId", "space_id"):
+            value = metadata.get(key)
+            if value:
+                spaces.add(_normalize_space_id(str(value)))
+    return spaces or {"default"}
+
+
+def _normalize_space_id(space_id: str | None) -> str:
+    return str(space_id or "default").strip() or "default"
 
 
 rag_agent_service = RagAgentService(streaming=True)

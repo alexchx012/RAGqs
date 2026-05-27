@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api import chat as chat_api
 from app.api import file as file_api
+from app.providers import SessionSummary
 from app.security import auth as auth_module
 from app.security.auth import SimpleAuthProvider, require_space_access
 
@@ -160,6 +161,41 @@ def test_audit_api_denies_users_without_audit_permission(monkeypatch):
     assert response.json()["detail"] == "missing permission: audit:read"
 
 
+def test_session_routes_filter_and_deny_by_session_space(monkeypatch):
+    _install_auth_settings(
+        monkeypatch,
+        auth_enabled=True,
+        auth_provider="dev_header",
+        auth_dev_users="alice:viewer:finance",
+    )
+    service = FakeSessionScopedRagService()
+    monkeypatch.setattr(chat_api, "rag_agent_service", service)
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/api")
+    client = TestClient(app)
+
+    list_response = client.get("/api/chat/sessions", headers={"X-RAG-User": "alice"})
+
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()["data"]["sessions"]] == [
+        "finance-session"
+    ]
+
+    detail_response = client.get(
+        "/api/chat/session/hr-session",
+        headers={"X-RAG-User": "alice"},
+    )
+    clear_response = client.post(
+        "/api/chat/clear",
+        headers={"X-RAG-User": "alice"},
+        json={"sessionId": "hr-session"},
+    )
+
+    assert detail_response.status_code == 403
+    assert clear_response.status_code == 403
+    assert service.cleared_sessions == []
+
+
 def _install_auth_settings(monkeypatch, **overrides):
     settings = _settings(**overrides)
     monkeypatch.setattr(auth_module, "config", settings)
@@ -187,3 +223,46 @@ def _client_error(callback):
     except Exception as exc:
         return exc
     raise AssertionError("expected exception")
+
+
+class FakeSessionScopedRagService:
+    def __init__(self):
+        self.cleared_sessions = []
+        self.spaces = {
+            "finance-session": {"finance"},
+            "hr-session": {"hr"},
+        }
+
+    def list_sessions(self, query=None, allowed_space_ids=None):
+        summaries = [
+            SessionSummary(
+                session_id="finance-session",
+                title="Finance",
+                message_count=2,
+                updated_at="2026-05-27T00:00:00Z",
+            ),
+            SessionSummary(
+                session_id="hr-session",
+                title="HR",
+                message_count=2,
+                updated_at="2026-05-27T00:00:00Z",
+            ),
+        ]
+        if allowed_space_ids is None or "*" in allowed_space_ids:
+            return summaries
+        allowed = set(allowed_space_ids)
+        return [
+            summary
+            for summary in summaries
+            if self.spaces.get(summary.session_id, {"default"}).issubset(allowed)
+        ]
+
+    def session_space_ids(self, session_id):
+        return self.spaces.get(session_id, {"default"})
+
+    def get_session_history(self, session_id):
+        return [{"role": "user", "content": session_id, "metadata": {}}]
+
+    def clear_session(self, session_id):
+        self.cleared_sessions.append(session_id)
+        return True

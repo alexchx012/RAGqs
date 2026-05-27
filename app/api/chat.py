@@ -131,7 +131,8 @@ async def clear_session(
     auth_context: AuthContext = Depends(require_permission("chat:write")),
 ):
     """清空会话历史"""
-    active_auth_context(auth_context)
+    active_context = active_auth_context(auth_context)
+    _require_session_space_access(active_context, request.session_id)
     try:
         success = rag_agent_service.clear_session(request.session_id)
         return ApiResponse(
@@ -149,9 +150,10 @@ async def list_sessions(
     auth_context: AuthContext = Depends(require_permission("session:read")),
 ):
     """查询会话摘要列表"""
-    active_auth_context(auth_context)
+    active_context = active_auth_context(auth_context)
     try:
-        summaries = rag_agent_service.list_sessions(query=query)
+        allowed_space_ids = None if is_all_space_context(active_context) else active_context.spaces
+        summaries = _call_list_sessions(query=query, allowed_space_ids=allowed_space_ids)
         sessions = [_serialize_session_summary(summary) for summary in summaries]
         return success_envelope({"count": len(sessions), "sessions": sessions}).model_dump(
             mode="json"
@@ -200,7 +202,8 @@ async def get_session_info(
     auth_context: AuthContext = Depends(require_permission("session:read")),
 ) -> SessionInfoResponse:
     """查询会话历史"""
-    active_auth_context(auth_context)
+    active_context = active_auth_context(auth_context)
+    _require_session_space_access(active_context, session_id)
     try:
         history = rag_agent_service.get_session_history(session_id)
         return SessionInfoResponse(session_id=session_id, message_count=len(history), history=history)
@@ -216,6 +219,41 @@ def _serialize_session_summary(summary) -> dict:
         "updatedAt": summary.updated_at,
         "lastMessage": summary.last_message,
     }
+
+
+def _call_list_sessions(query: str | None, allowed_space_ids: set[str] | None):
+    method = rag_agent_service.list_sessions
+    if _accepts_keyword(method, "allowed_space_ids"):
+        return method(query=query, allowed_space_ids=allowed_space_ids)
+    summaries = method(query=query)
+    if allowed_space_ids is None or "*" in allowed_space_ids:
+        return summaries
+    return [
+        summary
+        for summary in summaries
+        if _session_space_ids_allowed(
+            allowed_space_ids,
+            getattr(summary, "session_id", ""),
+        )
+    ]
+
+
+def _require_session_space_access(auth_context: AuthContext, session_id: str) -> None:
+    for space_id in _session_space_ids(session_id):
+        require_space_access(auth_context, space_id)
+
+
+def _session_space_ids_allowed(allowed_space_ids: set[str], session_id: str) -> bool:
+    session_spaces = _session_space_ids(session_id)
+    return session_spaces.issubset(allowed_space_ids)
+
+
+def _session_space_ids(session_id: str) -> set[str]:
+    method = getattr(rag_agent_service, "session_space_ids", None)
+    if method is None:
+        return {"default"}
+    spaces = method(session_id)
+    return {str(space or "default").strip() or "default" for space in spaces} or {"default"}
 
 
 def _serialize_retrieval_audit(audit) -> dict:

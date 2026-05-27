@@ -144,6 +144,28 @@ def test_rag_agent_service_lists_session_summaries_from_store():
     assert summaries[0].title == "What is a backend session?"
 
 
+def test_rag_agent_service_filters_session_summaries_by_allowed_spaces():
+    session_store = InMemorySessionStoreProvider()
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=SimpleNamespace(create_chat_model=lambda streaming: object()),
+        agent_factory=fake_agent_factory,
+        tools=[],
+        session_store_provider=session_store,
+        agent_runtime="legacy",
+    )
+    session_store.append_message("finance-session", "user", "Finance question", {"spaceId": "finance"})
+    session_store.append_message("finance-session", "assistant", "Finance answer", {"spaceId": "finance"})
+    session_store.append_message("hr-session", "user", "HR question", {"spaceId": "hr"})
+    session_store.append_message("hr-session", "assistant", "HR answer", {"spaceId": "hr"})
+
+    summaries = service.list_sessions(allowed_space_ids={"finance"})
+
+    assert [summary.session_id for summary in summaries] == ["finance-session"]
+    assert service.session_space_ids("finance-session") == {"finance"}
+    assert service.session_space_ids("missing-session") == {"default"}
+
+
 def test_session_info_response_allows_structured_message_metadata():
     response = SessionInfoResponse(
         session_id="s1",
