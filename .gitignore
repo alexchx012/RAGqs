@@ -1,5 +1,7 @@
 .venv/
 venv/
+.codex/
+docs/
 __pycache__/
 *.pyc
 *.egg-info/
