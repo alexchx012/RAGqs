@@ -1,4 +1,14 @@
 # Repository Guidelines
+##General Rules
+From now on, any code modifications must first have an OpenSpec change (using the openspec-propose skill).
+Any change must first answer:
+1. Why make the change?
+2. What will be changed?
+3. What will not be changed?
+4. How will it be accepted?
+5. How to roll back?
+6. Will it affect existing RAG / Agent / data entry / configuration / testing?
+If the answers are unclear, writing code is prohibited.
 
 ## Project Structure & Module Organization
 
