@@ -1,6 +1,7 @@
 .venv/
 venv/
 .codex/
+.agents/
 docs/
 __pycache__/
 *.pyc
@@ -18,5 +19,11 @@ artifacts/
 .ruff_cache/
 .mypy_cache/
 data/*.db
+data/*.db-*
 data/*.sqlite
+data/*.sqlite-*
 data/*.sqlite3
+data/*.sqlite3-*
+learning-progress/
+openspec/
+AGENTS.md

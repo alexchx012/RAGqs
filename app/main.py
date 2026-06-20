@@ -21,12 +21,14 @@ from app.security import build_cors_options
 from app.security.runtime_controls import install_runtime_controls_middleware
 
 
+# 构造 FastAPI lifespan 回调；参数注入让测试可以替换真实配置、Milvus 和索引 worker。
 def create_lifespan(
     *,
     settings: Any = config,
     milvus_manager: Any = default_milvus_manager,
     indexing_worker_factory: Callable[..., Any] = get_background_indexing_worker,
 ) -> Callable[[FastAPI], Any]:
+    # FastAPI 实际执行的生命周期函数：yield 前启动资源，finally 中按相反方向关闭资源。
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app_name = _settings_value(settings, "app", "name", "app_name", "RAG Knowledge Agent")
@@ -90,6 +92,7 @@ def create_lifespan(
     return lifespan
 
 
+# 组装完整 FastAPI 应用实例：安装中间件、挂载路由和静态目录，但不直接启动服务。
 def create_app(
     *,
     settings: Any = config,
@@ -133,6 +136,7 @@ def create_app(
     if os.path.isdir(static_dir):
         application.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+    # 处理浏览器访问根路径：优先返回静态首页，缺失时退回轻量 API 信息。
     @application.get("/")
     async def root():
         index_path = os.path.join(static_dir, "index.html")
@@ -143,6 +147,7 @@ def create_app(
     return application
 
 
+# 为直接运行本文件时的 uvicorn 启动提供参数，集中复用 app 组配置和旧平铺字段。
 def build_uvicorn_options(settings: Any = config) -> dict[str, Any]:
     return {
         "host": _settings_value(settings, "app", "host", "host", "0.0.0.0"),
@@ -151,10 +156,12 @@ def build_uvicorn_options(settings: Any = config) -> dict[str, Any]:
     }
 
 
+# 将配置中的 provider 或模式标识归一化，避免大小写和连字符差异影响分支判断。
 def _config_id(value: str) -> str:
     return str(value).strip().lower().replace("-", "_")
 
 
+# 兼容分组配置和旧平铺字段：优先读取 settings.<group>.<field>，缺失时回退到平铺字段。
 def _settings_value(
     settings: Any,
     group_name: str,
