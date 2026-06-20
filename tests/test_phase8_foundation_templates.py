@@ -411,38 +411,6 @@ def test_config_validation_rejects_unknown_retrieval_enhancer_settings():
     ) in issues
 
 
-def test_phase8_docs_cover_extension_and_second_business_templates():
-    extension_docs = (ROOT / "docs" / "extension-guide.md").read_text(encoding="utf-8")
-    template_docs = (ROOT / "docs" / "templates" / "business-rag-template.md").read_text(
-        encoding="utf-8"
-    )
-
-    for phrase in [
-        "Tool Registry",
-        "Tool Planning",
-        "Provider Switching",
-        "Prompt Profiles",
-        "Retrieval Enhancers",
-        "Second-Business Template",
-    ]:
-        assert phrase in extension_docs
-
-    for phrase in [
-        "ENABLED_TOOLS",
-        "TOOL_PLANNING_ENABLED",
-        "PROMPT_PROFILE",
-        "CHAT_PROVIDER",
-        "RETRIEVAL_AUDIT_STORE_PROVIDER",
-        "CHECKPOINT_PROVIDER",
-        "RETRIEVAL_PROFILE",
-        "business.example.jsonl",
-        "MinExamples",
-        "QUERY_REWRITER_PROVIDER",
-        "RERANKER_PROVIDER",
-        "CONTEXT_COMPRESSOR_PROVIDER",
-        "do not modify core code",
-    ]:
-        assert phrase in template_docs
 
 
 def _settings(**overrides):

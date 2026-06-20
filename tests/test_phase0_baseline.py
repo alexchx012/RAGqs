@@ -2,39 +2,35 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+TRACKED_BASELINE_ARTIFACTS = [
+    ".env.example",
+    "scripts/validate-baseline.ps1",
+    "scripts/run-evaluation.ps1",
+    "scripts/run-integration-smoke.ps1",
+    "scripts/run-postgres-smoke.ps1",
+    "scripts/check-api-health.ps1",
+    ".github/workflows/ci.yml",
+    "data/evaluation/golden.jsonl",
+    "data/evaluation/business.example.jsonl",
+    "data/evaluation/business-samples/hr-handbook.md",
+    "data/evaluation/business-samples/benefits-guide.md",
+    "data/evaluation/business-samples/expense-policy.md",
+    "data/evaluation/business-samples/support-sla.md",
+]
+
 
 def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
 def test_phase0_baseline_artifacts_exist():
-    expected_paths = [
-        ".env.example",
-        "docs/architecture/baseline-audit.md",
-        "docs/architecture/risk-register.md",
-        "docs/evaluation.md",
-        "docs/operations.md",
-        "docs/deployment.md",
-        "docs/extension-guide.md",
-        "docs/templates/business-rag-template.md",
-        "docs/superpowers/plans/2026-05-23-rag-agent-foundation.md",
-        "scripts/validate-baseline.ps1",
-        "scripts/run-evaluation.ps1",
-        "scripts/run-integration-smoke.ps1",
-        "scripts/run-postgres-smoke.ps1",
-        "scripts/check-api-health.ps1",
-        ".github/workflows/ci.yml",
-        "data/evaluation/golden.jsonl",
-        "data/evaluation/business.example.jsonl",
-        "docs/business-samples/hr-handbook.md",
-        "docs/business-samples/benefits-guide.md",
-        "docs/business-samples/expense-policy.md",
-        "docs/business-samples/support-sla.md",
-    ]
-
-    missing = [path for path in expected_paths if not (ROOT / path).exists()]
+    missing = [path for path in TRACKED_BASELINE_ARTIFACTS if not (ROOT / path).exists()]
 
     assert missing == []
+
+
+def test_phase0_baseline_artifacts_do_not_require_local_docs():
+    assert all(not path.startswith("docs/") for path in TRACKED_BASELINE_ARTIFACTS)
 
 
 def test_env_example_documents_all_current_settings():
@@ -102,6 +98,18 @@ def test_env_example_documents_all_current_settings():
         assert f"{key}=" in env_example
 
 
+def test_env_example_documents_langsmith_tracing_settings():
+    env_example = read(".env.example")
+
+    for key in [
+        "LANGSMITH_TRACING",
+        "LANGSMITH_ENDPOINT",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+    ]:
+        assert f"{key}=" in env_example
+
+
 def test_readme_documents_sqlite_development_state_defaults():
     readme = read("README.md")
 
@@ -113,56 +121,6 @@ def test_readme_documents_sqlite_development_state_defaults():
         "data/*.sqlite3",
     ]:
         assert phrase in readme
-
-
-def test_architecture_audit_captures_current_boundaries_and_limitations():
-    audit = read("docs/architecture/baseline-audit.md")
-
-    for phrase in [
-        "Current Architecture",
-        "FastAPI",
-        "LangGraph",
-        "Milvus",
-        "DashScope",
-        "Known Limitations",
-        "Target Foundation Direction",
-    ]:
-        assert phrase in audit
-
-
-def test_risk_register_covers_foundation_risks():
-    risk_register = read("docs/architecture/risk-register.md")
-
-    for phrase in [
-        "Configuration",
-        "Retrieval Quality",
-        "Session Persistence",
-        "Indexing Reliability",
-        "Observability",
-        "Security",
-        "Mitigation",
-    ]:
-        assert phrase in risk_register
-
-
-def test_implementation_plan_preserves_full_goal_scope():
-    plan = read("docs/superpowers/plans/2026-05-23-rag-agent-foundation.md")
-
-    for phrase in [
-        "Phase 0",
-        "Phase 1",
-        "Phase 2",
-        "Phase 3",
-        "Phase 4",
-        "Phase 5",
-        "Phase 6",
-        "Phase 7",
-        "Phase 8",
-        "StateGraph",
-        "provider",
-        "evaluation",
-    ]:
-        assert phrase in plan
 
 
 def test_baseline_validation_script_runs_core_checks():
@@ -237,131 +195,12 @@ def test_evaluation_script_enforces_core_metric_thresholds():
         assert phrase in script
 
 
-def test_deployment_docs_cover_phase7_operational_runbook():
-    docs = read("docs/deployment.md")
-
-    for phrase in [
-        "Deployment Runbook",
-        "start.ps1",
-        "DockerProfile",
-        "check-api-health.ps1",
-        "run-integration-smoke.ps1",
-        "run-postgres-smoke.ps1",
-        "run-evaluation.ps1",
-        "ReportPath",
-        ".github/workflows/ci.yml",
-        "GitHub Actions",
-        "Milvus stays running",
-    ]:
-        assert phrase in docs
-
-
-def test_extension_docs_cover_phase8_foundation_templates():
-    docs = read("docs/extension-guide.md")
-    template = read("docs/templates/business-rag-template.md")
-
-    for phrase in [
-        "Tool Registry",
-        "Provider Switching",
-        "Prompt Profiles",
-        "Tool Planning",
-        "Retrieval Enhancers",
-        "Second-Business Template",
-    ]:
-        assert phrase in docs
-
-    for phrase in [
-        "ENABLED_TOOLS",
-        "TOOL_PLANNING_ENABLED",
-        "PROMPT_PROFILE",
-        "CHAT_PROVIDER",
-        "INDEXING_QUEUE_PROVIDER",
-        "INDEXING_QUEUE_SQLITE_PATH",
-        "INDEXING_QUEUE_POSTGRES_DSN",
-        "INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS",
-        "QUERY_REWRITER_PROVIDER",
-        "UPLOAD_ALLOWED_EXTENSIONS",
-        "csv,html,htm,json",
-        "RETRIEVAL_PROFILE",
-        "RERANKER_PROVIDER",
-        "CONTEXT_COMPRESSOR_PROVIDER",
-        "do not modify core code",
-    ]:
-        assert phrase in template
-
-
-def test_evaluation_docs_explain_langsmith_tracing_setup():
-    env_example = read(".env.example")
-    docs = read("docs/evaluation.md")
-
-    for key in [
-        "LANGSMITH_TRACING",
-        "LANGSMITH_ENDPOINT",
-        "LANGSMITH_API_KEY",
-        "LANGSMITH_PROJECT",
-    ]:
-        assert f"{key}=" in env_example
-        assert key in docs
-
-    for phrase in [
-        "data/evaluation/business.example.jsonl",
-        "MinExamples",
-        "metadata.spaceId",
-    ]:
-        assert phrase in docs
-
-
-def test_operations_docs_cover_trace_ids_and_health_checks():
-    docs = read("docs/operations.md")
-
-    for phrase in [
-        "X-Trace-Id",
-        "http_request",
-        "latencyMs",
-        "Runtime Metrics",
-        "/api/metrics",
-        "/api/metrics/prometheus",
-        "ragqs_rag_queries_total",
-        "ApiEnvelope",
-        "response envelope",
-        "tokenUsage",
-        "Retrieval Audit",
-        "RETRIEVAL_AUDIT_STORE_PROVIDER",
-        "/api/chat/audits",
-        "modelProvider",
-        "embeddingProvider",
-        "vectorStore",
-        "sessionStore",
-        "config validation",
-        "Docker Profiles",
-        "Dependency Health Preflight",
-        "Background Indexing",
-        "INDEXING_QUEUE_PROVIDER",
-        "INDEXING_QUEUE_POSTGRES_DSN",
-        "INDEXING_QUEUE_LEASE_TIMEOUT_SECONDS",
-        "INDEXING_WORKER_RECOVER_PENDING_JOBS",
-        "CSV",
-        "HTML/HTM",
-        "JSON",
-        "Postgres Smoke Checks",
-        "run-postgres-smoke.ps1",
-        "CORS_ALLOW_ORIGINS",
-        "CORS_ALLOW_CREDENTIALS",
-        "DEPLOYMENT_ENVIRONMENT",
-    ]:
-        assert phrase in docs
-
-
 if __name__ == "__main__":
     test_phase0_baseline_artifacts_exist()
+    test_phase0_baseline_artifacts_do_not_require_local_docs()
     test_env_example_documents_all_current_settings()
-    test_architecture_audit_captures_current_boundaries_and_limitations()
-    test_risk_register_covers_foundation_risks()
-    test_implementation_plan_preserves_full_goal_scope()
+    test_env_example_documents_langsmith_tracing_settings()
+    test_readme_documents_sqlite_development_state_defaults()
     test_baseline_validation_script_runs_core_checks()
     test_evaluation_script_enforces_core_metric_thresholds()
-    test_deployment_docs_cover_phase7_operational_runbook()
-    test_extension_docs_cover_phase8_foundation_templates()
-    test_evaluation_docs_explain_langsmith_tracing_setup()
-    test_operations_docs_cover_trace_ids_and_health_checks()
     print("phase0 baseline tests passed")
