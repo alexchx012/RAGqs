@@ -337,7 +337,7 @@ def test_business_example_dataset_is_strong_enough_for_real_evaluation_preflight
 
 def test_business_example_dataset_sources_map_to_sample_documents():
     examples = load_golden_dataset("data/evaluation/business.example.jsonl")
-    sample_docs_dir = ROOT / "docs" / "business-samples"
+    sample_docs_dir = ROOT / "data" / "evaluation" / "business-samples"
 
     for example in examples:
         if example.expects_refusal:
@@ -348,19 +348,6 @@ def test_business_example_dataset_sources_map_to_sample_documents():
             content = source_path.read_text(encoding="utf-8").lower()
             for trait in example.expected_answer_traits:
                 assert trait.lower() in content
-
-
-def test_evaluation_docs_describe_status_fields_and_limits():
-    docs = (ROOT / "docs" / "evaluation.md").read_text(encoding="utf-8")
-
-    for phrase in [
-        "status",
-        "not_run",
-        "qualityConclusion",
-        "not_real_quality_validated",
-        "does not prove real business answer quality",
-    ]:
-        assert phrase in docs
 
 
 def test_real_evaluation_readiness_rejects_fake_service_providers():

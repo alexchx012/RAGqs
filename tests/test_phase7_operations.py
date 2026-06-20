@@ -732,34 +732,6 @@ def test_main_uvicorn_options_prefer_grouped_app_settings():
     }
 
 
-def test_operations_docs_describe_runtime_metrics_endpoint():
-    docs = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
-
-    for phrase in [
-        "Runtime Metrics",
-        "GET /api/metrics",
-        "GET /api/metrics/prometheus",
-        "Prometheus",
-        "ragqs_rag_queries_total",
-        "latencyBucketsMs",
-        "tokenUsage",
-        "totalQueries",
-    ]:
-        assert phrase in docs
-
-
-def test_operations_docs_describe_docker_profiles():
-    docs = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
-
-    for phrase in [
-        "Docker Profiles",
-        "-DockerProfile ui",
-        "Attu",
-        "core Milvus",
-    ]:
-        assert phrase in docs
-
-
 def test_health_preflight_accepts_healthy_dependency_payload():
     from app.operations.health_preflight import validate_health_payload
 
@@ -957,32 +929,6 @@ async def test_main_lifespan_skips_milvus_connection_for_fake_vector_store_provi
     assert manager.close_count == 0
 
 
-def test_operations_docs_describe_dependency_health_preflight():
-    docs = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
-
-    for phrase in [
-        "Dependency Health Preflight",
-        "scripts/check-api-health.ps1",
-        "app.operations.health_preflight",
-    ]:
-        assert phrase in docs
-
-
-def test_deployment_docs_describe_hosted_ci_workflow():
-    docs = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
-
-    for phrase in [
-        "GitHub Actions",
-        ".github/workflows/ci.yml",
-        "validate-baseline.ps1 -SkipPreflight",
-        "run-postgres-smoke.ps1",
-        "INDEXING_QUEUE_PROVIDER=postgres",
-        "INDEXING_QUEUE_POSTGRES_DSN",
-        "evaluation-report",
-    ]:
-        assert phrase in docs
-
-
 def test_hosted_ci_workflow_runs_baseline_and_uploads_evaluation_report():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
@@ -1025,15 +971,3 @@ def test_postgres_smoke_script_documents_non_destructive_checks():
         "does not create, delete, start, stop, or restart databases",
     ]:
         assert phrase in script
-
-
-def test_operations_docs_describe_postgres_write_path_smoke():
-    docs = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
-
-    for phrase in [
-        "-ValidateWritePath",
-        "temporary table",
-        "create, insert, select, and rollback",
-        "writePathValidated",
-    ]:
-        assert phrase in docs

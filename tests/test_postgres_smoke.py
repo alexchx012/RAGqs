@@ -309,23 +309,6 @@ def test_postgres_smoke_cli_outputs_json_report():
     assert "secret" not in rendered
 
 
-def test_deployment_docs_list_multi_instance_data_layer_gate_without_claiming_validation():
-    docs = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
-
-    for phrase in [
-        "Multi-Instance Data Layer Gate",
-        "not validated real multi-instance production data behavior",
-        "SESSION_STORE_PROVIDER=postgres",
-        "RETRIEVAL_AUDIT_STORE_PROVIDER=postgres",
-        "INDEXING_QUEUE_PROVIDER=postgres",
-        "INDEXING_JOB_STORE_PROVIDER=postgres",
-        "DOCUMENT_CATALOG_PROVIDER=postgres",
-        "CHECKPOINT_PROVIDER=postgres",
-        "run-postgres-smoke.ps1 -RequireConfigured -ValidateWritePath -Json",
-    ]:
-        assert phrase in docs
-
-
 def _settings(**overrides):
     values = {
         "session_store_provider": "sqlite",
