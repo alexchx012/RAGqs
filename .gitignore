@@ -1,8 +1,5 @@
 .venv/
 venv/
-.codex/
-.agents/
-docs/
 __pycache__/
 *.pyc
 *.egg-info/
@@ -24,7 +21,3 @@ data/*.sqlite
 data/*.sqlite-*
 data/*.sqlite3
 data/*.sqlite3-*
-learning-progress/
-openspec/
-AGENTS.md
-.reasonix/
