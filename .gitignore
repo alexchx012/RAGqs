@@ -27,3 +27,4 @@ data/*.sqlite3-*
 learning-progress/
 openspec/
 AGENTS.md
+.reasonix/

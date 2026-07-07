@@ -28,6 +28,15 @@ def create_lifespan(
     milvus_manager: Any = default_milvus_manager,
     indexing_worker_factory: Callable[..., Any] = get_background_indexing_worker,
 ) -> Callable[[FastAPI], Any]:
+    """创建 FastAPI 启动/关闭生命周期函数。
+
+    这是应用入口装配层代码，不直接启动服务，也不写具体业务逻辑。
+    它把 settings、milvus_manager 和 indexing_worker_factory 封进闭包，
+    返回给 FastAPI 一个 lifespan(app) 函数。FastAPI 启动时执行 yield
+    前的连接 Milvus / 启动后台索引 worker 逻辑，关闭时执行 finally 里的
+    worker 停止、Milvus 关闭和日志清理逻辑。
+    """
+
     # FastAPI 实际执行的生命周期函数：yield 前启动资源，finally 中按相反方向关闭资源。
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -100,6 +109,15 @@ def create_app(
     indexing_worker_factory: Callable[..., Any] = get_background_indexing_worker,
     static_dir: str = "static",
 ) -> FastAPI:
+    """创建并装配 FastAPI 应用实例。
+
+    这是应用入口装配层：创建 FastAPI application，安装生命周期函数、
+    请求上下文 middleware、运行时控制 middleware、CORS、健康检查路由、
+    对话/文件/指标 API 路由、静态资源挂载和首页 fallback。这里不直接实现
+    RAG 检索、上传安全扫描或向量入库；这些行为由 API、service、graph、
+    provider 等下游模块负责。返回值是 Uvicorn 可加载的 FastAPI app。
+    """
+
     app_name = _settings_value(settings, "app", "name", "app_name", "RAG Knowledge Agent")
     app_version = _settings_value(settings, "app", "version", "app_version", "1.0.0")
     application = FastAPI(
@@ -149,6 +167,13 @@ def create_app(
 
 # 为直接运行本文件时的 uvicorn 启动提供参数，集中复用 app 组配置和旧平铺字段。
 def build_uvicorn_options(settings: Any = config) -> dict[str, Any]:
+    """从配置中构造 Uvicorn 启动参数。
+
+    返回的字典提供 host、port 和 reload，供直接运行本文件时的
+    uvicorn.run(...) 使用。它只负责服务器监听参数，不改变 FastAPI
+    路由或 RAG 业务行为。
+    """
+
     return {
         "host": _settings_value(settings, "app", "host", "host", "0.0.0.0"),
         "port": int(_settings_value(settings, "app", "port", "port", 9900)),
