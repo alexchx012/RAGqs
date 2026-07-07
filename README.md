@@ -80,7 +80,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 9900 --reload
 
 ## Configuration & Ops
 
-- **状态存储** — 默认使用本地 SQLite（`data/*.sqlite3`），支持切换到 Postgres；`.env.example` 中配置各类 `*_PROVIDER=sqlite` 即可获得可重启的本地开发状态。
+- **状态存储** — 默认使用本地 SQLite（`data/*.sqlite3`），支持切换到 Postgres；`.env.example` 中设置 `SESSION_STORE_PROVIDER=sqlite`、`INDEXING_QUEUE_PROVIDER=sqlite`、`CHECKPOINT_PROVIDER=sqlite` 即可获得可重启的本地开发状态。
 - **认证与权限** — 本地开发默认 `AUTH_ENABLED=false`，以 `local-admin` 身份运行。试运行可启用 `AUTH_ENABLED=true` 并选择 `dev_header` 或 `reverse_proxy` provider，role + space 权限在后端统一校验。
 - **并发控制** — 可选启用 `RUNTIME_CONTROLS_ENABLED=true` 限制进程内并发请求数、排队超时和请求超时；通过 `.\scripts\run-fake-load.ps1` 验证 API 并发路径。
 - **试运行门禁** — 评测基座默认 fake 模式只验证软件接口可运行；将 session / audit / indexing / checkpoint 全切到 Postgres 后，运行 `.\scripts\run-postgres-smoke.ps1` 和 `.\scripts\run-evaluation.ps1` 做端到端验证。
