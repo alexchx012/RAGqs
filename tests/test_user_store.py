@@ -168,14 +168,21 @@ def test_last_admin_update_and_delete_leave_database_unchanged(tmp_path):
     assert store.get_by_id(admin.id) is not None
 
 
-def test_stale_delete_does_not_remove_user(tmp_path):
-    store = UserStore(tmp_path / "auth.sqlite3")
-    user = store.create_user(username="alice", password_hash="h1", roles=["viewer"], spaces=[])
-    store.update_user(user_id=user.id, expected_version=1, spaces=["docs"])
+def test_stale_delete_from_second_store_does_not_remove_user(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    first_store = UserStore(db_path)
+    user = first_store.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=[]
+    )
+    second_store = UserStore(db_path)
+    updated = first_store.update_user(user_id=user.id, expected_version=1, spaces=["docs"])
 
     with pytest.raises(UserVersionConflictError):
-        store.delete_user(user_id=user.id, expected_version=1)
-    assert store.get_by_id(user.id).version == 2
+        second_store.delete_user(user_id=user.id, expected_version=user.version)
+
+    assert first_store.get_by_id(user.id) == updated
+    assert second_store.get_by_id(user.id) == updated
+    assert first_store.count_users() == 1
 
 
 def test_update_user_rejects_missing_user(tmp_path):
@@ -183,3 +190,47 @@ def test_update_user_rejects_missing_user(tmp_path):
 
     with pytest.raises(UserNotFoundError):
         store.update_user(user_id="missing", expected_version=1, roles=["viewer"])
+
+
+def test_delete_user_returns_deleted_record_and_removes_non_admin(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    created = store.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=["docs"]
+    )
+    count_before = store.count_users()
+
+    deleted = store.delete_user(user_id=created.id, expected_version=created.version)
+
+    assert deleted == created
+    assert deleted.id == created.id
+    assert deleted.username == created.username
+    assert deleted.roles == created.roles
+    assert deleted.spaces == created.spaces
+    assert deleted.version == created.version
+    assert store.get_by_id(created.id) is None
+    assert store.count_users() == count_before - 1
+
+
+def test_delete_user_rejects_missing_user(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+
+    with pytest.raises(UserNotFoundError):
+        store.delete_user(user_id="missing", expected_version=1)
+
+    assert store.count_users() == 0
+
+
+def test_update_user_empty_lists_clear_roles_and_spaces(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    created = store.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=["docs"]
+    )
+
+    updated = store.update_user(
+        user_id=created.id, expected_version=created.version, roles=[], spaces=[]
+    )
+
+    assert updated.roles == []
+    assert updated.spaces == []
+    assert updated.version == created.version + 1
+    assert store.get_by_id(created.id) == updated
