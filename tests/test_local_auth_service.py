@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -168,6 +169,31 @@ def test_seed_initial_admin_skips_seed_with_empty_username(tmp_path):
     service.seed_initial_admin()
 
     assert service.user_store.count_users() == 0
+
+
+def test_seed_initial_admin_swallows_race_when_admin_created_concurrently(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    settings = SimpleNamespace(
+        auth_local_db_path=str(db_path),
+        auth_local_admin_seed="admin:supersecret",
+        auth_session_ttl_seconds=3600,
+    )
+    service = LocalAuthService(settings=settings)
+    # 模拟另一个进程在 count_users() 早退检查通过之后、本进程执行 create_user
+    # 之前抢先插入了同名 admin 账号（TOCTOU 竞态窗口）。
+    service.user_store.create_user(
+        username="admin",
+        password_hash=hash_password("someone-elses-password"),
+        roles=["admin"],
+        spaces=["*"],
+    )
+
+    with patch.object(service.user_store, "count_users", return_value=0):
+        service.seed_initial_admin()  # 不应向外抛出 UsernameAlreadyExistsError
+
+    user = service.user_store.get_by_username("admin")
+    assert user is not None
+    assert verify_password("someone-elses-password", user.password_hash)
 
 
 def test_seed_initial_admin_allows_colon_inside_password(tmp_path):
