@@ -233,18 +233,32 @@ def test_role_update_is_visible_without_target_relogin(local_auth_admin_app):
     target = service.user_store.create_user(
         username="bob", password_hash=hash_password("bob-pw"), roles=["viewer"], spaces=["docs"]
     )
-    target_client.post("/api/auth/login", json={"username": "bob", "password": "bob-pw"})
-    admin_client.post(
+    target_login = target_client.post(
+        "/api/auth/login", json={"username": "bob", "password": "bob-pw"}
+    )
+    assert target_login.status_code == 200
+    assert "rag_session" in target_login.cookies
+
+    admin_login = admin_client.post(
         "/api/auth/login", json={"username": "alice", "password": "correct-password"}
     )
+    assert admin_login.status_code == 200
+    assert "rag_session" in admin_login.cookies
+
+    before = target_client.get("/api/auth/me")
+    assert before.status_code == 200
+    assert before.json()["data"]["roles"] == ["viewer"]
+    assert before.json()["data"]["spaces"] == ["docs"]
 
     changed = admin_client.patch(
         f"/api/admin/users/{target.id}",
         json={"expected_version": 1, "roles": ["maintainer"], "spaces": ["private"]},
     )
     assert changed.status_code == 200
-    assert target_client.get("/api/auth/me").json()["data"]["roles"] == ["maintainer"]
-    assert target_client.get("/api/auth/me").json()["data"]["spaces"] == ["private"]
+    after = target_client.get("/api/auth/me")
+    assert after.status_code == 200
+    assert after.json()["data"]["roles"] == ["maintainer"]
+    assert after.json()["data"]["spaces"] == ["private"]
 
 
 def test_deleted_user_old_session_returns_401(local_auth_admin_app):
@@ -252,13 +266,25 @@ def test_deleted_user_old_session_returns_401(local_auth_admin_app):
     target = service.user_store.create_user(
         username="bob", password_hash=hash_password("bob-pw"), roles=["viewer"], spaces=["docs"]
     )
-    target_client.post("/api/auth/login", json={"username": "bob", "password": "bob-pw"})
-    admin_client.post(
+    target_login = target_client.post(
+        "/api/auth/login", json={"username": "bob", "password": "bob-pw"}
+    )
+    assert target_login.status_code == 200
+    assert "rag_session" in target_login.cookies
+
+    admin_login = admin_client.post(
         "/api/auth/login", json={"username": "alice", "password": "correct-password"}
     )
+    assert admin_login.status_code == 200
+    assert "rag_session" in admin_login.cookies
+
+    before_delete = target_client.get("/api/protected")
+    assert before_delete.status_code == 200
+    assert before_delete.json()["user_id"] == target.id
 
     deleted = admin_client.request(
         "DELETE", f"/api/admin/users/{target.id}", json={"expected_version": 1}
     )
     assert deleted.status_code == 200
-    assert target_client.get("/api/protected").status_code == 401
+    after_delete = target_client.get("/api/protected")
+    assert after_delete.status_code == 401
