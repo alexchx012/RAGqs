@@ -21,3 +21,4 @@ data/*.sqlite
 data/*.sqlite-*
 data/*.sqlite3
 data/*.sqlite3-*
+.worktrees/
