@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.security.local_auth_service import LocalAuthError, LocalAuthService
-from app.security.password import hash_password
+from app.security.password import hash_password, verify_password
 from app.security.session_store import SessionStore
 from app.security.user_store import UserStore
 
@@ -126,3 +126,62 @@ def test_seed_initial_admin_skips_when_no_seed_configured(tmp_path):
     service.seed_initial_admin()
 
     assert service.user_store.count_users() == 0
+
+
+def test_seed_initial_admin_skips_seed_missing_colon_separator(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    settings = SimpleNamespace(
+        auth_local_db_path=str(db_path),
+        auth_local_admin_seed="adminonly",
+        auth_session_ttl_seconds=3600,
+    )
+    service = LocalAuthService(settings=settings)
+
+    service.seed_initial_admin()
+
+    assert service.user_store.count_users() == 0
+
+
+def test_seed_initial_admin_skips_seed_with_empty_password(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    settings = SimpleNamespace(
+        auth_local_db_path=str(db_path),
+        auth_local_admin_seed="admin:",
+        auth_session_ttl_seconds=3600,
+    )
+    service = LocalAuthService(settings=settings)
+
+    service.seed_initial_admin()
+
+    assert service.user_store.count_users() == 0
+
+
+def test_seed_initial_admin_skips_seed_with_empty_username(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    settings = SimpleNamespace(
+        auth_local_db_path=str(db_path),
+        auth_local_admin_seed=":secret",
+        auth_session_ttl_seconds=3600,
+    )
+    service = LocalAuthService(settings=settings)
+
+    service.seed_initial_admin()
+
+    assert service.user_store.count_users() == 0
+
+
+def test_seed_initial_admin_allows_colon_inside_password(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    settings = SimpleNamespace(
+        auth_local_db_path=str(db_path),
+        auth_local_admin_seed="admin:pa:ss",
+        auth_session_ttl_seconds=3600,
+    )
+    service = LocalAuthService(settings=settings)
+
+    service.seed_initial_admin()
+
+    assert service.user_store.count_users() == 1
+    user = service.user_store.get_by_username("admin")
+    assert user is not None
+    assert verify_password("pa:ss", user.password_hash)
