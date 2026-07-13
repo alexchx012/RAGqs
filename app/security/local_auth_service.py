@@ -19,6 +19,11 @@ from app.security.user_store import UserStore
 
 _LOGIN_FAILURE_MESSAGE = "invalid username or password"
 
+# Fixed dummy hash verified against on unknown-username logins so that this
+# path costs the same argon2 verification time as a wrong-password login,
+# preventing username enumeration via response timing.
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing-safety")
+
 
 class LocalAuthError(Exception):
     """Raised when username/password login fails. Message is safe to show to clients."""
@@ -54,6 +59,7 @@ class LocalAuthService:
     def login(self, username: str, password: str) -> LoginResult:
         user = self.user_store.get_by_username(username)
         if user is None:
+            verify_password(password, _DUMMY_PASSWORD_HASH)
             logger.info(f"local auth login failed: unknown username={username!r}")
             raise LocalAuthError(_LOGIN_FAILURE_MESSAGE)
         if not verify_password(password, user.password_hash):
@@ -93,9 +99,19 @@ class LocalAuthService:
         seed = _auth_setting(self.settings, "local_admin_seed", None)
         if not seed:
             return
-        username, _, password = str(seed).partition(":")
+        username, sep, password = str(seed).partition(":")
         username = username.strip()
+        if not sep:
+            logger.warning(
+                "AUTH_LOCAL_ADMIN_SEED is malformed (missing ':' separator between "
+                "username and password); skipping admin account seed"
+            )
+            return
         if not username or not password:
+            logger.warning(
+                "AUTH_LOCAL_ADMIN_SEED is malformed (empty username or password); "
+                "skipping admin account seed"
+            )
             return
         self.user_store.create_user(
             username=username,
