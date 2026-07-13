@@ -2,7 +2,13 @@ import sqlite3
 
 import pytest
 
-from app.security.user_store import UsernameAlreadyExistsError, UserStore
+from app.security.user_store import (
+    LastAdminProtectionError,
+    UsernameAlreadyExistsError,
+    UserNotFoundError,
+    UserStore,
+    UserVersionConflictError,
+)
 
 
 def test_new_user_starts_at_version_one(tmp_path):
@@ -105,3 +111,75 @@ def test_user_store_persists_across_instances(tmp_path):
 
     assert second_store.count_users() == 1
     assert second_store.get_by_username("alice") is not None
+
+
+def test_list_users_is_deterministic_and_reads_versions(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    store.create_user(username="zeta", password_hash="h1", roles=["viewer"], spaces=[])
+    store.create_user(username="alice", password_hash="h2", roles=["admin"], spaces=["*"])
+
+    assert [user.username for user in store.list_users()] == ["alice", "zeta"]
+    assert all(user.version == 1 for user in store.list_users())
+
+
+def test_update_user_increments_version_and_preserves_omitted_field(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    created = store.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=["docs"]
+    )
+
+    updated = store.update_user(user_id=created.id, expected_version=1, roles=["maintainer"])
+
+    assert updated.roles == ["maintainer"]
+    assert updated.spaces == ["docs"]
+    assert updated.version == 2
+    assert store.get_by_id(created.id).version == 2
+
+
+def test_stale_update_rolls_back_without_overwriting_new_data(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    first = UserStore(db_path)
+    created = first.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=["docs"]
+    )
+    second = UserStore(db_path)
+    first.update_user(user_id=created.id, expected_version=1, roles=["maintainer"])
+
+    with pytest.raises(UserVersionConflictError):
+        second.update_user(user_id=created.id, expected_version=1, spaces=["private"])
+
+    current = first.get_by_id(created.id)
+    assert current.roles == ["maintainer"]
+    assert current.spaces == ["docs"]
+    assert current.version == 2
+
+
+def test_last_admin_update_and_delete_leave_database_unchanged(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    admin = store.create_user(username="admin", password_hash="h1", roles=["admin"], spaces=["*"])
+
+    with pytest.raises(LastAdminProtectionError):
+        store.update_user(user_id=admin.id, expected_version=1, roles=["viewer"])
+    assert store.get_by_id(admin.id).roles == ["admin"]
+    assert store.get_by_id(admin.id).version == 1
+
+    with pytest.raises(LastAdminProtectionError):
+        store.delete_user(user_id=admin.id, expected_version=1)
+    assert store.get_by_id(admin.id) is not None
+
+
+def test_stale_delete_does_not_remove_user(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    user = store.create_user(username="alice", password_hash="h1", roles=["viewer"], spaces=[])
+    store.update_user(user_id=user.id, expected_version=1, spaces=["docs"])
+
+    with pytest.raises(UserVersionConflictError):
+        store.delete_user(user_id=user.id, expected_version=1)
+    assert store.get_by_id(user.id).version == 2
+
+
+def test_update_user_rejects_missing_user(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+
+    with pytest.raises(UserNotFoundError):
+        store.update_user(user_id="missing", expected_version=1, roles=["viewer"])
