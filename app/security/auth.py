@@ -10,6 +10,9 @@ from fastapi import Depends, HTTPException, Request
 
 from app.config import config
 
+LOCAL_CREDENTIALS_PROVIDER = "local_credentials"
+LOCAL_SESSION_COOKIE_NAME = "rag_session"
+
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "admin": {"*"},
     "viewer": {
@@ -81,11 +84,18 @@ class SimpleAuthProvider:
     def __init__(self, settings: Any = config):
         self.settings = settings
 
-    def authenticate(self, headers: Mapping[str, str] | None = None) -> AuthContext:
+    def authenticate(
+        self,
+        headers: Mapping[str, str] | None = None,
+        *,
+        cookies: Mapping[str, str] | None = None,
+    ) -> AuthContext:
         if not _setting_bool(self.settings, "auth_enabled", False):
             return self._default_context(provider="disabled")
 
         provider = _setting_id(_setting_value(self.settings, "auth_provider", "dev_header"))
+        if provider == LOCAL_CREDENTIALS_PROVIDER:
+            return self._authenticate_local_credentials(cookies or {})
         if provider not in {"dev_header", "reverse_proxy"}:
             raise HTTPException(status_code=500, detail=f"unsupported auth provider: {provider}")
 
@@ -117,11 +127,27 @@ class SimpleAuthProvider:
             provider=provider,
         )
 
+    def _authenticate_local_credentials(self, cookies: Mapping[str, str]) -> AuthContext:
+        # Deferred import: local_auth_service imports AuthContext from this module at its own
+        # module top-level, so importing it back at this module's top level would be circular.
+        from app.security.local_auth_service import get_local_auth_service
+
+        token = str(cookies.get(LOCAL_SESSION_COOKIE_NAME, "")).strip()
+        if not token:
+            raise HTTPException(
+                status_code=401,
+                detail=f"missing session cookie: {LOCAL_SESSION_COOKIE_NAME}",
+            )
+        auth_context = get_local_auth_service(self.settings).resolve(token)
+        if auth_context is None:
+            raise HTTPException(status_code=401, detail="invalid or expired session")
+        return auth_context
+
 
 async def get_current_auth_context(request: Request) -> AuthContext:
     """FastAPI dependency that resolves the current auth context."""
 
-    return SimpleAuthProvider(config).authenticate(request.headers)
+    return SimpleAuthProvider(config).authenticate(request.headers, cookies=request.cookies)
 
 
 def require_permission(permission: str):
