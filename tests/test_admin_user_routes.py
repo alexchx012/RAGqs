@@ -39,6 +39,13 @@ def _assert_no_password_hash(value):
     elif isinstance(value, list):
         for nested in value:
             _assert_no_password_hash(nested)
+    elif isinstance(value, str):
+        assert "password_hash" not in value
+
+
+def test_password_hash_assertion_checks_string_values():
+    with pytest.raises(AssertionError):
+        _assert_no_password_hash("password_hash=should-not-leak")
 
 
 def test_create_app_mounts_admin_user_routes(tmp_path):
@@ -304,8 +311,32 @@ def test_admin_routes_return_422_for_missing_expected_version_or_patch_fields(tm
         client.request("DELETE", f"/api/admin/users/{user_id}", json={}),
     ]
 
-    assert [response.status_code for response in responses] == [422, 422, 422]
-    for response in responses:
+    expected_errors = [
+        {
+            "type": "missing",
+            "loc": ["body", "expected_version"],
+            "msg": "Field required",
+        },
+        {
+            "type": "value_error",
+            "loc": ["body"],
+            "msg": "Value error, roles or spaces must be provided",
+        },
+        {
+            "type": "missing",
+            "loc": ["body", "expected_version"],
+            "msg": "Field required",
+        },
+    ]
+
+    for response, expected_error in zip(responses, expected_errors, strict=True):
+        assert response.status_code == 422
+        payload = response.json()
+        assert set(payload) == {"detail"}
+        assert isinstance(payload["detail"], list)
+        assert len(payload["detail"]) == 1
+        error = payload["detail"][0]
+        assert {key: error[key] for key in ("type", "loc", "msg")} == expected_error
         _assert_no_password_hash(response.json())
     assert users.count_users() == before
 
