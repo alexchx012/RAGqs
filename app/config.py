@@ -43,6 +43,9 @@ class AuthConfig(FrozenConfigModel):
     default_user_id: str
     default_roles: str
     default_spaces: str
+    local_db_path: str
+    local_admin_seed: str | None
+    session_ttl_seconds: int
 
 
 class RuntimeConfig(FrozenConfigModel):
@@ -161,6 +164,9 @@ class Settings(BaseSettings):
     auth_default_user_id: str = "local-admin"
     auth_default_roles: str = "admin"
     auth_default_spaces: str = "*"
+    auth_local_db_path: str = "data/auth.sqlite3"
+    auth_local_admin_seed: str | None = None
+    auth_session_ttl_seconds: int = 604800
     runtime_controls_enabled: bool = False
     runtime_max_concurrent_requests: int = 40
     runtime_queue_timeout_seconds: float = 2.0
@@ -273,6 +279,9 @@ class Settings(BaseSettings):
             default_user_id=self.auth_default_user_id,
             default_roles=self.auth_default_roles,
             default_spaces=self.auth_default_spaces,
+            local_db_path=self.auth_local_db_path,
+            local_admin_seed=self.auth_local_admin_seed,
+            session_ttl_seconds=self.auth_session_ttl_seconds,
         )
 
     @property
