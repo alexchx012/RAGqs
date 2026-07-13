@@ -66,6 +66,40 @@ def test_resolve_returns_auth_context_for_valid_token(tmp_path):
     assert context.has_permission("chat:write")
 
 
+def test_resolve_reads_updated_roles_and_spaces_without_relogin(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    users = UserStore(db_path)
+    sessions = SessionStore(db_path)
+    service = LocalAuthService(user_store=users, session_store=sessions)
+    admin = users.create_user(
+        username="admin",
+        password_hash=hash_password("admin-pw"),
+        roles=["admin"],
+        spaces=["*"],
+    )
+    target = users.create_user(
+        username="bob",
+        password_hash=hash_password("bob-pw"),
+        roles=["viewer"],
+        spaces=["docs"],
+    )
+    login = service.login("bob", "bob-pw")
+
+    users.update_user(
+        user_id=target.id,
+        expected_version=1,
+        roles=["maintainer"],
+        spaces=["private"],
+    )
+
+    context = service.resolve(login.token)
+    assert context is not None
+    assert context.user_id == target.id
+    assert context.roles == {"maintainer"}
+    assert context.spaces == {"private"}
+    assert admin.id != target.id
+
+
 def test_resolve_returns_none_for_invalid_token(tmp_path):
     service = _build_service(tmp_path)
 
