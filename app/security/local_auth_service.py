@@ -15,7 +15,7 @@ from app.config import config
 from app.security.auth import AuthContext
 from app.security.password import hash_password, verify_password
 from app.security.session_store import SessionStore
-from app.security.user_store import UserStore
+from app.security.user_store import UsernameAlreadyExistsError, UserStore
 
 _LOGIN_FAILURE_MESSAGE = "invalid username or password"
 
@@ -113,12 +113,16 @@ class LocalAuthService:
                 "skipping admin account seed"
             )
             return
-        self.user_store.create_user(
-            username=username,
-            password_hash=hash_password(password),
-            roles=["admin"],
-            spaces=["*"],
-        )
+        try:
+            self.user_store.create_user(
+                username=username,
+                password_hash=hash_password(password),
+                roles=["admin"],
+                spaces=["*"],
+            )
+        except UsernameAlreadyExistsError:
+            # 表非空则跳过是本函数的幂等语义；并发对手抢先创建同名账号应视为同一结果。
+            return
 
 
 def _auth_setting(settings: Any, name: str, default: Any) -> Any:
