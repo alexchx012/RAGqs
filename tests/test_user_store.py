@@ -168,6 +168,24 @@ def test_last_admin_update_and_delete_leave_database_unchanged(tmp_path):
     assert store.get_by_id(admin.id) is not None
 
 
+def test_another_admin_allows_admin_demotion_and_regular_delete(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    first = store.create_user(username="first", password_hash="h1", roles=["admin"], spaces=["*"])
+    second = store.create_user(username="second", password_hash="h2", roles=["admin"], spaces=["*"])
+    ordinary = store.create_user(
+        username="ordinary", password_hash="h3", roles=["viewer"], spaces=[]
+    )
+
+    demoted = store.update_user(user_id=first.id, expected_version=1, roles=["viewer"])
+    assert demoted.roles == ["viewer"]
+    assert store.get_by_id(first.id) == demoted
+    assert store.get_by_id(second.id).roles == ["admin"]
+
+    deleted = store.delete_user(user_id=ordinary.id, expected_version=1)
+    assert deleted.id == ordinary.id
+    assert store.get_by_id(ordinary.id) is None
+
+
 def test_stale_delete_from_second_store_does_not_remove_user(tmp_path):
     db_path = tmp_path / "auth.sqlite3"
     first_store = UserStore(db_path)

@@ -1,6 +1,6 @@
 import pytest
 
-from app.security.password import verify_password
+from app.security.password import hash_password, verify_password
 from app.security.session_store import SessionStore
 from app.security.user_store import UserStore
 from app.services.admin_user_service import (
@@ -163,6 +163,24 @@ def test_delete_does_not_revoke_session_when_version_is_stale(tmp_path):
         service.delete_user(user_id=created["id"], expected_version=created["version"])
 
     assert sessions.get_valid_session(session.token) is not None
+
+
+def test_stale_service_delete_does_not_revoke_session(tmp_path):
+    service, users, sessions = _build_service(tmp_path)
+    users.create_user(
+        username="admin", password_hash=hash_password("admin"), roles=["admin"], spaces=["*"]
+    )
+    target = users.create_user(
+        username="bob", password_hash=hash_password("bob"), roles=["viewer"], spaces=[]
+    )
+    session = sessions.create_session(target.id, ttl_seconds=3600)
+    users.update_user(user_id=target.id, expected_version=1, spaces=["docs"])
+
+    with pytest.raises(AdminUserVersionConflictError):
+        service.delete_user(user_id=target.id, expected_version=1)
+
+    assert users.get_by_id(target.id) is not None
+    assert sessions.get_valid_session(session.token) == session
 
 
 def test_last_admin_errors_do_not_revoke_session(tmp_path):

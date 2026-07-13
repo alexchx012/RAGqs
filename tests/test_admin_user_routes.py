@@ -31,6 +31,16 @@ def _client_for(tmp_path, *, roles):
     return TestClient(application), service, users, sessions
 
 
+def _assert_no_password_hash(value):
+    if isinstance(value, dict):
+        assert "password_hash" not in value
+        for nested in value.values():
+            _assert_no_password_hash(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _assert_no_password_hash(nested)
+
+
 def test_create_app_mounts_admin_user_routes(tmp_path):
     application = create_app(static_dir=str(tmp_path))
     paths = set(application.openapi()["paths"])
@@ -283,6 +293,90 @@ def test_request_validation_returns_422_and_keeps_explicit_empty_updates(tmp_pat
     assert service.get_user(user_id)["spaces"] == []
 
 
+def test_admin_routes_return_422_for_missing_expected_version_or_patch_fields(tmp_path):
+    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    user_id = next(iter(users.list_users())).id
+    before = users.count_users()
+
+    responses = [
+        client.patch(f"/api/admin/users/{user_id}", json={}),
+        client.patch(f"/api/admin/users/{user_id}", json={"expected_version": 1}),
+        client.request("DELETE", f"/api/admin/users/{user_id}", json={}),
+    ]
+
+    assert [response.status_code for response in responses] == [422, 422, 422]
+    for response in responses:
+        _assert_no_password_hash(response.json())
+    assert users.count_users() == before
+
+
+def test_admin_routes_return_fixed_404_for_unknown_targets(tmp_path):
+    client, _, _, _ = _client_for(tmp_path, roles={"admin"})
+
+    responses = [
+        client.get("/api/admin/users/missing"),
+        client.patch(
+            "/api/admin/users/missing",
+            json={"expected_version": 1, "roles": ["viewer"]},
+        ),
+        client.request("DELETE", "/api/admin/users/missing", json={"expected_version": 1}),
+    ]
+
+    assert [response.status_code for response in responses] == [404, 404, 404]
+    for response in responses:
+        assert response.json()["detail"] == "administrator user not found"
+        assert "missing" not in response.text
+        _assert_no_password_hash(response.json())
+
+
+def test_admin_routes_return_fixed_409_for_conflicts_without_sensitive_data(tmp_path):
+    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    target = next(iter(users.list_users()))
+
+    duplicate = client.post(
+        "/api/admin/users",
+        json={"username": "target", "password": "pw", "roles": [], "spaces": []},
+    )
+    assert duplicate.status_code == 409
+
+    updated = client.patch(
+        f"/api/admin/users/{target.id}",
+        json={"expected_version": target.version, "spaces": ["updated"]},
+    )
+    assert updated.status_code == 200
+    stale = client.patch(
+        f"/api/admin/users/{target.id}",
+        json={"expected_version": target.version, "roles": ["maintainer"]},
+    )
+
+    only_admin = client.post(
+        "/api/admin/users",
+        json={"username": "only-admin", "password": "pw", "roles": ["admin"], "spaces": ["*"]},
+    )
+    only_admin.raise_for_status()
+    only_admin_user = only_admin.json()["data"]["user"]
+    demotion = client.patch(
+        f"/api/admin/users/{only_admin_user['id']}",
+        json={"expected_version": only_admin_user["version"], "roles": ["viewer"]},
+    )
+    deletion = client.request(
+        "DELETE",
+        f"/api/admin/users/{only_admin_user['id']}",
+        json={"expected_version": only_admin_user["version"]},
+    )
+
+    responses = [duplicate, stale, demotion, deletion]
+    assert [response.status_code for response in responses] == [409, 409, 409, 409]
+    assert [response.json()["detail"] for response in responses] == [
+        "administrator user already exists",
+        "administrator user version conflict",
+        "cannot remove last administrator",
+        "cannot remove last administrator",
+    ]
+    for response in responses:
+        _assert_no_password_hash(response.json())
+
+
 def test_last_admin_error_maps_to_409(tmp_path):
     client, _, users, _ = _client_for(tmp_path, roles={"admin"})
     created = client.post(
@@ -358,8 +452,9 @@ def test_delete_last_admin_returns_fixed_409_without_deletion(tmp_path):
     assert "password_hash" not in response.text
 
 
-def test_non_admin_gets_403_for_all_five_endpoints(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"viewer"})
+@pytest.mark.parametrize("role", ["viewer", "uploader", "maintainer", "auditor", "ops"])
+def test_non_admin_gets_403_for_all_five_endpoints(tmp_path, role):
+    client, _, users, _ = _client_for(tmp_path, roles={role})
     user_id = next(iter(users.list_users())).id
     before = users.count_users()
 
@@ -375,6 +470,8 @@ def test_non_admin_gets_403_for_all_five_endpoints(tmp_path):
     ]
 
     assert [response.status_code for response in responses] == [403] * 5
+    for response in responses:
+        _assert_no_password_hash(response.json())
     assert users.count_users() == before
 
 
