@@ -561,6 +561,28 @@ def test_config_validation_warns_when_local_credentials_has_no_seed_and_empty_us
     ]
 
 
+def test_config_validation_warns_when_local_credentials_seed_is_empty_string(tmp_path):
+    report = validate_settings(
+        _settings(
+            auth_provider="local_credentials",
+            auth_local_db_path=str(tmp_path / "auth.sqlite3"),
+            auth_local_admin_seed="",
+        )
+    )
+
+    assert report.is_valid is True
+    assert report.errors == []
+    assert [
+        (issue.field, issue.message, issue.severity) for issue in report.warnings
+    ] == [
+        (
+            "AUTH_LOCAL_ADMIN_SEED",
+            "no admin seed configured and the local user table is empty; no account can log in",
+            "warning",
+        )
+    ]
+
+
 def test_config_validation_does_not_warn_when_local_credentials_has_seed_configured(tmp_path):
     report = validate_settings(
         _settings(
