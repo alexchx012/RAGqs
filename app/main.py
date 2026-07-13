@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from app.api import auth, chat, file, health, metrics
+from app.api import admin_users, auth, chat, file, health, metrics
 from app.config import config
 from app.core.milvus_client import milvus_manager as default_milvus_manager
 from app.ingestion.worker import get_background_indexing_worker
@@ -162,6 +162,7 @@ def create_app(
         tags=["健康检查"],
     )
     application.include_router(auth.router, prefix="/api", tags=["认证"])
+    application.include_router(admin_users.router, prefix="/api", tags=["管理员用户"])
     application.include_router(chat.router, prefix="/api", tags=["对话"])
     application.include_router(file.router, prefix="/api", tags=["文件管理"])
     application.include_router(metrics.router, prefix="/api", tags=["运行指标"])

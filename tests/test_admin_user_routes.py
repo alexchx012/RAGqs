@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import admin_users
+from app.main import create_app
 from app.security.auth import AuthContext, get_current_auth_context
 from app.security.session_store import SessionStore
 from app.security.user_store import UserStore
@@ -28,6 +29,14 @@ def _client_for(tmp_path, *, roles):
         user_id="caller", roles=set(roles), spaces={"*"}
     )
     return TestClient(application), service, users, sessions
+
+
+def test_create_app_mounts_admin_user_routes(tmp_path):
+    application = create_app(static_dir=str(tmp_path))
+    paths = set(application.openapi()["paths"])
+
+    assert "/api/admin/users" in paths
+    assert "/api/admin/users/{user_id}" in paths
 
 
 def test_admin_can_list_and_view_safe_user_data(tmp_path):
