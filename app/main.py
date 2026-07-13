@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from app.api import chat, file, health, metrics
+from app.api import auth, chat, file, health, metrics
 from app.config import config
 from app.core.milvus_client import milvus_manager as default_milvus_manager
 from app.ingestion.worker import get_background_indexing_worker
@@ -75,6 +75,20 @@ def create_lifespan(
             indexing_worker = indexing_worker_factory(settings=settings)
             indexing_worker.start()
             logger.info("✅ 后台索引 worker 已启动")
+        auth_provider = _config_id(
+            _settings_value(
+                settings,
+                "auth",
+                "provider",
+                "auth_provider",
+                "dev_header",
+            )
+        )
+        if auth_provider == "local_credentials":
+            from app.security.local_auth_service import get_local_auth_service
+
+            get_local_auth_service(settings).seed_initial_admin()
+            logger.info("✅ 本地账号种子检查完成")
         try:
             yield
         finally:
@@ -147,6 +161,7 @@ def create_app(
         health.create_health_router(health_checker),
         tags=["健康检查"],
     )
+    application.include_router(auth.router, prefix="/api", tags=["认证"])
     application.include_router(chat.router, prefix="/api", tags=["对话"])
     application.include_router(file.router, prefix="/api", tags=["文件管理"])
     application.include_router(metrics.router, prefix="/api", tags=["运行指标"])

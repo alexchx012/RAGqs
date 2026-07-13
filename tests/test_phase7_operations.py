@@ -1038,6 +1038,60 @@ async def test_main_lifespan_skips_milvus_connection_for_fake_vector_store_provi
     assert manager.close_count == 0
 
 
+@pytest.mark.asyncio
+async def test_main_lifespan_seeds_initial_admin_for_local_credentials_provider(tmp_path):
+    from app.main import create_lifespan
+    from app.security.local_auth_service import reset_local_auth_service
+    from app.security.user_store import UserStore
+
+    reset_local_auth_service()
+    db_path = tmp_path / "auth.sqlite3"
+    settings = SimpleNamespace(
+        app=SimpleNamespace(name="Local Auth RAG API", version="1.0.0"),
+        providers=SimpleNamespace(vector_store="fake"),
+        storage=SimpleNamespace(indexing_execution_mode="sync"),
+        auth=SimpleNamespace(provider="local_credentials"),
+        auth_local_db_path=str(db_path),
+        auth_local_admin_seed="admin:supersecret",
+        auth_session_ttl_seconds=3600,
+    )
+
+    try:
+        async with create_lifespan(
+            settings=settings,
+            milvus_manager=SimpleNamespace(connect=lambda: None, close=lambda: None),
+        )(FastAPI()):
+            pass
+
+        assert UserStore(db_path).get_by_username("admin") is not None
+    finally:
+        reset_local_auth_service()
+
+
+@pytest.mark.asyncio
+async def test_main_lifespan_skips_seeding_for_dev_header_provider(tmp_path):
+    from app.main import create_lifespan
+    from app.security.local_auth_service import reset_local_auth_service
+
+    reset_local_auth_service()
+    settings = SimpleNamespace(
+        app=SimpleNamespace(name="Dev Header RAG API", version="1.0.0"),
+        providers=SimpleNamespace(vector_store="fake"),
+        storage=SimpleNamespace(indexing_execution_mode="sync"),
+        auth=SimpleNamespace(provider="dev_header"),
+    )
+
+    try:
+        async with create_lifespan(
+            settings=settings,
+            milvus_manager=SimpleNamespace(connect=lambda: None, close=lambda: None),
+        )(FastAPI()):
+            pass
+        # No assertion needed beyond "did not raise": dev_header must not touch auth sqlite.
+    finally:
+        reset_local_auth_service()
+
+
 def test_hosted_ci_workflow_runs_baseline_and_uploads_evaluation_report():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
