@@ -233,3 +233,24 @@ def test_provider_selection_and_validation_use_grouped_settings():
     assert selection.retrieval_audit_store_provider == "sqlite"
     assert selection.checkpoint_provider == "sqlite"
     assert report.is_valid is True
+
+
+def test_auth_group_exposes_local_credentials_fields_with_defaults():
+    settings = Settings(_env_file=None)
+
+    assert settings.auth.local_db_path == "data/auth.sqlite3"
+    assert settings.auth.local_admin_seed is None
+    assert settings.auth.session_ttl_seconds == 604800
+
+
+def test_auth_group_exposes_local_credentials_fields_when_overridden():
+    settings = Settings(
+        _env_file=None,
+        auth_local_db_path="data/test-auth.sqlite3",
+        auth_local_admin_seed="admin:supersecret",
+        auth_session_ttl_seconds=3600,
+    )
+
+    assert settings.auth.local_db_path == "data/test-auth.sqlite3"
+    assert settings.auth.local_admin_seed == "admin:supersecret"
+    assert settings.auth.session_ttl_seconds == 3600
