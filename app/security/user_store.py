@@ -21,6 +21,7 @@ class UserRecord:
     roles: list[str] = field(default_factory=list)
     spaces: list[str] = field(default_factory=list)
     created_at: str = ""
+    version: int = 1
 
 
 class UsernameAlreadyExistsError(Exception):
@@ -50,13 +51,16 @@ class UserStore:
             roles=list(roles),
             spaces=list(spaces),
             created_at=datetime.now(UTC).isoformat(),
+            version=1,
         )
         with closing(self._connect()) as connection:
             try:
                 connection.execute(
                     """
-                    INSERT INTO users (id, username, password_hash, roles, spaces, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO users (
+                        id, username, password_hash, roles, spaces, created_at, version
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user.id,
@@ -65,6 +69,7 @@ class UserStore:
                         json.dumps(user.roles, ensure_ascii=False),
                         json.dumps(user.spaces, ensure_ascii=False),
                         user.created_at,
+                        user.version,
                     ),
                 )
                 connection.commit()
@@ -75,7 +80,11 @@ class UserStore:
     def get_by_username(self, username: str) -> UserRecord | None:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT * FROM users WHERE username = ?",
+                """
+                SELECT id, username, password_hash, roles, spaces, created_at, version
+                FROM users
+                WHERE username = ?
+                """,
                 (username,),
             ).fetchone()
         return _user_from_row(row) if row is not None else None
@@ -83,7 +92,11 @@ class UserStore:
     def get_by_id(self, user_id: str) -> UserRecord | None:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT * FROM users WHERE id = ?",
+                """
+                SELECT id, username, password_hash, roles, spaces, created_at, version
+                FROM users
+                WHERE id = ?
+                """,
                 (user_id,),
             ).fetchone()
         return _user_from_row(row) if row is not None else None
@@ -95,18 +108,24 @@ class UserStore:
 
     def _initialize_schema(self) -> None:
         with closing(self._connect()) as connection:
-            connection.execute(
-                """
+            connection.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     roles TEXT NOT NULL,
                     spaces TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1
                 )
-                """
-            )
+                """)
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "version" not in columns:
+                connection.execute(
+                    "ALTER TABLE users ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+                )
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -123,6 +142,7 @@ def _user_from_row(row: sqlite3.Row) -> UserRecord:
         roles=_loads_list(row["roles"]),
         spaces=_loads_list(row["spaces"]),
         created_at=row["created_at"],
+        version=int(row["version"]),
     )
 
 
