@@ -516,6 +516,93 @@ def test_config_validation_rejects_unknown_deployment_environment():
     assert ("DEPLOYMENT_ENVIRONMENT", "unsupported environment: qa") in issues
 
 
+def test_config_validation_accepts_local_credentials_provider(tmp_path):
+    report = validate_settings(
+        _settings(
+            auth_provider="local_credentials",
+            auth_local_db_path=str(tmp_path / "auth.sqlite3"),
+            auth_local_admin_seed="admin:supersecret",
+        )
+    )
+
+    assert report.is_valid is True
+    assert report.errors == []
+
+
+def test_config_validation_rejects_unsupported_auth_provider():
+    report = validate_settings(_settings(auth_provider="bogus"))
+
+    assert report.is_valid is False
+    assert (
+        "AUTH_PROVIDER",
+        "unsupported provider: bogus",
+    ) in [(issue.field, issue.message) for issue in report.errors]
+
+
+def test_config_validation_warns_when_local_credentials_has_no_seed_and_empty_user_table(tmp_path):
+    report = validate_settings(
+        _settings(
+            auth_provider="local_credentials",
+            auth_local_db_path=str(tmp_path / "auth.sqlite3"),
+            auth_local_admin_seed=None,
+        )
+    )
+
+    assert report.is_valid is True
+    assert report.errors == []
+    assert [
+        (issue.field, issue.message, issue.severity) for issue in report.warnings
+    ] == [
+        (
+            "AUTH_LOCAL_ADMIN_SEED",
+            "no admin seed configured and the local user table is empty; no account can log in",
+            "warning",
+        )
+    ]
+
+
+def test_config_validation_does_not_warn_when_local_credentials_has_seed_configured(tmp_path):
+    report = validate_settings(
+        _settings(
+            auth_provider="local_credentials",
+            auth_local_db_path=str(tmp_path / "auth.sqlite3"),
+            auth_local_admin_seed="admin:supersecret",
+        )
+    )
+
+    assert report.warnings == []
+
+
+def test_config_validation_does_not_warn_when_local_credentials_user_table_already_has_accounts(
+    tmp_path,
+):
+    from app.security.user_store import UserStore
+
+    db_path = tmp_path / "auth.sqlite3"
+    UserStore(db_path).create_user(
+        username="alice", password_hash="hashed", roles=["admin"], spaces=["*"]
+    )
+
+    report = validate_settings(
+        _settings(
+            auth_provider="local_credentials",
+            auth_local_db_path=str(db_path),
+            auth_local_admin_seed=None,
+        )
+    )
+
+    assert report.warnings == []
+
+
+def test_config_validation_does_not_touch_local_auth_db_for_non_local_credentials_providers(
+    tmp_path,
+):
+    report = validate_settings(_settings(auth_provider="dev_header"))
+
+    assert report.is_valid is True
+    assert report.warnings == []
+
+
 def test_config_validation_rejects_unsafe_production_defaults():
     report = validate_settings(
         _settings(
