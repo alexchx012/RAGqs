@@ -15,6 +15,7 @@ from app.providers.selection import ProviderSelection, validate_provider_selecti
 from app.retrieval import build_default_retrieval_profile_registry, parse_filter_key_list
 from app.security.cors import parse_cors_origins
 from app.security.uploads import parse_allowed_extensions
+from app.security.user_store import UserStore
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
     """Validate settings that must be correct before starting the RAG service."""
 
     errors: list[ConfigIssue] = []
+    warnings: list[ConfigIssue] = []
     selection = ProviderSelection.from_settings(settings)
     app_config = getattr(settings, "app", settings)
     agent_config = getattr(settings, "agent", settings)
@@ -97,10 +99,34 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
     auth_provider = _normalize_config_id(
         _group_value(auth_config, settings, "provider", "auth_provider", default="dev_header")
     )
-    if auth_provider not in {"dev_header", "reverse_proxy"}:
+    if auth_provider not in {"dev_header", "reverse_proxy", "local_credentials"}:
         errors.append(
             ConfigIssue(field="AUTH_PROVIDER", message=f"unsupported provider: {auth_provider}")
         )
+    if auth_provider == "local_credentials":
+        local_admin_seed = _group_value(
+            auth_config, settings, "local_admin_seed", "auth_local_admin_seed", default=None
+        )
+        local_db_path = _group_value(
+            auth_config,
+            settings,
+            "local_db_path",
+            "auth_local_db_path",
+            default="data/auth.sqlite3",
+        )
+        if not str(local_admin_seed or "").strip() and _local_credentials_user_table_is_empty(
+            local_db_path
+        ):
+            warnings.append(
+                ConfigIssue(
+                    field="AUTH_LOCAL_ADMIN_SEED",
+                    message=(
+                        "no admin seed configured and the local user table is empty; "
+                        "no account can log in"
+                    ),
+                    severity="warning",
+                )
+            )
     if auth_enabled:
         auth_user_header = _group_value(
             auth_config,
@@ -767,7 +793,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             )
         )
 
-    return ConfigValidationReport(errors=errors)
+    return ConfigValidationReport(errors=errors, warnings=warnings)
 
 
 def _validate_production_settings(
@@ -914,6 +940,10 @@ def _group_value(
 
 def _normalize_config_id(value: Any) -> str:
     return str(value).strip().lower().replace("-", "_")
+
+
+def _local_credentials_user_table_is_empty(local_db_path: str) -> bool:
+    return UserStore(local_db_path).count_users() == 0
 
 
 if __name__ == "__main__":
