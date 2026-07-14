@@ -58,14 +58,14 @@ describe('KnowledgeSpaceSelector', () => {
   });
 
   it('renders the section header with title and refresh button', () => {
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     expect(screen.getByText('知识空间')).toBeDefined();
     expect(screen.getByTitle('刷新知识空间')).toBeDefined();
   });
 
   it('renders a select element with knowledge space options', () => {
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const select = screen.getByRole('combobox') as HTMLSelectElement;
     expect(select).toBeDefined();
@@ -78,15 +78,29 @@ describe('KnowledgeSpaceSelector', () => {
   });
 
   it('renders create form with space id and name inputs and submit button', () => {
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     expect(screen.getByPlaceholderText('space id')).toBeDefined();
     expect(screen.getByPlaceholderText('显示名称')).toBeDefined();
     expect(screen.getByText('创建')).toBeDefined();
   });
 
+  it('hides create form when scope is own', () => {
+    setupKnowledgeContext();
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="own" />);
+    expect(document.querySelector('form.space-form')).toBeNull();
+    expect(screen.queryByPlaceholderText('space id')).toBeNull();
+  });
+
+  it('shows create form when scope is all', () => {
+    setupKnowledgeContext();
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
+    expect(document.querySelector('form.space-form')).not.toBeNull();
+    expect(screen.getByPlaceholderText('space id')).toBeDefined();
+  });
+
   it('calls onSpaceChange and setSelectedSpaceId when a new space is selected', async () => {
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const select = screen.getByRole('combobox');
     fireEvent.change(select, { target: { value: 'sp-1' } });
@@ -97,7 +111,7 @@ describe('KnowledgeSpaceSelector', () => {
 
   it('creates a new knowledge space and shows success status', async () => {
     const user = userEvent.setup();
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const spaceIdInput = screen.getByPlaceholderText('space id');
     const nameInput = screen.getByPlaceholderText('显示名称');
@@ -126,7 +140,7 @@ describe('KnowledgeSpaceSelector', () => {
 
   it('uses space id as name when display name is empty', async () => {
     const user = userEvent.setup();
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const spaceIdInput = screen.getByPlaceholderText('space id');
     const submitButton = screen.getByText('创建');
@@ -143,7 +157,7 @@ describe('KnowledgeSpaceSelector', () => {
 
   it('does not submit when space id is empty', async () => {
     const user = userEvent.setup();
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const submitButton = screen.getByText('创建');
     await user.click(submitButton);
@@ -155,7 +169,7 @@ describe('KnowledgeSpaceSelector', () => {
     mockApiJson.mockRejectedValue(new Error('Network error'));
 
     const user = userEvent.setup();
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const spaceIdInput = screen.getByPlaceholderText('space id');
     const submitButton = screen.getByText('创建');
@@ -172,7 +186,7 @@ describe('KnowledgeSpaceSelector', () => {
     mockApiJson.mockRejectedValue('string error');
 
     const user = userEvent.setup();
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const spaceIdInput = screen.getByPlaceholderText('space id');
     const submitButton = screen.getByText('创建');
@@ -198,7 +212,7 @@ describe('KnowledgeSpaceSelector', () => {
       { space_id: 'new-default', name: 'New Default' },
     ]);
 
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const refreshBtn = screen.getByTitle('刷新知识空间');
     fireEvent.click(refreshBtn);
@@ -216,7 +230,7 @@ describe('KnowledgeSpaceSelector', () => {
   it('shows error status when refresh fails', async () => {
     mockRefreshSpaces.mockRejectedValue(new Error('Refresh failed'));
 
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const refreshBtn = screen.getByTitle('刷新知识空间');
     fireEvent.click(refreshBtn);
@@ -229,7 +243,7 @@ describe('KnowledgeSpaceSelector', () => {
   it('shows generic error when refresh fails with non-Error', async () => {
     mockRefreshSpaces.mockRejectedValue('refresh error');
 
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const refreshBtn = screen.getByTitle('刷新知识空间');
     fireEvent.click(refreshBtn);
@@ -240,7 +254,7 @@ describe('KnowledgeSpaceSelector', () => {
   });
 
   it('clears status message on refresh', async () => {
-    const { rerender } = render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const refreshBtn = screen.getByTitle('刷新知识空间');
     fireEvent.click(refreshBtn);
@@ -260,7 +274,7 @@ describe('KnowledgeSpaceSelector', () => {
       spaceIdOf: mockSpaceIdOf,
     });
 
-    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} />);
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
     const options = screen.getAllByRole('option');
     expect(options).toHaveLength(1);
