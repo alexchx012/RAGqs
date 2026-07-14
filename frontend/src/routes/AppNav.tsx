@@ -14,19 +14,19 @@ export default function AppNav() {
 
   return (
     <nav className="app-nav" data-testid="app-nav">
-      <div className="app-nav-brand" aria-hidden="true">
-        <span className="app-nav-mark" />
+      <div className="app-nav-brand">
+        <span className="app-nav-mark" aria-hidden="true" />
         <span className="app-nav-title">RAGqs</span>
       </div>
-      <div className="app-nav-tabs" role="list">
-        <NavLink to="/chat" role="listitem">
+      <div className="app-nav-tabs">
+        <NavLink to="/chat">
           聊天
         </NavLink>
-        <NavLink to="/knowledge" role="listitem">
+        <NavLink to="/knowledge">
           知识库
         </NavLink>
         {isAdmin && (
-          <NavLink to="/admin/projects" role="listitem">
+          <NavLink to="/admin/projects">
             项目管理
           </NavLink>
         )}
