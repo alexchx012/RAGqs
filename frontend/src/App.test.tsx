@@ -1,57 +1,127 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import React from 'react';
-import App from './App';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { AuthProvider } from './features/auth/AuthContext';
+import LoginPage from './features/auth/LoginPage';
+import ProtectedRoute from './routes/ProtectedRoute';
+import RootRedirect from './routes/RootRedirect';
+import AppNav from './routes/AppNav';
+import ChatPage from './pages/ChatPage';
+import KnowledgePage from './pages/KnowledgePage';
+import AdminProjectsPage from './pages/AdminProjectsPage';
+import { apiJson, registerUnauthorizedHandler, ApiError } from './api/client';
 
-// Mock the API client to prevent actual fetch calls
-vi.mock('./api/client', () => ({
-  apiJson: vi.fn().mockResolvedValue({ code: 200, data: { spaces: [], sessions: [], documents: [], jobs: [], audits: [] } }),
-  ApiError: class extends Error { constructor(msg: string) { super(msg); } },
-}));
+vi.mock('./api/client', async () => {
+  const actual = await vi.importActual<typeof import('./api/client')>('./api/client');
+  return {
+    ...actual,
+    apiJson: vi.fn(),
+  };
+});
 
-describe('App', () => {
+function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="app-shell">
+      <AppNav />
+      {children}
+    </div>
+  );
+}
+
+function TestApp({ initialEntries }: { initialEntries: string[] }) {
+  return (
+    <MemoryRouter initialEntries={initialEntries}>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/chat"
+            element={
+              <ProtectedRoute>
+                <Shell>
+                  <ChatPage />
+                </Shell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/knowledge"
+            element={
+              <ProtectedRoute>
+                <Shell>
+                  <KnowledgePage />
+                </Shell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/projects"
+            element={
+              <ProtectedRoute requireAdmin>
+                <Shell>
+                  <AdminProjectsPage />
+                </Shell>
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/" element={<RootRedirect />} />
+          <Route path="*" element={<RootRedirect />} />
+        </Routes>
+      </AuthProvider>
+    </MemoryRouter>
+  );
+}
+
+describe('App routes + auth guards', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    registerUnauthorizedHandler(null);
   });
 
   afterEach(() => {
     cleanup();
+    registerUnauthorizedHandler(null);
   });
 
-  it('renders the app layout with sidebar, main content, and management panel', () => {
-    render(<App />);
+  it('redirects unauthenticated root to login page', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError('unauthorized', 401),
+    );
 
-    // Sidebar: ChatHistorySidebar renders "RAG 知识库问答" title
-    expect(screen.getByText('RAG 知识库问答')).toBeDefined();
+    render(<TestApp initialEntries={['/']} />);
 
-    // Sidebar: "新建对话" button
-    expect(screen.getByText('新建对话')).toBeDefined();
-
-    // Main content: ChatPanel renders welcome greeting
-    expect(screen.getByText('你好！我是知识库问答助手')).toBeDefined();
-
-    // Management panel: KnowledgeSpaceSelector section header
-    expect(screen.getByText('知识空间')).toBeDefined();
-
-    // Management panel: DocumentList section header
-    expect(screen.getByText('文档')).toBeDefined();
-
-    // Management panel: IndexJobList section header
-    expect(screen.getByText('索引任务')).toBeDefined();
-
-    // Management panel: AuditList section header
-    expect(screen.getByText('检索审计')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByTestId('login-page')).toBeDefined();
+    });
   });
 
-  it('renders the app-layout root div', () => {
-    render(<App />);
-    const layout = document.querySelector('.app-layout');
-    expect(layout).not.toBeNull();
+  it('shows chat page for authenticated non-admin and hides admin nav', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      code: 200,
+      data: { user_id: 'u1', roles: ['user'], spaces: ['personal'] },
+    });
+
+    render(<TestApp initialEntries={['/chat']} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-page')).toBeDefined();
+    });
+    expect(screen.getByTestId('app-nav')).toBeDefined();
+    expect(screen.queryByText('项目管理')).toBeNull();
   });
 
-  it('renders the chat input field', () => {
-    render(<App />);
-    const input = screen.getByPlaceholderText('输入你的问题...');
-    expect(input).toBeDefined();
+  it('shows admin nav link for authenticated admin', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      code: 200,
+      data: { user_id: 'admin1', roles: ['admin'], spaces: ['*'] },
+    });
+
+    render(<TestApp initialEntries={['/chat']} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-page')).toBeDefined();
+    });
+    expect(screen.getByText('项目管理')).toBeDefined();
   });
 });
