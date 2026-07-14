@@ -62,4 +62,26 @@ describe('apiJson unauthorized handler', () => {
       status: 401,
     });
   });
+
+  it('apiJson 401 with skipUnauthorizedHandler does not invoke handler', async () => {
+    const handler = vi.fn();
+    registerUnauthorizedHandler(handler);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        json: async () => ({ detail: 'unauthorized' }),
+      }),
+    );
+
+    await expect(
+      apiJson('/auth/me', undefined, { skipUnauthorizedHandler: true }),
+    ).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 401,
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
 });

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -170,13 +170,33 @@ def create_app(
     if os.path.isdir(static_dir):
         application.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+    index_path = os.path.join(static_dir, "index.html")
+    index_exists = os.path.isfile(index_path)
+
     # 处理浏览器访问根路径：优先返回静态首页，缺失时退回轻量 API 信息。
     @application.get("/")
     async def root():
-        index_path = os.path.join(static_dir, "index.html")
-        if os.path.exists(index_path):
+        if index_exists:
             return FileResponse(index_path)
         return {"message": f"{app_name} API", "docs": "/docs"}
+
+    # SPA deep-link fallback: BrowserRouter paths must serve index.html on refresh.
+    # Do not swallow API, docs, OpenAPI, metrics, health, or static asset requests.
+    if index_exists:
+        _SPA_RESERVED_ROOTS = frozenset(
+            {"api", "docs", "redoc", "openapi.json", "metrics", "health", "static"}
+        )
+
+        @application.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):
+            root_segment = full_path.split("/", 1)[0]
+            if root_segment in _SPA_RESERVED_ROOTS:
+                raise HTTPException(status_code=404, detail="Not Found")
+            # Missing built assets (e.g. *.js) should 404, not fall back to HTML.
+            leaf = full_path.rsplit("/", 1)[-1]
+            if "." in leaf:
+                raise HTTPException(status_code=404, detail="Not Found")
+            return FileResponse(index_path)
 
     return application
 

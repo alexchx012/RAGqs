@@ -21,13 +21,14 @@ export function registerUnauthorizedHandler(fn: (() => void) | null): void {
 export async function apiJson<T = unknown>(
   path: string,
   options?: RequestInit,
+  config?: { skipUnauthorizedHandler?: boolean },
 ): Promise<ApiResponse<T>> {
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
     ...options,
   });
   if (!res.ok) {
-    if (res.status === 401) {
+    if (res.status === 401 && !config?.skipUnauthorizedHandler) {
       onUnauthorized?.();
     }
     let detail: string;

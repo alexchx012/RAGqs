@@ -1,5 +1,5 @@
 import React from 'react';
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { useAuth } from '../features/auth/AuthContext';
 
 export default function ProtectedRoute({
@@ -28,7 +28,8 @@ export default function ProtectedRoute({
   if (requireAdmin && !roles.includes('admin')) {
     return (
       <div className="auth-forbidden" data-testid="auth-forbidden">
-        无权限访问项目管理
+        无权限访问项目管理{' '}
+        <Link to="/chat">返回聊天</Link>
       </div>
     );
   }
