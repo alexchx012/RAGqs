@@ -4,6 +4,11 @@ import hljs from 'highlight.js';
 marked.setOptions({
   breaks: true,
   gfm: true,
+  // NOTE: headerIds and mangle options were removed in marked v11.
+  // - headerIds: heading IDs are only generated when the marked-gfm-heading-id
+  //   extension is explicitly loaded (not loaded here), so no IDs are generated.
+  // - mangle: email address mangling was removed entirely in v11.
+  // The default behavior without these options achieves the desired result.
 });
 
 marked.use({

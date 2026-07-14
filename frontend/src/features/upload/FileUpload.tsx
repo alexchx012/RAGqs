@@ -24,6 +24,17 @@ export default function FileUpload({ spaceId, disabled = false, onRefresh }: Fil
 
     try {
       const res = await fetch(`/api/upload?space_id=${encodeURIComponent(spaceId)}`, { method: 'POST', body: formData });
+      if (!res.ok) {
+        let errorDetail: string;
+        try {
+          const errorData = await res.json();
+          errorDetail = errorData.detail || errorData.message || `HTTP ${res.status}`;
+        } catch {
+          errorDetail = res.statusText || `HTTP ${res.status}`;
+        }
+        addMessage({ type: 'assistant', content: `❌ 上传失败: ${errorDetail}` });
+        return;
+      }
       const data = await res.json();
 
       if (data.code === 200) {
