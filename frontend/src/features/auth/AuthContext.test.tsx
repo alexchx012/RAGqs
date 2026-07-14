@@ -63,4 +63,76 @@ describe('AuthContext', () => {
     );
     await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('unauthenticated'));
   });
+
+  it('refresh probes /auth/me with skipUnauthorizedHandler', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      code: 200,
+      data: { user_id: 'u1', roles: ['user'], spaces: [] },
+    });
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <Probe />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authenticated'));
+    expect(apiJson).toHaveBeenCalledWith(
+      '/auth/me',
+      undefined,
+      expect.objectContaining({ skipUnauthorizedHandler: true }),
+    );
+  });
+
+  it('login rejects when body.data is missing user_id and stays unauthenticated', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new (await import('../../api/client')).ApiError('unauthorized', 401),
+    );
+
+    function LoginProbe() {
+      const auth = useAuth();
+      return (
+        <div>
+          <span data-testid="status">{auth.status}</span>
+          <span data-testid="user-id">{auth.userId ?? ''}</span>
+          <button
+            type="button"
+            data-testid="do-login"
+            onClick={() => {
+              void auth.login('alice', 'pw').catch(() => undefined);
+            }}
+          >
+            login
+          </button>
+        </div>
+      );
+    }
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <LoginProbe />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('unauthenticated'));
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 200, data: {} }),
+      }),
+    );
+
+    screen.getByTestId('do-login').click();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status').textContent).toBe('unauthenticated');
+    });
+    expect(screen.getByTestId('user-id').textContent).toBe('');
+
+    vi.unstubAllGlobals();
+  });
 });

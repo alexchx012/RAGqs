@@ -48,7 +48,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStatus('loading');
     setErrorMessage(null);
     try {
-      const res = await apiJson<AuthMeData>('/auth/me');
+      const res = await apiJson<AuthMeData>('/auth/me', undefined, {
+        skipUnauthorizedHandler: true,
+      });
       applyIdentity(res.data, setUserId, setRoles, setSpaces);
       setStatus('authenticated');
     } catch (err: unknown) {
@@ -101,7 +103,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new ApiError(detail, res.status);
     }
     const body = await res.json();
-    applyIdentity(body.data as AuthMeData, setUserId, setRoles, setSpaces);
+    const data = body?.data as AuthMeData | undefined;
+    if (!data || typeof data.user_id !== 'string' || !data.user_id) {
+      throw new ApiError('登录响应缺少用户信息', res.status);
+    }
+    applyIdentity(data, setUserId, setRoles, setSpaces);
     setErrorMessage(null);
     setStatus('authenticated');
   }, []);
