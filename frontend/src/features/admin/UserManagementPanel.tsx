@@ -79,6 +79,8 @@ export default function UserManagementPanel() {
 
   function toggleRole(role: string, current: string[], setter: (next: string[]) => void) {
     if (current.includes(role)) {
+      // keep at least one role selected
+      if (current.length <= 1) return;
       setter(current.filter((r) => r !== role));
     } else {
       setter([...current, role]);
@@ -87,6 +89,10 @@ export default function UserManagementPanel() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
+    if (createRoles.length === 0) {
+      setActionError('请至少选择一个角色');
+      return;
+    }
     setActionError(null);
     setSubmitting(true);
     try {
@@ -112,11 +118,11 @@ export default function UserManagementPanel() {
     }
   }
 
-  async function handleSave(
-    user: AdminUser,
-    roles: string[] = editRoles,
-    spacesInput: string = editSpaces,
-  ) {
+  async function handleSave(user: AdminUser) {
+    if (editRoles.length === 0) {
+      setActionError('请至少选择一个角色');
+      return;
+    }
     setActionError(null);
     setSubmitting(true);
     try {
@@ -125,8 +131,8 @@ export default function UserManagementPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           expected_version: user.version,
-          roles,
-          spaces: parseSpaces(spacesInput),
+          roles: editRoles,
+          spaces: parseSpaces(editSpaces),
         }),
       });
       setEditingId(null);
@@ -237,17 +243,6 @@ export default function UserManagementPanel() {
                       onClick={() => startEdit(user)}
                     >
                       编辑
-                    </button>
-                    {/* 列表态保留 save 控件，便于测试/快捷提交当前值（含 409 路径） */}
-                    <button
-                      type="button"
-                      data-testid={`save-user-${user.id}`}
-                      disabled={submitting}
-                      onClick={() =>
-                        handleSave(user, user.roles, user.spaces.join(', '))
-                      }
-                    >
-                      保存
                     </button>
                     <button
                       type="button"
