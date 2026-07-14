@@ -88,4 +88,36 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 9900 --reload
 
 ## Tech Stack
 
-FastAPI · LangChain · LangGraph · 通义千问 (DashScope) · Milvus · SQLite / Postgres · SSE
+FastAPI · LangChain · LangGraph · 通义千问 (DashScope) · Milvus · SQLite / Postgres · React · Vite · TypeScript · SSE
+
+## 前端构建
+
+前端使用 React + Vite + TypeScript 构建，源码位于 `frontend/` 目录。
+
+### 开发
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+开发服务器默认运行在 `http://localhost:5173`，API 请求自动代理到 `http://localhost:9900`（FastAPI 后端默认端口）。
+
+### 生产构建
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+构建产物输出到 `static/` 目录，由 FastAPI 的 `StaticFiles` 托管，无需额外配置。
+
+### 测试
+
+```bash
+cd frontend
+npm test              # Vitest 单元测试
+npx playwright test   # Playwright E2E 测试（需先启动后端）
+```
