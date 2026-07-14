@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useKnowledge } from './KnowledgeContext';
 import { apiJson } from '../../api/client';
 import type { AuditRecord, AuditData, PanelState } from '../../api/types';
@@ -6,14 +6,18 @@ import type { AuditRecord, AuditData, PanelState } from '../../api/types';
 export default function AuditList() {
   const { selectedSpaceId } = useKnowledge();
   const [panelState, setPanelState] = useState<PanelState<AuditRecord>>({ status: 'loading' });
+  const latestRequestRef = useRef(0);
 
   const fetchAudits = useCallback(async () => {
+    const requestId = ++latestRequestRef.current;
     setPanelState({ status: 'loading' });
     try {
       const data = await apiJson<AuditData>(`/chat/audits?space_id=${encodeURIComponent(selectedSpaceId)}`);
+      if (requestId !== latestRequestRef.current) return;
       const audits = Array.isArray(data.data?.audits) ? data.data.audits : [];
       setPanelState(audits.length === 0 ? { status: 'empty' } : { status: 'ready', items: audits });
     } catch (err: unknown) {
+      if (requestId !== latestRequestRef.current) return;
       const message = err instanceof Error ? err.message : '加载审计记录失败';
       setPanelState({ status: 'error', message });
     }

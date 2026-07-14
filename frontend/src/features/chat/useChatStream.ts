@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { useChat } from './ChatContext';
 
@@ -8,7 +8,7 @@ interface StreamMessage {
 }
 
 export function useChatStream() {
-  const { sessionId, addMessage, replaceLastMessage, setStreaming } = useChat();
+  const { sessionId, addMessage, replaceLastMessage, setStreaming, registerStreamAbort } = useChat();
   const abortRef = useRef<AbortController | null>(null);
 
   const abort = useCallback(() => {
@@ -17,6 +17,14 @@ export function useChatStream() {
       abortRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    registerStreamAbort(abort);
+    return () => {
+      abort();
+      registerStreamAbort(null);
+    };
+  }, [registerStreamAbort, abort]);
 
   const sendStream = useCallback(
     async (
@@ -87,9 +95,12 @@ export function useChatStream() {
           }
         }
       } catch (err: unknown) {
-        const errorMessage =
-          err instanceof Error ? err.message : '流式请求失败';
-        onError(errorMessage);
+        const wasAborted = controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
+        if (!wasAborted) {
+          const errorMessage =
+            err instanceof Error ? err.message : '流式请求失败';
+          onError(errorMessage);
+        }
       } finally {
         setStreaming(false);
         abortRef.current = null;

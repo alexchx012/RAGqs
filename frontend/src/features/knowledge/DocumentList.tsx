@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useKnowledge } from './KnowledgeContext';
 import { apiJson } from '../../api/client';
 import type { DocumentRecord, DocumentsData, PanelState } from '../../api/types';
@@ -6,16 +6,20 @@ import type { DocumentRecord, DocumentsData, PanelState } from '../../api/types'
 export default function DocumentList() {
   const { selectedSpaceId } = useKnowledge();
   const [panelState, setPanelState] = useState<PanelState<DocumentRecord>>({ status: 'loading' });
+  const latestRequestRef = useRef(0);
 
   const fetchDocuments = useCallback(async () => {
+    const requestId = ++latestRequestRef.current;
     setPanelState({ status: 'loading' });
     try {
       const data = await apiJson<DocumentsData>(
         `/knowledge-spaces/${encodeURIComponent(selectedSpaceId)}/documents`,
       );
+      if (requestId !== latestRequestRef.current) return;
       const docs = Array.isArray(data.data?.documents) ? data.data.documents : [];
       setPanelState(docs.length === 0 ? { status: 'empty' } : { status: 'ready', items: docs });
     } catch (err: unknown) {
+      if (requestId !== latestRequestRef.current) return;
       const message = err instanceof Error ? err.message : '加载文档失败';
       setPanelState({ status: 'error', message });
     }
