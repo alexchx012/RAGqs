@@ -12,12 +12,24 @@ export class ApiError extends Error {
   }
 }
 
+let onUnauthorized: (() => void) | null = null;
+
+export function registerUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
 export async function apiJson<T = unknown>(
   path: string,
   options?: RequestInit,
 ): Promise<ApiResponse<T>> {
-  const res = await fetch(`${API_BASE}${path}`, options);
+  const res = await fetch(`${API_BASE}${path}`, {
+    credentials: 'include',
+    ...options,
+  });
   if (!res.ok) {
+    if (res.status === 401) {
+      onUnauthorized?.();
+    }
     let detail: string;
     try {
       const errorData: ApiResponse<T> = await res.json();

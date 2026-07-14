@@ -85,3 +85,26 @@ export type PanelState<T> =
   | { status: 'error'; message: string }
   | { status: 'empty' }
   | { status: 'ready'; items: T[] };
+
+export interface AuthMeData {
+  user_id: string;
+  roles: string[];
+  spaces: string[];
+}
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  roles: string[];
+  spaces: string[];
+  version: number;
+  created_at: string;
+}
+
+export interface AdminUsersData {
+  users?: AdminUser[];
+}
+
+export interface AdminUserData {
+  user?: AdminUser;
+}

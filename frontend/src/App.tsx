@@ -1,56 +1,63 @@
-import React, { useCallback, useEffect } from 'react';
-import { ChatProvider } from './features/chat/ChatContext';
-import { ChatHistoryProvider } from './features/history/ChatHistoryContext';
-import { KnowledgeProvider, useKnowledge } from './features/knowledge/KnowledgeContext';
-import ChatPanel from './features/chat/ChatPanel';
-import ChatHistorySidebar from './features/history/ChatHistorySidebar';
-import FileUpload from './features/upload/FileUpload';
-import KnowledgeSpaceSelector from './features/knowledge/KnowledgeSpaceSelector';
-import DocumentList from './features/knowledge/DocumentList';
-import IndexJobList from './features/knowledge/IndexJobList';
-import AuditList from './features/knowledge/AuditList';
+import React from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { AuthProvider } from './features/auth/AuthContext';
+import LoginPage from './features/auth/LoginPage';
+import ProtectedRoute from './routes/ProtectedRoute';
+import RootRedirect from './routes/RootRedirect';
+import AppNav from './routes/AppNav';
+import ChatPage from './pages/ChatPage';
+import KnowledgePage from './pages/KnowledgePage';
+import AdminProjectsPage from './pages/AdminProjectsPage';
 
-function AppContent() {
-  const { selectedSpaceId, refreshSpaces, spaceIdOf, setSelectedSpaceId } = useKnowledge();
-
-  const handleRefresh = useCallback(async () => {
-    try {
-      const spaces = await refreshSpaces();
-      if (spaces.length > 0 && !spaces.some(s => spaceIdOf(s) === selectedSpaceId)) {
-        setSelectedSpaceId(spaceIdOf(spaces[0]));
-      }
-    } catch { /* silently handled */ }
-  }, [refreshSpaces, selectedSpaceId, spaceIdOf, setSelectedSpaceId]);
-
-  useEffect(() => { refreshSpaces().catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="app-layout">
-      <ChatHistorySidebar />
-      <main className="main-content">
-        <ChatPanel
-          spaceId={selectedSpaceId}
-          uploadSlot={<FileUpload spaceId={selectedSpaceId} onRefresh={handleRefresh} />}
-        />
-      </main>
-      <aside className="management-panel">
-        <KnowledgeSpaceSelector onSpaceChange={handleRefresh} />
-        <DocumentList />
-        <IndexJobList />
-        <AuditList />
-      </aside>
+    <div className="app-shell">
+      <AppNav />
+      {children}
     </div>
   );
 }
 
 export default function App() {
   return (
-    <KnowledgeProvider>
-      <ChatProvider>
-        <ChatHistoryProvider>
-          <AppContent />
-        </ChatHistoryProvider>
-      </ChatProvider>
-    </KnowledgeProvider>
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/chat"
+            element={
+              <ProtectedRoute>
+                <Shell>
+                  <ChatPage />
+                </Shell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/knowledge"
+            element={
+              <ProtectedRoute>
+                <Shell>
+                  <KnowledgePage />
+                </Shell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/projects"
+            element={
+              <ProtectedRoute requireAdmin>
+                <Shell>
+                  <AdminProjectsPage />
+                </Shell>
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/" element={<RootRedirect />} />
+          <Route path="*" element={<RootRedirect />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
