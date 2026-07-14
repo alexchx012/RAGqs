@@ -12,7 +12,11 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
 
   if (status === 'loading') {
-    return <div data-testid="auth-loading">加载中...</div>;
+    return (
+      <div className="auth-loading" data-testid="auth-loading">
+        加载中...
+      </div>
+    );
   }
   if (status === 'authenticated') {
     return <Navigate to="/chat" replace />;

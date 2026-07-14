@@ -24,7 +24,11 @@ function KnowledgePageContent() {
 
   return (
     <div className="knowledge-page" data-testid="knowledge-page">
-      <aside className="management-panel">
+      <header className="page-header">
+        <h1 className="page-title">知识库</h1>
+        <p className="page-subtitle">浏览与管理你有权限的知识空间</p>
+      </header>
+      <aside className="management-panel knowledge-panel-surface">
         <KnowledgeSpaceSelector scope="own" onSpaceChange={handleRefresh} />
         <DocumentList />
         <IndexJobList />
