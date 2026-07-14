@@ -20,6 +20,8 @@ export interface ChatContextValue {
   setStreaming: (v: boolean) => void;
   clearChat: () => void;
   regenerateSessionId: () => void;
+  registerStreamAbort: (fn: (() => void) | null) => void;
+  abortActiveStream: () => void;
 }
 
 function generateSessionId(): string {
@@ -41,6 +43,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [mode, setMode] = useState<ChatMode>('quick');
   const historyRef = useRef<ChatMessage[]>([]);
+  const streamAbortRef = useRef<(() => void) | null>(null);
 
   const addMessage = useCallback((msg: ChatMessage) => {
     historyRef.current = [...historyRef.current, msg];
@@ -71,6 +74,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setSessionId(generateSessionId());
   }, []);
 
+  const registerStreamAbort = useCallback((fn: (() => void) | null) => {
+    streamAbortRef.current = fn;
+  }, []);
+
+  const abortActiveStream = useCallback(() => {
+    streamAbortRef.current?.();
+  }, []);
+
   return (
     <ChatContext.Provider
       value={{
@@ -84,6 +95,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setStreaming,
         clearChat,
         regenerateSessionId,
+        registerStreamAbort,
+        abortActiveStream,
       }}
     >
       {children}

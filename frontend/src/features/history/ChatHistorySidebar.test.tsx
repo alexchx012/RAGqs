@@ -24,6 +24,7 @@ function createDefaultMocks() {
     currentChatHistory: [{ type: 'user', content: 'Hello' }],
     clearChat: vi.fn(),
     regenerateSessionId: vi.fn(),
+    abortActiveStream: vi.fn(),
   });
 
   mockUseChatHistory.mockReturnValue({
@@ -145,6 +146,7 @@ describe('ChatHistorySidebar', () => {
         currentChatHistory: [{ type: 'user', content: 'Hello' }],
         clearChat,
         regenerateSessionId,
+        abortActiveStream: vi.fn(),
       });
       mockUseChatHistory.mockReturnValue({
         chatHistories: [],
@@ -174,6 +176,7 @@ describe('ChatHistorySidebar', () => {
         currentChatHistory: [],
         clearChat,
         regenerateSessionId,
+        abortActiveStream: vi.fn(),
       });
       mockUseChatHistory.mockReturnValue({
         chatHistories: [],

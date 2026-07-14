@@ -3,17 +3,18 @@ import { useChat } from '../chat/ChatContext';
 import { useChatHistory } from './ChatHistoryContext';
 
 export default function ChatHistorySidebar() {
-  const { sessionId, currentChatHistory, addMessage, clearChat, regenerateSessionId } = useChat();
+  const { sessionId, currentChatHistory, addMessage, clearChat, regenerateSessionId, abortActiveStream } = useChat();
   const { chatHistories, saveCurrentChat, loadHistory, deleteHistory, searchHistories, refreshFromBackend } = useChatHistory();
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => { refreshFromBackend(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNewChat = useCallback(() => {
+    abortActiveStream();
     if (currentChatHistory.length > 0) saveCurrentChat();
     clearChat();
     regenerateSessionId();
-  }, [currentChatHistory, saveCurrentChat, clearChat, regenerateSessionId]);
+  }, [abortActiveStream, currentChatHistory, saveCurrentChat, clearChat, regenerateSessionId]);
 
   const handleSearch = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const q = e.target.value;
@@ -22,13 +23,14 @@ export default function ChatHistorySidebar() {
   }, [searchHistories]);
 
   const handleLoadHistory = useCallback(async (h: typeof chatHistories[number]) => {
+    abortActiveStream();
     const loaded = await loadHistory(h);
     clearChat();
     regenerateSessionId();
     for (const msg of loaded.messages) {
       addMessage(msg);
     }
-  }, [loadHistory, clearChat, regenerateSessionId, addMessage]);
+  }, [abortActiveStream, loadHistory, clearChat, regenerateSessionId, addMessage]);
 
   const handleDelete = useCallback((e: React.MouseEvent, id: string) => {
     e.stopPropagation();
