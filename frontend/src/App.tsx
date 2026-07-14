@@ -28,7 +28,10 @@ function AppContent() {
     <div className="app-layout">
       <ChatHistorySidebar />
       <main className="main-content">
-        <ChatPanel spaceId={selectedSpaceId} />
+        <ChatPanel
+          spaceId={selectedSpaceId}
+          uploadSlot={<FileUpload spaceId={selectedSpaceId} onRefresh={handleRefresh} />}
+        />
       </main>
       <aside className="management-panel">
         <KnowledgeSpaceSelector onSpaceChange={handleRefresh} />
@@ -36,7 +39,6 @@ function AppContent() {
         <IndexJobList />
         <AuditList />
       </aside>
-      <FileUpload spaceId={selectedSpaceId} onRefresh={handleRefresh} />
     </div>
   );
 }
