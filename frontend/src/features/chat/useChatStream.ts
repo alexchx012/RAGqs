@@ -8,7 +8,7 @@ interface StreamMessage {
 }
 
 export function useChatStream() {
-  const { sessionId, addMessage, setStreaming } = useChat();
+  const { sessionId, addMessage, replaceLastMessage, setStreaming } = useChat();
   const abortRef = useRef<AbortController | null>(null);
 
   const abort = useCallback(() => {
@@ -29,6 +29,7 @@ export function useChatStream() {
       abortRef.current = controller;
 
       let fullResponse = '';
+      let hasProgressiveMsg = false;
 
       try {
         await fetchEventSource('/api/chat_stream', {
@@ -58,6 +59,12 @@ export function useChatStream() {
               const msg: StreamMessage = JSON.parse(ev.data);
               if (msg.type === 'content') {
                 fullResponse += msg.data || '';
+                if (!hasProgressiveMsg) {
+                  addMessage({ type: 'assistant', content: fullResponse });
+                  hasProgressiveMsg = true;
+                } else {
+                  replaceLastMessage({ type: 'assistant', content: fullResponse });
+                }
               } else if (msg.type === 'done') {
                 return;
               } else if (msg.type === 'error') {
@@ -73,7 +80,11 @@ export function useChatStream() {
         });
 
         if (fullResponse) {
-          addMessage({ type: 'assistant', content: fullResponse });
+          if (hasProgressiveMsg) {
+            replaceLastMessage({ type: 'assistant', content: fullResponse });
+          } else {
+            addMessage({ type: 'assistant', content: fullResponse });
+          }
         }
       } catch (err: unknown) {
         const errorMessage =
@@ -84,7 +95,7 @@ export function useChatStream() {
         abortRef.current = null;
       }
     },
-    [sessionId, addMessage, setStreaming],
+    [sessionId, addMessage, replaceLastMessage, setStreaming],
   );
 
   return { sendStream, abort };

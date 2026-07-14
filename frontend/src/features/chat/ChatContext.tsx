@@ -16,6 +16,7 @@ export interface ChatContextValue {
   mode: ChatMode;
   setMode: (mode: ChatMode) => void;
   addMessage: (msg: ChatMessage) => void;
+  replaceLastMessage: (msg: ChatMessage) => void;
   setStreaming: (v: boolean) => void;
   clearChat: () => void;
   regenerateSessionId: () => void;
@@ -46,6 +47,17 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setCurrentChatHistory(historyRef.current);
   }, []);
 
+  const replaceLastMessage = useCallback((msg: ChatMessage) => {
+    const updated = [...historyRef.current];
+    if (updated.length > 0) {
+      updated[updated.length - 1] = msg;
+    } else {
+      updated.push(msg);
+    }
+    historyRef.current = updated;
+    setCurrentChatHistory(updated);
+  }, []);
+
   const setStreaming = useCallback((v: boolean) => {
     setIsStreaming(v);
   }, []);
@@ -68,6 +80,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         mode,
         setMode,
         addMessage,
+        replaceLastMessage,
         setStreaming,
         clearChat,
         regenerateSessionId,

@@ -3,8 +3,8 @@ import { useChat } from '../chat/ChatContext';
 import { useChatHistory } from './ChatHistoryContext';
 
 export default function ChatHistorySidebar() {
-  const { sessionId, currentChatHistory, clearChat, regenerateSessionId } = useChat();
-  const { chatHistories, saveCurrentChat, deleteHistory, searchHistories, refreshFromBackend } = useChatHistory();
+  const { sessionId, currentChatHistory, addMessage, clearChat, regenerateSessionId } = useChat();
+  const { chatHistories, saveCurrentChat, loadHistory, deleteHistory, searchHistories, refreshFromBackend } = useChatHistory();
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => { refreshFromBackend(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -20,6 +20,15 @@ export default function ChatHistorySidebar() {
     setSearchQuery(q);
     searchHistories(q);
   }, [searchHistories]);
+
+  const handleLoadHistory = useCallback(async (h: typeof chatHistories[number]) => {
+    const loaded = await loadHistory(h);
+    clearChat();
+    regenerateSessionId();
+    for (const msg of loaded.messages) {
+      addMessage(msg);
+    }
+  }, [loadHistory, clearChat, regenerateSessionId, addMessage]);
 
   const handleDelete = useCallback((e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -41,7 +50,7 @@ export default function ChatHistorySidebar() {
           <input type="search" className="history-search-input" placeholder="搜索历史" value={searchQuery} onChange={handleSearch} />
           <div className="chat-history-list">
             {chatHistories.map(h => (
-              <div key={h.id} className={`history-item ${h.id === sessionId ? 'active' : ''}`} title={h.title}>
+              <div key={h.id} className={`history-item ${h.id === sessionId ? 'active' : ''}`} title={h.title} onClick={() => handleLoadHistory(h)}>
                 <div className="history-item-content"><span className="history-item-title">{h.title}</span></div>
                 <button className="history-item-delete" onClick={(e) => handleDelete(e, h.id)} title="删除">
                   <svg viewBox="0 0 24 24" fill="none">

@@ -63,6 +63,7 @@ describe('FileUpload', () => {
     mockUseChat.mockReturnValue({ addMessage });
 
     mockFetch.mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ code: 200 }),
     });
 
@@ -121,6 +122,7 @@ describe('FileUpload', () => {
     mockUseChat.mockReturnValue({ addMessage });
 
     mockFetch.mockResolvedValueOnce({
+      ok: false,
       json: () => Promise.resolve({ code: 400, detail: '文件过大' }),
     });
 
