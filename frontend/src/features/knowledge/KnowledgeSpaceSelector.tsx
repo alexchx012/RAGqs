@@ -2,9 +2,12 @@ import React, { useState, useCallback } from 'react';
 import { useKnowledge } from './KnowledgeContext';
 import { apiJson } from '../../api/client';
 
-interface Props { onSpaceChange: () => void; }
+interface Props {
+  onSpaceChange: () => void;
+  scope: 'own' | 'all';
+}
 
-export default function KnowledgeSpaceSelector({ onSpaceChange }: Props) {
+export default function KnowledgeSpaceSelector({ onSpaceChange, scope }: Props) {
   const { selectedSpaceId, setSelectedSpaceId, knowledgeSpaces, refreshSpaces, spaceIdOf } = useKnowledge();
   const [newSpaceId, setNewSpaceId] = useState('');
   const [newSpaceName, setNewSpaceName] = useState('');
@@ -67,11 +70,13 @@ export default function KnowledgeSpaceSelector({ onSpaceChange }: Props) {
           <option key={spaceIdOf(space)} value={spaceIdOf(space)}>{space.name || spaceIdOf(space)}</option>
         ))}
       </select>
-      <form className="space-form" onSubmit={handleCreate}>
-        <input type="text" placeholder="space id" value={newSpaceId} onChange={e => setNewSpaceId(e.target.value)} />
-        <input type="text" placeholder="显示名称" value={newSpaceName} onChange={e => setNewSpaceName(e.target.value)} />
-        <button type="submit">创建</button>
-      </form>
+      {scope === 'all' && (
+        <form className="space-form" onSubmit={handleCreate}>
+          <input type="text" placeholder="space id" value={newSpaceId} onChange={e => setNewSpaceId(e.target.value)} />
+          <input type="text" placeholder="显示名称" value={newSpaceName} onChange={e => setNewSpaceName(e.target.value)} />
+          <button type="submit">创建</button>
+        </form>
+      )}
       {statusMsg && <div className={`management-status ${statusType}`} style={{ marginTop: 8 }}>{statusMsg}</div>}
     </section>
   );
