@@ -6,9 +6,10 @@ import { renderMarkdown, escapeHtml } from '../../markdown/renderMarkdown';
 
 interface ChatPanelProps {
   spaceId: string;
+  uploadSlot?: React.ReactNode;
 }
 
-export default function ChatPanel({ spaceId }: ChatPanelProps) {
+export default function ChatPanel({ spaceId, uploadSlot }: ChatPanelProps) {
   const {
     currentChatHistory,
     isStreaming,
@@ -99,7 +100,7 @@ export default function ChatPanel({ spaceId }: ChatPanelProps) {
             />
             <div className="input-bottom-bar">
               <div className="tools-btn-wrapper">
-                {/* FileUpload button rendered by parent via children slot */}
+                {uploadSlot}
               </div>
               <div className="right-actions">
                 <div className="mode-selector-wrapper">
