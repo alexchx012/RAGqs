@@ -32,10 +32,19 @@ export default function ChatHistorySidebar() {
     }
   }, [abortActiveStream, loadHistory, clearChat, regenerateSessionId, addMessage]);
 
-  const handleDelete = useCallback((e: React.MouseEvent, id: string) => {
+  const handleDelete = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    deleteHistory(id);
-  }, [deleteHistory]);
+    try {
+      await deleteHistory(id);
+      if (id === sessionId) {
+        abortActiveStream();
+        clearChat();
+        regenerateSessionId();
+      }
+    } catch (err) {
+      console.error('删除会话失败', err);
+    }
+  }, [deleteHistory, sessionId, abortActiveStream, clearChat, regenerateSessionId]);
 
   return (
     <aside className="sidebar">
