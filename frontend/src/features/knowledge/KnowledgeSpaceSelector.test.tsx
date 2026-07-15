@@ -77,6 +77,21 @@ describe('KnowledgeSpaceSelector', () => {
     expect(options[1].textContent).toBe('Space 1');
   });
 
+  it('does not fake a Default option when knowledge spaces are empty', () => {
+    setupKnowledgeContext({
+      selectedSpaceId: 'finance',
+      knowledgeSpaces: [],
+    });
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="own" />);
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe('');
+    expect(screen.getByText('暂无可用知识空间')).toBeDefined();
+    expect(screen.queryByText('Default')).toBeNull();
+    expect(screen.queryByText('finance')).toBeNull();
+  });
+
   it('renders create form with space id and name inputs and submit button', () => {
     render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
@@ -265,7 +280,7 @@ describe('KnowledgeSpaceSelector', () => {
     });
   });
 
-  it('renders fallback option when knowledgeSpaces is empty', () => {
+  it('renders empty placeholder when knowledgeSpaces is empty instead of faking selection', () => {
     setupKnowledgeContext({
       selectedSpaceId: 'my-space',
       knowledgeSpaces: [],
@@ -276,8 +291,11 @@ describe('KnowledgeSpaceSelector', () => {
 
     render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="all" />);
 
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
     const options = screen.getAllByRole('option');
     expect(options).toHaveLength(1);
-    expect(options[0].textContent).toBe('my-space');
+    expect(options[0].textContent).toBe('暂无可用知识空间');
+    expect(select.value).toBe('');
+    expect(select.disabled).toBe(true);
   });
 });
