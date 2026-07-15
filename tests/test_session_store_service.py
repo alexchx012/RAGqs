@@ -107,7 +107,7 @@ def test_clear_session_deletes_session_store_history():
     assert service.get_session_history("s1") == []
 
 
-def test_session_store_lists_summaries_newest_first_and_searches_messages():
+def test_session_store_lists_summaries_newest_first_and_searches_titles():
     session_store = InMemorySessionStoreProvider()
     session_store.append_message("s1", "user", "Alpha question")
     session_store.append_message("s1", "assistant", "Alpha answer")
@@ -120,8 +120,31 @@ def test_session_store_lists_summaries_newest_first_and_searches_messages():
     assert summaries[0].message_count == 1
     assert summaries[0].last_message == "Beta search target"
     assert [summary.session_id for summary in session_store.list_sessions(query="alpha")] == ["s1"]
-    assert [summary.session_id for summary in session_store.list_sessions(query="answer")] == ["s1"]
+    # Message body is not a search target for sidebar title search
+    assert session_store.list_sessions(query="answer") == []
     assert session_store.list_sessions(query="missing") == []
+
+
+def test_session_store_title_search_matches_你好_and_policy_scenarios():
+    session_store = InMemorySessionStoreProvider()
+    for sid in ("h1", "h2", "h3"):
+        session_store.append_message(sid, "user", "你好")
+        session_store.append_message(sid, "assistant", "回复里提到 policy 和字母 p")
+    session_store.append_message("p1", "user", "policy")
+    session_store.append_message("p1", "assistant", "policy 详情")
+
+    assert [s.session_id for s in session_store.list_sessions(query="policy")] == ["p1"]
+    assert [s.session_id for s in session_store.list_sessions(query="p")] == ["p1"]
+    assert sorted(s.session_id for s in session_store.list_sessions(query="你")) == [
+        "h1",
+        "h2",
+        "h3",
+    ]
+    assert sorted(s.session_id for s in session_store.list_sessions(query="你好")) == [
+        "h1",
+        "h2",
+        "h3",
+    ]
 
 
 def test_rag_agent_service_lists_session_summaries_from_store():
@@ -137,7 +160,7 @@ def test_rag_agent_service_lists_session_summaries_from_store():
     session_store.append_message("s1", "user", "What is a backend session?")
     session_store.append_message("s1", "assistant", "A stored server-side conversation.")
 
-    summaries = service.list_sessions(query="server-side")
+    summaries = service.list_sessions(query="backend")
 
     assert len(summaries) == 1
     assert summaries[0].session_id == "s1"
