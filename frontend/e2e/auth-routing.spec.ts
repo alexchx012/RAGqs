@@ -84,16 +84,32 @@ test.describe('auth routing', () => {
     await expect(page).toHaveURL(/\/login/, { timeout: 15000 });
   });
 
-  // 运行时拦截：不 goto；在 SPA 内触发一次 apiJson
+  // 运行时拦截：模拟「仍在页面内、会话已过期」——下一次 apiJson 返回 401。
+  // 注意：这不是 UI「登出」路径。UI 登出应直接 navigate('/login')，不应再点业务按钮。
   test('in-app 401 triggers global redirect without reload', async ({ page }) => {
     test.skip(!hasAdminCredentials(), '需要 AUTH_LOCAL_ADMIN_SEED 或 E2E_ADMIN_*');
     const { username, password } = resolveAdminCredentials();
     await loginViaApi(page, username, password);
     await page.goto('/knowledge');
     await expect(page.getByTestId('knowledge-page')).toBeVisible({ timeout: 15000 });
-    await page.request.post('/api/auth/logout');
-    await page.getByTitle('刷新知识空间').click();
-    await expect(page).toHaveURL(/\/login/, { timeout: 15000 });
+
+    // 仍停留在知识页；后续 /knowledge-spaces 请求模拟会话过期 401
+    await page.route('**/api/knowledge-spaces**', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'unauthorized' }),
+      });
+    });
+
+    const refreshBtn = page.getByTitle('刷新知识空间');
+    await expect(refreshBtn).toBeVisible();
+    // 401 全局 handler 会立即 navigate，按钮可能被卸载；与 waitForURL 并行避免 click 重试超时
+    await Promise.all([
+      page.waitForURL(/\/login/, { timeout: 15000 }),
+      refreshBtn.click({ force: true }),
+    ]);
+    await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 5000 });
   });
 
   test('non-admin cannot open admin projects', async ({ page }) => {
