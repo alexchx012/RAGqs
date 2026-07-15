@@ -26,7 +26,7 @@ def test_postgres_session_store_persists_messages_and_searchable_summaries():
     ]
     assert store.get_messages("s1")[1].metadata == {"source": "postgres"}
     assert [summary.session_id for summary in store.list_sessions()] == ["s2", "s1"]
-    assert [summary.session_id for summary in store.list_sessions(query="multi-instance")] == [
+    assert [summary.session_id for summary in store.list_sessions(query="production")] == [
         "s1"
     ]
     assert store.clear("s1") is True
