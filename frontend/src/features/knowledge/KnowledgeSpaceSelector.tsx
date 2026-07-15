@@ -57,18 +57,25 @@ export default function KnowledgeSpaceSelector({ onSpaceChange, scope }: Props) 
     }
   }, [refreshSpaces, selectedSpaceId, spaceIdOf, setSelectedSpaceId, onSpaceChange]);
 
-  const displaySpaces = knowledgeSpaces.length > 0 ? knowledgeSpaces : [{ space_id: selectedSpaceId, name: selectedSpaceId }];
-
   return (
     <section className="ops-section">
       <div className="ops-section-header">
         <span>知识空间</span>
         <button type="button" className="ops-icon-btn" title="刷新知识空间" onClick={handleRefresh}>↻</button>
       </div>
-      <select className="space-selector" value={selectedSpaceId} onChange={handleSelect}>
-        {displaySpaces.map(space => (
-          <option key={spaceIdOf(space)} value={spaceIdOf(space)}>{space.name || spaceIdOf(space)}</option>
-        ))}
+      <select
+        className="space-selector"
+        value={knowledgeSpaces.length === 0 ? '' : selectedSpaceId}
+        onChange={handleSelect}
+        disabled={knowledgeSpaces.length === 0}
+      >
+        {knowledgeSpaces.length === 0 ? (
+          <option value="">暂无可用知识空间</option>
+        ) : (
+          knowledgeSpaces.map(space => (
+            <option key={spaceIdOf(space)} value={spaceIdOf(space)}>{space.name || spaceIdOf(space)}</option>
+          ))
+        )}
       </select>
       {scope === 'all' && (
         <form className="space-form" onSubmit={handleCreate}>

@@ -4,11 +4,20 @@ import { apiJson } from '../../api/client';
 import type { DocumentRecord, DocumentsData, PanelState } from '../../api/types';
 
 export default function DocumentList() {
-  const { selectedSpaceId } = useKnowledge();
+  const { selectedSpaceId, spacesReady } = useKnowledge();
   const [panelState, setPanelState] = useState<PanelState<DocumentRecord>>({ status: 'loading' });
   const latestRequestRef = useRef(0);
 
   const fetchDocuments = useCallback(async () => {
+    if (!spacesReady) {
+      setPanelState({ status: 'loading' });
+      return;
+    }
+    if (!selectedSpaceId) {
+      // No accessible space — safe empty state, do not hit the documents API.
+      setPanelState({ status: 'empty' });
+      return;
+    }
     const requestId = ++latestRequestRef.current;
     setPanelState({ status: 'loading' });
     try {
@@ -23,7 +32,7 @@ export default function DocumentList() {
       const message = err instanceof Error ? err.message : '加载文档失败';
       setPanelState({ status: 'error', message });
     }
-  }, [selectedSpaceId]);
+  }, [selectedSpaceId, spacesReady]);
 
   useEffect(() => { fetchDocuments(); }, [fetchDocuments]);
 
@@ -61,7 +70,9 @@ export default function DocumentList() {
             <button type="button" onClick={fetchDocuments} style={{ background: 'none', border: 'none', color: '#1a73e8', cursor: 'pointer', textDecoration: 'underline' }}>↻ 重试</button>
           </div>
         )}
-        {panelState.status === 'empty' && <div>暂无文档</div>}
+        {panelState.status === 'empty' && (
+          <div>{selectedSpaceId ? '暂无文档' : '暂无可用知识空间'}</div>
+        )}
         {panelState.status === 'ready' && panelState.items.map(doc => (
           <div key={doc.document_id} className="ops-row">
             <div className="ops-row-main">{doc.file_name || doc.document_id} · {doc.status || 'unknown'}</div>

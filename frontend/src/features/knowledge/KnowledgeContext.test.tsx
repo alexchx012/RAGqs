@@ -42,13 +42,14 @@ describe('KnowledgeContext', () => {
       consoleSpy.mockRestore();
     });
 
-    it('provides selectedSpaceId, setSelectedSpaceId, knowledgeSpaces, refreshSpaces, and spaceIdOf', () => {
+    it('provides selectedSpaceId, setSelectedSpaceId, knowledgeSpaces, spacesReady, refreshSpaces, and spaceIdOf', () => {
       const { result } = renderHook(() => useKnowledge(), { wrapper });
 
       expect(result.current).toBeDefined();
       expect(result.current.selectedSpaceId).toBeDefined();
       expect(result.current.setSelectedSpaceId).toBeTypeOf('function');
       expect(result.current.knowledgeSpaces).toEqual([]);
+      expect(result.current.spacesReady).toBe(false);
       expect(result.current.refreshSpaces).toBeTypeOf('function');
       expect(result.current.spaceIdOf).toBeTypeOf('function');
     });
@@ -192,6 +193,71 @@ describe('KnowledgeContext', () => {
       });
 
       expect(result.current.knowledgeSpaces).toEqual([]);
+      expect(result.current.selectedSpaceId).toBe('');
+      expect(result.current.spacesReady).toBe(true);
+    });
+
+    it('corrects stale unauthorized selectedSpaceId after spaces load', async () => {
+      localStorage.setItem('ragSelectedSpaceId', 'finance');
+      mockApiJson.mockResolvedValue({
+        code: 200,
+        data: {
+          spaces: [
+            { space_id: 'hr', name: 'HR' },
+            { space_id: 'ops', name: 'Ops' },
+          ],
+        },
+      });
+
+      const { result } = renderHook(() => useKnowledge(), { wrapper });
+      expect(result.current.selectedSpaceId).toBe('finance');
+
+      await act(async () => {
+        await result.current.refreshSpaces();
+      });
+
+      expect(result.current.selectedSpaceId).toBe('hr');
+      expect(localStorage.getItem('ragSelectedSpaceId')).toBe('hr');
+      expect(result.current.spacesReady).toBe(true);
+    });
+
+    it('clears selection when accessible spaces list is empty', async () => {
+      localStorage.setItem('ragSelectedSpaceId', 'finance');
+      mockApiJson.mockResolvedValue({
+        code: 200,
+        data: { spaces: [] },
+      });
+
+      const { result } = renderHook(() => useKnowledge(), { wrapper });
+
+      await act(async () => {
+        await result.current.refreshSpaces();
+      });
+
+      expect(result.current.selectedSpaceId).toBe('');
+      expect(localStorage.getItem('ragSelectedSpaceId')).toBeNull();
+      expect(result.current.spacesReady).toBe(true);
+    });
+
+    it('keeps selectedSpaceId when it remains accessible', async () => {
+      localStorage.setItem('ragSelectedSpaceId', 'ops');
+      mockApiJson.mockResolvedValue({
+        code: 200,
+        data: {
+          spaces: [
+            { space_id: 'hr', name: 'HR' },
+            { space_id: 'ops', name: 'Ops' },
+          ],
+        },
+      });
+
+      const { result } = renderHook(() => useKnowledge(), { wrapper });
+
+      await act(async () => {
+        await result.current.refreshSpaces();
+      });
+
+      expect(result.current.selectedSpaceId).toBe('ops');
     });
   });
 
