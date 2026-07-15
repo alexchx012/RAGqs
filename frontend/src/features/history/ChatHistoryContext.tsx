@@ -38,10 +38,27 @@ export function normalizeHistories(histories: unknown[]): HistoryEntry[] {
   return result;
 }
 
+/** Newest activity first. Invalid/missing timestamps sink to the bottom. */
+export function sortHistoriesByActivity(histories: HistoryEntry[]): HistoryEntry[] {
+  return [...histories].sort((a, b) => {
+    const ta = Date.parse(a.updatedAt || '') || 0;
+    const tb = Date.parse(b.updatedAt || '') || 0;
+    return tb - ta;
+  });
+}
+
+export function messagesContentEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].type !== b[i].type || a[i].content !== b[i].content) return false;
+  }
+  return true;
+}
+
 export function loadFromStorage(): HistoryEntry[] {
   try {
     const raw = JSON.parse(localStorage.getItem('ragChatHistories') || '[]');
-    return normalizeHistories(raw);
+    return sortHistoriesByActivity(normalizeHistories(raw));
   } catch { return []; }
 }
 
@@ -75,10 +92,24 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
     if (currentChatHistory.length === 0) return;
     const first = currentChatHistory.find(m => m.type === 'user');
     const title = first ? first.content.substring(0, 30) : '新对话';
+    const messages = [...currentChatHistory];
     setChatHistories(prev => {
+      const existing = prev.find(h => h.id === sessionId);
+      // Viewing an existing chat without new messages must not bump order.
+      if (existing && messagesContentEqual(existing.messages || [], messages)) {
+        return prev;
+      }
+      const entry: HistoryEntry = {
+        id: sessionId,
+        title,
+        messages,
+        source: 'local',
+        updatedAt: new Date().toISOString(),
+        lastMessage: messages[messages.length - 1]?.content?.substring(0, 120) || existing?.lastMessage || '',
+        messageCount: messages.length,
+      };
       const filtered = prev.filter(h => h.id !== sessionId);
-      const entry: HistoryEntry = { id: sessionId, title, messages: [...currentChatHistory], source: 'local' };
-      const updated = [entry, ...filtered].slice(0, MAX_LOCAL);
+      const updated = sortHistoriesByActivity([entry, ...filtered]).slice(0, MAX_LOCAL);
       persistToStorage(updated);
       return updated;
     });
@@ -150,7 +181,7 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
         const localHits = loadFromStorage().filter(
           h => !backendIds.has(h.id) && titleMatchesQuery(h.title, query),
         );
-        const merged = normalizeHistories([...bh, ...localHits]);
+        const merged = sortHistoriesByActivity(normalizeHistories([...bh, ...localHits]));
         if (requestId !== refreshRequestIdRef.current) {
           return [];
         }
@@ -158,7 +189,7 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
         return merged;
       }
       const localHistories = loadFromStorage();
-      const merged = normalizeHistories([...bh, ...localHistories]);
+      const merged = sortHistoriesByActivity(normalizeHistories([...bh, ...localHistories]));
       if (requestId !== refreshRequestIdRef.current) {
         return [];
       }

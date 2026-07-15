@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, render, screen } from '@testing-library/react';
 import React from 'react';
-import { ChatProvider } from '../chat/ChatContext';
+import { ChatProvider, useChat } from '../chat/ChatContext';
 
 // Mock the api client before importing the module under test
 vi.mock('../../api/client', () => ({
@@ -13,6 +13,8 @@ import {
   ChatHistoryProvider,
   useChatHistory,
   normalizeHistories,
+  sortHistoriesByActivity,
+  messagesContentEqual,
   loadFromStorage,
   persistToStorage,
   MAX_LOCAL,
@@ -27,6 +29,10 @@ function wrapper({ children }: { children: React.ReactNode }) {
     null,
     React.createElement(ChatHistoryProvider, null, children),
   );
+}
+
+function useChatAndHistory() {
+  return { chat: useChat(), history: useChatHistory() };
 }
 
 // Create a chat-only wrapper that does NOT include ChatHistoryProvider (for error tests)
@@ -122,6 +128,187 @@ describe('ChatHistoryContext', () => {
       // The saveCurrentChat function itself calls useChat() internally.
       // For complete integration testing, we rely on the component-level test.
       expect(result.current.saveCurrentChat).toBeTypeOf('function');
+    });
+  });
+
+  describe('sortHistoriesByActivity', () => {
+    it('orders newest updatedAt first', () => {
+      const sorted = sortHistoriesByActivity([
+        { id: 'old', title: 'old', messages: [], updatedAt: '2024-01-01T00:00:00.000Z' },
+        { id: 'new', title: 'new', messages: [], updatedAt: '2024-06-01T00:00:00.000Z' },
+        { id: 'mid', title: 'mid', messages: [], updatedAt: '2024-03-01T00:00:00.000Z' },
+      ]);
+      expect(sorted.map(h => h.id)).toEqual(['new', 'mid', 'old']);
+    });
+
+    it('sinks missing timestamps below dated entries', () => {
+      const sorted = sortHistoriesByActivity([
+        { id: 'nodate', title: 'n', messages: [] },
+        { id: 'dated', title: 'd', messages: [], updatedAt: '2024-01-01T00:00:00.000Z' },
+      ]);
+      expect(sorted.map(h => h.id)).toEqual(['dated', 'nodate']);
+    });
+  });
+
+  describe('messagesContentEqual', () => {
+    it('returns true for identical message sequences', () => {
+      expect(
+        messagesContentEqual(
+          [{ type: 'user', content: 'policy' }],
+          [{ type: 'user', content: 'policy' }],
+        ),
+      ).toBe(true);
+    });
+
+    it('returns false when content changes', () => {
+      expect(
+        messagesContentEqual(
+          [{ type: 'user', content: 'policy' }],
+          [{ type: 'user', content: 'policy' }, { type: 'assistant', content: 'ok' }],
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('activity ordering integration', () => {
+    it('loadFromStorage returns histories sorted by updatedAt desc', () => {
+      localStorage.setItem(
+        'ragChatHistories',
+        JSON.stringify([
+          {
+            id: 'a',
+            title: '你好',
+            messages: [{ type: 'user', content: '你好' }],
+            updatedAt: '2024-01-01T00:00:00.000Z',
+          },
+          {
+            id: 'b',
+            title: 'policy',
+            messages: [{ type: 'user', content: 'policy' }],
+            updatedAt: '2024-06-01T00:00:00.000Z',
+          },
+        ]),
+      );
+      const loaded = loadFromStorage();
+      expect(loaded.map(h => h.id)).toEqual(['b', 'a']);
+    });
+
+    it('refreshFromBackend merges and sorts by updatedAt desc', async () => {
+      localStorage.setItem(
+        'ragChatHistories',
+        JSON.stringify([
+          {
+            id: 'local-old',
+            title: '你好',
+            messages: [{ type: 'user', content: '你好' }],
+            updatedAt: '2024-01-01T00:00:00.000Z',
+            source: 'local',
+          },
+        ]),
+      );
+      mockApiJson.mockResolvedValue({
+        code: 200,
+        data: {
+          sessions: [
+            {
+              id: 'be-new',
+              title: 'policy',
+              messageCount: 2,
+              updatedAt: '2024-06-01T00:00:00.000Z',
+              lastMessage: 'ok',
+            },
+          ],
+        },
+      });
+
+      const { result } = renderHook(() => useChatHistory(), { wrapper });
+      await act(async () => {
+        await result.current.refreshFromBackend();
+      });
+
+      expect(result.current.chatHistories.map(h => h.id)).toEqual(['be-new', 'local-old']);
+    });
+
+    it('saveCurrentChat does not reorder when messages are unchanged (view-only)', () => {
+      localStorage.setItem(
+        'ragChatHistories',
+        JSON.stringify([
+          {
+            id: 'newer',
+            title: '你好',
+            messages: [{ type: 'user', content: '你好' }],
+            updatedAt: '2024-06-01T00:00:00.000Z',
+            source: 'local',
+          },
+          {
+            id: 'policy',
+            title: 'policy',
+            messages: [
+              { type: 'user', content: 'policy' },
+              { type: 'assistant', content: 'ok' },
+            ],
+            updatedAt: '2024-01-01T00:00:00.000Z',
+            source: 'local',
+          },
+        ]),
+      );
+
+      const { result } = renderHook(() => useChatAndHistory(), { wrapper });
+      expect(result.current.history.chatHistories.map(h => h.id)).toEqual(['newer', 'policy']);
+
+      act(() => {
+        result.current.chat.setSessionId('policy');
+        result.current.chat.addMessage({ type: 'user', content: 'policy' });
+        result.current.chat.addMessage({ type: 'assistant', content: 'ok' });
+      });
+      act(() => {
+        result.current.history.saveCurrentChat();
+      });
+
+      expect(result.current.history.chatHistories.map(h => h.id)).toEqual(['newer', 'policy']);
+      expect(result.current.history.chatHistories.find(h => h.id === 'policy')?.updatedAt).toBe(
+        '2024-01-01T00:00:00.000Z',
+      );
+    });
+
+    it('saveCurrentChat bumps updatedAt and reorders when messages change', () => {
+      localStorage.setItem(
+        'ragChatHistories',
+        JSON.stringify([
+          {
+            id: 'newer',
+            title: '你好',
+            messages: [{ type: 'user', content: '你好' }],
+            updatedAt: '2024-06-01T00:00:00.000Z',
+            source: 'local',
+          },
+          {
+            id: 'policy',
+            title: 'policy',
+            messages: [{ type: 'user', content: 'policy' }],
+            updatedAt: '2024-01-01T00:00:00.000Z',
+            source: 'local',
+          },
+        ]),
+      );
+
+      const { result } = renderHook(() => useChatAndHistory(), { wrapper });
+
+      act(() => {
+        result.current.chat.setSessionId('policy');
+        result.current.chat.addMessage({ type: 'user', content: 'policy' });
+        result.current.chat.addMessage({ type: 'assistant', content: 'new answer' });
+      });
+      act(() => {
+        result.current.history.saveCurrentChat();
+      });
+
+      expect(result.current.history.chatHistories[0].id).toBe('policy');
+      expect(result.current.history.chatHistories[0].updatedAt).toBeTruthy();
+      expect(
+        Date.parse(result.current.history.chatHistories[0].updatedAt || '') >
+          Date.parse('2024-06-01T00:00:00.000Z'),
+      ).toBe(true);
     });
   });
 
