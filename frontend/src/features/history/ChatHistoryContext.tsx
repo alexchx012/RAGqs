@@ -55,7 +55,7 @@ export interface ChatHistoryContextValue {
   chatHistories: HistoryEntry[];
   saveCurrentChat: () => void;
   loadHistory: (entry: HistoryEntry) => Promise<HistoryEntry>;
-  deleteHistory: (id: string) => void;
+  deleteHistory: (id: string) => Promise<void>;
   searchHistories: (query: string) => Promise<void>;
   refreshFromBackend: () => Promise<HistoryEntry[]>;
 }
@@ -106,7 +106,12 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
     } catch { return { ...entry, messages: [] }; }
   }, []);
 
-  const deleteHistory = useCallback((id: string) => {
+  const deleteHistory = useCallback(async (id: string): Promise<void> => {
+    await apiJson('/chat/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: id }),
+    });
     setChatHistories(prev => {
       const updated = prev.filter(h => h.id !== id);
       persistToStorage(updated);

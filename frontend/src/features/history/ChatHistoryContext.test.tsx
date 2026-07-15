@@ -165,7 +165,8 @@ describe('ChatHistoryContext', () => {
   });
 
   describe('deleteHistory', () => {
-    it('removes entry from chatHistories', () => {
+    it('calls clear API then removes entry from chatHistories', async () => {
+      mockApiJson.mockResolvedValue({ status: 'success', message: '会话已清空', data: null });
       const existing: HistoryEntry[] = [
         {
           id: 'session_a',
@@ -184,15 +185,24 @@ describe('ChatHistoryContext', () => {
 
       const { result } = renderHook(() => useChatHistory(), { wrapper });
 
-      act(() => {
-        result.current.deleteHistory('session_a');
+      await act(async () => {
+        await result.current.deleteHistory('session_a');
       });
 
+      expect(mockApiJson).toHaveBeenCalledWith('/chat/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: 'session_a' }),
+      });
       expect(result.current.chatHistories).toHaveLength(1);
       expect(result.current.chatHistories[0].id).toBe('session_b');
+      const stored = JSON.parse(localStorage.getItem('ragChatHistories') || '[]');
+      expect(stored).toHaveLength(1);
+      expect(stored[0].id).toBe('session_b');
     });
 
-    it('does nothing when id is not found', () => {
+    it('keeps local entry when clear API fails', async () => {
+      mockApiJson.mockRejectedValue(new Error('network'));
       const existing: HistoryEntry[] = [
         {
           id: 'session_x',
@@ -205,10 +215,36 @@ describe('ChatHistoryContext', () => {
 
       const { result } = renderHook(() => useChatHistory(), { wrapper });
 
-      act(() => {
-        result.current.deleteHistory('nonexistent');
+      await act(async () => {
+        await expect(result.current.deleteHistory('session_x')).rejects.toThrow('network');
       });
 
+      expect(result.current.chatHistories).toHaveLength(1);
+      expect(result.current.chatHistories[0].id).toBe('session_x');
+    });
+
+    it('removes nothing when id is not found after successful clear', async () => {
+      mockApiJson.mockResolvedValue({ status: 'success', message: '会话已清空', data: null });
+      const existing: HistoryEntry[] = [
+        {
+          id: 'session_x',
+          title: 'Only Chat',
+          messages: [{ type: 'user', content: 'X' }],
+          source: 'local',
+        },
+      ];
+      localStorage.setItem('ragChatHistories', JSON.stringify(existing));
+
+      const { result } = renderHook(() => useChatHistory(), { wrapper });
+
+      await act(async () => {
+        await result.current.deleteHistory('nonexistent');
+      });
+
+      expect(mockApiJson).toHaveBeenCalledWith('/chat/clear', expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ sessionId: 'nonexistent' }),
+      }));
       expect(result.current.chatHistories).toHaveLength(1);
     });
   });

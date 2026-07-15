@@ -240,7 +240,7 @@ describe('ChatHistorySidebar', () => {
 
   describe('delete', () => {
     it('calls deleteHistory when delete button is clicked', async () => {
-      const deleteHistory = vi.fn();
+      const deleteHistory = vi.fn().mockResolvedValue(undefined);
       mockUseChatHistory.mockReturnValue({
         chatHistories: [
           { id: 'session-1', title: 'Chat 1', messages: [], source: 'local' },
@@ -258,6 +258,74 @@ describe('ChatHistorySidebar', () => {
 
       expect(deleteHistory).toHaveBeenCalledTimes(1);
       expect(deleteHistory).toHaveBeenCalledWith('session-1');
+    });
+
+    it('resets current chat when deleting the active session', async () => {
+      const deleteHistory = vi.fn().mockResolvedValue(undefined);
+      const clearChat = vi.fn();
+      const regenerateSessionId = vi.fn();
+      const abortActiveStream = vi.fn();
+      mockUseChat.mockReturnValue({
+        sessionId: 'session-1',
+        currentChatHistory: [{ type: 'user', content: 'Hello' }],
+        clearChat,
+        regenerateSessionId,
+        abortActiveStream,
+      });
+      mockUseChatHistory.mockReturnValue({
+        chatHistories: [
+          { id: 'session-1', title: 'Chat 1', messages: [], source: 'local' },
+        ],
+        saveCurrentChat: vi.fn(),
+        deleteHistory,
+        searchHistories: vi.fn().mockResolvedValue(undefined),
+        refreshFromBackend: vi.fn().mockResolvedValue([]),
+      });
+
+      render(<ChatHistorySidebar />);
+      await userEvent.click(screen.getByTitle('删除'));
+
+      await waitFor(() => {
+        expect(deleteHistory).toHaveBeenCalledWith('session-1');
+        expect(abortActiveStream).toHaveBeenCalled();
+        expect(clearChat).toHaveBeenCalled();
+        expect(regenerateSessionId).toHaveBeenCalled();
+      });
+    });
+
+    it('does not reset current chat when delete API fails', async () => {
+      const deleteHistory = vi.fn().mockRejectedValue(new Error('fail'));
+      const clearChat = vi.fn();
+      const regenerateSessionId = vi.fn();
+      const abortActiveStream = vi.fn();
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockUseChat.mockReturnValue({
+        sessionId: 'session-1',
+        currentChatHistory: [{ type: 'user', content: 'Hello' }],
+        clearChat,
+        regenerateSessionId,
+        abortActiveStream,
+      });
+      mockUseChatHistory.mockReturnValue({
+        chatHistories: [
+          { id: 'session-1', title: 'Chat 1', messages: [], source: 'local' },
+        ],
+        saveCurrentChat: vi.fn(),
+        deleteHistory,
+        searchHistories: vi.fn().mockResolvedValue(undefined),
+        refreshFromBackend: vi.fn().mockResolvedValue([]),
+      });
+
+      render(<ChatHistorySidebar />);
+      await userEvent.click(screen.getByTitle('删除'));
+
+      await waitFor(() => {
+        expect(deleteHistory).toHaveBeenCalledWith('session-1');
+      });
+      expect(clearChat).not.toHaveBeenCalled();
+      expect(regenerateSessionId).not.toHaveBeenCalled();
+      expect(abortActiveStream).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
     });
   });
 });
