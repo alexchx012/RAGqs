@@ -75,9 +75,7 @@ try {
         }
     }
 
-    Invoke-Step "node tests\chat-history.test.js" {
-        node tests\chat-history.test.js
-    }
+    Write-Host "[skip] node tests/chat-history.test.js (legacy static/app.js removed after SPA migration)" -ForegroundColor Yellow
 
     Invoke-Step "powershell tests\start-script.validation.ps1" {
         powershell -NoProfile -ExecutionPolicy Bypass -File tests\start-script.validation.ps1
