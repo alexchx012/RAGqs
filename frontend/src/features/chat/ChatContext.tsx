@@ -20,6 +20,7 @@ export interface ChatContextValue {
   setStreaming: (v: boolean) => void;
   clearChat: () => void;
   regenerateSessionId: () => void;
+  setSessionId: (id: string) => void;
   registerStreamAbort: (fn: (() => void) | null) => void;
   abortActiveStream: () => void;
 }
@@ -74,6 +75,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setSessionId(generateSessionId());
   }, []);
 
+  const adoptSessionId = useCallback((id: string) => {
+    setSessionId(id);
+  }, []);
+
   const registerStreamAbort = useCallback((fn: (() => void) | null) => {
     streamAbortRef.current = fn;
   }, []);
@@ -95,6 +100,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setStreaming,
         clearChat,
         regenerateSessionId,
+        setSessionId: adoptSessionId,
         registerStreamAbort,
         abortActiveStream,
       }}

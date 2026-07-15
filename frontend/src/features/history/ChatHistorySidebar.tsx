@@ -3,7 +3,7 @@ import { useChat } from '../chat/ChatContext';
 import { useChatHistory } from './ChatHistoryContext';
 
 export default function ChatHistorySidebar() {
-  const { sessionId, currentChatHistory, addMessage, clearChat, regenerateSessionId, abortActiveStream } = useChat();
+  const { sessionId, currentChatHistory, addMessage, clearChat, regenerateSessionId, setSessionId, abortActiveStream } = useChat();
   const { chatHistories, saveCurrentChat, loadHistory, deleteHistory, searchHistories, refreshFromBackend } = useChatHistory();
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -26,11 +26,12 @@ export default function ChatHistorySidebar() {
     abortActiveStream();
     const loaded = await loadHistory(h);
     clearChat();
-    regenerateSessionId();
+    // Adopt the history entry id so "新建对话" does not save a duplicate under a new id.
+    setSessionId(h.id);
     for (const msg of loaded.messages) {
       addMessage(msg);
     }
-  }, [abortActiveStream, loadHistory, clearChat, regenerateSessionId, addMessage]);
+  }, [abortActiveStream, loadHistory, clearChat, setSessionId, addMessage]);
 
   const handleDelete = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();

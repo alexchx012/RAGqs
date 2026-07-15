@@ -24,7 +24,9 @@ function createDefaultMocks() {
     currentChatHistory: [{ type: 'user', content: 'Hello' }],
     clearChat: vi.fn(),
     regenerateSessionId: vi.fn(),
+    setSessionId: vi.fn(),
     abortActiveStream: vi.fn(),
+    addMessage: vi.fn(),
   });
 
   mockUseChatHistory.mockReturnValue({
@@ -194,6 +196,63 @@ describe('ChatHistorySidebar', () => {
       expect(saveCurrentChat).not.toHaveBeenCalled();
       expect(clearChat).toHaveBeenCalledTimes(1);
       expect(regenerateSessionId).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('load history', () => {
+    it('adopts history entry id instead of regenerating session id', async () => {
+      const clearChat = vi.fn();
+      const regenerateSessionId = vi.fn();
+      const setSessionId = vi.fn();
+      const addMessage = vi.fn();
+      const loadHistory = vi.fn().mockResolvedValue({
+        id: 'policy-session',
+        title: 'policy',
+        messages: [
+          { type: 'user', content: 'policy' },
+          { type: 'assistant', content: 'ok' },
+        ],
+        source: 'local',
+      });
+
+      mockUseChat.mockReturnValue({
+        sessionId: 'session-fresh',
+        currentChatHistory: [],
+        clearChat,
+        regenerateSessionId,
+        setSessionId,
+        abortActiveStream: vi.fn(),
+        addMessage,
+      });
+      mockUseChatHistory.mockReturnValue({
+        chatHistories: [
+          {
+            id: 'policy-session',
+            title: 'policy',
+            messages: [
+              { type: 'user', content: 'policy' },
+              { type: 'assistant', content: 'ok' },
+            ],
+            source: 'local',
+          },
+        ],
+        saveCurrentChat: vi.fn(),
+        loadHistory,
+        deleteHistory: vi.fn(),
+        searchHistories: vi.fn().mockResolvedValue(undefined),
+        refreshFromBackend: vi.fn().mockResolvedValue([]),
+      });
+
+      render(<ChatHistorySidebar />);
+      await userEvent.click(screen.getByText('policy'));
+
+      await waitFor(() => {
+        expect(loadHistory).toHaveBeenCalledTimes(1);
+      });
+      expect(setSessionId).toHaveBeenCalledWith('policy-session');
+      expect(regenerateSessionId).not.toHaveBeenCalled();
+      expect(clearChat).toHaveBeenCalled();
+      expect(addMessage).toHaveBeenCalledTimes(2);
     });
   });
 
