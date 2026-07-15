@@ -317,6 +317,120 @@ describe('ChatHistoryContext', () => {
     });
   });
 
+  describe('searchHistories', () => {
+    it('merges local title matches that backend did not return', async () => {
+      localStorage.setItem(
+        'ragChatHistories',
+        JSON.stringify([
+          {
+            id: 'local-policy',
+            title: 'policy',
+            messages: [{ type: 'user', content: 'policy' }],
+            source: 'local',
+          },
+          {
+            id: 'local-hello',
+            title: '你好',
+            messages: [{ type: 'user', content: '你好' }],
+            source: 'local',
+          },
+        ]),
+      );
+
+      mockApiJson.mockResolvedValue({
+        code: 200,
+        data: {
+          sessions: [
+            {
+              id: 'be-policy',
+              title: 'policy',
+              messageCount: 2,
+              updatedAt: '2024-01-01T00:00:00Z',
+              lastMessage: 'ok',
+            },
+          ],
+        },
+      });
+
+      const { result } = renderHook(() => useChatHistory(), { wrapper });
+
+      await act(async () => {
+        await result.current.searchHistories('policy');
+      });
+
+      expect(mockApiJson).toHaveBeenCalledWith('/chat/sessions?query=policy');
+      const ids = result.current.chatHistories.map(h => h.id);
+      expect(ids).toContain('be-policy');
+      expect(ids).toContain('local-policy');
+      expect(ids).not.toContain('local-hello');
+    });
+
+    it('ignores stale responses from older queries', async () => {
+      let resolveOlder!: (value: unknown) => void;
+      let resolveNewer!: (value: unknown) => void;
+      const older = new Promise(resolve => {
+        resolveOlder = resolve;
+      });
+      const newer = new Promise(resolve => {
+        resolveNewer = resolve;
+      });
+
+      mockApiJson
+        .mockImplementationOnce(() => older)
+        .mockImplementationOnce(() => newer);
+
+      const { result } = renderHook(() => useChatHistory(), { wrapper });
+
+      let olderDone!: Promise<void>;
+      let newerDone!: Promise<void>;
+      await act(async () => {
+        olderDone = result.current.searchHistories('p');
+        newerDone = result.current.searchHistories('policy');
+      });
+
+      await act(async () => {
+        resolveNewer({
+          code: 200,
+          data: {
+            sessions: [
+              {
+                id: 'policy-session',
+                title: 'policy',
+                messageCount: 1,
+                updatedAt: '2024-01-02T00:00:00Z',
+                lastMessage: 'policy',
+              },
+            ],
+          },
+        });
+        await newerDone;
+      });
+
+      expect(result.current.chatHistories.map(h => h.id)).toEqual(['policy-session']);
+
+      await act(async () => {
+        resolveOlder({
+          code: 200,
+          data: {
+            sessions: [
+              {
+                id: 'stale-hello',
+                title: '你好',
+                messageCount: 1,
+                updatedAt: '2024-01-01T00:00:00Z',
+                lastMessage: '你好',
+              },
+            ],
+          },
+        });
+        await olderDone;
+      });
+
+      // Stale "p" response must not overwrite the latest "policy" results
+      expect(result.current.chatHistories.map(h => h.id)).toEqual(['policy-session']);
+    });
+  });
+
   describe('ChatHistoryProvider', () => {
     it('renders children', () => {
       render(

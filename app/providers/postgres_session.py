@@ -198,9 +198,8 @@ def _matches_session_query(
     summary: SessionSummary,
     messages: Iterable[StoredMessage],
 ) -> bool:
-    haystacks = [session_id, summary.title, summary.last_message]
-    haystacks.extend(message.content for message in messages)
-    return any(query in haystack.lower() for haystack in haystacks)
+    del session_id, messages  # title-only match for sidebar search parity
+    return query in (summary.title or "").lower()
 
 
 def _truncate_text(value: str, *, max_length: int) -> str:
