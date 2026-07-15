@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { useChat } from '../chat/ChatContext';
 import { apiJson } from '../../api/client';
 import type { ChatMessage, SessionsData, ApiResponse } from '../../api/types';
@@ -62,9 +62,14 @@ export interface ChatHistoryContextValue {
 
 const ChatHistoryContext = createContext<ChatHistoryContextValue | null>(null);
 
+function titleMatchesQuery(title: string, query: string): boolean {
+  return title.toLowerCase().includes(query.toLowerCase());
+}
+
 export function ChatHistoryProvider({ children }: { children: React.ReactNode }) {
   const { sessionId, currentChatHistory } = useChat();
   const [chatHistories, setChatHistories] = useState<HistoryEntry[]>(() => loadFromStorage());
+  const refreshRequestIdRef = useRef(0);
 
   const saveCurrentChat = useCallback(() => {
     if (currentChatHistory.length === 0) return;
@@ -119,10 +124,14 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
     });
   }, []);
 
-  async function _refreshImpl(query?: string): Promise<HistoryEntry[]> {
+  const _refreshImpl = useCallback(async (query?: string): Promise<HistoryEntry[]> => {
+    const requestId = ++refreshRequestIdRef.current;
     const search = query ? `?query=${encodeURIComponent(query)}` : '';
     try {
       const data = await apiJson<SessionsData>(`/chat/sessions${search}`);
+      if (requestId !== refreshRequestIdRef.current) {
+        return [];
+      }
       const sessions = Array.isArray(data.data?.sessions) ? data.data.sessions : [];
       const bh: HistoryEntry[] = [];
       for (const s of sessions) {
@@ -137,22 +146,35 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
         });
       }
       if (query) {
-        setChatHistories(bh);
-        return bh;
+        const backendIds = new Set(bh.map(h => h.id));
+        const localHits = loadFromStorage().filter(
+          h => !backendIds.has(h.id) && titleMatchesQuery(h.title, query),
+        );
+        const merged = normalizeHistories([...bh, ...localHits]);
+        if (requestId !== refreshRequestIdRef.current) {
+          return [];
+        }
+        setChatHistories(merged);
+        return merged;
       }
       const localHistories = loadFromStorage();
       const merged = normalizeHistories([...bh, ...localHistories]);
+      if (requestId !== refreshRequestIdRef.current) {
+        return [];
+      }
       setChatHistories(merged);
       return merged;
-    } catch { return chatHistories; }
-  }
+    } catch {
+      return requestId === refreshRequestIdRef.current ? chatHistories : [];
+    }
+  }, [chatHistories]);
 
   const searchHistories = useCallback(async (query: string) => {
     const trimmed = query.trim();
     await _refreshImpl(trimmed || undefined);
-  }, []);
+  }, [_refreshImpl]);
 
-  const refreshFromBackend = useCallback(async () => _refreshImpl(), []);
+  const refreshFromBackend = useCallback(async () => _refreshImpl(), [_refreshImpl]);
 
   return (
     <ChatHistoryContext.Provider value={{ chatHistories, saveCurrentChat, loadHistory, deleteHistory, searchHistories, refreshFromBackend }}>
