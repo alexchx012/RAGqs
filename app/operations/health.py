@@ -224,20 +224,14 @@ def _model_provider_health(settings: Any = config) -> HealthCheckResult:
             "openai_compatible_api_key",
             "",
         ).strip()
-        model = _settings_value(
-            settings,
-            "openai_compatible",
-            "model",
-            "openai_compatible_model",
-            "",
-        ).strip()
+        model = str(getattr(settings, "chat_model", "") or "").strip()
         if api_key and model:
             return HealthCheckResult.healthy(
                 "configured",
                 {"provider": "openai_compatible", "model": model},
             )
         return HealthCheckResult.unhealthy(
-            "OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_MODEL must be configured",
+            "OPENAI_COMPATIBLE_API_KEY and CHAT_MODEL must be configured",
             {"provider": "openai_compatible"},
         )
     if _dashscope_configured(settings):
@@ -245,7 +239,7 @@ def _model_provider_health(settings: Any = config) -> HealthCheckResult:
             "configured",
             {
                 "provider": "dashscope",
-                "model": _settings_value(settings, "rag", "model", "rag_model", "qwen-max"),
+                "model": str(getattr(settings, "chat_model", "") or "").strip(),
             },
         )
     return HealthCheckResult.unhealthy("DASHSCOPE_API_KEY is not configured")

@@ -217,9 +217,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
     openai_api_key = _group_value(
         openai_config, settings, "api_key", "openai_compatible_api_key"
     )
-    openai_model = _group_value(
-        openai_config, settings, "model", "openai_compatible_model"
-    )
+    chat_model = str(getattr(settings, "chat_model", "") or "")
     openai_embedding_model = _group_value(
         openai_config,
         settings,
@@ -234,10 +232,10 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
                 message="must be set when an OpenAI-compatible provider is selected",
             )
         )
-    if selection.chat_provider == "openai_compatible" and not openai_model.strip():
+    if selection.chat_provider == "openai_compatible" and not chat_model.strip():
         errors.append(
             ConfigIssue(
-                field="OPENAI_COMPATIBLE_MODEL",
+                field="CHAT_MODEL",
                 message="must be set when an OpenAI-compatible provider is selected",
             )
         )

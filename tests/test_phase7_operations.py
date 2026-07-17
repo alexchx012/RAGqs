@@ -331,7 +331,7 @@ def test_default_health_checker_prefers_grouped_settings_and_injected_dependenci
 
     settings = SimpleNamespace(
         app=SimpleNamespace(name="Grouped RAG", version="2.0.0"),
-        rag=SimpleNamespace(model="group-rag-model"),
+        chat_model="group-chat-model",
         dashscope=SimpleNamespace(
             api_key="sk-grouped",
             embedding_model="group-embedding",
@@ -339,7 +339,6 @@ def test_default_health_checker_prefers_grouped_settings_and_injected_dependenci
         milvus=SimpleNamespace(host="milvus.grouped", port=19630),
         app_name="Flat RAG",
         app_version="1.0.0",
-        rag_model="flat-rag-model",
         dashscope_api_key="sk-flat",
         dashscope_embedding_model="flat-embedding",
         milvus_host="flat-host",
@@ -362,7 +361,7 @@ def test_default_health_checker_prefers_grouped_settings_and_injected_dependenci
     }
     assert payload["dependencies"]["modelProvider"]["details"] == {
         "provider": "dashscope",
-        "model": "group-rag-model",
+        "model": "group-chat-model",
     }
     assert payload["dependencies"]["embeddingProvider"]["details"] == {
         "provider": "dashscope",
@@ -695,7 +694,7 @@ def test_config_validation_accepts_hardened_production_settings():
             checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
             ingestion_provider="vector_index",
             openai_compatible_api_key="sk-compatible",
-            openai_compatible_model="compatible-chat",
+            chat_model="compatible-chat",
             openai_compatible_embedding_model="compatible-embedding",
             auth_enabled=True,
             runtime_controls_enabled=True,

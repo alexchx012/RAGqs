@@ -74,7 +74,7 @@ class RagAgentService:
         metrics_clock=perf_counter,
     ):
         self.settings = settings or config
-        self.model_name = _settings_value(self.settings, "rag", "model", "rag_model", "qwen-max")
+        self.model_name = str(getattr(self.settings, "chat_model", "") or "")
         self.streaming = streaming
         self.prompt_profile = prompt_profile or _settings_value(
             self.settings,

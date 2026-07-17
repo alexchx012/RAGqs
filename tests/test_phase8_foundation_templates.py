@@ -209,7 +209,7 @@ def test_config_validation_checks_phase8_extension_settings():
             chat_provider="openai_compatible",
             embedding_provider="openai_compatible",
             openai_compatible_api_key="",
-            openai_compatible_model="",
+            chat_model="",
             prompt_profile="missing",
             enabled_tools="retrieve_knowledge,missing_tool",
         )
@@ -218,7 +218,7 @@ def test_config_validation_checks_phase8_extension_settings():
     assert report.is_valid is False
     issues = {(issue.field, issue.message) for issue in report.errors}
     assert ("OPENAI_COMPATIBLE_API_KEY", "must be set when an OpenAI-compatible provider is selected") in issues
-    assert ("OPENAI_COMPATIBLE_MODEL", "must be set when an OpenAI-compatible provider is selected") in issues
+    assert ("CHAT_MODEL", "must be set when an OpenAI-compatible provider is selected") in issues
     assert ("PROMPT_PROFILE", "unsupported prompt profile: missing") in issues
     assert ("ENABLED_TOOLS", "unsupported tool: missing_tool") in issues
 
@@ -416,7 +416,8 @@ def test_config_validation_rejects_unknown_retrieval_enhancer_settings():
 def _settings(**overrides):
     values = {
         "dashscope_api_key": "sk-valid",
-        "rag_model": "qwen-max",
+        "chat_model": "test-chat-model",
+        "deepseek_api_key": "",
         "rag_top_k": 3,
         "milvus_host": "127.0.0.1",
         "milvus_port": 19530,
@@ -442,7 +443,6 @@ def _settings(**overrides):
         "ingestion_provider": "vector_index",
         "openai_compatible_api_key": "sk-compatible",
         "openai_compatible_base_url": "https://api.example.com/v1",
-        "openai_compatible_model": "compatible-chat",
         "prompt_profile": "default",
         "retrieval_profile": "default",
         "retrieval_high_recall_top_k_multiplier": 2,

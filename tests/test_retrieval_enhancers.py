@@ -196,7 +196,7 @@ class RecordingVectorStore:
 def _settings(**overrides):
     values = {
         "dashscope_api_key": "sk-valid",
-        "rag_model": "qwen-max",
+        "chat_model": "test-chat-model",
         "rag_top_k": 3,
         "milvus_host": "127.0.0.1",
         "milvus_port": 19530,

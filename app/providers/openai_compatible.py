@@ -5,6 +5,8 @@ from __future__ import annotations
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
+from app.providers.selection import is_valid_secret
+
 
 class OpenAICompatibleChatModelProvider:
     """Chat provider for OpenAI-compatible chat-completions APIs."""
@@ -22,10 +24,10 @@ class OpenAICompatibleChatModelProvider:
         self.temperature = temperature
 
     def create_chat_model(self, streaming: bool = True) -> ChatOpenAI:
-        if not self.api_key:
+        if not is_valid_secret(self.api_key):
             raise ValueError("OPENAI_COMPATIBLE_API_KEY is required")
         if not self.model_name:
-            raise ValueError("OPENAI_COMPATIBLE_MODEL is required")
+            raise ValueError("model_name is required")
         kwargs = {
             "model": self.model_name,
             "api_key": self.api_key,
@@ -47,7 +49,7 @@ class OpenAICompatibleEmbeddingProvider:
         dimensions: int = 1024,
         base_url: str = "",
     ):
-        if not api_key:
+        if not is_valid_secret(api_key):
             raise ValueError("OPENAI_COMPATIBLE_API_KEY is required")
         if not model:
             raise ValueError("OPENAI_COMPATIBLE_EMBEDDING_MODEL is required")

@@ -6,6 +6,8 @@ from langchain_qwq import ChatQwen
 from loguru import logger
 from openai import OpenAI
 
+from app.providers.selection import is_valid_secret
+
 
 class DashScopeChatModelProvider:
     """DashScope chat model provider using ChatQwen."""
@@ -13,7 +15,7 @@ class DashScopeChatModelProvider:
     def __init__(
         self,
         api_key: str,
-        model_name: str = "qwen-max",
+        model_name: str,
         temperature: float = 0.7,
     ):
         self.api_key = api_key
@@ -21,7 +23,7 @@ class DashScopeChatModelProvider:
         self.temperature = temperature
 
     def create_chat_model(self, streaming: bool = True) -> ChatQwen:
-        if _is_placeholder_api_key(self.api_key):
+        if not is_valid_secret(self.api_key):
             raise ValueError("请设置环境变量 DASHSCOPE_API_KEY")
 
         return ChatQwen(
@@ -42,7 +44,7 @@ class DashScopeEmbeddingProvider:
         dimensions: int = 1024,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ):
-        if _is_placeholder_api_key(api_key):
+        if not is_valid_secret(api_key):
             raise ValueError("请设置环境变量 DASHSCOPE_API_KEY")
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -79,15 +81,3 @@ class DashScopeEmbeddingProvider:
         except Exception as e:
             logger.error(f"查询嵌入失败: {e}")
             raise RuntimeError(f"查询嵌入失败: {e}") from e
-
-
-def _is_placeholder_api_key(value: str) -> bool:
-    normalized = value.strip().strip('"').strip("'").lower()
-    if not normalized:
-        return True
-    if normalized.startswith("your-") and "key" in normalized:
-        return True
-    return any(
-        marker in normalized
-        for marker in ("your-api-key", "placeholder", "changeme")
-    )
