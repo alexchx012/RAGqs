@@ -17,7 +17,10 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from openai import OpenAI
+
+from app.providers.selection import is_valid_secret
 
 
 class DeepSeekProviderError(RuntimeError):
@@ -227,6 +230,35 @@ def _sanitize_error_text(text: str) -> str:
     return sanitized
 
 
+def _request_options(*, stop: list[str] | None, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Forward bind()/invoke() options that Chat Completions understands."""
+
+    options: dict[str, Any] = {}
+    if stop:
+        options["stop"] = stop
+
+    for key in (
+        "tools",
+        "tool_choice",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "response_format",
+        "user",
+        "seed",
+        "logit_bias",
+        "logprobs",
+        "top_logprobs",
+        "n",
+        "parallel_tool_calls",
+    ):
+        if key in kwargs and kwargs[key] is not None:
+            options[key] = kwargs[key]
+    return options
+
+
 def _classify_error(exc: BaseException) -> DeepSeekProviderError:
     if isinstance(exc, DeepSeekProviderError):
         return exc
@@ -285,6 +317,7 @@ class DeepSeekChatModel(BaseChatModel):
                 model=self.model_name,
                 messages=[_serialize_deepseek_message(message) for message in messages],
                 stream=False,
+                **_request_options(stop=stop, kwargs=kwargs),
             )
         except Exception as exc:  # noqa: BLE001 - normalize all transport failures
             raise _classify_error(exc) from None
@@ -307,6 +340,7 @@ class DeepSeekChatModel(BaseChatModel):
                 model=self.model_name,
                 messages=[_serialize_deepseek_message(message) for message in messages],
                 stream=True,
+                **_request_options(stop=stop, kwargs=kwargs),
             )
         except Exception as exc:  # noqa: BLE001 - normalize all transport failures
             raise _classify_error(exc) from None
@@ -329,6 +363,19 @@ class DeepSeekChatModel(BaseChatModel):
         except Exception as exc:  # noqa: BLE001 - normalize mid-stream failures
             raise _classify_error(exc) from None
 
+    def bind_tools(
+        self,
+        tools: list[Any],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.bind(
+            tools=[convert_to_openai_tool(tool) for tool in tools],
+            tool_choice=tool_choice,
+            **kwargs,
+        )
+
 
 class DeepSeekChatModelProvider:
     """Chat provider that constructs DeepSeekChatModel instances."""
@@ -346,6 +393,9 @@ class DeepSeekChatModelProvider:
         self.client_factory = client_factory
 
     def create_chat_model(self, streaming: bool = True) -> DeepSeekChatModel:
+        if not is_valid_secret(self.api_key):
+            raise ValueError("请设置环境变量 DEEPSEEK_API_KEY")
+
         client = self.client_factory(api_key=self.api_key, base_url=self.base_url)
         return DeepSeekChatModel(
             model_name=self.model_name,

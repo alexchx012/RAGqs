@@ -32,25 +32,50 @@ class FakeEmbeddingProvider:
 
 
 class FakeChatModel:
-    """Small async chat model surface compatible with unit tests."""
+    """Small chat model surface compatible with unit tests and tool loops."""
 
-    def __init__(self, response: str):
-        self.response = response
+    def __init__(
+        self,
+        response: str | None = None,
+        *,
+        responses: list[AIMessage] | None = None,
+    ):
+        if responses is not None:
+            self._responses = list(responses)
+        else:
+            self._responses = [AIMessage(content=response if response is not None else "")]
+        self.response = response if response is not None else (
+            self._responses[0].content if self._responses else ""
+        )
+        self._calls = 0
+
+    def bind_tools(self, tools: list[object], **kwargs: object) -> FakeChatModel:
+        del tools, kwargs
+        return self
 
     def invoke(self, messages: list[object]) -> AIMessage:
-        return AIMessage(content=self.response)
+        del messages
+        if not self._responses:
+            return AIMessage(content="")
+        response = self._responses[min(self._calls, len(self._responses) - 1)]
+        self._calls += 1
+        return response
 
     async def ainvoke(self, messages: list[object]) -> AIMessage:
-        return AIMessage(content=self.response)
+        return self.invoke(messages)
 
 
 @dataclass
 class FakeChatModelProvider:
-    """Chat model provider that always returns a fixed answer."""
+    """Chat model provider with fixed string or multi-turn AIMessage responses."""
 
     response: str = "fake answer"
+    responses: list[AIMessage] | None = None
 
     def create_chat_model(self, streaming: bool = True) -> FakeChatModel:
+        del streaming
+        if self.responses is not None:
+            return FakeChatModel(responses=self.responses)
         return FakeChatModel(self.response)
 
 
