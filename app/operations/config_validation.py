@@ -197,58 +197,140 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
                 )
             )
 
-    uses_dashscope = (
-        selection.chat_provider == "dashscope" or selection.embedding_provider == "dashscope"
+    deepseek_config = getattr(settings, "deepseek", settings)
+    deepseek_api_key = _group_value(
+        deepseek_config, settings, "api_key", "deepseek_api_key"
     )
-    if uses_dashscope and _is_placeholder_secret(
-        _group_value(dashscope_config, settings, "api_key", "dashscope_api_key")
-    ):
-        errors.append(
-            ConfigIssue(
-                field="DASHSCOPE_API_KEY",
-                message="must be set to a non-placeholder value",
-            )
+    dashscope_api_key = _group_value(
+        dashscope_config, settings, "api_key", "dashscope_api_key"
+    )
+    dashscope_embedding_model = str(
+        _group_value(
+            dashscope_config,
+            settings,
+            "embedding_model",
+            "dashscope_embedding_model",
+            default="text-embedding-v4",
         )
-
-    uses_openai_compatible = (
-        selection.chat_provider == "openai_compatible"
-        or selection.embedding_provider == "openai_compatible"
+        or ""
     )
     openai_api_key = _group_value(
         openai_config, settings, "api_key", "openai_compatible_api_key"
     )
+    openai_base_url = str(
+        _group_value(
+            openai_config,
+            settings,
+            "base_url",
+            "openai_compatible_base_url",
+        )
+        or ""
+    )
     chat_model = str(getattr(settings, "chat_model", "") or "")
-    openai_embedding_model = _group_value(
-        openai_config,
-        settings,
-        "embedding_model",
-        "openai_compatible_embedding_model",
+    openai_embedding_model = str(
+        _group_value(
+            openai_config,
+            settings,
+            "embedding_model",
+            "openai_compatible_embedding_model",
+        )
+        or ""
     )
 
-    if uses_openai_compatible and _is_placeholder_secret(openai_api_key):
-        errors.append(
-            ConfigIssue(
-                field="OPENAI_COMPATIBLE_API_KEY",
-                message="must be set when an OpenAI-compatible provider is selected",
+    # Chat credentials are diagnosed separately from embedding credentials.
+    if selection.chat_provider == "deepseek":
+        if _is_placeholder_secret(deepseek_api_key):
+            errors.append(
+                ConfigIssue(
+                    field="DEEPSEEK_API_KEY",
+                    message="must be set to a non-placeholder value",
+                )
             )
-        )
-    if selection.chat_provider == "openai_compatible" and not chat_model.strip():
-        errors.append(
-            ConfigIssue(
-                field="CHAT_MODEL",
-                message="must be set when an OpenAI-compatible provider is selected",
+        if not chat_model.strip():
+            errors.append(
+                ConfigIssue(
+                    field="CHAT_MODEL",
+                    message="must be set when a real chat provider is selected",
+                )
             )
-        )
-    if (
-        selection.embedding_provider == "openai_compatible"
-        and not openai_embedding_model.strip()
-    ):
-        errors.append(
-            ConfigIssue(
-                field="OPENAI_COMPATIBLE_EMBEDDING_MODEL",
-                message="must be set when an OpenAI-compatible provider is selected",
+    elif selection.chat_provider == "dashscope":
+        if _is_placeholder_secret(dashscope_api_key):
+            errors.append(
+                ConfigIssue(
+                    field="DASHSCOPE_API_KEY",
+                    message="must be set to a non-placeholder value",
+                )
             )
-        )
+        if not chat_model.strip():
+            errors.append(
+                ConfigIssue(
+                    field="CHAT_MODEL",
+                    message="must be set when a real chat provider is selected",
+                )
+            )
+    elif selection.chat_provider == "openai_compatible":
+        if _is_placeholder_secret(openai_api_key):
+            errors.append(
+                ConfigIssue(
+                    field="OPENAI_COMPATIBLE_API_KEY",
+                    message="must be set when an OpenAI-compatible provider is selected",
+                )
+            )
+        if not chat_model.strip():
+            errors.append(
+                ConfigIssue(
+                    field="CHAT_MODEL",
+                    message="must be set when an OpenAI-compatible provider is selected",
+                )
+            )
+        if not openai_base_url.strip():
+            errors.append(
+                ConfigIssue(
+                    field="OPENAI_COMPATIBLE_BASE_URL",
+                    message="must be set when an OpenAI-compatible provider is selected",
+                )
+            )
+
+    if selection.embedding_provider == "dashscope":
+        if _is_placeholder_secret(dashscope_api_key):
+            errors.append(
+                ConfigIssue(
+                    field="DASHSCOPE_API_KEY",
+                    message="must be set to a non-placeholder value",
+                )
+            )
+        if not dashscope_embedding_model.strip():
+            errors.append(
+                ConfigIssue(
+                    field="DASHSCOPE_EMBEDDING_MODEL",
+                    message="must be set when EMBEDDING_PROVIDER=dashscope",
+                )
+            )
+    elif selection.embedding_provider == "openai_compatible":
+        if _is_placeholder_secret(openai_api_key):
+            # Avoid duplicate OPENAI_COMPATIBLE_API_KEY when chat already reported it.
+            if not any(issue.field == "OPENAI_COMPATIBLE_API_KEY" for issue in errors):
+                errors.append(
+                    ConfigIssue(
+                        field="OPENAI_COMPATIBLE_API_KEY",
+                        message="must be set when an OpenAI-compatible provider is selected",
+                    )
+                )
+        if not openai_embedding_model.strip():
+            errors.append(
+                ConfigIssue(
+                    field="OPENAI_COMPATIBLE_EMBEDDING_MODEL",
+                    message="must be set when an OpenAI-compatible provider is selected",
+                )
+            )
+        if not openai_base_url.strip():
+            if not any(issue.field == "OPENAI_COMPATIBLE_BASE_URL" for issue in errors):
+                errors.append(
+                    ConfigIssue(
+                        field="OPENAI_COMPATIBLE_BASE_URL",
+                        message="must be set when an OpenAI-compatible provider is selected",
+                    )
+                )
 
     if selection.session_store_provider == "sqlite":
         sqlite_path = _group_value(

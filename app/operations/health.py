@@ -211,86 +211,138 @@ def create_default_health_checker(
 
 def _model_provider_health(settings: Any = config) -> HealthCheckResult:
     selection = ProviderSelection.from_settings(settings)
-    if selection.chat_provider == "fake":
+    provider = selection.chat_provider
+    model = str(getattr(settings, "chat_model", "") or "").strip()
+    if provider == "fake":
         return HealthCheckResult.healthy(
             "fake provider selected for local software-path checks",
             {"provider": "fake", "validation": "not_real_answer_quality"},
         )
-    if selection.chat_provider == "openai_compatible":
-        api_key = _settings_value(
-            settings,
-            "openai_compatible",
-            "api_key",
-            "openai_compatible_api_key",
-            "",
+    issue = _chat_provider_config_issue(provider, settings, model)
+    if issue:
+        return HealthCheckResult.unhealthy(issue, {"provider": provider})
+    return HealthCheckResult.healthy(
+        "configured; real provider call not verified",
+        {
+            "provider": provider,
+            "model": model,
+            "validation": "configured_not_smoke_tested",
+        },
+    )
+
+
+def _chat_provider_config_issue(provider: str, settings: Any, model: str) -> str | None:
+    """Return a config issue message for chat provider settings, or None when configured."""
+
+    if provider == "deepseek":
+        api_key = str(
+            _settings_value(settings, "deepseek", "api_key", "deepseek_api_key", "")
         ).strip()
-        model = str(getattr(settings, "chat_model", "") or "").strip()
-        if api_key and model:
-            return HealthCheckResult.healthy(
-                "configured",
-                {"provider": "openai_compatible", "model": model},
+        if _is_placeholder_secret(api_key):
+            return "DEEPSEEK_API_KEY is not configured"
+        if not model.strip():
+            return "CHAT_MODEL is not configured"
+        return None
+
+    if provider == "dashscope":
+        if not _dashscope_configured(settings):
+            return "DASHSCOPE_API_KEY is not configured"
+        if not model.strip():
+            return "CHAT_MODEL is not configured"
+        return None
+
+    if provider == "openai_compatible":
+        api_key = str(
+            _settings_value(
+                settings,
+                "openai_compatible",
+                "api_key",
+                "openai_compatible_api_key",
+                "",
             )
-        return HealthCheckResult.unhealthy(
-            "OPENAI_COMPATIBLE_API_KEY and CHAT_MODEL must be configured",
-            {"provider": "openai_compatible"},
-        )
-    if _dashscope_configured(settings):
-        return HealthCheckResult.healthy(
-            "configured",
-            {
-                "provider": "dashscope",
-                "model": str(getattr(settings, "chat_model", "") or "").strip(),
-            },
-        )
-    return HealthCheckResult.unhealthy("DASHSCOPE_API_KEY is not configured")
+        ).strip()
+        base_url = str(
+            _settings_value(
+                settings,
+                "openai_compatible",
+                "base_url",
+                "openai_compatible_base_url",
+                "",
+            )
+        ).strip()
+        if not api_key or not model.strip():
+            return "OPENAI_COMPATIBLE_API_KEY and CHAT_MODEL must be configured"
+        if not base_url:
+            return "OPENAI_COMPATIBLE_BASE_URL must be configured"
+        return None
+
+    return f"unsupported chat provider: {provider}"
 
 
 def _embedding_provider_health(settings: Any = config) -> HealthCheckResult:
     selection = ProviderSelection.from_settings(settings)
-    if selection.embedding_provider == "fake":
+    provider = selection.embedding_provider
+    if provider == "fake":
         return HealthCheckResult.healthy(
             "fake provider selected for local software-path checks",
             {"provider": "fake", "validation": "not_real_embedding_quality"},
         )
-    if selection.embedding_provider == "openai_compatible":
-        api_key = _settings_value(
-            settings,
-            "openai_compatible",
-            "api_key",
-            "openai_compatible_api_key",
-            "",
+    if provider == "openai_compatible":
+        api_key = str(
+            _settings_value(
+                settings,
+                "openai_compatible",
+                "api_key",
+                "openai_compatible_api_key",
+                "",
+            )
         ).strip()
-        model = _settings_value(
-            settings,
-            "openai_compatible",
-            "embedding_model",
-            "openai_compatible_embedding_model",
-            "",
+        model = str(
+            _settings_value(
+                settings,
+                "openai_compatible",
+                "embedding_model",
+                "openai_compatible_embedding_model",
+                "",
+            )
         ).strip()
         if api_key and model:
             return HealthCheckResult.healthy(
-                "configured",
+                "configured; real provider call not verified",
                 {"provider": "openai_compatible", "model": model},
             )
         return HealthCheckResult.unhealthy(
             "OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_EMBEDDING_MODEL must be configured",
             {"provider": "openai_compatible"},
         )
-    if _dashscope_configured(settings):
+    if provider == "dashscope":
+        if not _dashscope_configured(settings):
+            return HealthCheckResult.unhealthy(
+                "DASHSCOPE_API_KEY is not configured",
+                {"provider": "dashscope"},
+            )
+        model = str(
+            _settings_value(
+                settings,
+                "dashscope",
+                "embedding_model",
+                "dashscope_embedding_model",
+                "text-embedding-v4",
+            )
+        ).strip()
+        if not model:
+            return HealthCheckResult.unhealthy(
+                "DASHSCOPE_EMBEDDING_MODEL is not configured",
+                {"provider": "dashscope"},
+            )
         return HealthCheckResult.healthy(
-            "configured",
-            {
-                "provider": "dashscope",
-                "model": _settings_value(
-                    settings,
-                    "dashscope",
-                    "embedding_model",
-                    "dashscope_embedding_model",
-                    "text-embedding-v4",
-                )
-            },
+            "configured; real provider call not verified",
+            {"provider": "dashscope", "model": model},
         )
-    return HealthCheckResult.unhealthy("DASHSCOPE_API_KEY is not configured")
+    return HealthCheckResult.unhealthy(
+        f"unsupported embedding provider: {provider}",
+        {"provider": provider},
+    )
 
 
 def _vector_store_health(
