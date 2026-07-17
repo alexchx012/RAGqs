@@ -26,6 +26,7 @@ from app.providers.contracts import (
     VectorStoreProvider,
 )
 from app.providers.dashscope import DashScopeChatModelProvider
+from app.providers.deepseek import DeepSeekChatModelProvider
 from app.providers.fakes import (
     FakeChatModelProvider,
     FakeEmbeddingProvider,
@@ -99,8 +100,37 @@ def create_default_provider_container(
         from app.core.milvus_client import milvus_manager
 
     if chat_model_provider is None:
-        if selection.chat_provider == "fake":
-            chat_model_provider = FakeChatModelProvider()
+        chat_model = _settings_value(settings, None, "chat_model", "chat_model", "")
+        if selection.chat_provider == "deepseek":
+            chat_model_provider = DeepSeekChatModelProvider(
+                api_key=_settings_value(
+                    settings,
+                    "deepseek",
+                    "api_key",
+                    "deepseek_api_key",
+                    "",
+                ),
+                model_name=chat_model,
+                base_url=_settings_value(
+                    settings,
+                    "deepseek",
+                    "base_url",
+                    "deepseek_base_url",
+                    "https://api.deepseek.com",
+                ),
+            )
+        elif selection.chat_provider == "dashscope":
+            chat_model_provider = DashScopeChatModelProvider(
+                api_key=_settings_value(
+                    settings,
+                    "dashscope",
+                    "api_key",
+                    "dashscope_api_key",
+                    "",
+                ),
+                model_name=chat_model,
+                temperature=0.7,
+            )
         elif selection.chat_provider == "openai_compatible":
             chat_model_provider = OpenAICompatibleChatModelProvider(
                 api_key=_settings_value(
@@ -110,7 +140,7 @@ def create_default_provider_container(
                     "openai_compatible_api_key",
                     "",
                 ),
-                model_name=getattr(settings, "chat_model", ""),
+                model_name=chat_model,
                 base_url=_settings_value(
                     settings,
                     "openai_compatible",
@@ -120,17 +150,11 @@ def create_default_provider_container(
                 ),
                 temperature=0.7,
             )
+        elif selection.chat_provider == "fake":
+            chat_model_provider = FakeChatModelProvider()
         else:
-            chat_model_provider = DashScopeChatModelProvider(
-                api_key=_settings_value(
-                    settings,
-                    "dashscope",
-                    "api_key",
-                    "dashscope_api_key",
-                    "",
-                ),
-                model_name=getattr(settings, "chat_model", ""),
-                temperature=0.7,
+            raise ValueError(
+                f"CHAT_PROVIDER: unsupported provider: {selection.chat_provider}"
             )
 
     if embedding_provider is None:
@@ -412,14 +436,15 @@ def reset_default_provider_container() -> None:
 
 def _settings_value(
     settings: Any,
-    group_name: str,
+    group_name: str | None,
     group_field_name: str,
     flat_field_name: str,
     default: Any,
 ) -> Any:
-    group = getattr(settings, group_name, None)
-    if group is not None and hasattr(group, group_field_name):
-        return getattr(group, group_field_name)
+    if group_name is not None:
+        group = getattr(settings, group_name, None)
+        if group is not None and hasattr(group, group_field_name):
+            return getattr(group, group_field_name)
     return getattr(settings, flat_field_name, default)
 
 
