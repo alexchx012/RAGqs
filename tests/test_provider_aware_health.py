@@ -8,6 +8,94 @@ from app.operations.health import create_default_health_checker
 from app.operations.health_preflight import HealthPreflightError, validate_health_payload
 
 
+def test_health_reports_deepseek_chat_and_dashscope_embedding_as_configured():
+    checker = create_default_health_checker(
+        settings=Settings(
+            _env_file=None,
+            chat_provider=None,
+            deepseek_api_key="ds-key",
+            chat_model="deepseek-v4-pro",
+            embedding_provider="dashscope",
+            dashscope_api_key="qwen-key",
+            dashscope_embedding_model="text-embedding-v4",
+            vector_store_provider="fake",
+            session_store_provider="memory",
+            retrieval_audit_store_provider="memory",
+            checkpoint_provider="memory",
+            indexing_queue_provider="memory",
+            indexing_job_store_provider="memory",
+            document_catalog_provider="memory",
+        )
+    )
+
+    payload, status = checker.as_response()
+
+    assert status == 200
+    assert payload["dependencies"]["modelProvider"]["details"] == {
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+        "validation": "configured_not_smoke_tested",
+    }
+    assert payload["dependencies"]["embeddingProvider"]["details"]["model"] == "text-embedding-v4"
+    assert payload["dependencies"]["embeddingProvider"]["details"]["provider"] == "dashscope"
+
+
+@pytest.mark.parametrize(
+    ("settings", "field"),
+    [
+        (
+            Settings(
+                _env_file=None,
+                chat_provider=None,
+                chat_model="deepseek-v4-pro",
+                deepseek_api_key="",
+                embedding_provider="fake",
+                vector_store_provider="fake",
+            ),
+            "DEEPSEEK_API_KEY",
+        ),
+        (
+            Settings(
+                _env_file=None,
+                chat_provider="dashscope",
+                dashscope_api_key="",
+                chat_model="qwen-max",
+                embedding_provider="fake",
+                vector_store_provider="fake",
+            ),
+            "DASHSCOPE_API_KEY",
+        ),
+        (
+            Settings(
+                _env_file=None,
+                chat_provider="openai_compatible",
+                openai_compatible_api_key="sk",
+                openai_compatible_base_url="https://x",
+                chat_model="",
+                embedding_provider="fake",
+                vector_store_provider="fake",
+            ),
+            "CHAT_MODEL",
+        ),
+        (
+            Settings(
+                _env_file=None,
+                chat_provider=None,
+                deepseek_api_key="ds",
+                chat_model="deepseek-v4-pro",
+                embedding_provider="dashscope",
+                dashscope_api_key="",
+                vector_store_provider="fake",
+            ),
+            "DASHSCOPE_API_KEY",
+        ),
+    ],
+)
+def test_validation_names_the_missing_configuration(settings, field):
+    report = validate_settings(settings)
+    assert field in {issue.field for issue in report.errors}
+
+
 def test_health_checker_reports_fake_provider_boundaries_without_real_dependencies():
     checker = create_default_health_checker(
         settings=_settings(

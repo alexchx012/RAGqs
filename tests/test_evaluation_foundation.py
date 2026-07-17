@@ -26,8 +26,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _real_settings(**overrides):
     values = {
+        "chat_provider": None,
+        "chat_model": "deepseek-v4-pro",
+        "deepseek_api_key": "sk-real-deepseek",
         "dashscope_api_key": "sk-real-dashscope",
-        "chat_provider": "dashscope",
         "embedding_provider": "dashscope",
         "vector_store_provider": "milvus",
         "ingestion_provider": "vector_index",
@@ -388,6 +390,25 @@ def test_real_evaluation_readiness_checks_http_base_url_and_model_judge_provider
     assert report.ready is False
     assert "BASE_URL" in {issue.field for issue in report.errors}
     assert "CHAT_PROVIDER" in {issue.field for issue in report.errors}
+
+
+def test_real_evaluation_readiness_reports_missing_deepseek_chat_key():
+    from app.evaluation.readiness import validate_real_evaluation_readiness
+
+    report = validate_real_evaluation_readiness(
+        _real_golden_examples(),
+        settings=_real_settings(
+            chat_provider=None,
+            deepseek_api_key="",
+            chat_model="deepseek-v4-pro",
+            dashscope_api_key="sk-real-dashscope",
+        ),
+        mode="service",
+        faithfulness_judge="static",
+    )
+
+    assert report.ready is False
+    assert "DEEPSEEK_API_KEY" in {issue.field for issue in report.errors}
 
 
 def test_real_evaluation_readiness_warns_when_langsmith_is_disabled():
