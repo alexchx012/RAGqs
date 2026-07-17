@@ -369,3 +369,27 @@ async def test_session_store_does_not_persist_private_reasoning_metadata():
     assert "reasoning_content" not in repr(stored)
     assert "private" not in repr(stored)
     assert "deepseek_tool_calls" not in repr(stored)
+
+
+@pytest.mark.asyncio
+async def test_session_store_public_history_contract_on_fake_path():
+    session_store = InMemorySessionStoreProvider()
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=SimpleNamespace(create_chat_model=lambda streaming: object()),
+        agent_factory=fake_agent_factory,
+        tools=[],
+        retriever_provider=StaticRetriever(),
+        session_store_provider=session_store,
+        agent_runtime="legacy",
+    )
+
+    await service.query_with_trace("persist public only", session_id="s-public")
+
+    history = service.get_session_history("s-public")
+    assert [message["content"] for message in history] == [
+        "persist public only",
+        "stored answer",
+    ]
+    assert "reasoning_content" not in repr(history)
+    assert "reasoning_content" not in repr(session_store.get_messages("s-public"))

@@ -45,6 +45,17 @@ def test_dashscope_embedding_provider_rejects_env_example_placeholder():
         DashScopeEmbeddingProvider(api_key="your-dashscope-api-key")
 
 
+def test_dashscope_embedding_provider_uses_embedding_model_not_chat_model():
+    provider = DashScopeEmbeddingProvider(
+        api_key="key",
+        model="text-embedding-v4",
+        dimensions=1024,
+    )
+
+    assert provider.model == "text-embedding-v4"
+    assert provider.dimensions == 1024
+
+
 def test_dashscope_chat_model_provider_requires_model_name_from_caller():
     with pytest.raises(TypeError):
         DashScopeChatModelProvider(api_key="sk-valid")  # type: ignore[call-arg]

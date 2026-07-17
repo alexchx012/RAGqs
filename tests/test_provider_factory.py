@@ -406,3 +406,26 @@ def test_dashscope_embedding_keeps_its_own_model_source(monkeypatch):
 
     assert container.embedding_provider.model == "text-embedding-v4"
     assert container.embedding_provider.dimensions == 1024
+
+
+def test_explicit_fake_providers_wire_no_key_software_path():
+    settings = _settings(
+        chat_provider="fake",
+        embedding_provider="fake",
+        vector_store_provider="fake",
+        session_store_provider="memory",
+        ingestion_provider="fake",
+        checkpoint_provider="memory",
+        chat_model="deepseek-v4-pro",
+    )
+
+    container = create_default_provider_container(settings=settings, milvus_manager=object())
+
+    assert isinstance(container.chat_model_provider, FakeChatModelProvider)
+    assert isinstance(container.embedding_provider, FakeEmbeddingProvider)
+    assert container.chat_model_provider.create_chat_model(streaming=False).invoke([]).content == (
+        "fake answer"
+    )
+    assert len(container.embedding_provider.embed_query("hello")) == (
+        container.embedding_provider.dimensions
+    )

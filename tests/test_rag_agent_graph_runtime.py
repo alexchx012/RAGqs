@@ -620,3 +620,23 @@ async def test_public_trace_and_session_metadata_do_not_contain_reasoning():
     assert "reasoning_content" not in repr(service.get_session_history("s1"))
     assert "private" not in repr(service.get_session_history("s1"))
     assert "deepseek_tool_calls" not in repr(service.get_session_history("s1"))
+
+
+@pytest.mark.asyncio
+async def test_fake_chat_path_public_trace_stays_stable_without_credentials():
+    session_store = InMemorySessionStoreProvider()
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=SyncChatProvider("stable public answer"),
+        agent_factory=failing_agent_factory,
+        tools=[],
+        retriever_provider=RecordingRetriever(),
+        session_store_provider=session_store,
+        agent_runtime="explicit_graph",
+    )
+
+    result = await service.query_with_trace("question", session_id="s-fake")
+
+    assert result["answer"] == "stable public answer"
+    assert "reasoning_content" not in repr(result)
+    assert "reasoning_content" not in repr(service.get_session_history("s-fake"))
