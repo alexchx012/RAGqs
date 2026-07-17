@@ -97,8 +97,6 @@ class StorageConfig(FrozenConfigModel):
 class AgentConfig(FrozenConfigModel):
     runtime: str
     enabled_tools: str
-    tool_planning_enabled: bool
-    tool_planning_excluded_tools: str
     prompt_profile: str
 
 
@@ -206,8 +204,6 @@ class Settings(BaseSettings):
     checkpoint_postgres_dsn: str = ""
     agent_runtime: str = "explicit_graph"
     enabled_tools: str = "retrieve_knowledge,get_current_time"
-    tool_planning_enabled: bool = False
-    tool_planning_excluded_tools: str = "retrieve_knowledge"
     prompt_profile: str = "default"
 
     # DeepSeek provider 配置
@@ -346,8 +342,6 @@ class Settings(BaseSettings):
         return AgentConfig(
             runtime=self.agent_runtime,
             enabled_tools=self.enabled_tools,
-            tool_planning_enabled=self.tool_planning_enabled,
-            tool_planning_excluded_tools=self.tool_planning_excluded_tools,
             prompt_profile=self.prompt_profile,
         )
 

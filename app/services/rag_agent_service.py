@@ -14,13 +14,11 @@ from typing_extensions import TypedDict
 from app.agents import (
     ChatModelAnswerGenerator,
     LangChainToolExecutor,
-    LangChainToolPlanner,
     ToolExecutor,
-    ToolPlanner,
     build_rag_state_graph,
 )
 from app.config import config
-from app.extensions.tools import ToolRegistry, build_enabled_tools, parse_enabled_tool_names
+from app.extensions.tools import ToolRegistry, build_enabled_tools
 from app.observability import get_current_trace_id, runtime_metrics
 from app.observability.metrics import normalize_token_usage
 from app.observability.retrieval_audit import RetrievalAuditRecord
@@ -68,8 +66,6 @@ class RagAgentService:
         enabled_tool_names: list[str] | None = None,
         tool_registry: ToolRegistry | None = None,
         tool_executor: ToolExecutor | None = None,
-        tool_planner: ToolPlanner | None = None,
-        tool_planning_enabled: bool | None = None,
         metrics_collector: Any | None = None,
         metrics_clock=perf_counter,
     ):
@@ -101,18 +97,6 @@ class RagAgentService:
             registry=tool_registry,
         )
         self.tool_executor = tool_executor or LangChainToolExecutor(self.tools)
-        self.tool_planning_enabled = (
-            _settings_value(
-                self.settings,
-                "agent",
-                "tool_planning_enabled",
-                "tool_planning_enabled",
-                False,
-            )
-            if tool_planning_enabled is None
-            else tool_planning_enabled
-        )
-        self.tool_planner = tool_planner or self._build_tool_planner()
         self.checkpoint_provider = checkpoint_provider
         self.checkpointer = (
             checkpointer
@@ -475,7 +459,8 @@ class RagAgentService:
                 system_prompt=self.system_prompt,
             ),
             tool_executor=self.tool_executor,
-            tool_planner=self.tool_planner,
+            available_tools=self.tools,
+            system_prompt=self.system_prompt,
             checkpointer=self.checkpointer,
             default_top_k=self.retrieval_top_k,
         )
@@ -538,25 +523,6 @@ class RagAgentService:
 
             self.checkpoint_provider = get_default_provider_container().checkpoint_provider
         return self.checkpoint_provider
-
-    def _build_tool_planner(self) -> ToolPlanner | None:
-        if not self.tool_planning_enabled:
-            return None
-        planner_tools = _filter_tool_planning_tools(
-            self.tools,
-            excluded_tool_names=_settings_value(
-                self.settings,
-                "agent",
-                "tool_planning_excluded_tools",
-                "tool_planning_excluded_tools",
-                "retrieve_knowledge",
-            ),
-        )
-        return LangChainToolPlanner(
-            chat_model_provider=self.chat_model_provider,
-            tools=planner_tools,
-            system_prompt=self.system_prompt,
-        )
 
     def _build_runtime_config(self, *, session_id: str, space_id: str) -> dict[str, Any]:
         metadata = {
@@ -721,19 +687,6 @@ def _normalize_agent_runtime(agent_runtime: str) -> str:
     if normalized not in {"explicit_graph", "legacy"}:
         raise ValueError(f"unsupported agent runtime: {agent_runtime}")
     return normalized
-
-
-def _filter_tool_planning_tools(
-    tools: list[Any],
-    *,
-    excluded_tool_names: str,
-) -> list[Any]:
-    excluded = set(parse_enabled_tool_names(excluded_tool_names))
-    return [
-        tool
-        for tool in tools
-        if (getattr(tool, "name", None) or getattr(tool, "__name__", "")) not in excluded
-    ]
 
 
 def _settings_value(
