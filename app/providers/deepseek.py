@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Iterator
 from typing import Any, Callable
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from openai import OpenAI
+
+
+class DeepSeekProviderError(RuntimeError):
+    """Normalized DeepSeek upstream failure without secret-bearing details."""
+
+    def __init__(self, category: str, message: str | None = None):
+        self.category = category
+        text = message if message is not None else category
+        super().__init__(text)
 
 
 def _text_content(content: Any) -> str:
@@ -72,11 +85,181 @@ def _serialize_deepseek_message(message: BaseMessage) -> dict[str, Any]:
     raise TypeError(f"unsupported DeepSeek message: {type(message).__name__}")
 
 
+def _tool_call_to_dict(call: Any) -> dict[str, Any]:
+    if isinstance(call, dict):
+        function = call.get("function") or {}
+        if not isinstance(function, dict):
+            function = {
+                "name": getattr(function, "name", None),
+                "arguments": getattr(function, "arguments", "") or "",
+            }
+        return {
+            "id": call.get("id"),
+            "type": call.get("type") or "function",
+            "function": {
+                "name": function.get("name"),
+                "arguments": function.get("arguments") or "",
+            },
+        }
+
+    function = getattr(call, "function", None)
+    return {
+        "id": getattr(call, "id", None),
+        "type": getattr(call, "type", None) or "function",
+        "function": {
+            "name": getattr(function, "name", None) if function is not None else None,
+            "arguments": (
+                getattr(function, "arguments", "") if function is not None else ""
+            )
+            or "",
+        },
+    }
+
+
+def _langchain_tool_calls(raw_tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for call in raw_tool_calls:
+        function = call.get("function") or {}
+        arguments = function.get("arguments") or ""
+        name = function.get("name")
+        call_id = call.get("id")
+        if not name or call_id is None:
+            continue
+        try:
+            parsed = json.loads(arguments) if arguments else {}
+            if not isinstance(parsed, dict):
+                continue
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        result.append(
+            {
+                "name": name,
+                "args": parsed,
+                "id": call_id,
+                "type": "tool_call",
+            }
+        )
+    return result
+
+
+def _invalid_langchain_tool_calls(
+    raw_tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for call in raw_tool_calls:
+        function = call.get("function") or {}
+        arguments = function.get("arguments") or ""
+        name = function.get("name")
+        call_id = call.get("id")
+        if not name or call_id is None:
+            result.append(
+                {
+                    "name": name or "",
+                    "args": arguments if isinstance(arguments, str) else str(arguments),
+                    "id": call_id,
+                    "error": "incomplete tool call",
+                    "type": "invalid_tool_call",
+                }
+            )
+            continue
+        try:
+            parsed = json.loads(arguments) if arguments else {}
+            if not isinstance(parsed, dict):
+                raise ValueError("tool call arguments must be a JSON object")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            result.append(
+                {
+                    "name": name,
+                    "args": arguments if isinstance(arguments, str) else str(arguments),
+                    "id": call_id,
+                    "error": str(exc),
+                    "type": "invalid_tool_call",
+                }
+            )
+    return result
+
+
+def _usage_metadata(usage: Any | None) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    prompt = getattr(usage, "prompt_tokens", None)
+    completion = getattr(usage, "completion_tokens", None)
+    total = getattr(usage, "total_tokens", None)
+    if prompt is None and completion is None and total is None:
+        return None
+    return {
+        "input_tokens": int(prompt or 0),
+        "output_tokens": int(completion or 0),
+        "total_tokens": int(total or 0),
+    }
+
+
 def _to_ai_message(choice: Any, usage: Any | None = None) -> AIMessage:
-    """Minimal non-streaming response mapping for transport contract tests."""
     message = choice.message
-    content = getattr(message, "content", None) or ""
-    return AIMessage(content=content)
+    raw_tool_calls = [
+        _tool_call_to_dict(call) for call in (getattr(message, "tool_calls", None) or [])
+    ]
+    return AIMessage(
+        content=getattr(message, "content", None) or "",
+        additional_kwargs={
+            "reasoning_content": getattr(message, "reasoning_content", None),
+            "deepseek_tool_calls": raw_tool_calls,
+        },
+        tool_calls=_langchain_tool_calls(raw_tool_calls),
+        invalid_tool_calls=_invalid_langchain_tool_calls(raw_tool_calls),
+        response_metadata={"finish_reason": getattr(choice, "finish_reason", None)},
+        usage_metadata=_usage_metadata(usage),
+    )
+
+
+_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"),
+    re.compile(r"\bds-[A-Za-z0-9_\-]{4,}\b"),
+    re.compile(r"\bBearer\s+\S+", re.IGNORECASE),
+    re.compile(r"(?i)(api[_-]?key|token|secret|authorization)\s*[:=]\s*\S+"),
+)
+
+
+def _sanitize_error_text(text: str) -> str:
+    sanitized = text
+    for pattern in _SECRET_PATTERNS:
+        sanitized = pattern.sub("[redacted]", sanitized)
+    return sanitized
+
+
+def _classify_error(exc: BaseException) -> DeepSeekProviderError:
+    if isinstance(exc, DeepSeekProviderError):
+        return exc
+
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+
+    raw = str(exc)
+    lowered = raw.lower()
+
+    category: str | None = None
+    if status == 401 or status == 403 or "401" in lowered or "authentication" in lowered or "invalid key" in lowered or "unauthorized" in lowered:
+        category = "authentication"
+    elif status == 429 or "rate limit" in lowered or "too many requests" in lowered:
+        category = "rate_limit"
+    elif status == 400 or "invalid parameter" in lowered or "invalid_request" in lowered or "bad request" in lowered:
+        category = "invalid_request"
+    elif status == 404 or "not found" in lowered or "resource" in lowered and "not" in lowered:
+        category = "resource"
+    elif status is not None and int(status) >= 500:
+        category = "server"
+    elif "server" in lowered or "internal error" in lowered or "503" in lowered or "500" in lowered:
+        category = "server"
+    elif "resource" in lowered or "insufficient" in lowered or "quota" in lowered:
+        category = "resource"
+    else:
+        category = "upstream"
+
+    # Message must not leak secrets or raw secret-bearing bodies.
+    safe_message = f"DeepSeek {category} error"
+    return DeepSeekProviderError(category, safe_message)
 
 
 class DeepSeekChatModel(BaseChatModel):
@@ -97,16 +280,54 @@ class DeepSeekChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[_serialize_deepseek_message(message) for message in messages],
-            stream=False,
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[_serialize_deepseek_message(message) for message in messages],
+                stream=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize all transport failures
+            raise _classify_error(exc) from None
+
         return ChatResult(
             generations=[
                 ChatGeneration(message=_to_ai_message(response.choices[0], response.usage))
             ]
         )
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[_serialize_deepseek_message(message) for message in messages],
+                stream=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize all transport failures
+            raise _classify_error(exc) from None
+
+        try:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    # usage-only or empty chunks produce no client tokens
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                if not content:
+                    # empty content deltas do not produce client tokens
+                    continue
+                yield ChatGenerationChunk(message=AIMessageChunk(content=content))
+        except Exception as exc:  # noqa: BLE001 - normalize mid-stream failures
+            raise _classify_error(exc) from None
 
 
 class DeepSeekChatModelProvider:
