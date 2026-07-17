@@ -70,7 +70,7 @@ class RagAgentService:
         metrics_clock=perf_counter,
     ):
         self.settings = settings or config
-        self.model_name = str(getattr(self.settings, "chat_model", "") or "")
+        self.model_name = str(getattr(self.settings, "chat_model", "")).strip()
         self.streaming = streaming
         self.prompt_profile = prompt_profile or _settings_value(
             self.settings,
@@ -672,14 +672,40 @@ class RagAgentService:
     def clear_session(self, session_id: str) -> bool:
         try:
             success = self._get_session_store_provider().clear(session_id)
-            try:
-                self.checkpointer.delete_thread(session_id)
-            except AttributeError:
-                pass
+            self._clear_checkpoint_thread(session_id)
             return success
         except Exception as e:
             logger.error(f"清空会话历史失败: {session_id}, 错误: {e}")
             return False
+
+    def _clear_checkpoint_thread(self, session_id: str) -> None:
+        """Clear private LangGraph checkpoint state for the public session id.
+
+        Uses the same thread_id that runtime configs bind via
+        ``_build_runtime_config`` so public session store clears stay aligned
+        with private message-chain checkpoints.
+        """
+        thread_id = self._build_runtime_config(
+            session_id=session_id,
+            space_id="default",
+        )["configurable"]["thread_id"]
+        delete_thread = getattr(self.checkpointer, "delete_thread", None)
+        if not callable(delete_thread):
+            logger.warning(
+                "checkpointer {} has no delete_thread; private checkpoint for "
+                "thread_id={} was not cleared",
+                type(self.checkpointer).__name__,
+                thread_id,
+            )
+            return
+        try:
+            delete_thread(thread_id)
+        except Exception as exc:
+            logger.warning(
+                "failed to clear private checkpoint for thread_id={}: {}",
+                thread_id,
+                exc,
+            )
 
 
 def _normalize_agent_runtime(agent_runtime: str) -> str:
