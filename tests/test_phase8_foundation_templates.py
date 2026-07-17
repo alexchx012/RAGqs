@@ -421,7 +421,7 @@ def _settings(**overrides):
         "rag_top_k": 3,
         "milvus_host": "127.0.0.1",
         "milvus_port": 19530,
-        "chat_provider": "dashscope",
+        "chat_provider": None,
         "embedding_provider": "dashscope",
         "vector_store_provider": "milvus",
         "session_store_provider": "memory",

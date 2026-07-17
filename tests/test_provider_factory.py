@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.documents import Document
 
 from app.ingestion.worker import reset_background_indexing_worker
@@ -10,6 +11,7 @@ from app.observability.retrieval_audit import (
 from app.providers import (
     ChatModelProvider,
     CheckpointProvider,
+    FakeChatModelProvider,
     FakeEmbeddingProvider,
     FakeIngestionProvider,
     IngestionProvider,
@@ -19,6 +21,8 @@ from app.providers import (
     SessionStoreProvider,
     VectorStoreProvider,
 )
+from app.providers.dashscope import DashScopeChatModelProvider
+from app.providers.deepseek import DeepSeekChatModelProvider
 from app.providers.factory import ProviderContainer, create_default_provider_container
 from app.providers.ingestion import VectorIndexIngestionProvider
 from app.providers.milvus import MilvusVectorStoreProvider
@@ -289,3 +293,102 @@ def test_vector_store_retriever_provider_returns_structured_debug_output():
         "returned": 1,
     }
     assert vector_store.calls == [("graph", 7, {"space": "base"})]
+
+
+def _settings(**overrides):
+    values = {
+        "dashscope_api_key": "sk-valid",
+        "chat_model": "test-chat-model",
+        "deepseek_api_key": "",
+        "deepseek_base_url": "https://api.deepseek.com",
+        "rag_top_k": 3,
+        "milvus_host": "127.0.0.1",
+        "milvus_port": 19530,
+        "chat_provider": None,
+        "embedding_provider": "dashscope",
+        "vector_store_provider": "milvus",
+        "session_store_provider": "memory",
+        "session_store_sqlite_path": "data/sessions.sqlite3",
+        "session_store_postgres_dsn": "",
+        "retrieval_audit_store_provider": "memory",
+        "retrieval_audit_sqlite_path": "data/retrieval-audits.sqlite3",
+        "retrieval_audit_postgres_dsn": "",
+        "indexing_job_store_provider": "memory",
+        "indexing_job_store_sqlite_path": "data/indexing-jobs.sqlite3",
+        "indexing_job_store_postgres_dsn": "",
+        "document_catalog_provider": "memory",
+        "document_catalog_sqlite_path": "data/document-catalog.sqlite3",
+        "document_catalog_postgres_dsn": "",
+        "checkpoint_provider": "memory",
+        "checkpoint_sqlite_path": "data/checkpoints.sqlite3",
+        "checkpoint_postgres_dsn": "",
+        "agent_runtime": "explicit_graph",
+        "ingestion_provider": "vector_index",
+        "openai_compatible_api_key": "sk-compatible",
+        "openai_compatible_base_url": "https://api.example.com/v1",
+        "prompt_profile": "default",
+        "retrieval_profile": "default",
+        "retrieval_high_recall_top_k_multiplier": 2,
+        "retrieval_relaxed_filter_preserve_keys": "space_id,spaceId,tenant_id,tenantId",
+        "query_rewriter_provider": "none",
+        "reranker_provider": "none",
+        "context_compressor_provider": "none",
+        "context_compressor_max_characters": 1200,
+        "enabled_tools": "retrieve_knowledge,get_current_time",
+        "cors_allow_origins": "http://127.0.0.1:9900",
+        "cors_allow_credentials": True,
+        "chunk_max_size": 800,
+        "chunk_overlap": 100,
+        "host": "0.0.0.0",
+        "port": 9900,
+        "milvus_timeout": 10000,
+        "dashscope_embedding_model": "text-embedding-v4",
+        "openai_compatible_embedding_model": "compatible-embedding",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize(
+    ("settings", "provider_type"),
+    [
+        (_settings(deepseek_api_key="ds", chat_model="deepseek-v4-pro"), DeepSeekChatModelProvider),
+        (
+            _settings(chat_provider="dashscope", dashscope_api_key="qwen", chat_model="qwen-max"),
+            DashScopeChatModelProvider,
+        ),
+        (
+            _settings(
+                chat_provider="openai_compatible",
+                openai_compatible_api_key="sk",
+                openai_compatible_base_url="https://x/v1",
+                chat_model="remote-chat",
+            ),
+            OpenAICompatibleChatModelProvider,
+        ),
+        (_settings(chat_provider="fake", chat_model="ignored-by-fake"), FakeChatModelProvider),
+    ],
+)
+def test_factory_selects_explicit_or_default_chat_provider(settings, provider_type):
+    container = create_default_provider_container(settings=settings, milvus_manager=object())
+    assert isinstance(container.chat_model_provider, provider_type)
+
+
+def test_factory_passes_chat_model_to_every_real_chat_provider():
+    container = create_default_provider_container(
+        settings=_settings(
+            chat_provider="dashscope",
+            dashscope_api_key="qwen",
+            chat_model="qwen-plus",
+        ),
+        milvus_manager=object(),
+    )
+    assert container.chat_model_provider.model_name == "qwen-plus"
+
+
+def test_factory_rejects_unknown_provider_without_dashscope_fallback():
+    with pytest.raises(ValueError, match="CHAT_PROVIDER.*unknown"):
+        create_default_provider_container(
+            settings=_settings(chat_provider="unknown"),
+            milvus_manager=object(),
+        )
