@@ -215,6 +215,93 @@ def _to_ai_message(choice: Any, usage: Any | None = None) -> AIMessage:
     )
 
 
+def _stream_tool_call_parts(call: Any) -> tuple[int, dict[str, Any], dict[str, Any]]:
+    """Normalize one streaming tool-call delta into index, LC chunk, DeepSeek fragment."""
+    if isinstance(call, dict):
+        index = int(call.get("index") or 0)
+        call_id = call.get("id")
+        call_type = call.get("type") or "function"
+        function = call.get("function") or {}
+        if not isinstance(function, dict):
+            function = {
+                "name": getattr(function, "name", None),
+                "arguments": getattr(function, "arguments", "") or "",
+            }
+        name = function.get("name")
+        arguments = function.get("arguments") or ""
+    else:
+        index = int(getattr(call, "index", 0) or 0)
+        call_id = getattr(call, "id", None)
+        call_type = getattr(call, "type", None) or "function"
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None) if function is not None else None
+        arguments = (
+            getattr(function, "arguments", "") if function is not None else ""
+        ) or ""
+
+    tool_call_chunk = {
+        "name": name,
+        "args": arguments,
+        "id": call_id,
+        "index": index,
+        "type": "tool_call_chunk",
+    }
+    deepseek_fragment = {
+        "id": call_id,
+        "type": call_type,
+        "function": {
+            "name": name,
+            "arguments": arguments,
+        },
+    }
+    return index, tool_call_chunk, deepseek_fragment
+
+
+def _merge_stream_tool_call(
+    store: dict[int, dict[str, Any]],
+    index: int,
+    fragment: dict[str, Any],
+) -> None:
+    entry = store.setdefault(
+        index,
+        {
+            "id": None,
+            "type": "function",
+            "function": {"name": None, "arguments": ""},
+        },
+    )
+    if fragment.get("id"):
+        entry["id"] = fragment["id"]
+    if fragment.get("type"):
+        entry["type"] = fragment["type"]
+    function = fragment.get("function") or {}
+    if function.get("name"):
+        entry["function"]["name"] = function["name"]
+    if function.get("arguments"):
+        entry["function"]["arguments"] = (
+            entry["function"].get("arguments") or ""
+        ) + str(function["arguments"])
+
+
+def _assembled_deepseek_tool_calls(
+    store: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index in sorted(store):
+        entry = store[index]
+        result.append(
+            {
+                "id": entry.get("id"),
+                "type": entry.get("type") or "function",
+                "function": {
+                    "name": (entry.get("function") or {}).get("name"),
+                    "arguments": (entry.get("function") or {}).get("arguments") or "",
+                },
+            }
+        )
+    return result
+
+
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"),
     re.compile(r"\bds-[A-Za-z0-9_\-]{4,}\b"),
@@ -338,6 +425,14 @@ class DeepSeekChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
+        """Stream Chat Completions deltas as LangChain generation chunks.
+
+        Content deltas are yielded as public tokens. Tool-call and reasoning
+        deltas are also yielded so ``generate_from_stream`` / message aggregation
+        can assemble a full AIMessage (with ``tool_calls`` and
+        ``deepseek_tool_calls``), but their payload never appears in
+        ``AIMessageChunk.content`` — public SSE consumers only see content text.
+        """
         try:
             stream = self.client.chat.completions.create(
                 model=self.model_name,
@@ -347,6 +442,11 @@ class DeepSeekChatModel(BaseChatModel):
             )
         except Exception as exc:  # noqa: BLE001 - normalize all transport failures
             raise _classify_error(exc) from None
+
+        assembled_tool_calls: dict[int, dict[str, Any]] = {}
+        reasoning_parts: list[str] = []
+        yielded = False
+        emitted_deepseek_tool_calls = False
 
         try:
             for chunk in stream:
@@ -358,11 +458,89 @@ class DeepSeekChatModel(BaseChatModel):
                 delta = getattr(choice, "delta", None)
                 if delta is None:
                     continue
-                content = getattr(delta, "content", None)
-                if not content:
-                    # empty content deltas do not produce client tokens
+
+                content = getattr(delta, "content", None) or ""
+                reasoning = getattr(delta, "reasoning_content", None)
+                raw_tool_deltas = getattr(delta, "tool_calls", None) or []
+                finish_reason = getattr(choice, "finish_reason", None)
+
+                tool_call_chunks: list[dict[str, Any]] = []
+                for raw_call in raw_tool_deltas:
+                    index, tool_call_chunk, deepseek_fragment = _stream_tool_call_parts(
+                        raw_call
+                    )
+                    tool_call_chunks.append(tool_call_chunk)
+                    _merge_stream_tool_call(
+                        assembled_tool_calls, index, deepseek_fragment
+                    )
+
+                if isinstance(reasoning, str) and reasoning:
+                    reasoning_parts.append(reasoning)
+
+                additional_kwargs: dict[str, Any] = {}
+                if isinstance(reasoning, str) and reasoning:
+                    # Keep reasoning off public content; only on additional_kwargs.
+                    additional_kwargs["reasoning_content"] = reasoning
+                # Attach assembled DeepSeek tool calls only once on the terminal
+                # chunk. LangChain merges additional_kwargs lists by concatenation,
+                # so emitting the full list on every tool delta would duplicate.
+                if assembled_tool_calls and finish_reason is not None:
+                    additional_kwargs["deepseek_tool_calls"] = (
+                        _assembled_deepseek_tool_calls(assembled_tool_calls)
+                    )
+                    emitted_deepseek_tool_calls = True
+
+                has_public_content = bool(content)
+                has_tool = bool(tool_call_chunks)
+                has_reasoning = bool(isinstance(reasoning, str) and reasoning)
+                has_finish = finish_reason is not None
+
+                if not (has_public_content or has_tool or has_reasoning or has_finish):
                     continue
-                yield ChatGenerationChunk(message=AIMessageChunk(content=content))
+
+                response_metadata: dict[str, Any] = {}
+                if finish_reason is not None:
+                    response_metadata["finish_reason"] = finish_reason
+
+                message_kwargs: dict[str, Any] = {
+                    "content": content if has_public_content else "",
+                    "additional_kwargs": additional_kwargs,
+                    "response_metadata": response_metadata,
+                }
+                if tool_call_chunks:
+                    message_kwargs["tool_call_chunks"] = tool_call_chunks
+
+                yield ChatGenerationChunk(message=AIMessageChunk(**message_kwargs))
+                yielded = True
+
+            # Ensure pure tool-call / reasoning streams always produce a final
+            # generation chunk with assembled metadata when finish_reason was
+            # omitted, or when nothing was yielded at all.
+            if assembled_tool_calls and not emitted_deepseek_tool_calls:
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        content="",
+                        additional_kwargs={
+                            "deepseek_tool_calls": _assembled_deepseek_tool_calls(
+                                assembled_tool_calls
+                            ),
+                            **(
+                                {"reasoning_content": "".join(reasoning_parts)}
+                                if reasoning_parts
+                                else {}
+                            ),
+                        },
+                    )
+                )
+            elif not yielded and reasoning_parts:
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        content="",
+                        additional_kwargs={
+                            "reasoning_content": "".join(reasoning_parts)
+                        },
+                    )
+                )
         except Exception as exc:  # noqa: BLE001 - normalize mid-stream failures
             raise _classify_error(exc) from None
 

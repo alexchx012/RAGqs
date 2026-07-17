@@ -48,8 +48,6 @@ CHECKPOINT_SQLITE_PATH=data/checkpoints.sqlite3
 CHECKPOINT_POSTGRES_DSN=
 AGENT_RUNTIME=explicit_graph
 ENABLED_TOOLS=retrieve_knowledge,get_current_time
-TOOL_PLANNING_ENABLED=false
-TOOL_PLANNING_EXCLUDED_TOOLS=retrieve_knowledge
 PROMPT_PROFILE=strict
 RAG_TOP_K=3
 RETRIEVAL_PROFILE=default
@@ -97,7 +95,7 @@ For retrieval-quality profiles, set `RETRIEVAL_PROFILE=high_recall` when the bus
 
 Register business tools through `ToolRegistry`, then add their names to `ENABLED_TOOLS`. Tool names should be stable, action-oriented, and specific, for example `crm_lookup` or `policy_lookup`.
 
-Enable `TOOL_PLANNING_ENABLED=true` only when the chat model should choose non-retrieval tools inside the explicit graph. Leave `retrieve_knowledge` in `TOOL_PLANNING_EXCLUDED_TOOLS`; document retrieval is already handled by the graph retrieval node.
+There is no pre-retrieval planner. `decide_retrieval` only routes to tools for an explicit `tool_request`. During answer generation the model may still emit `tool_calls`; the graph continues `answer ↔ tool` until a final answer is produced. Document retrieval stays on the graph retrieve node rather than a model-planned `retrieve_knowledge` pre-step.
 
 ## Prompts
 

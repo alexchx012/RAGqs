@@ -63,7 +63,7 @@
 | final_response | 生成 graph 终态响应。 | `app/agents/rag_graph.py`：`RagGraphNodes.final_response()` |
 | ChatModelAnswerGenerator | 显式 graph 的答案生成器。 | `app/agents/rag_graph.py`：`ChatModelAnswerGenerator` |
 | LangChainToolExecutor | 在显式 graph 中执行 LangChain tool。 | `app/agents/rag_graph.py`：`LangChainToolExecutor` |
-| LangChainToolPlanner | 使用 chat model tool calling 决定是否调用工具。 | `app/agents/rag_graph.py`：`LangChainToolPlanner` |
+| answer↔tool continuation | answer 阶段模型产出 tool_calls 后路由 tool，再回到 answer 续轮。 | `app/agents/rag_graph.py`：`route_after_answer` / `route_after_tool` |
 | ToolRegistry | 工具注册表。 | `app/extensions/tools.py`：`ToolRegistry` |
 | retrieve_knowledge | LangChain 知识检索工具。 | `app/tools/knowledge_tool.py`：`retrieve_knowledge()` |
 | enforce_knowledge_space | 用 contextvar 强制检索工具使用请求 space。 | `app/tools/knowledge_tool.py`：`enforce_knowledge_space()` |
@@ -127,7 +127,7 @@
 | `CHECKPOINT_PROVIDER` | 选择 LangGraph checkpoint provider。 | `app/config.py`：`Settings.checkpoint_provider` |
 | `AGENT_RUNTIME` | 选择 `explicit_graph` 或 `legacy`。 | `app/config.py`：`Settings.agent_runtime` |
 | `ENABLED_TOOLS` | Agent 启用工具列表。 | `app/config.py`：`Settings.enabled_tools` |
-| `TOOL_PLANNING_ENABLED` | 是否启用模型工具规划。 | `app/config.py`：`Settings.tool_planning_enabled` |
+| `ENABLED_TOOLS` | 启用的工具名列表。 | `app/config.py`：`Settings.enabled_tools` |
 | `PROMPT_PROFILE` | 系统提示词 profile。 | `app/config.py`：`Settings.prompt_profile` |
 | `RAG_TOP_K` | 默认检索 top_k。 | `app/config.py`：`Settings.rag_top_k` |
 | `RETRIEVAL_PROFILE` | retrieval profile 名称。 | `app/config.py`：`Settings.retrieval_profile` |

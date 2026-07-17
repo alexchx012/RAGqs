@@ -253,12 +253,13 @@ Milvus 搜索在 `app/providers/milvus.py::MilvusVectorStoreProvider.similarity_
 ```text
 normalize_input
   -> decide_retrieval
-     -> tool, if state.tool_request.name exists
+     -> tool, if state.tool_request.name exists (explicit only)
      -> handoff, if question is empty
-     -> planner decision, if tool_planner is enabled
      -> retrieve, default path
-  -> retrieve/tool/handoff
-  -> answer/error_policy
+  -> retrieve / tool / handoff
+  -> answer
+     -> tool, if AIMessage.tool_calls (answer↔tool continuation)
+     -> final_response / error_policy
   -> final_response
 ```
 
@@ -268,11 +269,9 @@ normalize_input
 - 默认工具注册在 `app/extensions/tools.py::build_default_tool_registry`。
 - 默认工具名配置在 `app/config.py::Settings.enabled_tools`。
 - 工具执行在 `app/agents/rag_graph.py::LangChainToolExecutor.execute`。
-- 模型工具规划在 `app/agents/rag_graph.py::LangChainToolPlanner.plan`。
+- 模型在 answer 阶段通过 `bind_tools` 产出 tool_calls 后由 `route_after_answer` 进入 tool 续轮；无 pre-retrieval planner。
 
-注意：`TOOL_PLANNING_ENABLED` 默认是 `False`，所以正常问答默认走检索，不主动让模型规划工具调用。
-
-需要人工确认：未来希望 Agent 是“RAG 优先，工具显式触发”，还是“模型自主决定工具调用”。
+当前默认是“RAG 优先 + 显式 tool_request / answer 阶段 tool_calls”，没有独立的 pre-retrieval 工具规划开关。
 
 ## 10. 配置项详解
 
@@ -291,7 +290,7 @@ normalize_input
 | Provider | `app/config.py::ProviderConfig`, `app/providers/selection.py` | chat/embedding/vector/session/audit/ingestion/checkpoint 选择；chat 可自动选择。 |
 | DeepSeek | `app/config.py::DeepSeekConfig`, `app/providers/deepseek.py` | 默认候选 chat Key / base URL。 |
 | Storage | `app/config.py::StorageConfig`, `app/providers/factory.py` | SQLite/Postgres 路径和 DSN。 |
-| Agent | `app/config.py::AgentConfig`, `app/services/rag_agent_service.py` | runtime、工具、tool planner、prompt profile。 |
+| Agent | `app/config.py::AgentConfig`, `app/services/rag_agent_service.py` | runtime、工具、prompt profile。 |
 | RAG | `app/config.py::RagConfig`, `app/retrieval/pipeline.py` | top_k、retrieval profile、rewrite/rerank/compress；无专用模型字段。 |
 | Chat model | `app/config.py::Settings.chat_model` | 所有 chat provider 共用模型名 `CHAT_MODEL`。 |
 | Chunking | `app/config.py::ChunkingConfig`, `app/services/document_splitter_service.py` | chunk size 和 overlap。 |
@@ -336,13 +335,13 @@ normalize_input
 3. 在 `.env.example::ENABLED_TOOLS` 和 `app/config.py::Settings.enabled_tools` 中决定是否默认启用。
 4. `app/services/rag_agent_service.py::RagAgentService.__init__` 会调用 `build_enabled_tools` 构造工具列表。
 5. 显式工具执行走 `app/agents/rag_graph.py::RagGraphNodes.tool` 和 `LangChainToolExecutor.execute`。
-6. 如果需要模型自动规划工具，必须关注 `app/config.py::Settings.tool_planning_enabled` 和 `app/services/rag_agent_service.py::_build_tool_planner`。
+6. answer 阶段模型可通过 `bind_tools` 产出 tool_calls，由 `route_after_answer` / `route_after_tool` 完成 answer↔tool 续轮；`decide_retrieval` 不再做 pre-retrieval planner。
 
 测试优先看：
 
 - `tests/test_phase8_foundation_templates.py::test_tool_registry_registers_builtin_and_business_tools`
 - `tests/test_rag_state_graph.py::test_langchain_tool_executor_invokes_registered_tools_by_name`
-- `tests/test_rag_agent_graph_runtime.py::test_rag_agent_service_builds_explicit_graph_with_model_tool_planning`
+- `tests/test_rag_agent_graph_runtime.py` 中的 answer↔tool / streaming 相关用例
 
 需要人工确认：新工具是否允许访问外部系统；如果允许，需要新增超时、权限和审计策略。
 
@@ -375,8 +374,8 @@ Chat model：
 2. 参考 `app/providers/deepseek.py::DeepSeekChatModelProvider`、`app/providers/dashscope.py::DashScopeChatModelProvider` 或 `app/providers/openai_compatible.py::OpenAICompatibleChatModelProvider`。
 3. 在 `app/providers/selection.py::SUPPORTED_CHAT_PROVIDERS` 加 id。
 4. 在 `app/providers/factory.py::create_default_provider_container` 加 chat provider 分支，并只传入共享 `CHAT_MODEL`。
-5. 确认返回的模型支持 `invoke`；如果要流式，需要支持 `stream`，调用点在 `app/agents/rag_graph.py::ChatModelAnswerGenerator.stream`。
-6. 如果要 tool planning，需要模型支持 `bind_tools` 和 tool call 输出，调用点在 `app/agents/rag_graph.py::LangChainToolPlanner.plan`。
+5. 确认返回的模型支持 `invoke`；如果要流式，需要支持 `stream`，调用点在 `app/agents/rag_graph.py::ChatModelAnswerGenerator.stream` / `stream_ai_message`。
+6. 如果要 answer↔tool 续轮，模型需要支持 `bind_tools` 与 tool_call 输出；流式路径还必须把 tool_call 组装进最终 AIMessage（见 `app/providers/deepseek.py::_stream`）。
 7. 扩展边界是 `ProviderContainer.chat_model_provider`，不是某个厂商专属 chat provider 名称。
 
 Embedding model：
@@ -532,7 +531,7 @@ Embedding model：
 第四组：扩展能力
 
 - 新增数据源前先稳定 `app/ingestion/loaders.py::DocumentLoaderRegistry`。
-- 新增工具前先稳定 `app/extensions/tools.py::ToolRegistry` 和 `app/agents/rag_graph.py::LangChainToolPlanner`。
+- 新增工具前先稳定 `app/extensions/tools.py::ToolRegistry` 和 `app/agents/rag_graph.py::LangChainToolExecutor` / answer↔tool 续轮。
 - 替换向量库前先统一 `app/providers/contracts.py::VectorStoreProvider` 和 `app/services/vector_store_manager.py` 的签名。
 
 需要人工确认：下一轮目标是“内部试运行稳定”，还是“架构扩展性优先”。两者的 OpenSpec change 拆分方式不同。

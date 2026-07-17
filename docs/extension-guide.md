@@ -13,11 +13,11 @@ registry = build_default_tool_registry()
 registry.register(crm_lookup, category="business")
 ```
 
-## Tool Planning
+## Tool Continuation (answer ↔ tool)
 
-The explicit graph owns retrieval by default. Set `TOOL_PLANNING_ENABLED=true` when the graph should ask the configured chat model, via LangChain `bind_tools`, whether a non-retrieval tool should run before normal retrieval.
+There is no pre-retrieval planner. `decide_retrieval` routes to `tool` only when state already has an explicit `tool_request.name`; otherwise it retrieves (or handoffs empty questions).
 
-`TOOL_PLANNING_EXCLUDED_TOOLS=retrieve_knowledge` keeps native RAG retrieval on the graph path while still allowing business tools such as `crm_lookup` or operational tools such as `get_current_time` to be model-selected. Keep this disabled for low-cost deployments that should avoid an extra planning model call.
+During answer generation the chat model may emit `tool_calls` (via LangChain `bind_tools`). The graph then routes `answer → tool → answer` until the model returns a normal answer or hits the tool-round limit. Public SSE tokens stay content-only; reasoning / tool deltas never leak as client content.
 
 ## Provider Switching
 
@@ -57,9 +57,9 @@ Use `fake` providers for local tests and demos that must not call DeepSeek, Dash
 
 When extending chat providers, implement `ChatModelProvider` and wire it through
 `ProviderContainer.chat_model_provider`. That vendor-agnostic boundary is what answer
-generation, tool planning, evaluation judges, and retrieval enhancers (`llm` rewrite /
-rerank / compress) consume—do not hard-code “DashScope chat provider” as the extension
-point.
+generation (including answer↔tool continuation), evaluation judges, and retrieval
+enhancers (`llm` rewrite / rerank / compress) consume—do not hard-code
+“DashScope chat provider” as the extension point.
 
 Retrieval audits are exposed through `GET /api/chat/audits` and can be filtered by session, knowledge space, trace id, and limit. Enable SQLite audit storage when a business needs local post-answer review of selected chunks and retrieval debug data; use Postgres when multiple API instances need to share the same audit trail.
 
