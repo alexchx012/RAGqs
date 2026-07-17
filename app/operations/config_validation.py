@@ -293,12 +293,14 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
 
     if selection.embedding_provider == "dashscope":
         if _is_placeholder_secret(dashscope_api_key):
-            errors.append(
-                ConfigIssue(
-                    field="DASHSCOPE_API_KEY",
-                    message="must be set to a non-placeholder value",
+            # Avoid duplicate DASHSCOPE_API_KEY when chat already reported it.
+            if not any(issue.field == "DASHSCOPE_API_KEY" for issue in errors):
+                errors.append(
+                    ConfigIssue(
+                        field="DASHSCOPE_API_KEY",
+                        message="must be set to a non-placeholder value",
+                    )
                 )
-            )
         if not dashscope_embedding_model.strip():
             errors.append(
                 ConfigIssue(

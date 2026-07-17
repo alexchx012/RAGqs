@@ -270,7 +270,7 @@ def _chat_provider_config_issue(provider: str, settings: Any, model: str) -> str
                 "",
             )
         ).strip()
-        if not api_key or not model.strip():
+        if _is_placeholder_secret(api_key) or not model.strip():
             return "OPENAI_COMPATIBLE_API_KEY and CHAT_MODEL must be configured"
         if not base_url:
             return "OPENAI_COMPATIBLE_BASE_URL must be configured"
@@ -306,7 +306,7 @@ def _embedding_provider_health(settings: Any = config) -> HealthCheckResult:
                 "",
             )
         ).strip()
-        if api_key and model:
+        if not _is_placeholder_secret(api_key) and model:
             return HealthCheckResult.healthy(
                 "configured; real provider call not verified",
                 {"provider": "openai_compatible", "model": model},

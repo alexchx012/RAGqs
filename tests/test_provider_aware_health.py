@@ -168,6 +168,56 @@ def test_health_checker_rejects_env_example_dashscope_placeholder():
     )
 
 
+def test_validation_dedupes_dashscope_key_when_chat_and_embedding_share_it():
+    report = validate_settings(
+        Settings(
+            _env_file=None,
+            chat_provider="dashscope",
+            embedding_provider="dashscope",
+            dashscope_api_key="your-dashscope-api-key",
+            chat_model="qwen-max",
+            dashscope_embedding_model="text-embedding-v4",
+            vector_store_provider="fake",
+            session_store_provider="memory",
+            retrieval_audit_store_provider="memory",
+            checkpoint_provider="memory",
+            indexing_queue_provider="memory",
+            indexing_job_store_provider="memory",
+            document_catalog_provider="memory",
+        )
+    )
+
+    dashscope_key_issues = [
+        issue for issue in report.errors if issue.field == "DASHSCOPE_API_KEY"
+    ]
+    assert len(dashscope_key_issues) == 1
+    assert dashscope_key_issues[0].message == "must be set to a non-placeholder value"
+
+
+def test_health_checker_rejects_openai_compatible_placeholder_key():
+    checker = create_default_health_checker(
+        settings=_settings(
+            chat_provider="openai_compatible",
+            embedding_provider="openai_compatible",
+            openai_compatible_api_key="your-openai-compatible-api-key",
+            openai_compatible_base_url="https://api.example.com/v1",
+            chat_model="compatible-chat",
+            openai_compatible_embedding_model="compatible-embedding",
+        ),
+        milvus_manager=SimpleNamespace(health_check=lambda: True),
+    )
+
+    payload, status_code = checker.as_response()
+
+    assert status_code == 503
+    assert payload["dependencies"]["modelProvider"]["message"] == (
+        "OPENAI_COMPATIBLE_API_KEY and CHAT_MODEL must be configured"
+    )
+    assert payload["dependencies"]["embeddingProvider"]["message"] == (
+        "OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_EMBEDDING_MODEL must be configured"
+    )
+
+
 def test_health_checker_uses_grouped_provider_selection_for_runtime_stores():
     settings = SimpleNamespace(
         providers=SimpleNamespace(
