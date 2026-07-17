@@ -1,12 +1,12 @@
 # RAG 知识库问答 Agent
 
-基于 **LangChain + LangGraph + Milvus + 通义千问** 的纯 RAG 知识库问答系统。
+基于 **LangChain + LangGraph + Milvus + DeepSeek chat + DashScope embedding** 的纯 RAG 知识库问答系统。
 
 > **状态**: 内部实验项目，尚未完成生产级验证。多实例数据层、真实业务答案质量等均未经过完整测试。
 
 ## Features
 
-- **Provider 解耦** — LLM / Embedding / VectorStore / Session / Audit / Ingestion 全部通过 `app/providers/` 的 contract + factory 装配，支持 DashScope、OpenAI-compatible、fake provider 和 Postgres-backed store 切换。
+- **Provider 解耦** — Chat / Embedding / VectorStore / Session / Audit / Ingestion 全部通过 `app/providers/` 的 contract + factory 装配，支持 DeepSeek、DashScope、OpenAI-compatible、fake provider 和 Postgres-backed store 切换。
 - **显式 LangGraph 编排** — `app/agents/rag_graph.py` 将检索决策、检索、拒答、工具调用、答案生成、错误处理拆成稳定节点，流程可追踪、可调试。
 - **结构化检索 Pipeline** — `app/retrieval/pipeline.py` 支持 query rewrite、多 retriever、去重、rerank、context compression 和阶段耗时 debug。
 - **知识空间与权限隔离** — chat / upload / session / audit / document lifecycle 均在服务端校验角色与 space 权限。
@@ -23,7 +23,7 @@ uv pip install -e .
 
 # 2. 配置
 cp .env.example .env
-# 编辑 .env，填入 DASHSCOPE_API_KEY
+# 编辑 .env：填入 DEEPSEEK_API_KEY（默认 chat）与 DASHSCOPE_API_KEY（默认 embedding）
 
 # 3. 一键启动（自动检查 / 启动 Milvus）
 .\start.ps1
@@ -80,15 +80,32 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 9900 --reload
 
 ## Configuration & Ops
 
+默认是 **DeepSeek chat + DashScope embedding** 混合装配：
+
+```dotenv
+# 默认聊天：CHAT_PROVIDER 留空时，若 DEEPSEEK_API_KEY 有效则自动选择 DeepSeek。
+# 只有同时保存两个有效 chat Key 才触发 DeepSeek-first 自动顺序；只有一个有效 chat Key 时不比较优先级。
+# DashScope chat、OpenAI-compatible chat 与 fake 均必须显式设置 CHAT_PROVIDER。
+CHAT_MODEL=deepseek-v4-pro
+DEEPSEEK_API_KEY=...
+
+# 默认向量化：DashScope embedding（与 chat provider 独立）。
+DASHSCOPE_API_KEY=...
+DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4
+```
+
+- **Chat 配置** — 所有 chat provider 共用必填 `CHAT_MODEL`；可选 `CHAT_PROVIDER`（`deepseek` / `dashscope` / `openai_compatible` / `fake`）。不再使用 `RAG_MODEL`、`DASHSCOPE_MODEL`、`OPENAI_COMPATIBLE_MODEL`。
 - **状态存储** — 默认使用本地 SQLite（`data/*.sqlite3`），支持切换到 Postgres；`.env.example` 中设置 `SESSION_STORE_PROVIDER=sqlite`、`INDEXING_QUEUE_PROVIDER=sqlite`、`CHECKPOINT_PROVIDER=sqlite` 即可获得可重启的本地开发状态。
 - **认证与权限** — 本地开发默认 `AUTH_ENABLED=false`，以 `local-admin` 身份运行。试运行可启用 `AUTH_ENABLED=true` 并选择 `dev_header` 或 `reverse_proxy` provider，role + space 权限在后端统一校验。
 - **并发控制** — 可选启用 `RUNTIME_CONTROLS_ENABLED=true` 限制进程内并发请求数、排队超时和请求超时；通过 `.\scripts\run-fake-load.ps1` 验证 API 并发路径。
+- **健康与 smoke 边界** — `/health` 与启动 preflight 只表示配置 / 依赖边界检查；真实 DeepSeek 调用需运行后续 DeepSeek smoke（opt-in，见 `docs/operations.md`）。配置完整 ≠ 真实 smoke 通过 ≠ 答案质量已验证。
 - **试运行门禁** — 评测基座默认 fake 模式只验证软件接口可运行；将 session / audit / indexing / checkpoint 全切到 Postgres 后，运行 `.\scripts\run-postgres-smoke.ps1` 和 `.\scripts\run-evaluation.ps1` 做端到端验证。
+- **回滚** — 若本 change 引入不可接受回归，还原本 change 产生的提交即可；不涉及向量、数据库 schema 或公开 API 数据迁移。
 - **更多信息** — 项目协作规则、测试命令和代码结构详见 `AGENTS.md`。
 
 ## Tech Stack
 
-FastAPI · LangChain · LangGraph · 通义千问 (DashScope) · Milvus · SQLite / Postgres · React · Vite · TypeScript · SSE
+FastAPI · LangChain · LangGraph · DeepSeek (chat) · DashScope (embedding) · Milvus · SQLite / Postgres · React · Vite · TypeScript · SSE
 
 ## 前端构建
 
