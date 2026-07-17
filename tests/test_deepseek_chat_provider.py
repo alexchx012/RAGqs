@@ -68,4 +68,11 @@ def test_deepseek_uses_chat_completions_and_preserves_tool_history():
     assert request["stream"] is False
     assert [item["role"] for item in request["messages"]] == ["system", "user", "assistant", "tool"]
     assert request["messages"][2]["reasoning_content"] == "private reasoning"
+    assert "tool_calls" in request["messages"][2]
+    assert request["messages"][2]["tool_calls"] == [{
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": '{"id":"7"}'},
+    }]
+    assert request["messages"][2]["tool_calls"][0]["function"]["arguments"] == '{"id":"7"}'
     assert request["messages"][3]["tool_call_id"] == "call-1"
