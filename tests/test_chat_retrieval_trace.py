@@ -166,6 +166,55 @@ async def test_chat_api_returns_sources_and_retrieval_debug(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_api_response_exposes_only_public_answer(monkeypatch):
+    class FakeRagService:
+        async def query_with_trace(self, question: str, session_id: str, space_id: str = "default"):
+            return {
+                "answer": "public answer",
+                "sources": [],
+                "retrieval": {},
+            }
+
+    monkeypatch.setattr(chat_api, "rag_agent_service", FakeRagService())
+
+    payload = await chat_api.chat(ChatRequest(Id="s1", Question="q", spaceId="default"))
+
+    assert payload["data"]["answer"] == "public answer"
+    assert "reasoning_content" not in repr(payload)
+
+
+def test_stream_events_do_not_project_private_reasoning():
+    internal_events = [
+        {"type": "retrieval", "data": {"sources": []}},
+        {"type": "token", "data": "public token", "node": "answer"},
+        {"type": "complete"},
+        {"type": "error", "data": "boom"},
+        {"type": "handoff", "data": {"action": "refuse"}, "node": "handoff"},
+        {"type": "input", "data": "internal-only"},
+    ]
+
+    public_events = [
+        event
+        for event in (chat_api.format_stream_chunk(chunk) for chunk in internal_events)
+        if event is not None
+    ]
+
+    assert all("reasoning_content" not in repr(event) for event in public_events)
+    assert {event["type"] for event in public_events} <= {
+        "content",
+        "done",
+        "error",
+        "retrieval",
+        "handoff",
+        "retrieval_decision",
+        "error_policy",
+        "source",
+        "tool_call",
+        "tool_result",
+    }
+
+
+@pytest.mark.asyncio
 async def test_chat_api_preserves_graph_failure_status(monkeypatch):
     class FakeRagService:
         async def query_with_trace(self, question: str, session_id: str):
