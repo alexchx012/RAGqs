@@ -110,13 +110,7 @@ def create_default_provider_container(
                     "openai_compatible_api_key",
                     "",
                 ),
-                model_name=_settings_value(
-                    settings,
-                    "openai_compatible",
-                    "model",
-                    "openai_compatible_model",
-                    "",
-                ),
+                model_name=getattr(settings, "chat_model", ""),
                 base_url=_settings_value(
                     settings,
                     "openai_compatible",
@@ -135,7 +129,7 @@ def create_default_provider_container(
                     "dashscope_api_key",
                     "",
                 ),
-                model_name=_settings_value(settings, "rag", "model", "rag_model", "qwen-max"),
+                model_name=getattr(settings, "chat_model", ""),
                 temperature=0.7,
             )
 

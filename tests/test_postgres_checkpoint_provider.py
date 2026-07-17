@@ -30,12 +30,14 @@ def test_postgres_checkpoint_provider_defers_connection_until_create_checkpointe
 
 def test_provider_factory_can_select_postgres_checkpoint_provider_without_connecting():
     settings = SimpleNamespace(
-        dashscope_api_key="sk-valid",
-        rag_model="qwen-max",
+        chat_provider="fake",
+        chat_model="test-chat-model",
+        deepseek_api_key="",
+        dashscope_api_key="",
+        dashscope_embedding_model="text-embedding-v4",
         rag_top_k=3,
         milvus_host="127.0.0.1",
         milvus_port=19530,
-        chat_provider="fake",
         embedding_provider="fake",
         vector_store_provider="fake",
         ingestion_provider="fake",
@@ -43,6 +45,7 @@ def test_provider_factory_can_select_postgres_checkpoint_provider_without_connec
         checkpoint_provider="postgres",
         checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs",
     )
+    assert not hasattr(settings, "rag_model")
 
     container = create_default_provider_container(settings=settings, milvus_manager=object())
 

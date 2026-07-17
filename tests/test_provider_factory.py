@@ -53,10 +53,10 @@ def test_default_provider_container_prefers_grouped_openai_compatible_settings()
         openai_compatible=SimpleNamespace(
             api_key="sk-grouped",
             base_url="https://models.example.com/v1",
-            model="group-chat",
             embedding_model="group-embedding",
         ),
-        rag=SimpleNamespace(top_k=3, model="ignored-rag-model"),
+        chat_model="group-chat",
+        rag=SimpleNamespace(top_k=3),
     )
 
     container = create_default_provider_container(settings=settings, milvus_manager=object())
@@ -81,9 +81,9 @@ def test_default_provider_container_prefers_grouped_rag_and_milvus_settings():
             checkpoint="memory",
         ),
         milvus=SimpleNamespace(host="milvus.internal", port=19630),
+        chat_model="test-chat-model",
         rag=SimpleNamespace(
             top_k=9,
-            model="group-rag-model",
             retrieval_profile="high_recall",
             retrieval_high_recall_top_k_multiplier=3,
             retrieval_relaxed_filter_preserve_keys="space_id,tenant_id",
@@ -150,7 +150,7 @@ def test_default_provider_container_prefers_grouped_storage_settings(tmp_path):
 def test_default_provider_container_wires_all_boundaries_without_connecting():
     settings = SimpleNamespace(
         dashscope_api_key="unit-test-key",
-        rag_model="qwen-max",
+        chat_model="test-chat-model",
         rag_top_k=5,
         milvus_host="127.0.0.1",
         milvus_port=19530,
@@ -185,7 +185,7 @@ def test_default_provider_container_can_enable_background_indexing_mode():
     reset_background_indexing_worker()
     settings = SimpleNamespace(
         dashscope_api_key="unit-test-key",
-        rag_model="qwen-max",
+        chat_model="test-chat-model",
         rag_top_k=5,
         milvus_host="127.0.0.1",
         milvus_port=19530,
@@ -212,7 +212,7 @@ def test_default_provider_container_can_enable_background_indexing_mode():
 def test_default_provider_container_can_use_sqlite_retrieval_audit_store(tmp_path):
     settings = SimpleNamespace(
         dashscope_api_key="unit-test-key",
-        rag_model="qwen-max",
+        chat_model="test-chat-model",
         rag_top_k=5,
         milvus_host="127.0.0.1",
         milvus_port=19530,
@@ -234,7 +234,7 @@ def test_default_provider_container_can_use_sqlite_retrieval_audit_store(tmp_pat
 def test_default_provider_container_can_use_postgres_retrieval_audit_store():
     settings = SimpleNamespace(
         dashscope_api_key="unit-test-key",
-        rag_model="qwen-max",
+        chat_model="test-chat-model",
         rag_top_k=5,
         milvus_host="127.0.0.1",
         milvus_port=19530,

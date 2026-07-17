@@ -45,15 +45,23 @@ def test_dashscope_embedding_provider_rejects_env_example_placeholder():
         DashScopeEmbeddingProvider(api_key="your-dashscope-api-key")
 
 
+def test_dashscope_chat_model_provider_requires_model_name_from_caller():
+    with pytest.raises(TypeError):
+        DashScopeChatModelProvider(api_key="sk-valid")  # type: ignore[call-arg]
+
+
 def test_dashscope_chat_model_provider_validates_api_key_when_creating_model():
-    provider = DashScopeChatModelProvider(api_key="")
+    provider = DashScopeChatModelProvider(api_key="", model_name="test-chat-model")
 
     with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
         provider.create_chat_model(streaming=False)
 
 
 def test_dashscope_chat_model_provider_rejects_env_example_placeholder():
-    provider = DashScopeChatModelProvider(api_key="your-dashscope-api-key")
+    provider = DashScopeChatModelProvider(
+        api_key="your-dashscope-api-key",
+        model_name="test-chat-model",
+    )
 
     with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
         provider.create_chat_model(streaming=False)

@@ -44,7 +44,7 @@ def test_health_checker_rejects_incomplete_openai_compatible_provider_configurat
             chat_provider="openai_compatible",
             embedding_provider="openai_compatible",
             openai_compatible_api_key="",
-            openai_compatible_model="",
+            chat_model="",
             openai_compatible_embedding_model="",
         ),
         milvus_manager=SimpleNamespace(health_check=lambda: True),
@@ -54,7 +54,7 @@ def test_health_checker_rejects_incomplete_openai_compatible_provider_configurat
 
     assert status_code == 503
     assert payload["dependencies"]["modelProvider"]["message"] == (
-        "OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_MODEL must be configured"
+        "OPENAI_COMPATIBLE_API_KEY and CHAT_MODEL must be configured"
     )
     assert payload["dependencies"]["embeddingProvider"]["message"] == (
         "OPENAI_COMPATIBLE_API_KEY and OPENAI_COMPATIBLE_EMBEDDING_MODEL must be configured"
@@ -196,7 +196,7 @@ def test_production_validation_requires_auth_and_runtime_controls():
             checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
             ingestion_provider="vector_index",
             openai_compatible_api_key="sk-compatible",
-            openai_compatible_model="compatible-chat",
+            chat_model="compatible-chat",
             openai_compatible_embedding_model="compatible-embedding",
             auth_enabled=False,
             runtime_controls_enabled=False,
@@ -234,7 +234,7 @@ def _settings(**overrides):
         "document_catalog_sqlite_path": "data/document-catalog.sqlite3",
         "checkpoint_sqlite_path": "data/checkpoints.sqlite3",
         "openai_compatible_api_key": "",
-        "openai_compatible_model": "",
+        "chat_model": "test-chat-model",
         "openai_compatible_embedding_model": "",
         "milvus_host": "localhost",
         "milvus_port": 19530,
