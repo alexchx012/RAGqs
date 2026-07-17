@@ -29,7 +29,7 @@
 | `app/api/chat.py` | 问答、流式问答、会话、检索审计 API。 | `chat`, `chat_stream`, `_call_query_with_trace`, `format_stream_chunk`, `list_retrieval_audits` |
 | `app/api/file.py` | 文件上传、知识空间、文档生命周期、索引任务 API。 | `upload_file`, `_call_index_single_file`, `build_upload_security_policy`, `delete_document`, `rebuild_document` |
 | `app/services/rag_agent_service.py` | RAG/Agent 运行时编排，连接 API、图、Provider、会话、审计、指标。 | `RagAgentService`, `query_with_trace`, `query_stream_with_trace`, `_invoke_explicit_graph`, `_build_default_explicit_graph`, `retrieve_context` |
-| `app/agents/rag_graph.py` | 显式 LangGraph RAG 状态图。 | `RagGraphState`, `RagGraphNodes`, `build_rag_state_graph`, `ChatModelAnswerGenerator`, `LangChainToolExecutor`, `LangChainToolPlanner`, `_build_answer_prompt` |
+| `app/agents/rag_graph.py` | 显式 LangGraph RAG 状态图。 | `RagGraphState`, `RagGraphNodes`, `build_rag_state_graph`, `ChatModelAnswerGenerator`, `LangChainToolExecutor`, `_build_answer_prompt` |
 | `app/providers/factory.py` | Provider 组合根，按配置创建 chat/embedding/vector/retriever/session/audit/ingestion/checkpoint provider。 | `ProviderContainer`, `create_default_provider_container`, `get_default_provider_container` |
 | `app/providers/contracts.py` | Provider 边界协议和核心数据结构。 | `RetrievalRequest`, `RetrievalResult`, `RetrievalSource`, `EmbeddingProvider`, `ChatModelProvider`, `VectorStoreProvider`, `RetrieverProvider`, `IngestionProvider` |
 | `app/retrieval/pipeline.py` | 检索流水线：改写、检索、去重、重排、压缩、source 序列化。 | `RetrievalPipeline.retrieve`, `LLMQueryRewriter`, `LLMReranker`, `LLMContextCompressor`, `_deduplicate_documents`, `_source_from_document` |
@@ -125,9 +125,9 @@
 
 | 路径 | 函数/类 | 工具调用行为 |
 | --- | --- | --- |
-| `app/agents/rag_graph.py` | `RagGraphNodes.decide_retrieval` | 如果 state 中已有 `tool_request.name`，路由到 `tool`；否则在启用 planner 时调用 `_plan_tool_or_retrieval`。 |
-| `app/agents/rag_graph.py` | `LangChainToolPlanner.plan` | 当 `TOOL_PLANNING_ENABLED=true` 且存在 planner tools 时，用模型 tool calling 决定是否走工具。 |
-| `app/agents/rag_graph.py` | `RagGraphNodes.tool` | 构造 `tool_call` 事件，调用 `ToolExecutor.execute`。 |
+| `app/agents/rag_graph.py` | `RagGraphNodes.decide_retrieval` | 仅当 state 中已有显式 `tool_request.name` 时路由到 `tool`；否则空问题 handoff，其余走 retrieve。无 pre-retrieval planner。 |
+| `app/agents/rag_graph.py` | `RagGraphNodes.answer` / `route_after_answer` | answer 阶段模型可产出 `tool_calls`；有 tool_calls 则 `answer → tool`，工具结果后 `tool → answer` 续轮。 |
+| `app/agents/rag_graph.py` | `RagGraphNodes.tool` | 优先执行模型 AIMessage.tool_calls；否则执行显式 `tool_request`。 |
 | `app/agents/rag_graph.py` | `LangChainToolExecutor.execute` | 按名称找到 LangChain tool，优先调用 `tool.invoke(args)`。 |
 | `app/extensions/tools.py` | `build_default_tool_registry`, `build_enabled_tools` | 默认注册 `retrieve_knowledge` 和 `get_current_time`。 |
 | `app/tools/knowledge_tool.py` | `retrieve_knowledge`, `retrieve_knowledge_with_provider`, `enforce_knowledge_space` | legacy/tool 路径下调用 retriever provider；`enforce_knowledge_space` 保证工具内 space_id 不越权到请求外空间。 |
@@ -203,7 +203,7 @@
 | `app/config.py` | 配置默认值和 `.env` 映射。 | `Settings`, `ProviderConfig`, `StorageConfig`, `AgentConfig`, `RagConfig` | 几乎所有模块 | Pydantic Settings | 高 | 配置决定 Provider、RAG、Agent、存储、安全、部署行为。 |
 | `app/api/chat.py` | 问答 API 边界。 | `chat`, `chat_stream`, `format_stream_chunk`, `_require_session_space_access` | 前端 `static/app.js`, HTTP clients, tests | `rag_agent_service`, `require_permission`, `require_space_access`, `success_envelope` | 高 | 用户问题从这里进入，错误和权限边界也在这里。 |
 | `app/services/rag_agent_service.py` | RAG/Agent 核心服务。 | `RagAgentService`, `query_with_trace`, `query_stream_with_trace`, `_build_default_explicit_graph`, `_record_retrieval_audit` | `app/api/chat.py`, evaluation service, tests | `build_rag_state_graph`, ProviderContainer, session/audit/metrics stores | 高 | 项目主干调用链汇聚点，连接模型、检索、工具、审计和会话。 |
-| `app/agents/rag_graph.py` | 显式 Agent/RAG 状态图。 | `RagGraphNodes`, `build_rag_state_graph`, `ChatModelAnswerGenerator`, `LangChainToolExecutor`, `LangChainToolPlanner`, `_build_answer_prompt` | `RagAgentService._build_default_explicit_graph`, graph tests | `RetrieverProvider.retrieve`, `model.invoke/stream`, tool executor | 高 | 决定 RAG、工具、拒答、错误策略和最终响应的状态机。 |
+| `app/agents/rag_graph.py` | 显式 Agent/RAG 状态图。 | `RagGraphNodes`, `build_rag_state_graph`, `ChatModelAnswerGenerator`, `LangChainToolExecutor`, `_build_answer_prompt` | `RagAgentService._build_default_explicit_graph`, graph tests | `RetrieverProvider.retrieve`, `model.invoke/stream`, tool executor | 高 | 决定 RAG、工具、拒答、错误策略和最终响应的状态机。 |
 | `app/providers/factory.py` | Provider 组合根。 | `ProviderContainer`, `create_default_provider_container`, `get_default_provider_container` | `RagAgentService`, `app/api/file.py`, tools, tests | DeepSeek/DashScope/OpenAI/fake/Milvus/SQLite/Postgres providers, `RetrievalPipeline` | 高 | 理解可替换架构和默认运行路径的入口；默认 DeepSeek chat + DashScope embedding。 |
 | `app/providers/contracts.py` | Provider 协议和跨模块数据模型。 | `RetrievalRequest`, `RetrievalResult`, `RetrievalSource`, protocol classes | Provider、RAG、retrieval、tests | 无业务调用 | 中 | 所有边界类型的 source of truth。 |
 | `app/retrieval/pipeline.py` | 检索增强流水线。 | `RetrievalPipeline.retrieve`, `LLMQueryRewriter`, `LLMReranker`, `LLMContextCompressor` | `ProviderFactory` 创建的 retriever provider | primary/additional retrievers, chat model provider | 高 | 排序、去重、重排、压缩和 debug 信息都在这里。 |
@@ -245,7 +245,7 @@
 7. `app/services/vector_store_manager.py::VectorStoreManager.similarity_search` 没有 `filters` 参数，但 `app/providers/contracts.py::VectorStoreProvider.similarity_search` 有 filters。Open question：该兼容 wrapper 是否还会被检索路径直接使用；若会，知识空间过滤会不会丢失？
 8. `app/services/document_splitter_service.py::DocumentSplitterService.__init__` 对 text splitter 使用 `chunk_size=self.chunk_size * 2`。Open question：这是有意扩大 chunk，还是历史兼容导致配置名 `CHUNK_MAX_SIZE` 与实际行为不一致？
 9. `app/services/rag_agent_service.py` 同时保留 `explicit_graph` 和 `legacy` 两套 Agent runtime。Open question：`legacy` 是否仍是受支持路径，还是仅用于兼容/回归测试？
-10. `app/config.py::Settings.tool_planning_enabled` 默认为 `False`，`app/services/rag_agent_service.py::_build_tool_planner` 默认排除 `retrieve_knowledge`。Open question：生产期望的 Agent 工具调用是“显式 tool_request 才调用”，还是要开启模型规划工具调用？
+10. 已移除 pre-retrieval planner（`LangChainToolPlanner` / `TOOL_PLANNING_*`）。当前工具路径：显式 `tool_request`，或 answer 阶段模型 `tool_calls` 触发的 answer↔tool 续轮。
 11. `app/retrieval/profiles.py::high_recall` 会增加 relaxed filter fallback，但保留 `space_id/tenant_id` 等键。Open question：未来是否存在更多租户/权限过滤字段需要加入 `RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS`？
 12. `app/evaluation/*` 已有 fake/service/http/real readiness 路径。Open question：当前是否存在真实业务 golden dataset 和真实 provider 环境用于评估答案质量，还是只完成了评估框架和 fake/预检？
 13. `app/security/runtime_controls.py` 是进程内并发/超时控制。Open question：多 worker、多实例、反向代理限流和 Postgres/Milvus 连接池容量是否已有外部设计文档？

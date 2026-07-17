@@ -69,8 +69,6 @@ def test_env_example_documents_all_current_settings():
         "DOCUMENT_CATALOG_POSTGRES_DSN",
         "CHECKPOINT_POSTGRES_DSN",
         "ENABLED_TOOLS",
-        "TOOL_PLANNING_ENABLED",
-        "TOOL_PLANNING_EXCLUDED_TOOLS",
         "PROMPT_PROFILE",
         "OPENAI_COMPATIBLE_API_KEY",
         "OPENAI_COMPATIBLE_BASE_URL",

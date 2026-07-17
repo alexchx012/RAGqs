@@ -142,7 +142,7 @@
 
 当 `AGENT_RUNTIME=legacy` 时，`RagAgentService._run_legacy_query()` 使用 LangChain `create_agent()`，工具来自 `app/extensions/tools.py` 的 `build_enabled_tools()`。默认工具是 `app/tools/knowledge_tool.py` 的 `retrieve_knowledge()` 和 `app/tools/time_tool.py` 的 `get_current_time()`。legacy 调用会包裹 `enforce_knowledge_space(space_id)`，强制 `retrieve_knowledge()` 使用请求选定 space。
 
-显式图也支持工具分支：`RagGraphNodes.decide_retrieval()` 在 `tool_request` 存在或可选 `LangChainToolPlanner.plan()` 返回 tool action 时进入 `RagGraphNodes.tool()`。默认 `TOOL_PLANNING_ENABLED=false`，并且 `TOOL_PLANNING_EXCLUDED_TOOLS=retrieve_knowledge`，因此原生 RAG 检索走 graph retrieval path，不靠模型调用 `retrieve_knowledge`。
+显式图支持工具分支，但没有 pre-retrieval planner：`RagGraphNodes.decide_retrieval()` 仅在 state 已有显式 `tool_request.name` 时进入 `tool`；否则走 retrieve / handoff。答案阶段 `RagGraphNodes.answer()` 可通过模型 `tool_calls` 进入 answer↔tool 续轮（`route_after_answer` → `tool` → `route_after_tool` → `answer`）。原生 RAG 检索始终走 graph retrieve 节点。
 
 ## Testing And Deployment
 
@@ -217,7 +217,7 @@
 ### 已澄清的模型配置真相
 
 - 所有 chat provider 共用唯一模型来源 `CHAT_MODEL`（默认 `deepseek-v4-pro`）。`RAG_MODEL`、`DASHSCOPE_MODEL`、`OPENAI_COMPATIBLE_MODEL` 及其 Python 字段已删除，不再作为配置或回退路径。
-- RAG 没有专用模型变量；答案生成、tool planning、evaluation judge 与检索增强器（rewrite / rerank / compress）在需要 LLM 时都复用 `ProviderContainer.chat_model_provider`。
+- RAG 没有专用模型变量；答案生成（含 answer↔tool 续轮）、evaluation judge 与检索增强器（rewrite / rerank / compress）在需要 LLM 时都复用 `ProviderContainer.chat_model_provider`。
 - DashScope embedding 继续使用独立的 `DASHSCOPE_EMBEDDING_MODEL`，与 `CHAT_MODEL` 解耦。证据：`app/config.py` 的 `Settings.chat_model`、`app/providers/factory.py` 的 `create_default_provider_container()`、`app/providers/selection.py`。
 
 ### 需要代码修复

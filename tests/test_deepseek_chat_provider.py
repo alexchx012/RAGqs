@@ -99,14 +99,33 @@ def model_with_completion(completion: FakeCompletion):
     return model, completions
 
 
-def fake_delta(content=None, tool_calls=None, finish_reason=None):
+def fake_stream_tool_call(index=0, call_id=None, name=None, arguments=""):
+    function = type("Function", (), {"name": name, "arguments": arguments})()
+    return type(
+        "ToolCallDelta",
+        (),
+        {
+            "index": index,
+            "id": call_id,
+            "type": "function" if call_id is not None else None,
+            "function": function,
+        },
+    )()
+
+
+def fake_delta(
+    content=None,
+    tool_calls=None,
+    finish_reason=None,
+    reasoning_content=None,
+):
     delta = type(
         "Delta",
         (),
         {
             "content": content,
             "tool_calls": tool_calls,
-            "reasoning_content": None,
+            "reasoning_content": reasoning_content,
         },
     )()
     choice = type(
@@ -287,6 +306,132 @@ def test_stream_ignores_empty_and_usage_only_chunks():
     ])
 
     assert "".join(chunk.content for chunk in model.stream([HumanMessage(content="q")])) == "hello"
+
+
+def test_stream_pure_tool_call_yields_usable_ai_message_with_tool_calls():
+    model, _ = model_with_stream(
+        [
+            fake_delta(
+                content=None,
+                tool_calls=[
+                    fake_stream_tool_call(
+                        index=0, call_id="call-1", name="lookup", arguments=""
+                    )
+                ],
+            ),
+            fake_delta(
+                content=None,
+                tool_calls=[
+                    fake_stream_tool_call(
+                        index=0, call_id=None, name=None, arguments='{"id":"7"}'
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+
+    message = model.invoke([HumanMessage(content="q")])
+
+    assert message.content in ("", None)
+    assert message.tool_calls == [
+        {
+            "name": "lookup",
+            "args": {"id": "7"},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+    ]
+    assert message.additional_kwargs["deepseek_tool_calls"] == [
+        {
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"id":"7"}'},
+        }
+    ]
+
+
+def test_stream_mixed_content_and_tool_calls_preserves_both():
+    model, _ = model_with_stream(
+        [
+            fake_delta(content="checking "),
+            fake_delta(
+                content=None,
+                tool_calls=[
+                    fake_stream_tool_call(
+                        index=0, call_id="call-9", name="lookup", arguments='{"id":"1"}'
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+
+    message = model.invoke([HumanMessage(content="q")])
+
+    assert message.content == "checking "
+    assert message.tool_calls[0]["name"] == "lookup"
+    assert message.tool_calls[0]["args"] == {"id": "1"}
+    assert message.additional_kwargs["deepseek_tool_calls"][0]["id"] == "call-9"
+
+
+def test_stream_keeps_reasoning_off_public_content():
+    model, _ = model_with_stream(
+        [
+            fake_delta(content=None, reasoning_content="private"),
+            fake_delta(content="visible", finish_reason="stop"),
+        ]
+    )
+
+    public = "".join(chunk.content for chunk in model.stream([HumanMessage(content="q")]))
+    message = model.invoke([HumanMessage(content="q")])
+
+    assert public == "visible"
+    assert "private" not in public
+    assert message.content == "visible"
+    assert message.additional_kwargs.get("reasoning_content") == "private"
+
+
+def test_stream_ai_message_pure_tool_call_without_public_tokens():
+    from app.agents.rag_graph import ChatModelAnswerGenerator
+
+    class _Provider:
+        def create_chat_model(self, streaming=True):
+            model, _ = model_with_stream(
+                [
+                    fake_delta(
+                        content=None,
+                        reasoning_content="think",
+                        tool_calls=[
+                            fake_stream_tool_call(
+                                index=0,
+                                call_id="call-1",
+                                name="lookup",
+                                arguments='{"id":"7"}',
+                            )
+                        ],
+                        finish_reason="tool_calls",
+                    )
+                ]
+            )
+            return model
+
+    generator = ChatModelAnswerGenerator(
+        chat_model_provider=_Provider(),
+        system_prompt="sys",
+    )
+    public_tokens: list[str] = []
+    message = generator.stream_ai_message(
+        [HumanMessage(content="q")],
+        tools=None,
+        on_token=public_tokens.append,
+    )
+
+    assert public_tokens == []
+    assert message.tool_calls[0]["name"] == "lookup"
+    assert message.tool_calls[0]["args"] == {"id": "7"}
+    assert message.additional_kwargs.get("reasoning_content") == "think"
+    assert "think" not in str(message.content or "")
 
 
 def test_transport_error_is_classified_without_exposing_api_key():
