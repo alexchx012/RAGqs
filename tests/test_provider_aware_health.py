@@ -49,6 +49,8 @@ def test_health_reports_deepseek_chat_and_dashscope_embedding_as_configured():
                 chat_provider=None,
                 chat_model="deepseek-v4-pro",
                 deepseek_api_key="",
+                # Isolate from process env so zero-key defaults to DeepSeek candidate.
+                dashscope_api_key="",
                 embedding_provider="fake",
                 vector_store_provider="fake",
             ),
@@ -284,6 +286,7 @@ def test_production_validation_requires_auth_and_runtime_controls():
             checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
             ingestion_provider="vector_index",
             openai_compatible_api_key="sk-compatible",
+            openai_compatible_base_url="https://api.example.com/v1",
             chat_model="compatible-chat",
             openai_compatible_embedding_model="compatible-embedding",
             auth_enabled=False,

@@ -722,6 +722,7 @@ def test_config_validation_accepts_hardened_production_settings():
             checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
             ingestion_provider="vector_index",
             openai_compatible_api_key="sk-compatible",
+            openai_compatible_base_url="https://api.example.com/v1",
             chat_model="compatible-chat",
             openai_compatible_embedding_model="compatible-embedding",
             auth_enabled=True,

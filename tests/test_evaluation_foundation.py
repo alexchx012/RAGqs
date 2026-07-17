@@ -401,7 +401,12 @@ def test_real_evaluation_readiness_reports_missing_deepseek_chat_key():
             chat_provider=None,
             deepseek_api_key="",
             chat_model="deepseek-v4-pro",
-            dashscope_api_key="sk-real-dashscope",
+            # Zero valid chat keys => DeepSeek default_candidate; diagnose DEEPSEEK_API_KEY.
+            # DashScope remains available only for embedding, not as automatic chat fallback here.
+            dashscope_api_key="",
+            embedding_provider="fake",
+            vector_store_provider="fake",
+            ingestion_provider="fake",
         ),
         mode="service",
         faithfulness_judge="static",

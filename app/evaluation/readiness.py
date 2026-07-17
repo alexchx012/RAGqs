@@ -186,8 +186,14 @@ def _validate_model_judge_provider(
         )
         return
 
+    chat_related_prefixes = (
+        "DEEPSEEK",
+        "DASHSCOPE_API_KEY",
+        "CHAT_MODEL",
+        "OPENAI_COMPATIBLE",
+    )
     for issue in validate_settings(settings).errors:
-        if issue.field.startswith("DASHSCOPE") or issue.field.startswith("OPENAI_COMPATIBLE"):
+        if any(issue.field.startswith(prefix) for prefix in chat_related_prefixes):
             errors.append(EvaluationReadinessIssue(field=issue.field, message=issue.message))
 
 

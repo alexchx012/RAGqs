@@ -276,9 +276,13 @@ function Assert-AppConfiguration {
 
     $envFile = Join-Path $script:RepoRoot ".env"
     if (-not (Test-Path -LiteralPath $envFile)) {
-        throw ".env not found. Create it from .env.example and set DASHSCOPE_API_KEY before starting the app."
+        throw ".env not found. Create it from .env.example and set CHAT_MODEL, DEEPSEEK_API_KEY, and DASHSCOPE_EMBEDDING_MODEL (or the selected provider keys) before starting the app."
     }
 
+    # Preflight only calls configuration validation; do not print API keys.
+    # Chat credentials (CHAT_MODEL / DEEPSEEK_API_KEY) are diagnosed separately
+    # from embedding credentials (DASHSCOPE_API_KEY / DASHSCOPE_EMBEDDING_MODEL).
+    Write-Step "Running configuration preflight (config validation only; no upstream smoke calls)"
     $stdoutPath = Join-Path ([System.IO.Path]::GetTempPath()) "ragqs-config-validation.out"
     $stderrPath = Join-Path ([System.IO.Path]::GetTempPath()) "ragqs-config-validation.err"
     Remove-Item -LiteralPath $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
@@ -306,12 +310,12 @@ function Assert-AppConfiguration {
             $message = "Python dependencies could not be loaded while validating app.operations.config_validation. Run dependency installation, then rerun start.ps1."
         }
         elseif ([string]::IsNullOrWhiteSpace($message)) {
-            $message = "Fix .env values and rerun start.ps1."
+            $message = "Fix CHAT_MODEL / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / DASHSCOPE_EMBEDDING_MODEL (as required by selected providers) and rerun start.ps1."
         }
-        throw "Configuration validation failed. $message"
+        throw "Configuration preflight failed. $message"
     }
 
-    Write-Ok "Application configuration is valid"
+    Write-Ok "Application configuration is valid (configured; not smoke-tested)"
 }
 
 function Get-ExistingMilvusContainers {
