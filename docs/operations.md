@@ -316,9 +316,13 @@ The suite covers three paths against Chat Completions only (never Responses API)
 
 1. Non-streaming public text
 2. Ordinary streaming public text
-3. thinking + tool-call continuation with the zero-side-effect `get_current_time` tool — the second
-   adapter request must keep the assistant tool-call history (including optional
-   `reasoning_content`) and the matching `ToolMessage`, then return non-empty public text
+3. thinking + tool-call continuation with the zero-side-effect `get_current_time` tool — first
+   turn forces `tool_choice` for the tool; second turn asks only for a final public answer from
+   the tool result (no re-forced tool call). The smoke enables DeepSeek thinking via
+   `extra_body={"thinking": {"type": "enabled"}}` when the adapter forwards it. The second
+   adapter request must keep assistant `tool_calls` and the matching `ToolMessage`, then return
+   non-empty public text. `reasoning_content` is asserted only when the live first turn actually
+   returns it; full reasoning history serialization remains covered by unit tests
 
 Constraints:
 
