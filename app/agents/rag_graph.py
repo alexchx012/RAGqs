@@ -167,40 +167,27 @@ class RagGraphNodes:
 
             if hasattr(self.answer_generator, "invoke_messages"):
                 stream_writer = _get_stream_writer_or_none()
-                use_stream = (
-                    stream_writer is not None
-                    and hasattr(self.answer_generator, "stream_messages")
-                    and not tools
+                # Stream pure-answer turns even when tools are bound. Tool-call
+                # turns still return a full AIMessage (with tool_calls) from the
+                # stream assembly path; public tokens are content-only.
+                use_stream = stream_writer is not None and (
+                    hasattr(self.answer_generator, "stream_ai_message")
+                    or hasattr(self.answer_generator, "stream_messages")
                 )
                 if use_stream:
-                    answer_text = _stream_answer_tokens(
+                    message = _stream_answer_message(
                         state=state,
                         answer_generator=self.answer_generator,
                         stream_writer=stream_writer,
                         messages=prepared_messages,
                         tools=tools,
                     )
-                    message = AIMessage(content=answer_text)
                 else:
                     message = self.answer_generator.invoke_messages(
                         prepared_messages,
                         tools,
                     )
-                    if (
-                        stream_writer is not None
-                        and not _has_tool_calls(message)
-                        and _message_text(message)
-                        and hasattr(self.answer_generator, "stream_messages")
-                    ):
-                        # Public token stream for final visible content only.
-                        answer_text = _message_text(message)
-                        stream_writer(
-                            {
-                                "type": "token",
-                                "node": "answer",
-                                "data": answer_text,
-                            }
-                        )
+                message = _coerce_ai_message(message)
             else:
                 stream_writer = _get_stream_writer_or_none()
                 if stream_writer is not None and hasattr(self.answer_generator, "stream"):
@@ -448,11 +435,20 @@ class RagGraphNodes:
             messages.append(system_message)
             bootstrap.append(system_message)
 
-        last = messages[-1] if messages else None
-        if last is None or isinstance(last, (SystemMessage, AIMessage)):
-            human_message = HumanMessage(content=_build_answer_prompt(state))
-            messages.append(human_message)
-            bootstrap.append(human_message)
+        # On the first model call of a turn (tool_rounds == 0), always append the
+        # current-turn Human with retrieval context unless it is already last.
+        # Do not key only on AI/System — history may end on ToolMessage after a
+        # prior tool loop, round-limit stop, or invalid-args failure.
+        if state.get("tool_rounds", 0) == 0:
+            human_content = _build_answer_prompt(state)
+            last = messages[-1] if messages else None
+            if not (
+                isinstance(last, HumanMessage)
+                and getattr(last, "content", None) == human_content
+            ):
+                human_message = HumanMessage(content=human_content)
+                messages.append(human_message)
+                bootstrap.append(human_message)
 
         return messages, bootstrap
 
@@ -625,6 +621,71 @@ class ChatModelAnswerGenerator:
             if token:
                 yield token
 
+    def stream_ai_message(
+        self,
+        messages: list[BaseMessage],
+        tools: list[Any] | None = None,
+        *,
+        on_token: Callable[[str], None] | None = None,
+    ) -> Any:
+        """Stream model output and return a full AIMessage (incl. tool_calls).
+
+        Public tokens are content text only — never reasoning_content / usage /
+        tool deltas. Content tokens are emitted as they arrive so pure-answer
+        turns stream progressively; tool-call turns typically have empty content
+        and therefore emit nothing. When the model has no ``stream``, falls back
+        to ``invoke_messages``.
+        """
+        model = self._get_streaming_model()
+        if tools and hasattr(model, "bind_tools"):
+            model = model.bind_tools(tools)
+        if not hasattr(model, "stream"):
+            message = self.invoke_messages(messages, tools=tools)
+            text = _message_text(message)
+            if text and on_token is not None and not _has_tool_calls(message):
+                on_token(text)
+            return message
+
+        content_parts: list[str] = []
+        aggregated: Any = None
+        saw_tool_calls = False
+        for chunk in model.stream(list(messages)):
+            if _has_tool_calls(chunk):
+                saw_tool_calls = True
+            token = _message_text(chunk)
+            if token:
+                content_parts.append(token)
+                # Suppress content tokens once tool-call deltas appear so
+                # intermediate tool turns never leak public token events.
+                if on_token is not None and not saw_tool_calls:
+                    on_token(token)
+            try:
+                aggregated = chunk if aggregated is None else aggregated + chunk
+            except Exception:
+                # Plain test doubles / non-aggregatable chunks: keep text only.
+                # Prefer a full AIMessage-like chunk (tool_calls) over text stubs.
+                if aggregated is None or _has_tool_calls(chunk):
+                    aggregated = chunk
+                continue
+
+        answer_text = "".join(content_parts)
+        if aggregated is not None and (
+            _has_tool_calls(aggregated)
+            or isinstance(aggregated, AIMessage)
+            or getattr(aggregated, "additional_kwargs", None)
+        ):
+            tool_calls = list(getattr(aggregated, "tool_calls", None) or [])
+            additional_kwargs = dict(
+                getattr(aggregated, "additional_kwargs", None) or {}
+            )
+            content = _message_text(aggregated) or answer_text
+            return AIMessage(
+                content=content,
+                tool_calls=tool_calls,
+                additional_kwargs=additional_kwargs,
+            )
+        return AIMessage(content=answer_text)
+
     def _get_model(self):
         if self._model is None:
             self._model = self.chat_model_provider.create_chat_model(streaming=False)
@@ -662,6 +723,15 @@ def _stream_answer_tokens(
     tools: list[Any] | None = None,
 ) -> str:
     tokens: list[str] = []
+    if messages is not None and hasattr(answer_generator, "stream_ai_message"):
+        message = _stream_answer_message(
+            state=state,
+            answer_generator=answer_generator,
+            stream_writer=stream_writer,
+            messages=messages,
+            tools=tools,
+        )
+        return _message_text(message)
     if messages is not None and hasattr(answer_generator, "stream_messages"):
         stream_iter = answer_generator.stream_messages(messages, tools)
     else:
@@ -673,6 +743,34 @@ def _stream_answer_tokens(
         tokens.append(text)
         stream_writer({"type": "token", "node": "answer", "data": text})
     return "".join(tokens)
+
+
+def _stream_answer_message(
+    *,
+    state: RagGraphState,
+    answer_generator: Any,
+    stream_writer: Callable[[dict[str, Any]], None],
+    messages: list[BaseMessage] | None = None,
+    tools: list[Any] | None = None,
+) -> Any:
+    def on_token(text: str) -> None:
+        stream_writer({"type": "token", "node": "answer", "data": text})
+
+    if messages is not None and hasattr(answer_generator, "stream_ai_message"):
+        return answer_generator.stream_ai_message(
+            messages,
+            tools,
+            on_token=on_token,
+        )
+    # Legacy generators: text-only stream → plain AIMessage.
+    answer_text = _stream_answer_tokens(
+        state=state,
+        answer_generator=answer_generator,
+        stream_writer=stream_writer,
+        messages=messages,
+        tools=tools,
+    )
+    return AIMessage(content=answer_text)
 
 
 def _get_stream_writer_or_none():
@@ -698,6 +796,19 @@ def _message_text(message: Any) -> str:
     if callable(text):
         return str(text())
     return "" if content is None else str(content)
+
+
+def _coerce_ai_message(message: Any) -> AIMessage:
+    """Ensure graph message state only stores LangChain BaseMessage instances."""
+    if isinstance(message, AIMessage):
+        return message
+    tool_calls = list(getattr(message, "tool_calls", None) or [])
+    additional_kwargs = dict(getattr(message, "additional_kwargs", None) or {})
+    return AIMessage(
+        content=_message_text(message),
+        tool_calls=tool_calls,
+        additional_kwargs=additional_kwargs,
+    )
 
 
 def _has_tool_calls(message: Any) -> bool:

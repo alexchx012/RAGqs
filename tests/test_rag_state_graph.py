@@ -1,6 +1,6 @@
 import pytest
 from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agents import (
     AnswerGenerator,
@@ -9,6 +9,7 @@ from app.agents import (
     ToolExecutor,
     build_rag_state_graph,
 )
+from app.agents.rag_graph import RagGraphNodes
 from app.config import Settings
 from app.providers import RetrievalRequest, RetrievalResult, RetrievalSource
 
@@ -758,3 +759,273 @@ def test_invalid_tool_arguments_do_not_execute_tool(arguments):
     assert not any(
         isinstance(message, ToolMessage) for message in state.get("messages", [])
     )
+
+
+def test_prepare_model_messages_appends_human_when_history_ends_with_tool_message():
+    """First model call of a new turn must append Human even after ToolMessage end."""
+    nodes = RagGraphNodes(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=RecordingAnswerGenerator(),
+        system_prompt="sys",
+    )
+    retrieval_result = RetrievalResult(
+        query="follow up",
+        documents=[
+            Document(page_content="ctx", metadata={"_file_name": "doc.md"}),
+        ],
+        sources=[],
+        debug={},
+    )
+    state = {
+        "messages": [
+            SystemMessage(content="sys"),
+            HumanMessage(content="prior turn with tools"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "crm_lookup",
+                        "args": {"customer_id": "c-1"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(content="lookup:c-1", tool_call_id="call-1", name="crm_lookup"),
+        ],
+        "tool_rounds": 0,
+        "question": "follow up",
+        "normalized_question": "follow up",
+        "retrieval_result": retrieval_result,
+    }
+
+    prepared, bootstrap = nodes._prepare_model_messages(state)
+
+    assert len(bootstrap) == 1
+    assert isinstance(bootstrap[0], HumanMessage)
+    assert "follow up" in bootstrap[0].content
+    assert isinstance(prepared[-1], HumanMessage)
+    assert prepared[-1] is bootstrap[0]
+    assert "Retrieved context" in prepared[-1].content
+
+
+def test_prepare_model_messages_skips_duplicate_human_on_same_turn():
+    nodes = RagGraphNodes(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=RecordingAnswerGenerator(),
+        system_prompt="sys",
+    )
+    retrieval_result = RetrievalResult(
+        query="same",
+        documents=[Document(page_content="ctx", metadata={"_file_name": "doc.md"})],
+        sources=[],
+        debug={},
+    )
+    # Build the exact prompt the node would generate, then seed it as last message.
+    seeded_state = {
+        "messages": [],
+        "tool_rounds": 0,
+        "question": "same",
+        "normalized_question": "same",
+        "retrieval_result": retrieval_result,
+    }
+    _, first_bootstrap = nodes._prepare_model_messages(seeded_state)
+    human = first_bootstrap[-1]
+    state = {
+        "messages": [SystemMessage(content="sys"), human],
+        "tool_rounds": 0,
+        "question": "same",
+        "normalized_question": "same",
+        "retrieval_result": retrieval_result,
+    }
+
+    prepared, bootstrap = nodes._prepare_model_messages(state)
+
+    assert bootstrap == []
+    assert prepared[-1] is human
+
+
+def test_prepare_model_messages_does_not_rebootstrap_during_tool_continuation():
+    nodes = RagGraphNodes(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=RecordingAnswerGenerator(),
+        system_prompt="sys",
+    )
+    state = {
+        "messages": [
+            SystemMessage(content="sys"),
+            HumanMessage(content="prior"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "crm_lookup",
+                        "args": {"customer_id": "c-1"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(content="lookup:c-1", tool_call_id="call-1", name="crm_lookup"),
+        ],
+        "tool_rounds": 1,
+        "question": "prior",
+        "normalized_question": "prior",
+        "retrieval_result": RetrievalResult(
+            query="prior",
+            documents=[Document(page_content="ctx", metadata={})],
+            sources=[],
+            debug={},
+        ),
+    }
+
+    prepared, bootstrap = nodes._prepare_model_messages(state)
+
+    assert bootstrap == []
+    assert isinstance(prepared[-1], ToolMessage)
+
+
+def test_graph_streams_final_answer_when_tools_available_but_unused():
+    """Tools bound must not force invoke+single-token for pure text answers."""
+
+    class StreamingBoundToolsModel:
+        def __init__(self):
+            self.stream_calls = []
+            self.invoke_calls = []
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            self.invoke_calls.append(list(messages))
+            return AIMessage(content="should-not-invoke-for-streamed-answer")
+
+        def stream(self, messages):
+            self.stream_calls.append(list(messages))
+            yield type("Chunk", (), {"content": "streamed "})()
+            yield type("Chunk", (), {"content": "with tools"})()
+
+    from langchain_core.tools import tool
+
+    model = StreamingBoundToolsModel()
+
+    @tool("unused_lookup")
+    def unused_lookup(customer_id: str) -> str:
+        """Unused tool kept available for binding."""
+        return f"customer:{customer_id}"
+
+    graph = build_rag_state_graph(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=ChatModelAnswerGenerator(
+            chat_model_provider=ContinuationChatProvider(model),
+            system_prompt="Answer with tools when needed.",
+        ),
+        tool_executor=LangChainToolExecutor([unused_lookup]),
+        available_tools=[unused_lookup],
+    )
+
+    chunks = list(
+        graph.stream(
+            {"question": "What is RAG?", "session_id": "s1"},
+            stream_mode=["custom", "updates"],
+        )
+    )
+
+    custom_chunks = [payload for mode, payload in chunks if mode == "custom"]
+    answer_updates = [
+        payload["answer"]
+        for mode, payload in chunks
+        if mode == "updates" and "answer" in payload
+    ]
+
+    assert model.stream_calls, "pure answer turn should use model.stream even with tools bound"
+    assert model.invoke_calls == []
+    assert custom_chunks == [
+        {"type": "token", "node": "answer", "data": "streamed "},
+        {"type": "token", "node": "answer", "data": "with tools"},
+    ]
+    assert answer_updates[0]["answer"] == "streamed with tools"
+
+
+def test_graph_tool_call_turn_does_not_emit_public_tokens_when_streaming():
+    """Tool-call intermediate turns must not leak public token events."""
+
+    class ToolThenAnswerModel:
+        def __init__(self):
+            self.stream_calls = 0
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            raise AssertionError("streaming path should use model.stream")
+
+        def stream(self, messages):
+            self.stream_calls += 1
+            if self.stream_calls == 1:
+                # Intermediate tool-call turn: no public content tokens.
+                yield AIMessage(
+                    content="",
+                    additional_kwargs={
+                        "reasoning_content": "private",
+                        "deepseek_tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "crm_lookup",
+                                    "arguments": '{"customer_id":"c-9"}',
+                                },
+                            }
+                        ],
+                    },
+                    tool_calls=[
+                        {
+                            "name": "crm_lookup",
+                            "args": {"customer_id": "c-9"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+                return
+            yield type("Chunk", (), {"content": "after tool"})()
+
+    from langchain_core.tools import tool
+
+    model = ToolThenAnswerModel()
+
+    @tool("crm_lookup")
+    def crm_lookup(customer_id: str) -> str:
+        """Look up a customer record."""
+        return f"customer:{customer_id}"
+
+    graph = build_rag_state_graph(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=ChatModelAnswerGenerator(
+            chat_model_provider=ContinuationChatProvider(model),
+            system_prompt="Answer with tools when needed.",
+        ),
+        tool_executor=LangChainToolExecutor([crm_lookup]),
+        available_tools=[crm_lookup],
+    )
+
+    chunks = list(
+        graph.stream(
+            {"question": "lookup c-9", "session_id": "s1"},
+            stream_mode=["custom", "updates"],
+        )
+    )
+    custom_chunks = [payload for mode, payload in chunks if mode == "custom"]
+    final_updates = [
+        payload["final_response"]
+        for mode, payload in chunks
+        if mode == "updates" and "final_response" in payload
+    ]
+
+    assert all(chunk.get("type") == "token" for chunk in custom_chunks)
+    assert all(chunk.get("data") != "private" for chunk in custom_chunks)
+    assert custom_chunks == [
+        {"type": "token", "node": "answer", "data": "after tool"},
+    ]
+    assert final_updates[0]["final_response"]["answer"] == "after tool"
