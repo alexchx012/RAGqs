@@ -75,6 +75,9 @@ def test_env_example_documents_all_current_settings():
         "OPENAI_COMPATIBLE_API_KEY",
         "OPENAI_COMPATIBLE_BASE_URL",
         "OPENAI_COMPATIBLE_EMBEDDING_MODEL",
+        "CHAT_MODEL",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
         "DASHSCOPE_API_KEY",
         "DASHSCOPE_EMBEDDING_MODEL",
         "MILVUS_HOST",
@@ -105,6 +108,17 @@ def test_env_example_documents_langsmith_tracing_settings():
         "LANGSMITH_PROJECT",
     ]:
         assert f"{key}=" in env_example
+
+
+def test_env_example_uses_deepseek_chat_and_dashscope_embeddings():
+    text = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "CHAT_MODEL=deepseek-v4-pro" in text
+    assert "DEEPSEEK_API_KEY=" in text
+    assert "DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4" in text
+    assert "RAG_MODEL=" not in text
+    assert "DASHSCOPE_MODEL=" not in text
+    assert "OPENAI_COMPATIBLE_MODEL=" not in text
 
 
 def test_readme_documents_sqlite_development_state_defaults():
@@ -197,6 +211,7 @@ if __name__ == "__main__":
     test_phase0_baseline_artifacts_do_not_require_local_docs()
     test_env_example_documents_all_current_settings()
     test_env_example_documents_langsmith_tracing_settings()
+    test_env_example_uses_deepseek_chat_and_dashscope_embeddings()
     test_readme_documents_sqlite_development_state_defaults()
     test_baseline_validation_script_runs_core_checks()
     test_evaluation_script_enforces_core_metric_thresholds()
