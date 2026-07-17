@@ -19,12 +19,10 @@ from app.providers.selection import ProviderSelection
 
 
 def test_development_defaults_use_sqlite_for_runtime_state():
-    # Explicit chat_provider keeps current validation green until selection
-    # accepts blank/None as auto-select (later task).
+    # Blank/None chat_provider auto-selects from valid credentials (DashScope key only).
     settings = Settings(
         _env_file=None,
         dashscope_api_key="sk-valid",
-        chat_provider="dashscope",
     )
     selection = ProviderSelection.from_settings(settings)
 
