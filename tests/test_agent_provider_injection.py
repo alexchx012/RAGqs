@@ -1,7 +1,55 @@
+from types import SimpleNamespace
+
 import pytest
 
 from app.providers import FakeChatModelProvider
 from app.services.rag_agent_service import RagAgentService
+
+
+def test_service_uses_chat_model_for_trace_metadata():
+    service = RagAgentService(
+        settings=SimpleNamespace(chat_model="deepseek-v4-pro"),
+        streaming=False,
+        chat_model_provider=FakeChatModelProvider(),
+        agent_factory=lambda model, tools, checkpointer: object(),
+        tools=[],
+        checkpointer=object(),
+        agent_runtime="legacy",
+    )
+
+    assert service.model_name == "deepseek-v4-pro"
+
+
+def test_service_model_name_strips_chat_model_whitespace():
+    service = RagAgentService(
+        settings=SimpleNamespace(chat_model="  deepseek-v4-pro  "),
+        streaming=False,
+        chat_model_provider=FakeChatModelProvider(),
+        agent_factory=lambda model, tools, checkpointer: object(),
+        tools=[],
+        checkpointer=object(),
+        agent_runtime="legacy",
+    )
+
+    assert service.model_name == "deepseek-v4-pro"
+
+
+def test_service_model_name_ignores_rag_model_fields():
+    service = RagAgentService(
+        settings=SimpleNamespace(
+            chat_model="deepseek-v4-pro",
+            rag_model="legacy-rag-model",
+            rag=SimpleNamespace(model="grouped-rag-model", top_k=3),
+        ),
+        streaming=False,
+        chat_model_provider=FakeChatModelProvider(),
+        agent_factory=lambda model, tools, checkpointer: object(),
+        tools=[],
+        checkpointer=object(),
+        agent_runtime="legacy",
+    )
+
+    assert service.model_name == "deepseek-v4-pro"
 
 
 @pytest.mark.asyncio

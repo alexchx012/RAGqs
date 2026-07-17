@@ -138,6 +138,88 @@ async def test_rag_agent_service_records_retrieval_audit_with_current_trace_id(m
 
 
 @pytest.mark.asyncio
+async def test_retrieval_audit_does_not_store_private_reasoning_content(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from langchain_core.tools import tool
+
+    class AuditThinkingModel:
+        def __init__(self):
+            self.calls = []
+            self.bound_tools = []
+
+        def bind_tools(self, tools):
+            self.bound_tools = tools
+            return self
+
+        def invoke(self, messages):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return AIMessage(
+                    content="",
+                    additional_kwargs={
+                        "reasoning_content": "private-audit-reasoning",
+                        "deepseek_tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "demo_tool", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    tool_calls=[
+                        {
+                            "name": "demo_tool",
+                            "args": {},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(content="audited public answer")
+
+    class AuditThinkingProvider:
+        def __init__(self):
+            self.model = AuditThinkingModel()
+
+        def create_chat_model(self, streaming: bool = True):
+            return self.model
+
+    class AuditToolExecutor:
+        def execute(self, request):
+            return {"name": request["name"], "output": "tool answer", "metadata": {}}
+
+    @tool("demo_tool")
+    def demo_tool() -> str:
+        """Return a demo tool response."""
+        return "demo"
+
+    def failing_agent_factory(model, tools, checkpointer):
+        raise AssertionError("legacy create_agent path should not be used")
+
+    audit_store = InMemoryRetrievalAuditStore()
+    monkeypatch.setattr(rag_service_module, "get_current_trace_id", lambda: "trace-private")
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=AuditThinkingProvider(),
+        agent_factory=failing_agent_factory,
+        tools=[demo_tool],
+        retriever_provider=StaticRetriever(),
+        session_store_provider=InMemorySessionStoreProvider(),
+        retrieval_audit_store_provider=audit_store,
+        tool_executor=AuditToolExecutor(),
+        agent_runtime="explicit_graph",
+    )
+
+    await service.query_with_trace("What is RAG?", session_id="s1")
+
+    records = audit_store.list_records(session_id="s1")
+    assert len(records) == 1
+    assert "reasoning_content" not in repr(records)
+    assert "private-audit-reasoning" not in repr(records)
+    assert "deepseek_tool_calls" not in repr(records)
+
+
+@pytest.mark.asyncio
 async def test_chat_api_lists_retrieval_audits(monkeypatch):
     class FakeRagService:
         def list_retrieval_audits(

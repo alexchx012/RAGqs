@@ -108,6 +108,67 @@ def test_clear_session_deletes_session_store_history():
     assert service.get_session_history("s1") == []
 
 
+@pytest.mark.asyncio
+async def test_clear_session_removes_public_history_and_private_checkpoint():
+    from langgraph.checkpoint.memory import MemorySaver
+
+    session_store = InMemorySessionStoreProvider()
+    checkpointer = MemorySaver()
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=SessionThinkingToolProvider(),
+        agent_factory=failing_session_agent_factory,
+        tools=[],
+        retriever_provider=SessionEmptyRetriever(),
+        session_store_provider=session_store,
+        checkpointer=checkpointer,
+        agent_runtime="explicit_graph",
+    )
+
+    await service.query_with_trace("question", session_id="s1")
+
+    checkpoint_cfg = service._build_runtime_config(session_id="s1", space_id="default")
+    thread_id = checkpoint_cfg["configurable"]["thread_id"]
+    assert thread_id == "s1"
+    assert session_store.get_messages("s1")
+    assert checkpointer.get(checkpoint_cfg) is not None
+    assert thread_id in checkpointer.storage
+
+    assert service.clear_session("s1") is True
+
+    # MemorySaver.get() may re-touch defaultdict keys, so check deletion first.
+    assert checkpointer.get(checkpoint_cfg) is None
+    assert session_store.get_messages("s1") == []
+    assert service.get_session_history("s1") == []
+
+
+def test_clear_session_warns_when_checkpointer_lacks_delete_thread(monkeypatch):
+    from app.services import rag_agent_service as rag_service_module
+
+    warnings = []
+
+    def capture_warning(message, *args, **kwargs):
+        warnings.append(message.format(*args) if args else str(message))
+
+    monkeypatch.setattr(rag_service_module.logger, "warning", capture_warning)
+
+    session_store = InMemorySessionStoreProvider()
+    session_store.append_message("s1", "user", "hello")
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=SimpleNamespace(create_chat_model=lambda streaming: object()),
+        agent_factory=fake_agent_factory,
+        tools=[],
+        session_store_provider=session_store,
+        checkpointer=object(),
+        agent_runtime="legacy",
+    )
+
+    assert service.clear_session("s1") is True
+    assert session_store.get_messages("s1") == []
+    assert any("delete_thread" in message for message in warnings)
+
+
 def test_session_store_lists_summaries_newest_first_and_searches_titles():
     session_store = InMemorySessionStoreProvider()
     session_store.append_message("s1", "user", "Alpha question")
