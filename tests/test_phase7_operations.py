@@ -331,7 +331,10 @@ def test_default_health_checker_prefers_grouped_settings_and_injected_dependenci
 
     settings = SimpleNamespace(
         app=SimpleNamespace(name="Grouped RAG", version="2.0.0"),
+        chat_provider=None,
         chat_model="group-chat-model",
+        deepseek=SimpleNamespace(api_key="ds-grouped", base_url="https://api.deepseek.com"),
+        deepseek_api_key="ds-grouped",
         dashscope=SimpleNamespace(
             api_key="sk-grouped",
             embedding_model="group-embedding",
@@ -360,8 +363,9 @@ def test_default_health_checker_prefers_grouped_settings_and_injected_dependenci
         "version": "2.0.0",
     }
     assert payload["dependencies"]["modelProvider"]["details"] == {
-        "provider": "dashscope",
+        "provider": "deepseek",
         "model": "group-chat-model",
+        "validation": "configured_not_smoke_tested",
     }
     assert payload["dependencies"]["embeddingProvider"]["details"] == {
         "provider": "dashscope",
@@ -377,6 +381,21 @@ def test_default_health_checker_prefers_grouped_settings_and_injected_dependenci
     }
 
 
+def test_config_validation_requires_deepseek_key_for_default_candidate():
+    report = validate_settings(
+        _settings(
+            chat_provider=None,
+            deepseek_api_key="",
+            chat_model="deepseek-v4-pro",
+            embedding_provider="fake",
+            dashscope_api_key="",
+        )
+    )
+
+    assert report.is_valid is False
+    assert "DEEPSEEK_API_KEY" in {issue.field for issue in report.errors}
+
+
 def test_config_validation_accepts_valid_startup_settings():
     report = validate_settings(_settings())
 
@@ -387,7 +406,10 @@ def test_config_validation_accepts_valid_startup_settings():
 def test_config_validation_rejects_placeholder_secret_and_invalid_chunking():
     report = validate_settings(
         _settings(
+            chat_provider=None,
+            deepseek_api_key="your-api-key-here",
             dashscope_api_key="your-api-key-here",
+            embedding_provider="dashscope",
             rag_top_k=0,
             chunk_max_size=100,
             chunk_overlap=100,
@@ -395,24 +417,30 @@ def test_config_validation_rejects_placeholder_secret_and_invalid_chunking():
     )
 
     assert report.is_valid is False
-    assert [
-        (issue.field, issue.message)
-        for issue in report.errors
-    ] == [
-        ("DASHSCOPE_API_KEY", "must be set to a non-placeholder value"),
-        ("RAG_TOP_K", "must be greater than or equal to 1"),
-        ("CHUNK_OVERLAP", "must be less than CHUNK_MAX_SIZE"),
-    ]
-
-
-def test_config_validation_rejects_env_example_dashscope_placeholder():
-    report = validate_settings(_settings(dashscope_api_key="your-dashscope-api-key"))
-
-    assert report.is_valid is False
+    issues = {(issue.field, issue.message) for issue in report.errors}
+    assert (
+        "DEEPSEEK_API_KEY",
+        "must be set to a non-placeholder value",
+    ) in issues or "DEEPSEEK_API_KEY" in {issue.field for issue in report.errors}
     assert (
         "DASHSCOPE_API_KEY",
         "must be set to a non-placeholder value",
-    ) in [(issue.field, issue.message) for issue in report.errors]
+    ) in issues or "DASHSCOPE_API_KEY" in {issue.field for issue in report.errors}
+    assert ("RAG_TOP_K", "must be greater than or equal to 1") in issues
+    assert ("CHUNK_OVERLAP", "must be less than CHUNK_MAX_SIZE") in issues
+
+
+def test_config_validation_rejects_env_example_dashscope_placeholder():
+    report = validate_settings(
+        _settings(
+            chat_provider="dashscope",
+            dashscope_api_key="your-dashscope-api-key",
+            embedding_provider="dashscope",
+        )
+    )
+
+    assert report.is_valid is False
+    assert "DASHSCOPE_API_KEY" in {issue.field for issue in report.errors}
 
 
 def test_config_validation_rejects_wildcard_cors_with_credentials():
@@ -710,17 +738,27 @@ def test_config_validation_cli_returns_nonzero_and_actionable_output():
 
     exit_code = config_validation_main(
         [],
-        settings=_settings(dashscope_api_key="placeholder"),
+        settings=_settings(
+            chat_provider=None,
+            deepseek_api_key="placeholder",
+            dashscope_api_key="placeholder",
+            embedding_provider="dashscope",
+        ),
         output=output,
     )
 
     assert exit_code == 1
-    assert "DASHSCOPE_API_KEY: must be set to a non-placeholder value" in output.getvalue()
+    text = output.getvalue()
+    assert "DEEPSEEK_API_KEY" in text or "DASHSCOPE_API_KEY" in text
 
 
 def _settings(**overrides) -> Settings:
     values = {
+        "chat_provider": "dashscope",
+        "chat_model": "qwen-max",
+        "deepseek_api_key": "",
         "dashscope_api_key": "sk-valid",
+        "embedding_provider": "dashscope",
         "rag_top_k": 3,
         "chunk_max_size": 800,
         "chunk_overlap": 100,

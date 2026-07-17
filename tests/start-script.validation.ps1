@@ -43,7 +43,9 @@ foreach ($required in @(
         "milvus-etcd",
         "milvus-minio",
         "milvus-standalone",
-        "DASHSCOPE_API_KEY",
+        "CHAT_MODEL",
+        "DEEPSEEK_API_KEY",
+        "DASHSCOPE_EMBEDDING_MODEL",
         "vector-database.yml",
         "uvicorn",
         "app.main:app"
@@ -51,6 +53,8 @@ foreach ($required in @(
     Assert-True ($text.Contains($required)) "start.ps1 should contain '$required'."
 }
 
+Assert-True ($text -notmatch 'RAG_MODEL') "start.ps1 should not reference RAG_MODEL."
+Assert-True ($text -notmatch 'DASHSCOPE_MODEL') "start.ps1 should not reference DASHSCOPE_MODEL."
 Assert-True ($text -match 'docker\s+compose') "start.ps1 should start Docker Compose services."
 Assert-True ($text -match '--profile') "start.ps1 should support Docker Compose profiles."
 Assert-True ($text -match '@\("start"') "start.ps1 should be able to start existing named Milvus containers."
@@ -68,7 +72,7 @@ $stderrPath = Join-Path ([System.IO.Path]::GetTempPath()) "ragqs-start-script-sm
 Remove-Item -LiteralPath $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
 
 $escapedScriptPath = $scriptPath.Replace("'", "''")
-$runtimeCommand = "`$env:Path=''; `$env:DASHSCOPE_API_KEY='placeholder'; & '$escapedScriptPath' -SkipDocker -Port 65534"
+$runtimeCommand = "`$env:Path=''; `$env:DASHSCOPE_API_KEY='placeholder'; `$env:DEEPSEEK_API_KEY='placeholder'; & '$escapedScriptPath' -SkipDocker -Port 65534"
 $runtime = Start-Process `
     -FilePath $psExe `
     -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $runtimeCommand) `
@@ -87,6 +91,6 @@ if (Test-Path -LiteralPath $stderrPath) {
 
 Assert-True ($runtime.ExitCode -ne 0) "Safe failure smoke test should exit non-zero."
 Assert-True ($runtimeOutput -notmatch "CancelKeyPress") "Safe failure smoke test should not fail on Console.CancelKeyPress handling."
-Assert-True ($runtimeOutput -match "Python was not found|DASHSCOPE_API_KEY|Required command|Configuration validation failed") "Safe failure smoke test should fail with an actionable preflight message."
+Assert-True ($runtimeOutput -match "Python was not found|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|CHAT_MODEL|Required command|Configuration validation failed|Configuration preflight failed") "Safe failure smoke test should fail with an actionable preflight message."
 
 Write-Host "start.ps1 validation passed."
