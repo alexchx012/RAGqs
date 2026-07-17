@@ -1,4 +1,5 @@
 import pytest
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.providers.deepseek import DeepSeekChatModel, DeepSeekChatModelProvider, DeepSeekProviderError
@@ -153,6 +154,73 @@ def model_that_raises(error: Exception):
         streaming=False,
     )
     return model, completions
+
+
+def test_provider_returns_base_chat_model_and_binds_openai_tools():
+    provider = DeepSeekChatModelProvider(
+        api_key="ds-key", model_name="deepseek-v4-pro", base_url="https://api.deepseek.com",
+        client_factory=lambda **_: RecordingClient(),
+    )
+    model = provider.create_chat_model(streaming=False)
+
+    bound = model.bind_tools([{"type": "function", "function": {
+        "name": "lookup", "description": "lookup", "parameters": {"type": "object", "properties": {}},
+    }}])
+
+    assert isinstance(model, BaseChatModel)
+    assert bound is not None
+
+
+def test_provider_rejects_missing_or_placeholder_api_key():
+    with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
+        DeepSeekChatModelProvider(
+            api_key="",
+            model_name="deepseek-v4-pro",
+            client_factory=lambda **_: RecordingClient(),
+        ).create_chat_model(streaming=False)
+
+    with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
+        DeepSeekChatModelProvider(
+            api_key="your-api-key",
+            model_name="deepseek-v4-pro",
+            client_factory=lambda **_: RecordingClient(),
+        ).create_chat_model(streaming=False)
+
+
+def test_bound_tools_are_forwarded_to_chat_completions_create():
+    client = RecordingClient()
+    model = DeepSeekChatModelProvider(
+        api_key="ds-key",
+        model_name="deepseek-v4-pro",
+        client_factory=lambda **_: client,
+    ).create_chat_model(streaming=False)
+
+    bound = model.bind_tools(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    )
+    bound.invoke([HumanMessage(content="question")])
+
+    request = client.chat.completions.calls[0]
+    assert request["stream"] is False
+    assert request["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
 
 
 def test_deepseek_uses_chat_completions_and_preserves_tool_history():

@@ -325,6 +325,35 @@ async def test_fake_chat_model_provider_returns_ai_messages():
     assert response.content == "foundation answer"
 
 
+def test_fake_chat_model_supports_bind_tools_and_multi_turn_responses():
+    first = AIMessage(
+        content="",
+        tool_calls=[{"name": "lookup", "args": {"id": "7"}, "id": "call-1", "type": "tool_call"}],
+    )
+    second = AIMessage(content="done")
+    provider = FakeChatModelProvider(responses=[first, second])
+    model = provider.create_chat_model(streaming=False)
+
+    bound = model.bind_tools(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    )
+
+    assert bound is model
+    assert bound.invoke([HumanMessage(content="q1")]) is first
+    assert bound.invoke([HumanMessage(content="q2")]) is second
+    # Exhausted sequence stays on the last response.
+    assert bound.invoke([HumanMessage(content="q3")]) is second
+
+
 def test_in_memory_session_store_provider_tracks_messages_by_session():
     provider = InMemorySessionStoreProvider()
 
