@@ -100,7 +100,8 @@ def create_default_provider_container(
         from app.core.milvus_client import milvus_manager
 
     if chat_model_provider is None:
-        chat_model = _settings_value(settings, None, "chat_model", "chat_model", "")
+        # All real chat providers use the shared chat_model setting only.
+        chat_model = str(getattr(settings, "chat_model", "")).strip()
         if selection.chat_provider == "deepseek":
             chat_model_provider = DeepSeekChatModelProvider(
                 api_key=_settings_value(
@@ -184,10 +185,14 @@ def create_default_provider_container(
                     "",
                 ),
             )
-        else:
-            from app.services.vector_embedding_service import vector_embedding_service
+        elif selection.embedding_provider == "dashscope":
+            from app.services.vector_embedding_service import build_vector_embedding_service
 
-            embedding_provider = vector_embedding_service
+            embedding_provider = build_vector_embedding_service(settings=settings)
+        else:
+            raise ValueError(
+                f"EMBEDDING_PROVIDER: unsupported provider: {selection.embedding_provider}"
+            )
 
     if vector_store_provider is None:
         if selection.vector_store_provider == "fake":
