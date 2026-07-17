@@ -6,11 +6,10 @@ from app.agents import (
     AnswerGenerator,
     ChatModelAnswerGenerator,
     LangChainToolExecutor,
-    LangChainToolPlanner,
     ToolExecutor,
-    ToolPlanner,
     build_rag_state_graph,
 )
+from app.config import Settings
 from app.providers import RetrievalRequest, RetrievalResult, RetrievalSource
 
 
@@ -112,20 +111,6 @@ class RecordingToolExecutor:
         }
 
 
-class RecordingToolPlanner:
-    def __init__(self, request):
-        self.request = request
-        self.states = []
-
-    def plan(self, state):
-        self.states.append(state)
-        return {
-            "action": "tool",
-            "reason": "planner_tool_call",
-            "tool_request": self.request,
-        }
-
-
 def test_explicit_rag_state_graph_retrieves_answers_and_records_events():
     retriever = RecordingRetriever()
     answer_generator = RecordingAnswerGenerator()
@@ -216,45 +201,6 @@ def test_explicit_rag_state_graph_executes_explicit_tool_requests_without_retrie
     }
 
 
-def test_explicit_rag_state_graph_uses_planner_tool_request_without_retrieval():
-    tool_planner = RecordingToolPlanner(
-        {"name": "crm_lookup", "args": {"customer_id": "c-456"}}
-    )
-    tool_executor = RecordingToolExecutor()
-    graph = build_rag_state_graph(
-        retriever_provider=NoCallRetriever(),
-        answer_generator=NoCallAnswerGenerator(),
-        tool_executor=tool_executor,
-        tool_planner=tool_planner,
-    )
-
-    state = graph.invoke({"question": "lookup customer", "session_id": "s1"})
-
-    assert isinstance(tool_planner, ToolPlanner)
-    assert tool_planner.states[0]["normalized_question"] == "lookup customer"
-    assert state["tool_plan"] == {
-        "action": "tool",
-        "reason": "planner_tool_call",
-        "tool_request": {"name": "crm_lookup", "args": {"customer_id": "c-456"}},
-    }
-    assert tool_executor.requests == [
-        {"name": "crm_lookup", "args": {"customer_id": "c-456"}}
-    ]
-    assert state["answer"] == "lookup:c-456"
-    assert [event["type"] for event in state["events"]] == [
-        "input",
-        "retrieval_decision",
-        "tool_call",
-        "tool_result",
-        "done",
-    ]
-    assert state["events"][1]["data"] == {
-        "action": "tool",
-        "reason": "planner_tool_call",
-        "toolName": "crm_lookup",
-    }
-
-
 def test_langchain_tool_executor_invokes_registered_tools_by_name():
     from langchain_core.tools import tool
 
@@ -274,62 +220,15 @@ def test_langchain_tool_executor_invokes_registered_tools_by_name():
     }
 
 
-def test_langchain_tool_planner_returns_first_model_tool_call():
-    from langchain_core.tools import tool
+def test_lang_chain_tool_planner_removed():
+    import app.agents.rag_graph as rag_graph_module
 
-    class FakeToolPlanningModel:
-        def __init__(self):
-            self.bound_tools = []
-            self.messages = []
+    assert not hasattr(rag_graph_module, "LangChainToolPlanner")
 
-        def bind_tools(self, tools):
-            self.bound_tools = tools
-            return self
 
-        def invoke(self, messages):
-            self.messages.append(messages)
-            return type(
-                "Message",
-                (),
-                {
-                    "tool_calls": [
-                        {
-                            "name": "crm_lookup",
-                            "args": {"customer_id": "c-789"},
-                            "id": "call-1",
-                            "type": "tool_call",
-                        }
-                    ]
-                },
-            )()
-
-    class FakeChatProvider:
-        def __init__(self):
-            self.model = FakeToolPlanningModel()
-
-        def create_chat_model(self, streaming: bool = True):
-            return self.model
-
-    @tool("crm_lookup")
-    def crm_lookup(customer_id: str) -> str:
-        """Look up a customer record."""
-        return f"customer:{customer_id}"
-
-    provider = FakeChatProvider()
-    planner = LangChainToolPlanner(
-        chat_model_provider=provider,
-        tools=[crm_lookup],
-        system_prompt="Plan tool usage.",
-    )
-
-    plan = planner.plan({"normalized_question": "lookup c-789"})
-
-    assert plan == {
-        "action": "tool",
-        "reason": "model_tool_call",
-        "tool_request": {"name": "crm_lookup", "args": {"customer_id": "c-789"}},
-    }
-    assert provider.model.bound_tools == [crm_lookup]
+def test_settings_no_longer_exposes_tool_planning_fields():
+    assert "tool_planning_enabled" not in Settings.model_fields
+    assert "tool_planning_excluded_tools" not in Settings.model_fields
 
 
 def test_chat_model_answer_generator_streams_model_chunks():
@@ -763,14 +662,13 @@ def test_graph_returns_to_model_after_thinking_tool_call():
         return f"customer:{customer_id}"
 
     graph = build_rag_state_graph(
-        retriever_provider=NoCallRetriever(),
-        answer_generator=NoCallAnswerGenerator(),
-        tool_executor=executor,
-        tool_planner=LangChainToolPlanner(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=ChatModelAnswerGenerator(
             chat_model_provider=ContinuationChatProvider(model),
-            tools=[crm_lookup],
-            system_prompt="Plan tool usage.",
+            system_prompt="Answer with tools when needed.",
         ),
+        tool_executor=executor,
+        available_tools=[crm_lookup],
     )
 
     state = graph.invoke(
@@ -805,14 +703,13 @@ def test_graph_preserves_multiple_tool_call_order():
         return "second-result"
 
     graph = build_rag_state_graph(
-        retriever_provider=NoCallRetriever(),
-        answer_generator=NoCallAnswerGenerator(),
-        tool_executor=executor,
-        tool_planner=LangChainToolPlanner(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=ChatModelAnswerGenerator(
             chat_model_provider=ContinuationChatProvider(model),
-            tools=[first_tool, second_tool],
-            system_prompt="Plan tool usage.",
+            system_prompt="Answer with tools when needed.",
         ),
+        tool_executor=executor,
+        available_tools=[first_tool, second_tool],
     )
 
     state = graph.invoke(
@@ -841,14 +738,13 @@ def test_invalid_tool_arguments_do_not_execute_tool(arguments):
         return f"customer:{customer_id}"
 
     graph = build_rag_state_graph(
-        retriever_provider=NoCallRetriever(),
-        answer_generator=NoCallAnswerGenerator(),
-        tool_executor=executor,
-        tool_planner=LangChainToolPlanner(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=ChatModelAnswerGenerator(
             chat_model_provider=ContinuationChatProvider(model),
-            tools=[crm_lookup],
-            system_prompt="Plan tool usage.",
+            system_prompt="Answer with tools when needed.",
         ),
+        tool_executor=executor,
+        available_tools=[crm_lookup],
     )
 
     state = graph.invoke(

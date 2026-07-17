@@ -294,7 +294,6 @@ async def test_session_store_does_not_persist_private_reasoning_metadata():
         retriever_provider=SessionEmptyRetriever(),
         session_store_provider=session_store,
         tool_executor=SessionRecordingToolExecutor(),
-        tool_planning_enabled=True,
         agent_runtime="explicit_graph",
     )
 

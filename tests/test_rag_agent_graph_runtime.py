@@ -480,44 +480,6 @@ def test_rag_agent_service_builds_explicit_graph_with_injected_tool_executor():
     assert state["answer"] == "tool answer"
 
 
-def test_rag_agent_service_builds_explicit_graph_with_model_tool_planning():
-    from langchain_core.tools import tool
-
-    @tool("demo_tool")
-    def demo_tool() -> str:
-        """Return a demo tool response."""
-        return "demo"
-
-    chat_provider = ToolPlanningChatProvider()
-    tool_executor = RecordingToolExecutor()
-    service = RagAgentService(
-        streaming=False,
-        chat_model_provider=chat_provider,
-        agent_factory=failing_agent_factory,
-        tools=[demo_tool],
-        retriever_provider=RecordingRetriever(),
-        session_store_provider=InMemorySessionStoreProvider(),
-        tool_executor=tool_executor,
-        tool_planning_enabled=True,
-        agent_runtime="explicit_graph",
-    )
-    graph = service._build_default_explicit_graph()
-
-    state = graph.invoke(
-        {"question": "run tool", "session_id": "s-tool"},
-        {"configurable": {"thread_id": "s-tool"}},
-    )
-
-    assert chat_provider.model.bound_tools == [demo_tool]
-    assert tool_executor.requests == [{"name": "demo_tool", "args": {}}]
-    assert state["tool_plan"] == {
-        "action": "tool",
-        "reason": "model_tool_call",
-        "tool_request": {"name": "demo_tool", "args": {}},
-    }
-    assert state["answer"] == "tool answer"
-
-
 def test_rag_agent_service_prefers_grouped_agent_and_rag_settings():
     from langchain_core.tools import tool
 
@@ -539,16 +501,15 @@ def test_rag_agent_service_prefers_grouped_agent_and_rag_settings():
         agent=SimpleNamespace(
             runtime="explicit_graph",
             enabled_tools="demo_tool,excluded_tool",
-            tool_planning_enabled=True,
-            tool_planning_excluded_tools="excluded_tool",
             prompt_profile="strict",
         ),
+        chat_model="group-model",
     )
 
     service = RagAgentService(
         settings=settings,
         streaming=False,
-        chat_model_provider=ToolPlanningChatProvider(),
+        chat_model_provider=SyncChatProvider(),
         agent_factory=failing_agent_factory,
         checkpointer=object(),
         tool_registry=registry,
@@ -559,10 +520,9 @@ def test_rag_agent_service_prefers_grouped_agent_and_rag_settings():
     assert service.retrieval_top_k == 7
     assert service.agent_runtime == "explicit_graph"
     assert service.use_explicit_graph is True
-    assert service.tool_planning_enabled is True
     assert [tool.name for tool in service.tools] == ["demo_tool", "excluded_tool"]
-    assert service.tool_planner is not None
-    assert [tool.name for tool in service.tool_planner.tools] == ["demo_tool"]
+    assert not hasattr(service, "tool_planner")
+    assert not hasattr(service, "tool_planning_enabled")
 
 
 @pytest.mark.asyncio
@@ -650,7 +610,6 @@ async def test_public_trace_and_session_metadata_do_not_contain_reasoning():
         retriever_provider=EmptyRetriever(),
         session_store_provider=session_store,
         tool_executor=tool_executor,
-        tool_planning_enabled=True,
         agent_runtime="explicit_graph",
     )
 

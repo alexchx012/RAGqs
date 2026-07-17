@@ -93,8 +93,6 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         checkpoint_postgres_dsn="postgresql://rag:secret@db/ragqs-checkpoints",
         agent_runtime="legacy",
         enabled_tools="retrieve_knowledge",
-        tool_planning_enabled=True,
-        tool_planning_excluded_tools="retrieve_knowledge",
         prompt_profile="strict",
         openai_compatible_api_key="sk-openai",
         openai_compatible_base_url="https://models.example.com/v1",
@@ -170,8 +168,6 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
     assert settings.agent == AgentConfig(
         runtime="legacy",
         enabled_tools="retrieve_knowledge",
-        tool_planning_enabled=True,
-        tool_planning_excluded_tools="retrieve_knowledge",
         prompt_profile="strict",
     )
     assert settings.openai_compatible == OpenAICompatibleConfig(
