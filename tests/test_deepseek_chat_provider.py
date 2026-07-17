@@ -2,7 +2,11 @@ import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.providers.deepseek import DeepSeekChatModel, DeepSeekChatModelProvider, DeepSeekProviderError
+from app.providers.deepseek import (
+    DeepSeekChatModel,
+    DeepSeekChatModelProvider,
+    DeepSeekProviderError,
+)
 
 
 class FakeUsage:
