@@ -392,3 +392,17 @@ def test_factory_rejects_unknown_provider_without_dashscope_fallback():
             settings=_settings(chat_provider="unknown"),
             milvus_manager=object(),
         )
+
+
+def test_dashscope_embedding_keeps_its_own_model_source(monkeypatch):
+    settings = _settings(
+        chat_provider="fake",
+        chat_model="deepseek-v4-pro",
+        embedding_provider="dashscope",
+        dashscope_api_key="qwen-key",
+        dashscope_embedding_model="text-embedding-v4",
+    )
+    container = create_default_provider_container(settings=settings, milvus_manager=object())
+
+    assert container.embedding_provider.model == "text-embedding-v4"
+    assert container.embedding_provider.dimensions == 1024

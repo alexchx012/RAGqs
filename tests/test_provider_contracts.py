@@ -92,6 +92,21 @@ def test_vector_embedding_service_builder_prefers_grouped_dashscope_settings():
     assert provider.dimensions == 1024
 
 
+def test_vector_embedding_service_ignores_chat_model():
+    from app.services.vector_embedding_service import build_vector_embedding_service
+
+    settings = SimpleNamespace(
+        chat_model="deepseek-v4-pro",
+        dashscope_api_key="sk-embed",
+        dashscope_embedding_model="text-embedding-v4",
+    )
+
+    provider = build_vector_embedding_service(settings=settings)
+
+    assert provider.model == "text-embedding-v4"
+    assert provider.dimensions == 1024
+
+
 def test_fake_vector_store_provider_adds_searches_and_deletes_by_source():
     provider = FakeVectorStoreProvider()
     documents = [
