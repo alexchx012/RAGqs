@@ -284,6 +284,50 @@ real multi-instance production data behavior. Use it before trial deployment to 
 network failures, and insufficient write permissions, then run a separate multi-instance staging
 exercise before calling the data layer production-validated.
 
+## DeepSeek Chat Provider Smoke (opt-in)
+
+Real DeepSeek Chat Completions traffic is **not** part of the default test or preflight path.
+`/health`, config validation, and CI only prove the selected chat provider is configured. They do
+**not** mean a live DeepSeek request succeeded or that answer quality is validated.
+
+Use the opt-in integration suite when you intentionally want live provider evidence:
+
+```powershell
+# Default / CI: must SKIP (not PASS) without the opt-in gate
+.\.venv\Scripts\python.exe -m pytest tests/integration/test_deepseek_smoke.py -v
+
+# Controlled live run (requires a non-placeholder DEEPSEEK_API_KEY in the environment)
+$env:DEEPSEEK_SMOKE = '1'
+# optional overrides:
+# $env:CHAT_MODEL = 'deepseek-v4-pro'
+# $env:DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
+.\.venv\Scripts\python.exe -m pytest tests/integration/test_deepseek_smoke.py -v
+```
+
+Gate semantics:
+
+| Condition | Result |
+|-----------|--------|
+| `DEEPSEEK_SMOKE` unset / not `1` | `SKIPPED` |
+| `DEEPSEEK_API_KEY` missing or placeholder | `SKIPPED` |
+| Both set and valid | live smoke runs (PASS / FAIL) |
+
+The suite covers three paths against Chat Completions only (never Responses API):
+
+1. Non-streaming public text
+2. Ordinary streaming public text
+3. thinking + tool-call continuation with the zero-side-effect `get_current_time` tool — the second
+   adapter request must keep the assistant tool-call history (including optional
+   `reasoning_content`) and the matching `ToolMessage`, then return non-empty public text
+
+Constraints:
+
+- Skipped runs must be reported as **未执行 / SKIPPED**, never as PASS.
+- Live failures stay FAIL; do not reclassify rate limits, auth, balance, model-id, or network errors
+  as skips.
+- Never print `DEEPSEEK_API_KEY` or other secret-bearing material in test output, logs, or reports.
+- Do not use business write tools in this smoke path.
+
 ## Security Boundaries
 
 CORS is configured from environment variables instead of hard-coded wildcard settings:
