@@ -1,4 +1,6 @@
+import pytest
 from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agents import (
     AnswerGenerator,
@@ -592,3 +594,271 @@ def test_explicit_rag_state_graph_resets_tool_request_between_checkpointed_invoc
     ]
     assert retriever.requests[0].query == "What is RAG?"
     assert state["answer"] == "Answered: What is RAG? using rag.md"
+
+
+class ContinuationModel:
+    """Records every model invocation so tests can assert tool-continuation history."""
+
+    def __init__(self):
+        self.calls = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            return AIMessage(
+                content="",
+                additional_kwargs={
+                    "reasoning_content": "private",
+                    "deepseek_tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "crm_lookup",
+                                "arguments": '{"customer_id":"c-7"}',
+                            },
+                        }
+                    ],
+                },
+                tool_calls=[
+                    {
+                        "name": "crm_lookup",
+                        "args": {"customer_id": "c-7"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content="customer found")
+
+
+class MultiToolContinuationModel:
+    def __init__(self):
+        self.calls = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            return AIMessage(
+                content="",
+                additional_kwargs={
+                    "reasoning_content": "private",
+                    "deepseek_tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "first", "arguments": "{}"},
+                        },
+                        {
+                            "id": "call-2",
+                            "type": "function",
+                            "function": {"name": "second", "arguments": "{}"},
+                        },
+                    ],
+                },
+                tool_calls=[
+                    {
+                        "name": "first",
+                        "args": {},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    },
+                    {
+                        "name": "second",
+                        "args": {},
+                        "id": "call-2",
+                        "type": "tool_call",
+                    },
+                ],
+            )
+        return AIMessage(content="final answer")
+
+
+class InvalidArgsModel:
+    def __init__(self, arguments: str):
+        self.arguments = arguments
+        self.calls = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        import json
+
+        self.calls.append(messages)
+        # LangChain AIMessage requires tool_calls[].args to be a dict. The raw
+        # invalid payload lives in deepseek_tool_calls; Task 10 validation must
+        # prefer that raw string and reject before execution.
+        coerced_args: dict = {}
+        try:
+            parsed = json.loads(self.arguments)
+            if isinstance(parsed, dict):
+                coerced_args = parsed
+        except json.JSONDecodeError:
+            coerced_args = {}
+        return AIMessage(
+            content="",
+            additional_kwargs={
+                "reasoning_content": "private",
+                "deepseek_tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "crm_lookup",
+                            "arguments": self.arguments,
+                        },
+                    }
+                ],
+            },
+            tool_calls=[
+                {
+                    "name": "crm_lookup",
+                    "args": coerced_args,
+                    "id": "call-1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
+class SequenceRecordingToolExecutor:
+    def __init__(self):
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(
+            {"name": request["name"], "args": dict(request.get("args") or {})}
+        )
+        return {
+            "name": request["name"],
+            "output": f"result:{request['name']}",
+            "metadata": {},
+        }
+
+
+class ContinuationChatProvider:
+    def __init__(self, model):
+        self.model = model
+
+    def create_chat_model(self, streaming: bool = True):
+        return self.model
+
+
+def test_graph_returns_to_model_after_thinking_tool_call():
+    from langchain_core.tools import tool
+
+    model = ContinuationModel()
+    executor = RecordingToolExecutor()
+
+    @tool("crm_lookup")
+    def crm_lookup(customer_id: str) -> str:
+        """Look up a customer record."""
+        return f"customer:{customer_id}"
+
+    graph = build_rag_state_graph(
+        retriever_provider=NoCallRetriever(),
+        answer_generator=NoCallAnswerGenerator(),
+        tool_executor=executor,
+        tool_planner=LangChainToolPlanner(
+            chat_model_provider=ContinuationChatProvider(model),
+            tools=[crm_lookup],
+            system_prompt="Plan tool usage.",
+        ),
+    )
+
+    state = graph.invoke(
+        {"question": "lookup c-7", "session_id": "s1"},
+        {"configurable": {"thread_id": "s1"}},
+    )
+
+    assert state["answer"] == "customer found"
+    assert len(model.calls) == 2
+    assert model.calls[1][-2].additional_kwargs["reasoning_content"] == "private"
+    assert isinstance(model.calls[1][-1], ToolMessage)
+    assert model.calls[1][-1].tool_call_id == "call-1"
+    assert executor.requests == [
+        {"name": "crm_lookup", "args": {"customer_id": "c-7"}}
+    ]
+
+
+def test_graph_preserves_multiple_tool_call_order():
+    from langchain_core.tools import tool
+
+    model = MultiToolContinuationModel()
+    executor = SequenceRecordingToolExecutor()
+
+    @tool("first")
+    def first_tool() -> str:
+        """First tool."""
+        return "first-result"
+
+    @tool("second")
+    def second_tool() -> str:
+        """Second tool."""
+        return "second-result"
+
+    graph = build_rag_state_graph(
+        retriever_provider=NoCallRetriever(),
+        answer_generator=NoCallAnswerGenerator(),
+        tool_executor=executor,
+        tool_planner=LangChainToolPlanner(
+            chat_model_provider=ContinuationChatProvider(model),
+            tools=[first_tool, second_tool],
+            system_prompt="Plan tool usage.",
+        ),
+    )
+
+    state = graph.invoke(
+        {"question": "run both", "session_id": "s1"},
+        {"configurable": {"thread_id": "s1"}},
+    )
+
+    assert [request["name"] for request in executor.requests] == ["first", "second"]
+    tool_messages = [
+        message for message in model.calls[1] if isinstance(message, ToolMessage)
+    ]
+    assert [message.tool_call_id for message in tool_messages] == ["call-1", "call-2"]
+    assert state["answer"] == "final answer"
+
+
+@pytest.mark.parametrize("arguments", ["{not-json", "[]", '{"unexpected": true}'])
+def test_invalid_tool_arguments_do_not_execute_tool(arguments):
+    from langchain_core.tools import tool
+
+    model = InvalidArgsModel(arguments)
+    executor = SequenceRecordingToolExecutor()
+
+    @tool("crm_lookup")
+    def crm_lookup(customer_id: str) -> str:
+        """Look up a customer record."""
+        return f"customer:{customer_id}"
+
+    graph = build_rag_state_graph(
+        retriever_provider=NoCallRetriever(),
+        answer_generator=NoCallAnswerGenerator(),
+        tool_executor=executor,
+        tool_planner=LangChainToolPlanner(
+            chat_model_provider=ContinuationChatProvider(model),
+            tools=[crm_lookup],
+            system_prompt="Plan tool usage.",
+        ),
+    )
+
+    state = graph.invoke(
+        {"question": "unsafe", "session_id": "s1"},
+        {"configurable": {"thread_id": "s1"}},
+    )
+
+    assert executor.requests == []
+    assert state["answer"] == ""
+    assert any("tool arguments" in error for error in state["errors"])
+    assert not any(
+        isinstance(message, ToolMessage) for message in state.get("messages", [])
+    )

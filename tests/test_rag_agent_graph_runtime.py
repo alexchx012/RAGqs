@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.documents import Document
+from langchain_core.messages import AIMessage
 
 from app.extensions.tools import ToolRegistry
 from app.providers import InMemorySessionStoreProvider, RetrievalResult, RetrievalSource
@@ -578,3 +579,85 @@ async def test_rag_agent_service_query_uses_explicit_graph_answer_when_enabled()
     answer = await service.query("question", session_id="s1")
 
     assert answer == "plain graph answer"
+
+
+class ThinkingToolChatModel:
+    """Emits private reasoning + a tool call on the first turn, then a public answer."""
+
+    def __init__(self):
+        self.calls = []
+        self.bound_tools = []
+
+    def bind_tools(self, tools):
+        self.bound_tools = tools
+        return self
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            return AIMessage(
+                content="",
+                additional_kwargs={
+                    "reasoning_content": "private",
+                    "deepseek_tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "demo_tool",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                tool_calls=[
+                    {
+                        "name": "demo_tool",
+                        "args": {},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content="customer found")
+
+
+class ThinkingToolChatProvider:
+    def __init__(self):
+        self.model = ThinkingToolChatModel()
+
+    def create_chat_model(self, streaming: bool = True):
+        return self.model
+
+
+@pytest.mark.asyncio
+async def test_public_trace_and_session_metadata_do_not_contain_reasoning():
+    from langchain_core.tools import tool
+
+    @tool("demo_tool")
+    def demo_tool() -> str:
+        """Return a demo tool response."""
+        return "demo"
+
+    chat_provider = ThinkingToolChatProvider()
+    tool_executor = RecordingToolExecutor()
+    session_store = InMemorySessionStoreProvider()
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=chat_provider,
+        agent_factory=failing_agent_factory,
+        tools=[demo_tool],
+        retriever_provider=EmptyRetriever(),
+        session_store_provider=session_store,
+        tool_executor=tool_executor,
+        tool_planning_enabled=True,
+        agent_runtime="explicit_graph",
+    )
+
+    result = await service.query_with_trace("question", session_id="s1")
+
+    assert "private" not in repr(result)
+    assert "reasoning_content" not in repr(result)
+    assert "reasoning_content" not in repr(service.get_session_history("s1"))
+    assert "private" not in repr(service.get_session_history("s1"))
+    assert "deepseek_tool_calls" not in repr(service.get_session_history("s1"))
