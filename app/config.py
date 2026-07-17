@@ -1,6 +1,6 @@
 """配置管理模块"""
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,13 +57,18 @@ class RuntimeConfig(FrozenConfigModel):
 
 
 class ProviderConfig(FrozenConfigModel):
-    chat: str
+    chat: str | None
     embedding: str
     vector_store: str
     session_store: str
     retrieval_audit_store: str
     ingestion: str
     checkpoint: str
+
+
+class DeepSeekConfig(FrozenConfigModel):
+    api_key: str
+    base_url: str
 
 
 class StorageConfig(FrozenConfigModel):
@@ -100,13 +105,11 @@ class AgentConfig(FrozenConfigModel):
 class OpenAICompatibleConfig(FrozenConfigModel):
     api_key: str
     base_url: str
-    model: str
     embedding_model: str
 
 
 class DashScopeConfig(FrozenConfigModel):
     api_key: str
-    model: str
     embedding_model: str
 
 
@@ -118,7 +121,6 @@ class MilvusConfig(FrozenConfigModel):
 
 class RagConfig(FrozenConfigModel):
     top_k: int
-    model: str
     retrieval_profile: str
     retrieval_high_recall_top_k_multiplier: int
     retrieval_relaxed_filter_preserve_keys: str
@@ -174,7 +176,8 @@ class Settings(BaseSettings):
     runtime_control_excluded_paths: str = "/health,/static"
 
     # 扩展配置
-    chat_provider: str = "dashscope"
+    chat_provider: str | None = None
+    chat_model: str = "deepseek-v4-pro"
     embedding_provider: str = "dashscope"
     vector_store_provider: str = "milvus"
     session_store_provider: str = "sqlite"
@@ -207,15 +210,17 @@ class Settings(BaseSettings):
     tool_planning_excluded_tools: str = "retrieve_knowledge"
     prompt_profile: str = "default"
 
+    # DeepSeek provider 配置
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+
     # OpenAI-compatible provider 配置
     openai_compatible_api_key: str = ""
     openai_compatible_base_url: str = ""
-    openai_compatible_model: str = ""
     openai_compatible_embedding_model: str = ""
 
     # DashScope 配置
     dashscope_api_key: str = ""
-    dashscope_model: str = "qwen-max"
     dashscope_embedding_model: str = "text-embedding-v4"
 
     # Milvus 配置
@@ -225,7 +230,6 @@ class Settings(BaseSettings):
 
     # RAG 配置
     rag_top_k: int = 3
-    rag_model: str = "qwen-max"
     retrieval_profile: str = "default"
     retrieval_high_recall_top_k_multiplier: int = 2
     retrieval_relaxed_filter_preserve_keys: str = "space_id,spaceId,tenant_id,tenantId"
@@ -237,6 +241,12 @@ class Settings(BaseSettings):
     # 文档分块配置
     chunk_max_size: int = 800
     chunk_overlap: int = 100
+
+    @field_validator("chat_provider", mode="before")
+    @classmethod
+    def normalize_chat_provider(cls, value: object) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
 
     @property
     def app(self) -> AppConfig:
@@ -342,11 +352,17 @@ class Settings(BaseSettings):
         )
 
     @property
+    def deepseek(self) -> DeepSeekConfig:
+        return DeepSeekConfig(
+            api_key=self.deepseek_api_key,
+            base_url=self.deepseek_base_url,
+        )
+
+    @property
     def openai_compatible(self) -> OpenAICompatibleConfig:
         return OpenAICompatibleConfig(
             api_key=self.openai_compatible_api_key,
             base_url=self.openai_compatible_base_url,
-            model=self.openai_compatible_model,
             embedding_model=self.openai_compatible_embedding_model,
         )
 
@@ -354,7 +370,6 @@ class Settings(BaseSettings):
     def dashscope(self) -> DashScopeConfig:
         return DashScopeConfig(
             api_key=self.dashscope_api_key,
-            model=self.dashscope_model,
             embedding_model=self.dashscope_embedding_model,
         )
 
@@ -370,7 +385,6 @@ class Settings(BaseSettings):
     def rag(self) -> RagConfig:
         return RagConfig(
             top_k=self.rag_top_k,
-            model=self.rag_model,
             retrieval_profile=self.retrieval_profile,
             retrieval_high_recall_top_k_multiplier=self.retrieval_high_recall_top_k_multiplier,
             retrieval_relaxed_filter_preserve_keys=self.retrieval_relaxed_filter_preserve_keys,

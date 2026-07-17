@@ -4,6 +4,7 @@ from app.config import (
     ChunkingConfig,
     CorsConfig,
     DashScopeConfig,
+    DeepSeekConfig,
     DeploymentConfig,
     MilvusConfig,
     OpenAICompatibleConfig,
@@ -18,7 +19,13 @@ from app.providers.selection import ProviderSelection
 
 
 def test_development_defaults_use_sqlite_for_runtime_state():
-    settings = Settings(_env_file=None, dashscope_api_key="sk-valid")
+    # Explicit chat_provider keeps current validation green until selection
+    # accepts blank/None as auto-select (later task).
+    settings = Settings(
+        _env_file=None,
+        dashscope_api_key="sk-valid",
+        chat_provider="dashscope",
+    )
     selection = ProviderSelection.from_settings(settings)
 
     assert settings.upload_allowed_extensions == "txt,md,markdown,csv,html,htm,json"
@@ -93,16 +100,16 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         prompt_profile="strict",
         openai_compatible_api_key="sk-openai",
         openai_compatible_base_url="https://models.example.com/v1",
-        openai_compatible_model="gpt-test",
         openai_compatible_embedding_model="embed-test",
+        deepseek_api_key="sk-deepseek",
+        deepseek_base_url="https://api.deepseek.com",
         dashscope_api_key="sk-dashscope",
-        dashscope_model="qwen-plus",
         dashscope_embedding_model="text-embedding-v4",
+        chat_model="deepseek-v4-pro",
         milvus_host="milvus.local",
         milvus_port=19531,
         milvus_timeout=5000,
         rag_top_k=8,
-        rag_model="qwen-plus",
         retrieval_profile="high_recall",
         retrieval_high_recall_top_k_multiplier=3,
         retrieval_relaxed_filter_preserve_keys="space_id,tenant_id",
@@ -172,12 +179,14 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
     assert settings.openai_compatible == OpenAICompatibleConfig(
         api_key="sk-openai",
         base_url="https://models.example.com/v1",
-        model="gpt-test",
         embedding_model="embed-test",
+    )
+    assert settings.deepseek == DeepSeekConfig(
+        api_key="sk-deepseek",
+        base_url="https://api.deepseek.com",
     )
     assert settings.dashscope == DashScopeConfig(
         api_key="sk-dashscope",
-        model="qwen-plus",
         embedding_model="text-embedding-v4",
     )
     assert settings.milvus == MilvusConfig(
@@ -187,7 +196,6 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
     )
     assert settings.rag == RagConfig(
         top_k=8,
-        model="qwen-plus",
         retrieval_profile="high_recall",
         retrieval_high_recall_top_k_multiplier=3,
         retrieval_relaxed_filter_preserve_keys="space_id,tenant_id",
@@ -201,6 +209,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
     assert settings.app_name == settings.app.name
     assert settings.deployment_environment == settings.deployment.environment
     assert settings.chat_provider == settings.providers.chat
+    assert settings.chat_model == "deepseek-v4-pro"
     assert settings.retrieval_audit_store_provider == settings.providers.retrieval_audit_store
     assert settings.rag_top_k == settings.rag.top_k
 
@@ -236,7 +245,12 @@ def test_provider_selection_and_validation_use_grouped_settings():
 
 
 def test_auth_group_exposes_local_credentials_fields_with_defaults():
-    settings = Settings(_env_file=None)
+    settings = Settings(
+        _env_file=None,
+        auth_local_db_path="data/auth.sqlite3",
+        auth_local_admin_seed=None,
+        auth_session_ttl_seconds=604800,
+    )
 
     assert settings.auth.local_db_path == "data/auth.sqlite3"
     assert settings.auth.local_admin_seed is None
