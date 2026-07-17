@@ -253,6 +253,9 @@ def _request_options(*, stop: list[str] | None, kwargs: dict[str, Any]) -> dict[
         "top_logprobs",
         "n",
         "parallel_tool_calls",
+        # OpenAI SDK merges extra_body into the request JSON; used for DeepSeek-only
+        # fields such as thinking={"type": "enabled"} without affecting other providers.
+        "extra_body",
     ):
         if key in kwargs and kwargs[key] is not None:
             options[key] = kwargs[key]

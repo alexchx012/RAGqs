@@ -85,10 +85,18 @@ def test_real_deepseek_thinking_tool_call_continuation():
     """thinking + tool-call: second adapter request keeps full protocol chain.
 
     Uses the zero-side-effect ``get_current_time`` tool only. Never runs business
-    write tools. Asserts the second Chat Completions payload contains the
-    assistant tool call (with optional reasoning_content) and a matching
-    ToolMessage, then a non-empty public final answer.
+    write tools. First turn forces a tool call; second turn asks only for a final
+    public answer from the tool result (no re-forced tool_choice / prompt).
+
+    Thinking is enabled via DeepSeek ``extra_body={"thinking": {"type": "enabled"}}``
+    so the live path can exercise reasoning_content when the model returns it.
+    ``reasoning_content`` preservation is asserted only when the first turn actually
+    produced it — never invent a PASS for missing reasoning. Unit tests still cover
+    the full reasoning_content history serialization contract.
     """
+
+    # DeepSeek-only request option; adapter forwards extra_body into Chat Completions.
+    thinking_kwargs = {"extra_body": {"thinking": {"type": "enabled"}}}
 
     provider = _provider(client_factory=_RecordingClient)
     model = provider.create_chat_model(streaming=False)
@@ -98,18 +106,16 @@ def test_real_deepseek_thinking_tool_call_continuation():
             "type": "function",
             "function": {"name": "get_current_time"},
         },
+        **thinking_kwargs,
     )
 
-    first = bound.invoke(
-        [
-            HumanMessage(
-                content=(
-                    "What is the current time in Asia/Shanghai? "
-                    "You must call the get_current_time tool."
-                )
-            )
-        ]
+    first_human = HumanMessage(
+        content=(
+            "What is the current time in Asia/Shanghai? "
+            "You must call the get_current_time tool."
+        )
     )
+    first = bound.invoke([first_human])
 
     tool_calls = list(getattr(first, "tool_calls", None) or [])
     assert tool_calls, "expected model to emit a tool call for get_current_time"
@@ -128,13 +134,16 @@ def test_real_deepseek_thinking_tool_call_continuation():
         name="get_current_time",
     )
 
-    # Second turn: no forced tool_choice so the model can answer from the tool result.
-    followup = model.bind_tools([get_current_time]).invoke(
+    # Second turn: no forced tool_choice and no "must call tool" prompt — ask only
+    # for a final public answer based on the already-provided tool result.
+    followup = model.bind_tools([get_current_time], **thinking_kwargs).invoke(
         [
             HumanMessage(
                 content=(
                     "What is the current time in Asia/Shanghai? "
-                    "You must call the get_current_time tool."
+                    "The get_current_time tool result is already in the messages. "
+                    "Give a brief final public answer based on that result only. "
+                    "Do not call any tool again."
                 )
             ),
             first if isinstance(first, AIMessage) else AIMessage(content=str(first.content)),
@@ -145,6 +154,12 @@ def test_real_deepseek_thinking_tool_call_continuation():
     recorder = model.client
     assert isinstance(recorder, _RecordingClient)
     assert len(recorder.calls) >= 2, "expected two Chat Completions requests"
+
+    # Prefer observing thinking enablement on the first request when the SDK surfaces it.
+    first_request = recorder.calls[0]
+    first_extra = first_request.get("extra_body") or {}
+    if first_extra:
+        assert first_extra.get("thinking") == {"type": "enabled"}
 
     second_request = recorder.calls[1]
     roles = [item.get("role") for item in second_request.get("messages", [])]
@@ -161,8 +176,8 @@ def test_real_deepseek_thinking_tool_call_continuation():
     )
     assert assistant_with_tools is not None, "assistant history must carry tool_calls"
     assert assistant_with_tools["tool_calls"][0]["function"]["name"] == "get_current_time"
-    # thinking/tool-call protocol may include private reasoning on the assistant turn
-    # (optional depending on model); when present it must not be dropped from history.
+    # Live thinking may still omit reasoning_content depending on model/route.
+    # Only require history preservation when the first turn actually returned it.
     if first.additional_kwargs.get("reasoning_content") is not None:
         assert "reasoning_content" in assistant_with_tools
 

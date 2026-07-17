@@ -99,7 +99,7 @@ DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4
 - **认证与权限** — 本地开发默认 `AUTH_ENABLED=false`，以 `local-admin` 身份运行。试运行可启用 `AUTH_ENABLED=true` 并选择 `dev_header` 或 `reverse_proxy` provider，role + space 权限在后端统一校验。
 - **并发控制** — 可选启用 `RUNTIME_CONTROLS_ENABLED=true` 限制进程内并发请求数、排队超时和请求超时；通过 `.\scripts\run-fake-load.ps1` 验证 API 并发路径。
 - **健康与 smoke 边界** — `/health` 与启动 preflight 只表示配置 / 依赖边界检查；真实 DeepSeek 调用需运行后续 DeepSeek smoke（opt-in，见 `docs/operations.md`）。配置完整 ≠ 真实 smoke 通过 ≠ 答案质量已验证。
-- **DeepSeek 真实 smoke（opt-in）** — `tests/integration/test_deepseek_smoke.py` 仅在 `DEEPSEEK_SMOKE=1` 且 `DEEPSEEK_API_KEY` 为非占位密钥时执行；否则 `pytest.skip`（记为未执行 / SKIPPED，不得记为 PASS）。覆盖非流式文本、普通流、以及零副作用 `get_current_time` 的 thinking+tool-call 续接。输出不得打印密钥。
+- **DeepSeek 真实 smoke（opt-in）** — `tests/integration/test_deepseek_smoke.py` 仅在 `DEEPSEEK_SMOKE=1` 且 `DEEPSEEK_API_KEY` 为非占位密钥时执行；否则 `pytest.skip`（记为未执行 / SKIPPED，不得记为 PASS）。覆盖非流式文本、普通流、以及零副作用 `get_current_time` 的 thinking+tool-call 续接（首轮强制 tool call；次轮仅要最终公开回答，并尝试 `extra_body` 开启 thinking；`reasoning_content` 仅在 live 返回时断言，完整保真由单元测试覆盖）。输出不得打印密钥。
 - **试运行门禁** — 评测基座默认 fake 模式只验证软件接口可运行；将 session / audit / indexing / checkpoint 全切到 Postgres 后，运行 `.\scripts\run-postgres-smoke.ps1` 和 `.\scripts\run-evaluation.ps1` 做端到端验证。
 - **回滚** — 若本 change 引入不可接受回归，还原本 change 产生的提交即可；不涉及向量、数据库 schema 或公开 API 数据迁移。
 - **更多信息** — 项目协作规则、测试命令和代码结构详见 `AGENTS.md`。
