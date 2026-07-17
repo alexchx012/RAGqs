@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.models.response import SessionInfoResponse
 from app.providers import (
@@ -203,3 +204,108 @@ def test_session_info_response_allows_structured_message_metadata():
     )
 
     assert response.history[0]["metadata"]["sources"][0]["fileName"] == "session.md"
+
+
+class SessionThinkingToolModel:
+    def __init__(self):
+        self.calls = []
+        self.bound_tools = []
+
+    def bind_tools(self, tools):
+        self.bound_tools = tools
+        return self
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            return AIMessage(
+                content="",
+                additional_kwargs={
+                    "reasoning_content": "private",
+                    "deepseek_tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "demo_tool",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                tool_calls=[
+                    {
+                        "name": "demo_tool",
+                        "args": {},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content="customer found")
+
+
+class SessionThinkingToolProvider:
+    def __init__(self):
+        self.model = SessionThinkingToolModel()
+
+    def create_chat_model(self, streaming: bool = True):
+        return self.model
+
+
+class SessionRecordingToolExecutor:
+    def __init__(self):
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        return {"name": request["name"], "output": "tool answer", "metadata": {}}
+
+
+class SessionEmptyRetriever:
+    def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        return RetrievalResult(
+            query=request.query,
+            documents=[],
+            sources=[],
+            debug={"stages": ["retrieve"], "returned": 0},
+        )
+
+
+def failing_session_agent_factory(model, tools, checkpointer):
+    raise AssertionError("legacy create_agent path should not be used")
+
+
+@pytest.mark.asyncio
+async def test_session_store_does_not_persist_private_reasoning_metadata():
+    from langchain_core.tools import tool
+
+    @tool("demo_tool")
+    def demo_tool() -> str:
+        """Return a demo tool response."""
+        return "demo"
+
+    session_store = InMemorySessionStoreProvider()
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=SessionThinkingToolProvider(),
+        agent_factory=failing_session_agent_factory,
+        tools=[demo_tool],
+        retriever_provider=SessionEmptyRetriever(),
+        session_store_provider=session_store,
+        tool_executor=SessionRecordingToolExecutor(),
+        tool_planning_enabled=True,
+        agent_runtime="explicit_graph",
+    )
+
+    await service.query_with_trace("question", session_id="s1")
+
+    history = service.get_session_history("s1")
+    stored = session_store.get_messages("s1")
+
+    assert "reasoning_content" not in repr(history)
+    assert "private" not in repr(history)
+    assert "deepseek_tool_calls" not in repr(history)
+    assert "reasoning_content" not in repr(stored)
+    assert "private" not in repr(stored)
+    assert "deepseek_tool_calls" not in repr(stored)
