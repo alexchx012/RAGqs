@@ -70,13 +70,24 @@ class AdminUserService:
         self.user_store = user_store if user_store is not None else UserStore(db_path)
         self.session_store = session_store if session_store is not None else SessionStore(db_path)
 
-    def list_users(self) -> list[dict[str, Any]]:
+    def list_users(self, *, actor: AuthContext | None = None) -> list[dict[str, Any]]:
         """Return every user without exposing credential hashes."""
 
-        return [self._safe_user(user) for user in self.user_store.list_users()]
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
 
-    def get_user(self, user_id: str) -> dict[str, Any]:
+        users = self.user_store.list_users()
+        if not actor_is_super_admin:
+            if actor_department_id is None:
+                return []
+            users = [user for user in users if user.department_id == actor_department_id]
+        return [self._safe_user(user) for user in users]
+
+    def get_user(self, user_id: str, *, actor: AuthContext | None = None) -> dict[str, Any]:
         """Return one user without exposing its credential hash."""
+
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
 
         try:
             user = self.user_store.get_by_id(user_id)
@@ -84,6 +95,9 @@ class AdminUserService:
             raise AdminUserNotFoundError(_NOT_FOUND_ERROR) from exc
         if user is None:
             raise AdminUserNotFoundError(_NOT_FOUND_ERROR)
+        if not actor_is_super_admin:
+            if actor_department_id is None or user.department_id != actor_department_id:
+                raise AdminUserNotFoundError(_NOT_FOUND_ERROR)
         return self._safe_user(user)
 
     def create_user(
