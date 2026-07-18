@@ -9,7 +9,7 @@ from app.agents import (
     ToolExecutor,
     build_rag_state_graph,
 )
-from app.agents.rag_graph import RagGraphNodes
+from app.agents.rag_graph import MAX_MODEL_TOOL_ROUNDS, RagGraphNodes
 from app.config import Settings
 from app.providers import RetrievalRequest, RetrievalResult, RetrievalSource
 
@@ -1029,3 +1029,82 @@ def test_graph_tool_call_turn_does_not_emit_public_tokens_when_streaming():
         {"type": "token", "node": "answer", "data": "after tool"},
     ]
     assert final_updates[0]["final_response"]["answer"] == "after tool"
+
+
+class NeverConvergesModel:
+    """Fake chat model that always demands another tool call and never emits a
+    plain-text answer, so nothing but the round-limit guard can stop it."""
+
+    def __init__(self):
+        self.calls = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        call_id = f"call-{len(self.calls)}"
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "crm_lookup",
+                    "args": {"customer_id": "c-1"},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
+class AlwaysSucceedsToolExecutor:
+    """Fake tool executor that always succeeds and records every request."""
+
+    def __init__(self):
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(
+            {"name": request["name"], "args": dict(request.get("args") or {})}
+        )
+        return {"name": request["name"], "output": "ok", "metadata": {}}
+
+
+def test_model_tool_round_limit_stops_unbounded_tool_call_loop():
+    """A model that never converges to a text answer must be stopped by
+    MAX_MODEL_TOOL_ROUNDS instead of looping forever (Task 20 regression)."""
+    from langchain_core.tools import tool
+
+    model = NeverConvergesModel()
+    executor = AlwaysSucceedsToolExecutor()
+
+    @tool("crm_lookup")
+    def crm_lookup(customer_id: str) -> str:
+        """Look up a customer record."""
+        return f"customer:{customer_id}"
+
+    graph = build_rag_state_graph(
+        retriever_provider=RecordingRetriever(),
+        answer_generator=ChatModelAnswerGenerator(
+            chat_model_provider=ContinuationChatProvider(model),
+            system_prompt="Answer with tools when needed.",
+        ),
+        tool_executor=executor,
+        available_tools=[crm_lookup],
+    )
+
+    # recursion_limit is the test's own belt-and-suspenders guard: if the
+    # round-limit check ever regresses and the fake model keeps demanding
+    # tool calls forever, LangGraph raises GraphRecursionError well short of
+    # an actual hang instead of spinning indefinitely.
+    state = graph.invoke(
+        {"question": "loop forever", "session_id": "s1"},
+        {"configurable": {"thread_id": "s1"}, "recursion_limit": 40},
+    )
+
+    assert len(model.calls) == MAX_MODEL_TOOL_ROUNDS
+    assert len(executor.requests) == MAX_MODEL_TOOL_ROUNDS
+    assert any(
+        "model tool round limit exceeded" in error for error in state["errors"]
+    )
+    assert state["final_response"]["success"] is False
