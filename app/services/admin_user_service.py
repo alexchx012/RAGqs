@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import config
-from app.security.auth import ROLE_PERMISSIONS
+from app.security.auth import AuthContext, ROLE_PERMISSIONS
 from app.security.password import hash_password
 from app.security.session_store import SessionStore
 from app.security.user_store import (
@@ -22,6 +22,8 @@ _ALREADY_EXISTS_ERROR = "administrator user already exists"
 _NOT_FOUND_ERROR = "administrator user not found"
 _VERSION_CONFLICT_ERROR = "administrator user version conflict"
 _LAST_ADMIN_ERROR = "cannot remove last administrator"
+_SCOPE_ERROR = "administrator lacks management scope for this operation"
+_DEPARTMENT_REQUIRED_ERROR = "department_admin role requires a department_id"
 
 
 class AdminUserServiceError(Exception):
@@ -46,6 +48,10 @@ class AdminUserVersionConflictError(AdminUserServiceError):
 
 class LastAdminError(AdminUserServiceError):
     """Raised when a mutation would remove the last administrator."""
+
+
+class AdminUserScopeError(AdminUserServiceError):
+    """Raised when an actor exceeds its department scope or role-write authority."""
 
 
 class AdminUserService:
@@ -82,17 +88,35 @@ class AdminUserService:
     def create_user(
         self,
         *,
+        actor: AuthContext | None = None,
         username: str,
         password: str,
         roles: list[str],
         spaces: list[str],
+        department_id: str | None = None,
     ) -> dict[str, Any]:
-        """Validate, hash, and persist a new local user."""
+        """Validate, hash, and persist a new local user within the actor's management scope."""
 
         normalized_username = _normalize_username(username)
         normalized_password = _normalize_password(password)
         normalized_roles = _normalize_roles(roles)
         normalized_spaces = _normalize_spaces(spaces)
+
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
+
+        if not actor_is_super_admin and {"super_admin", "department_admin"} & set(normalized_roles):
+            raise AdminUserScopeError(_SCOPE_ERROR)
+
+        if actor_is_super_admin:
+            resolved_department_id = department_id
+        else:
+            if department_id is not None and department_id != actor_department_id:
+                raise AdminUserScopeError(_SCOPE_ERROR)
+            resolved_department_id = actor_department_id
+
+        if "department_admin" in normalized_roles and resolved_department_id is None:
+            raise AdminUserValidationError(_DEPARTMENT_REQUIRED_ERROR)
 
         try:
             user = self.user_store.create_user(
@@ -100,6 +124,7 @@ class AdminUserService:
                 password_hash=hash_password(normalized_password),
                 roles=normalized_roles,
                 spaces=normalized_spaces,
+                department_ids=_normalize_department_ids(resolved_department_id),
             )
         except UsernameAlreadyExistsError as exc:
             raise AdminUserAlreadyExistsError(_ALREADY_EXISTS_ERROR) from exc
@@ -157,13 +182,14 @@ class AdminUserService:
 
     @staticmethod
     def _safe_user(user: UserRecord) -> dict[str, Any]:
-        """Project a stored user to the six fields safe for service callers."""
+        """Project a stored user to the seven fields safe for service callers."""
 
         return {
             "id": user.id,
             "username": user.username,
             "roles": list(user.roles),
             "spaces": list(user.spaces),
+            "department_id": user.department_id,
             "version": user.version,
             "created_at": user.created_at,
         }
@@ -218,6 +244,10 @@ def _normalize_spaces(spaces: list[str]) -> list[str]:
             normalized.append(value)
             seen.add(value)
     return normalized
+
+
+def _normalize_department_ids(department_id: str | None) -> list[str]:
+    return [] if department_id is None else [department_id]
 
 
 def _auth_setting(settings: Any, name: str, default: Any) -> Any:
