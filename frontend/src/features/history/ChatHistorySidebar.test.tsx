@@ -254,6 +254,59 @@ describe('ChatHistorySidebar', () => {
       expect(clearChat).toHaveBeenCalled();
       expect(addMessage).toHaveBeenCalledTimes(2);
     });
+
+    it('ignores a stale load when a newer load resolves first (out-of-order race)', async () => {
+      const clearChat = vi.fn();
+      const setSessionId = vi.fn();
+      const addMessage = vi.fn();
+
+      let resolveA: (value: { id: string; title: string; messages: unknown[]; source: string }) => void;
+      let resolveB: (value: { id: string; title: string; messages: unknown[]; source: string }) => void;
+      const pendingA = new Promise((resolve) => { resolveA = resolve; });
+      const pendingB = new Promise((resolve) => { resolveB = resolve; });
+
+      const loadHistory = vi.fn()
+        .mockImplementationOnce(() => pendingA)
+        .mockImplementationOnce(() => pendingB);
+
+      mockUseChat.mockReturnValue({
+        sessionId: 'session-fresh',
+        currentChatHistory: [],
+        clearChat,
+        regenerateSessionId: vi.fn(),
+        setSessionId,
+        abortActiveStream: vi.fn(),
+        addMessage,
+      });
+      mockUseChatHistory.mockReturnValue({
+        chatHistories: [
+          { id: 'session-a', title: 'Chat A', messages: [], source: 'local' },
+          { id: 'session-b', title: 'Chat B', messages: [], source: 'local' },
+        ],
+        saveCurrentChat: vi.fn(),
+        loadHistory,
+        deleteHistory: vi.fn(),
+        searchHistories: vi.fn().mockResolvedValue(undefined),
+        refreshFromBackend: vi.fn().mockResolvedValue([]),
+      });
+
+      render(<ChatHistorySidebar />);
+
+      // User clicks A (slow, more messages), then clicks B (fast) before A resolves.
+      await userEvent.click(screen.getByText('Chat A'));
+      await userEvent.click(screen.getByText('Chat B'));
+
+      // B resolves first, then A resolves later — A must not clobber B's applied state.
+      resolveB!({ id: 'session-b', title: 'Chat B', messages: [{ type: 'user', content: 'b' }], source: 'local' });
+      await waitFor(() => {
+        expect(setSessionId).toHaveBeenCalledWith('session-b');
+      });
+      resolveA!({ id: 'session-a', title: 'Chat A', messages: [{ type: 'user', content: 'a' }], source: 'local' });
+      await Promise.resolve();
+
+      expect(setSessionId).not.toHaveBeenCalledWith('session-a');
+      expect(setSessionId).toHaveBeenLastCalledWith('session-b');
+    });
   });
 
   describe('search', () => {

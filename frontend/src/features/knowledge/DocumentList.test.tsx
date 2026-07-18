@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import React from 'react';
 import DocumentList from './DocumentList';
 
@@ -94,5 +94,31 @@ describe('DocumentList', () => {
   it('has refresh button', () => {
     render(<DocumentList />);
     expect(screen.getByTitle('刷新文档')).toBeInTheDocument();
+  });
+
+  it('does not let a stale in-flight request overwrite the empty state after the space is cleared', async () => {
+    let resolveFetch: (value: unknown) => void;
+    mockApiJson.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
+
+    const { rerender } = render(<DocumentList />);
+    await waitFor(() => { expect(mockApiJson).toHaveBeenCalledTimes(1); });
+
+    // Space becomes unavailable (e.g. refreshSpaces corrected selection) while the
+    // first request for the old space is still in flight.
+    setupKnowledge({ selectedSpaceId: '', spacesReady: true });
+    rerender(<DocumentList />);
+    await waitFor(() => { expect(screen.getByText('暂无可用知识空间')).toBeInTheDocument(); });
+
+    // The stale request for the old space finally resolves — it must not clobber
+    // the safe empty state that's already showing.
+    await act(async () => {
+      resolveFetch!({
+        code: 200,
+        data: { documents: [{ document_id: 'doc1', file_name: 'stale.txt', status: 'completed' }] },
+      });
+    });
+
+    expect(screen.getByText('暂无可用知识空间')).toBeInTheDocument();
+    expect(screen.queryByText(/stale\.txt/)).toBeNull();
   });
 });

@@ -239,6 +239,44 @@ describe('KnowledgeContext', () => {
       expect(result.current.spacesReady).toBe(true);
     });
 
+    it('ignores a stale refreshSpaces response so it cannot clobber a newer one', async () => {
+      let resolveFirst: (value: unknown) => void;
+      let resolveSecond: (value: unknown) => void;
+      const firstPromise = new Promise((resolve) => { resolveFirst = resolve; });
+      const secondPromise = new Promise((resolve) => { resolveSecond = resolve; });
+      mockApiJson
+        .mockImplementationOnce(() => firstPromise)
+        .mockImplementationOnce(() => secondPromise);
+
+      const { result } = renderHook(() => useKnowledge(), { wrapper });
+
+      let firstCallPromise!: Promise<KnowledgeSpace[]>;
+      let secondCallPromise!: Promise<KnowledgeSpace[]>;
+      act(() => {
+        firstCallPromise = result.current.refreshSpaces();
+        secondCallPromise = result.current.refreshSpaces();
+      });
+
+      // The second (newer) call's response arrives first.
+      await act(async () => {
+        resolveSecond({ code: 200, data: { spaces: [{ space_id: 'new-space', name: 'New' }] } });
+        await secondCallPromise;
+      });
+      expect(result.current.knowledgeSpaces).toEqual([{ space_id: 'new-space', name: 'New' }]);
+
+      // The first (older) call's response arrives later — it must not overwrite
+      // the state the newer call already applied, even though it still hands
+      // its own fetched data back to whoever awaited it.
+      let firstReturnedSpaces: KnowledgeSpace[] = [];
+      await act(async () => {
+        resolveFirst({ code: 200, data: { spaces: [{ space_id: 'old-space', name: 'Old' }] } });
+        firstReturnedSpaces = await firstCallPromise;
+      });
+
+      expect(firstReturnedSpaces).toEqual([{ space_id: 'old-space', name: 'Old' }]);
+      expect(result.current.knowledgeSpaces).toEqual([{ space_id: 'new-space', name: 'New' }]);
+    });
+
     it('keeps selectedSpaceId when it remains accessible', async () => {
       localStorage.setItem('ragSelectedSpaceId', 'ops');
       mockApiJson.mockResolvedValue({

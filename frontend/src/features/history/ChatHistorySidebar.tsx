@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useChat } from '../chat/ChatContext';
 import { useChatHistory } from './ChatHistoryContext';
 
@@ -6,6 +6,7 @@ export default function ChatHistorySidebar() {
   const { sessionId, currentChatHistory, addMessage, clearChat, regenerateSessionId, setSessionId, abortActiveStream } = useChat();
   const { chatHistories, saveCurrentChat, loadHistory, deleteHistory, searchHistories, refreshFromBackend } = useChatHistory();
   const [searchQuery, setSearchQuery] = useState('');
+  const latestLoadRequestRef = useRef(0);
 
   useEffect(() => { refreshFromBackend(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -23,8 +24,12 @@ export default function ChatHistorySidebar() {
   }, [searchHistories]);
 
   const handleLoadHistory = useCallback(async (h: typeof chatHistories[number]) => {
+    const requestId = ++latestLoadRequestRef.current;
     abortActiveStream();
     const loaded = await loadHistory(h);
+    // A newer load has started since this one began — discard this stale result
+    // instead of clobbering the session the user has since switched to.
+    if (requestId !== latestLoadRequestRef.current) return;
     clearChat();
     // Adopt the history entry id so "新建对话" does not save a duplicate under a new id.
     setSessionId(h.id);

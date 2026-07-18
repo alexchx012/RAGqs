@@ -10,11 +10,16 @@ export default function DocumentList() {
 
   const fetchDocuments = useCallback(async () => {
     if (!spacesReady) {
+      // Invalidate any in-flight request from a previous ready state so its
+      // response can't land after this state resets the panel.
+      ++latestRequestRef.current;
       setPanelState({ status: 'loading' });
       return;
     }
     if (!selectedSpaceId) {
       // No accessible space — safe empty state, do not hit the documents API.
+      // Also invalidate any in-flight request for a previously selected space.
+      ++latestRequestRef.current;
       setPanelState({ status: 'empty' });
       return;
     }

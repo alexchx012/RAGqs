@@ -7,20 +7,20 @@ import ChatHistorySidebar from '../features/history/ChatHistorySidebar';
 import FileUpload from '../features/upload/FileUpload';
 
 function ChatPageContent() {
-  const { selectedSpaceId, spacesReady, refreshSpaces, spaceIdOf, setSelectedSpaceId } = useKnowledge();
+  const { selectedSpaceId, spacesReady, refreshSpaces } = useKnowledge();
   const [spacesError, setSpacesError] = useState('');
 
+  // Selection correction (stale/unauthorized space → first available) already
+  // happens inside refreshSpaces itself via a race-safe functional state
+  // update; this callback only needs to trigger the refresh and surface errors.
   const handleRefresh = useCallback(async () => {
     setSpacesError('');
     try {
-      const spaces = await refreshSpaces();
-      if (spaces.length > 0 && !spaces.some((s) => spaceIdOf(s) === selectedSpaceId)) {
-        setSelectedSpaceId(spaceIdOf(spaces[0]));
-      }
+      await refreshSpaces();
     } catch (err: unknown) {
       setSpacesError(err instanceof Error ? err.message : '知识空间加载失败');
     }
-  }, [refreshSpaces, selectedSpaceId, spaceIdOf, setSelectedSpaceId]);
+  }, [refreshSpaces]);
 
   useEffect(() => {
     handleRefresh();
