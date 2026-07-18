@@ -14,7 +14,8 @@ LOCAL_CREDENTIALS_PROVIDER = "local_credentials"
 LOCAL_SESSION_COOKIE_NAME = "rag_session"
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
-    "admin": {"*"},
+    "super_admin": {"*"},
+    "department_admin": {"user:manage"},
     "viewer": {
         "chat:write",
         "chat:read",
@@ -122,7 +123,7 @@ class SimpleAuthProvider:
     def _default_context(self, *, provider: str) -> AuthContext:
         return AuthContext(
             user_id=_setting_value(self.settings, "auth_default_user_id", "local-admin"),
-            roles=_parse_list(_setting_value(self.settings, "auth_default_roles", "admin")),
+            roles=_parse_list(_setting_value(self.settings, "auth_default_roles", "super_admin")),
             spaces=_parse_list(_setting_value(self.settings, "auth_default_spaces", "*")),
             provider=provider,
         )
@@ -193,7 +194,7 @@ def is_all_space_context(auth_context: AuthContext) -> bool:
 
 
 def parse_dev_users(value: str) -> dict[str, tuple[set[str], set[str]]]:
-    """Parse AUTH_DEV_USERS entries: user:role|role:space|space;user2:admin:*."""
+    """Parse AUTH_DEV_USERS entries: user:role|role:space|space;user2:super_admin:*."""
 
     users: dict[str, tuple[set[str], set[str]]] = {}
     for raw_entry in str(value or "").split(";"):

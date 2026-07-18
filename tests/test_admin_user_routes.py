@@ -57,7 +57,7 @@ def test_create_app_mounts_admin_user_routes(tmp_path):
 
 
 def test_admin_can_list_and_view_safe_user_data(tmp_path):
-    client, _, _, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, _, _ = _client_for(tmp_path, roles={"super_admin"})
 
     listed = client.get("/api/admin/users")
 
@@ -74,7 +74,7 @@ def test_admin_can_list_and_view_safe_user_data(tmp_path):
 
 
 def test_admin_can_create_and_delete_user_with_json_expected_version(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, users, _ = _client_for(tmp_path, roles={"super_admin"})
 
     created = client.post(
         "/api/admin/users",
@@ -101,7 +101,7 @@ def test_admin_can_create_and_delete_user_with_json_expected_version(tmp_path):
 
 
 def test_patch_stale_version_returns_409_without_overwrite(tmp_path):
-    client, service, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, service, users, _ = _client_for(tmp_path, roles={"super_admin"})
     user_id = next(iter(users.list_users())).id
 
     assert (
@@ -126,7 +126,7 @@ def test_patch_stale_version_returns_409_without_overwrite(tmp_path):
 
 
 def test_service_domain_errors_map_to_stable_http_statuses(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, users, _ = _client_for(tmp_path, roles={"super_admin"})
     user_id = next(iter(users.list_users())).id
 
     invalid = client.post(
@@ -169,7 +169,7 @@ def test_service_error_detail_does_not_echo_sensitive_exception_text(tmp_path):
         lambda: LeakingService()
     )
     application.dependency_overrides[get_current_auth_context] = lambda: AuthContext(
-        user_id="caller", roles={"admin"}, spaces={"*"}
+        user_id="caller", roles={"super_admin"}, spaces={"*"}
     )
 
     response = TestClient(application).post(
@@ -255,7 +255,7 @@ def test_service_error_details_are_fixed_and_safe(
         lambda: RaisingService()
     )
     application.dependency_overrides[get_current_auth_context] = lambda: AuthContext(
-        user_id="caller", roles={"admin"}, spaces={"*"}
+        user_id="caller", roles={"super_admin"}, spaces={"*"}
     )
 
     request = TestClient(application)
@@ -271,7 +271,7 @@ def test_service_error_details_are_fixed_and_safe(
 
 
 def test_request_validation_returns_422_and_keeps_explicit_empty_updates(tmp_path):
-    client, service, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, service, users, _ = _client_for(tmp_path, roles={"super_admin"})
     user_id = next(iter(users.list_users())).id
 
     missing_password = client.post(
@@ -301,7 +301,7 @@ def test_request_validation_returns_422_and_keeps_explicit_empty_updates(tmp_pat
 
 
 def test_admin_routes_return_422_for_missing_expected_version_or_patch_fields(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, users, _ = _client_for(tmp_path, roles={"super_admin"})
     user_id = next(iter(users.list_users())).id
     before = users.count_users()
 
@@ -342,7 +342,7 @@ def test_admin_routes_return_422_for_missing_expected_version_or_patch_fields(tm
 
 
 def test_admin_routes_return_fixed_404_for_unknown_targets(tmp_path):
-    client, _, _, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, _, _ = _client_for(tmp_path, roles={"super_admin"})
 
     responses = [
         client.get("/api/admin/users/missing"),
@@ -361,7 +361,7 @@ def test_admin_routes_return_fixed_404_for_unknown_targets(tmp_path):
 
 
 def test_admin_routes_return_fixed_409_for_conflicts_without_sensitive_data(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, users, _ = _client_for(tmp_path, roles={"super_admin"})
     target = next(iter(users.list_users()))
 
     duplicate = client.post(
@@ -382,7 +382,7 @@ def test_admin_routes_return_fixed_409_for_conflicts_without_sensitive_data(tmp_
 
     only_admin = client.post(
         "/api/admin/users",
-        json={"username": "only-admin", "password": "pw", "roles": ["admin"], "spaces": ["*"]},
+        json={"username": "only-admin", "password": "pw", "roles": ["super_admin"], "spaces": ["*"]},
     )
     only_admin.raise_for_status()
     only_admin_user = only_admin.json()["data"]["user"]
@@ -409,10 +409,10 @@ def test_admin_routes_return_fixed_409_for_conflicts_without_sensitive_data(tmp_
 
 
 def test_last_admin_error_maps_to_409(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, users, _ = _client_for(tmp_path, roles={"super_admin"})
     created = client.post(
         "/api/admin/users",
-        json={"username": "only-admin", "password": "pw", "roles": ["admin"], "spaces": ["*"]},
+        json={"username": "only-admin", "password": "pw", "roles": ["super_admin"], "spaces": ["*"]},
     ).json()["data"]["user"]
 
     response = client.patch(
@@ -422,13 +422,13 @@ def test_last_admin_error_maps_to_409(tmp_path):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "cannot remove last administrator"
-    assert users.get_by_id(created["id"]).roles == ["admin"]
+    assert users.get_by_id(created["id"]).roles == ["super_admin"]
     assert created["id"] not in response.text
     assert "password_hash" not in response.text
 
 
 def test_delete_missing_user_returns_fixed_404_detail(tmp_path):
-    client, _, _, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, _, _ = _client_for(tmp_path, roles={"super_admin"})
 
     response = client.request("DELETE", "/api/admin/users/missing", json={"expected_version": 1})
 
@@ -439,7 +439,7 @@ def test_delete_missing_user_returns_fixed_404_detail(tmp_path):
 
 
 def test_delete_stale_version_returns_fixed_409_without_deletion(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, users, _ = _client_for(tmp_path, roles={"super_admin"})
     user_id = next(iter(users.list_users())).id
 
     assert (
@@ -460,10 +460,10 @@ def test_delete_stale_version_returns_fixed_409_without_deletion(tmp_path):
 
 
 def test_delete_last_admin_returns_fixed_409_without_deletion(tmp_path):
-    client, _, users, _ = _client_for(tmp_path, roles={"admin"})
+    client, _, users, _ = _client_for(tmp_path, roles={"super_admin"})
     created_response = client.post(
         "/api/admin/users",
-        json={"username": "only-admin", "password": "pw", "roles": ["admin"], "spaces": ["*"]},
+        json={"username": "only-admin", "password": "pw", "roles": ["super_admin"], "spaces": ["*"]},
     )
     created_response.raise_for_status()
     created = created_response.json()["data"]["user"]
@@ -478,7 +478,7 @@ def test_delete_last_admin_returns_fixed_409_without_deletion(tmp_path):
     assert response.json()["detail"] == "cannot remove last administrator"
     record = users.get_by_id(created["id"])
     assert record is not None
-    assert record.roles == ["admin"]
+    assert record.roles == ["super_admin"]
     assert created["id"] not in response.text
     assert "password_hash" not in response.text
 

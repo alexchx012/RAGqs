@@ -24,7 +24,7 @@ def local_auth_app(tmp_path, monkeypatch):
     user_store.create_user(
         username="alice",
         password_hash=hash_password("correct-password"),
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
     service = LocalAuthService(user_store=user_store, session_store=session_store)
@@ -58,7 +58,7 @@ def local_auth_admin_app(tmp_path, monkeypatch):
     user_store.create_user(
         username="alice",
         password_hash=hash_password("correct-password"),
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
     service = LocalAuthService(user_store=user_store, session_store=session_store)
@@ -99,7 +99,7 @@ def test_login_success_sets_cookie_and_returns_user_info(local_auth_app):
     assert response.status_code == 200
     assert "rag_session" in response.cookies
     body = response.json()["data"]
-    assert body["roles"] == ["admin"]
+    assert body["roles"] == ["super_admin"]
     assert body["spaces"] == ["*"]
 
 
@@ -218,7 +218,7 @@ def test_me_endpoint_returns_user_info_when_logged_in(local_auth_app):
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["roles"] == ["admin"]
+    assert data["roles"] == ["super_admin"]
     assert data["spaces"] == ["*"]
 
 

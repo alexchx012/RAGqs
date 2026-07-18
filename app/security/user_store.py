@@ -150,8 +150,8 @@ class UserStore:
 
                 new_roles = list(current.roles) if roles is None else list(roles)
                 new_spaces = list(current.spaces) if spaces is None else list(spaces)
-                admin_count = self._count_admins(connection)
-                if "admin" in current.roles and "admin" not in new_roles and admin_count == 1:
+                admin_count = self._count_super_admins(connection)
+                if "super_admin" in current.roles and "super_admin" not in new_roles and admin_count == 1:
                     raise LastAdminProtectionError(user_id)
 
                 cursor = connection.execute(
@@ -203,8 +203,8 @@ class UserStore:
                 if current.version != expected_version:
                     raise UserVersionConflictError(user_id)
 
-                admin_count = self._count_admins(connection)
-                if "admin" in current.roles and admin_count == 1:
+                admin_count = self._count_super_admins(connection)
+                if "super_admin" in current.roles and admin_count == 1:
                     raise LastAdminProtectionError(user_id)
 
                 cursor = connection.execute(
@@ -226,9 +226,9 @@ class UserStore:
         return int(row["count"]) if row is not None else 0
 
     @staticmethod
-    def _count_admins(connection: sqlite3.Connection) -> int:
+    def _count_super_admins(connection: sqlite3.Connection) -> int:
         rows = connection.execute("SELECT roles FROM users").fetchall()
-        return sum("admin" in _loads_list(row["roles"]) for row in rows)
+        return sum("super_admin" in _loads_list(row["roles"]) for row in rows)
 
     def _initialize_schema(self) -> None:
         with closing(self._connect()) as connection:
@@ -250,6 +250,10 @@ class UserStore:
                 connection.execute(
                     "ALTER TABLE users ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
                 )
+            connection.execute(
+                "UPDATE users SET roles = REPLACE(roles, '\"admin\"', '\"super_admin\"') "
+                "WHERE roles LIKE '%\"admin\"%'"
+            )
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
