@@ -10,6 +10,7 @@ from app.security.password import hash_password
 from app.security.session_store import SessionStore
 from app.security.user_store import (
     LastAdminProtectionError,
+    UserManageScopeConflictError,
     UsernameAlreadyExistsError,
     UserNotFoundError,
     UserRecord,
@@ -133,25 +134,46 @@ class AdminUserService:
     def update_user(
         self,
         *,
+        actor: AuthContext | None = None,
         user_id: str,
         expected_version: int,
         roles: list[str] | None = None,
         spaces: list[str] | None = None,
+        department_id: str | None = None,
     ) -> dict[str, Any]:
-        """Update optional role and space fields using an optimistic version."""
+        """Update optional role, space, and department fields using an optimistic version."""
 
         normalized_roles = None if roles is None else _normalize_roles(roles)
         normalized_spaces = None if spaces is None else _normalize_spaces(spaces)
+
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
+
+        if (
+            normalized_roles is not None
+            and not actor_is_super_admin
+            and {"super_admin", "department_admin"} & set(normalized_roles)
+        ):
+            raise AdminUserScopeError(_SCOPE_ERROR)
+        if (
+            normalized_roles is not None
+            and "department_admin" in normalized_roles
+            and department_id is None
+        ):
+            raise AdminUserValidationError(_DEPARTMENT_REQUIRED_ERROR)
 
         try:
             user = self.user_store.update_user(
                 user_id=user_id,
                 expected_version=expected_version,
-                actor_is_super_admin=True,
-                actor_department_id=None,
+                actor_is_super_admin=actor_is_super_admin,
+                actor_department_id=actor_department_id,
                 roles=normalized_roles,
                 spaces=normalized_spaces,
+                department_ids=(None if department_id is None else [department_id]),
             )
+        except UserManageScopeConflictError as exc:
+            raise AdminUserScopeError(_SCOPE_ERROR) from exc
         except UserVersionConflictError as exc:
             raise AdminUserVersionConflictError(_VERSION_CONFLICT_ERROR) from exc
         except LastAdminProtectionError as exc:
@@ -160,16 +182,23 @@ class AdminUserService:
             raise AdminUserNotFoundError(_NOT_FOUND_ERROR) from exc
         return self._safe_user(user)
 
-    def delete_user(self, *, user_id: str, expected_version: int) -> dict[str, str | bool]:
+    def delete_user(
+        self, *, actor: AuthContext | None = None, user_id: str, expected_version: int
+    ) -> dict[str, str | bool]:
         """Delete a user and revoke its sessions only after deletion commits."""
+
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
 
         try:
             self.user_store.delete_user(
                 user_id=user_id,
                 expected_version=expected_version,
-                actor_is_super_admin=True,
-                actor_department_id=None,
+                actor_is_super_admin=actor_is_super_admin,
+                actor_department_id=actor_department_id,
             )
+        except UserManageScopeConflictError as exc:
+            raise AdminUserScopeError(_SCOPE_ERROR) from exc
         except UserVersionConflictError as exc:
             raise AdminUserVersionConflictError(_VERSION_CONFLICT_ERROR) from exc
         except LastAdminProtectionError as exc:

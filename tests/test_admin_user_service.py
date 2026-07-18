@@ -287,3 +287,99 @@ def test_omitting_actor_behaves_like_unrestricted_super_admin(tmp_path):
 
     assert created["department_id"] == "dept-1"
     assert users.get_by_id(created["id"]).roles == ["department_admin"]
+
+
+def test_update_translates_scope_conflict_to_admin_user_scope_error(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    target = users.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-2"],
+    )
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces={"docs"}, department_id="dept-1"
+    )
+
+    with pytest.raises(AdminUserScopeError):
+        service.update_user(
+            actor=dept_admin, user_id=target.id, expected_version=1, spaces=["docs"]
+        )
+    with pytest.raises(AdminUserScopeError):
+        service.delete_user(actor=dept_admin, user_id=target.id, expected_version=1)
+    assert users.get_by_id(target.id).spaces == []
+
+
+def test_update_rejects_role_escalation_by_department_admin(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    target = users.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces={"docs"}, department_id="dept-1"
+    )
+
+    with pytest.raises(AdminUserScopeError):
+        service.update_user(
+            actor=dept_admin, user_id=target.id, expected_version=1,
+            roles=["department_admin"], department_id="dept-1",
+        )
+    assert users.get_by_id(target.id).roles == ["viewer"]
+
+
+def test_update_requires_department_id_when_adding_department_admin_role(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    target = users.create_user(username="bob", password_hash="h1", roles=["viewer"], spaces=[])
+    super_admin = AuthContext(user_id="root", roles={"super_admin"}, spaces={"*"})
+
+    with pytest.raises(AdminUserValidationError):
+        service.update_user(
+            actor=super_admin, user_id=target.id, expected_version=1,
+            roles=["department_admin"],
+        )
+
+
+def test_update_succeeds_when_department_admin_role_and_department_id_provided_together(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    target = users.create_user(username="bob", password_hash="h1", roles=["viewer"], spaces=[])
+    super_admin = AuthContext(user_id="root", roles={"super_admin"}, spaces={"*"})
+
+    updated = service.update_user(
+        actor=super_admin, user_id=target.id, expected_version=1,
+        roles=["department_admin"], department_id="dept-1",
+    )
+
+    assert updated["roles"] == ["department_admin"]
+    assert updated["department_id"] == "dept-1"
+
+
+def test_department_admin_can_update_and_delete_user_in_own_department(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    target = users.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces={"docs"}, department_id="dept-1"
+    )
+
+    updated = service.update_user(
+        actor=dept_admin, user_id=target.id, expected_version=1, spaces=["docs"]
+    )
+    assert updated["spaces"] == ["docs"]
+
+    result = service.delete_user(actor=dept_admin, user_id=target.id, expected_version=2)
+    assert result == {"deleted": True, "user_id": target.id}
+
+
+def test_omitting_actor_preserves_pre_change_update_and_delete_behavior(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    target = users.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-9"],
+    )
+
+    updated = service.update_user(user_id=target.id, expected_version=1, spaces=["docs"])
+    assert updated["spaces"] == ["docs"]
+
+    result = service.delete_user(user_id=target.id, expected_version=2)
+    assert result == {"deleted": True, "user_id": target.id}
