@@ -17,7 +17,7 @@ def _build_service(tmp_path):
     user_store.create_user(
         username="alice",
         password_hash=hash_password("correct-password"),
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
     return service
@@ -29,7 +29,7 @@ def test_login_succeeds_with_correct_credentials(tmp_path):
     result = service.login("alice", "correct-password")
 
     assert result.user_id
-    assert result.roles == {"admin"}
+    assert result.roles == {"super_admin"}
     assert result.spaces == {"*"}
     assert len(result.token) > 20
 
@@ -60,7 +60,7 @@ def test_resolve_returns_auth_context_for_valid_token(tmp_path):
 
     assert context is not None
     assert context.user_id == result.user_id
-    assert context.roles == {"admin"}
+    assert context.roles == {"super_admin"}
     assert context.spaces == {"*"}
     assert context.provider == "local_credentials"
     assert context.has_permission("chat:write")
@@ -74,7 +74,7 @@ def test_resolve_reads_updated_roles_and_spaces_without_relogin(tmp_path):
     admin = users.create_user(
         username="admin",
         password_hash=hash_password("admin-pw"),
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
     target = users.create_user(
@@ -88,6 +88,8 @@ def test_resolve_reads_updated_roles_and_spaces_without_relogin(tmp_path):
     users.update_user(
         user_id=target.id,
         expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
         roles=["maintainer"],
         spaces=["private"],
     )
@@ -104,6 +106,32 @@ def test_resolve_returns_none_for_invalid_token(tmp_path):
     service = _build_service(tmp_path)
 
     assert service.resolve("not-a-real-token") is None
+
+
+def test_resolve_backfills_department_id_from_user_record(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    users = UserStore(db_path)
+    sessions = SessionStore(db_path)
+    service = LocalAuthService(user_store=users, session_store=sessions)
+    users.create_user(
+        username="lead", password_hash=hash_password("lead-pw"), roles=["department_admin"],
+        spaces=["docs"], department_ids=["dept-1"],
+    )
+    login = service.login("lead", "lead-pw")
+
+    context = service.resolve(login.token)
+
+    assert context is not None
+    assert context.department_id == "dept-1"
+
+
+def test_resolve_department_id_is_none_when_user_has_no_department(tmp_path):
+    service = _build_service(tmp_path)
+
+    context = service.resolve(service.login("alice", "correct-password").token)
+
+    assert context is not None
+    assert context.department_id is None
 
 
 def test_logout_invalidates_token_immediately(tmp_path):
@@ -128,7 +156,7 @@ def test_seed_initial_admin_creates_account_on_first_startup(tmp_path):
 
     user = service.user_store.get_by_username("admin")
     assert user is not None
-    assert user.roles == ["admin"]
+    assert user.roles == ["super_admin"]
     assert user.spaces == ["*"]
 
 
@@ -218,7 +246,7 @@ def test_seed_initial_admin_swallows_race_when_admin_created_concurrently(tmp_pa
     service.user_store.create_user(
         username="admin",
         password_hash=hash_password("someone-elses-password"),
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
 

@@ -7,7 +7,22 @@ from app.api import chat as chat_api
 from app.api import file as file_api
 from app.providers import SessionSummary
 from app.security import auth as auth_module
-from app.security.auth import SimpleAuthProvider, require_space_access
+from app.security.auth import AuthContext, SimpleAuthProvider, require_space_access
+
+
+def test_super_admin_role_grants_wildcard_permission():
+    context = AuthContext(user_id="root", roles={"super_admin"}, spaces=set())
+
+    assert context.has_permission("document:delete")
+    assert context.has_permission("user:manage")
+
+
+def test_department_admin_role_only_grants_user_manage():
+    context = AuthContext(user_id="dept-lead", roles={"department_admin"}, spaces=set())
+
+    assert context.has_permission("user:manage")
+    assert not context.has_permission("document:delete")
+    assert not context.has_permission("chat:write")
 
 
 def test_disabled_auth_returns_local_admin_for_compatibility():
@@ -16,7 +31,7 @@ def test_disabled_auth_returns_local_admin_for_compatibility():
     context = provider.authenticate({})
 
     assert context.user_id == "local-admin"
-    assert context.roles == {"admin"}
+    assert context.roles == {"super_admin"}
     assert context.spaces == {"*"}
     assert context.has_permission("chat:write")
     assert context.has_permission("document:delete")
@@ -208,9 +223,9 @@ def _settings(**overrides):
         "auth_user_header": "X-RAG-User",
         "auth_roles_header": "X-RAG-Roles",
         "auth_spaces_header": "X-RAG-Spaces",
-        "auth_dev_users": "local-admin:admin:*",
+        "auth_dev_users": "local-admin:super_admin:*",
         "auth_default_user_id": "local-admin",
-        "auth_default_roles": "admin",
+        "auth_default_roles": "super_admin",
         "auth_default_spaces": "*",
     }
     values.update(overrides)

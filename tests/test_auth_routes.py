@@ -24,7 +24,7 @@ def local_auth_app(tmp_path, monkeypatch):
     user_store.create_user(
         username="alice",
         password_hash=hash_password("correct-password"),
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
     service = LocalAuthService(user_store=user_store, session_store=session_store)
@@ -58,7 +58,7 @@ def local_auth_admin_app(tmp_path, monkeypatch):
     user_store.create_user(
         username="alice",
         password_hash=hash_password("correct-password"),
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
     service = LocalAuthService(user_store=user_store, session_store=session_store)
@@ -88,6 +88,51 @@ def local_auth_admin_app(tmp_path, monkeypatch):
     return TestClient(application), TestClient(application), service
 
 
+@pytest.fixture()
+def local_auth_department_scoped_app(tmp_path, monkeypatch):
+    db_path = tmp_path / "auth.sqlite3"
+    user_store = UserStore(db_path)
+    session_store = SessionStore(db_path)
+    user_store.create_user(
+        username="alice",
+        password_hash=hash_password("correct-password"),
+        roles=["super_admin"],
+        spaces=["*"],
+    )
+    user_store.create_user(
+        username="carol",
+        password_hash=hash_password("carol-password"),
+        roles=["department_admin"],
+        spaces=["docs"],
+        department_ids=["dept-1"],
+    )
+    service = LocalAuthService(user_store=user_store, session_store=session_store)
+
+    monkeypatch.setattr(auth_api, "get_local_auth_service", lambda settings=None: service)
+    monkeypatch.setattr(
+        "app.security.local_auth_service.get_local_auth_service",
+        lambda settings=None: service,
+    )
+    monkeypatch.setattr(
+        auth_module,
+        "config",
+        SimpleNamespace(auth_enabled=True, auth_provider="local_credentials"),
+    )
+
+    application = FastAPI()
+    application.include_router(auth_api.router, prefix="/api")
+    application.include_router(admin_users.router, prefix="/api")
+    application.dependency_overrides[admin_users.admin_user_service_dependency] = (
+        lambda: AdminUserService(user_store=user_store, session_store=session_store)
+    )
+    return (
+        TestClient(application),
+        TestClient(application),
+        TestClient(application),
+        service,
+    )
+
+
 # --- Requirement: Local credential login ---
 
 
@@ -99,7 +144,7 @@ def test_login_success_sets_cookie_and_returns_user_info(local_auth_app):
     assert response.status_code == 200
     assert "rag_session" in response.cookies
     body = response.json()["data"]
-    assert body["roles"] == ["admin"]
+    assert body["roles"] == ["super_admin"]
     assert body["spaces"] == ["*"]
 
 
@@ -218,7 +263,7 @@ def test_me_endpoint_returns_user_info_when_logged_in(local_auth_app):
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["roles"] == ["admin"]
+    assert data["roles"] == ["super_admin"]
     assert data["spaces"] == ["*"]
 
 
@@ -288,3 +333,47 @@ def test_deleted_user_old_session_returns_401(local_auth_admin_app):
     assert deleted.status_code == 200
     after_delete = target_client.get("/api/protected")
     assert after_delete.status_code == 401
+
+
+def test_department_admin_real_login_filters_list_by_resolved_department(
+    local_auth_department_scoped_app,
+):
+    _, dept_client, _, service = local_auth_department_scoped_app
+    same_dept = service.user_store.create_user(
+        username="dave", password_hash=hash_password("pw"), roles=["viewer"], spaces=["docs"],
+        department_ids=["dept-1"],
+    )
+    service.user_store.create_user(
+        username="erin", password_hash=hash_password("pw"), roles=["viewer"], spaces=["docs"],
+        department_ids=["dept-2"],
+    )
+
+    login = dept_client.post(
+        "/api/auth/login", json={"username": "carol", "password": "carol-password"}
+    )
+    assert login.status_code == 200
+
+    listed = dept_client.get("/api/admin/users")
+    assert listed.status_code == 200
+    usernames = {user["username"] for user in listed.json()["data"]["users"]}
+    assert usernames == {"carol", "dave"}
+    assert same_dept.username in usernames
+
+
+def test_department_admin_real_login_gets_404_for_cross_department_target(
+    local_auth_department_scoped_app,
+):
+    _, dept_client, _, service = local_auth_department_scoped_app
+    other_dept = service.user_store.create_user(
+        username="erin", password_hash=hash_password("pw"), roles=["viewer"], spaces=["docs"],
+        department_ids=["dept-2"],
+    )
+
+    login = dept_client.post(
+        "/api/auth/login", json={"username": "carol", "password": "carol-password"}
+    )
+    assert login.status_code == 200
+
+    response = dept_client.get(f"/api/admin/users/{other_dept.id}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "administrator user not found"

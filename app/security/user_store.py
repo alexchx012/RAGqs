@@ -22,6 +22,11 @@ class UserRecord:
     spaces: list[str] = field(default_factory=list)
     created_at: str = ""
     version: int = 1
+    department_ids: list[str] = field(default_factory=list)
+
+    @property
+    def department_id(self) -> str | None:
+        return self.department_ids[0] if self.department_ids else None
 
 
 class UsernameAlreadyExistsError(Exception):
@@ -40,6 +45,14 @@ class LastAdminProtectionError(Exception):
     """Raised when a mutation would remove the last administrator."""
 
 
+class UserManageScopeConflictError(Exception):
+    """Raised when an actor lacks department scope or admin-account authority over a target."""
+
+
+class TooManyDepartmentsError(Exception):
+    """Raised when department_ids exceeds the single-membership limit enforced today."""
+
+
 class UserStore:
     """Durable user credential store backed by a local SQLite database file."""
 
@@ -55,7 +68,9 @@ class UserStore:
         password_hash: str,
         roles: list[str],
         spaces: list[str],
+        department_ids: list[str] | None = None,
     ) -> UserRecord:
+        normalized_department_ids = _validate_department_ids(department_ids)
         user = UserRecord(
             id=str(uuid.uuid4()),
             username=username,
@@ -64,15 +79,17 @@ class UserStore:
             spaces=list(spaces),
             created_at=datetime.now(UTC).isoformat(),
             version=1,
+            department_ids=normalized_department_ids,
         )
         with closing(self._connect()) as connection:
             try:
                 connection.execute(
                     """
                     INSERT INTO users (
-                        id, username, password_hash, roles, spaces, created_at, version
+                        id, username, password_hash, roles, spaces, created_at, version,
+                        department_ids_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user.id,
@@ -82,6 +99,7 @@ class UserStore:
                         json.dumps(user.spaces, ensure_ascii=False),
                         user.created_at,
                         user.version,
+                        json.dumps(user.department_ids, ensure_ascii=False),
                     ),
                 )
                 connection.commit()
@@ -93,7 +111,8 @@ class UserStore:
         with closing(self._connect()) as connection:
             row = connection.execute(
                 """
-                SELECT id, username, password_hash, roles, spaces, created_at, version
+                SELECT id, username, password_hash, roles, spaces, created_at, version,
+                    department_ids_json
                 FROM users
                 WHERE username = ?
                 """,
@@ -105,7 +124,8 @@ class UserStore:
         with closing(self._connect()) as connection:
             row = connection.execute(
                 """
-                SELECT id, username, password_hash, roles, spaces, created_at, version
+                SELECT id, username, password_hash, roles, spaces, created_at, version,
+                    department_ids_json
                 FROM users
                 WHERE id = ?
                 """,
@@ -116,7 +136,8 @@ class UserStore:
     def list_users(self) -> list[UserRecord]:
         with closing(self._connect()) as connection:
             rows = connection.execute("""
-                SELECT id, username, password_hash, roles, spaces, created_at, version
+                SELECT id, username, password_hash, roles, spaces, created_at, version,
+                    department_ids_json
                 FROM users
                 ORDER BY username ASC, id ASC
                 """).fetchall()
@@ -127,15 +148,19 @@ class UserStore:
         *,
         user_id: str,
         expected_version: int,
+        actor_is_super_admin: bool,
+        actor_department_id: str | None,
         roles: list[str] | None = None,
         spaces: list[str] | None = None,
+        department_ids: list[str] | None = None,
     ) -> UserRecord:
         with closing(self._connect()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
                     """
-                    SELECT id, username, password_hash, roles, spaces, created_at, version
+                    SELECT id, username, password_hash, roles, spaces, created_at, version,
+                        department_ids_json
                     FROM users
                     WHERE id = ?
                     """,
@@ -145,24 +170,35 @@ class UserStore:
                     raise UserNotFoundError(user_id)
 
                 current = _user_from_row(row)
+                self._require_manage_scope(
+                    current,
+                    actor_is_super_admin=actor_is_super_admin,
+                    actor_department_id=actor_department_id,
+                )
                 if current.version != expected_version:
                     raise UserVersionConflictError(user_id)
 
                 new_roles = list(current.roles) if roles is None else list(roles)
                 new_spaces = list(current.spaces) if spaces is None else list(spaces)
-                admin_count = self._count_admins(connection)
-                if "admin" in current.roles and "admin" not in new_roles and admin_count == 1:
+                new_department_ids = (
+                    list(current.department_ids)
+                    if department_ids is None
+                    else _validate_department_ids(department_ids)
+                )
+                admin_count = self._count_super_admins(connection)
+                if "super_admin" in current.roles and "super_admin" not in new_roles and admin_count == 1:
                     raise LastAdminProtectionError(user_id)
 
                 cursor = connection.execute(
                     """
                     UPDATE users
-                    SET roles = ?, spaces = ?, version = version + 1
+                    SET roles = ?, spaces = ?, department_ids_json = ?, version = version + 1
                     WHERE id = ? AND version = ?
                     """,
                     (
                         json.dumps(new_roles, ensure_ascii=False),
                         json.dumps(new_spaces, ensure_ascii=False),
+                        json.dumps(new_department_ids, ensure_ascii=False),
                         user_id,
                         expected_version,
                     ),
@@ -182,15 +218,24 @@ class UserStore:
             spaces=new_spaces,
             created_at=current.created_at,
             version=current.version + 1,
+            department_ids=new_department_ids,
         )
 
-    def delete_user(self, *, user_id: str, expected_version: int) -> UserRecord:
+    def delete_user(
+        self,
+        *,
+        user_id: str,
+        expected_version: int,
+        actor_is_super_admin: bool,
+        actor_department_id: str | None,
+    ) -> UserRecord:
         with closing(self._connect()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
                     """
-                    SELECT id, username, password_hash, roles, spaces, created_at, version
+                    SELECT id, username, password_hash, roles, spaces, created_at, version,
+                        department_ids_json
                     FROM users
                     WHERE id = ?
                     """,
@@ -200,11 +245,16 @@ class UserStore:
                     raise UserNotFoundError(user_id)
 
                 current = _user_from_row(row)
+                self._require_manage_scope(
+                    current,
+                    actor_is_super_admin=actor_is_super_admin,
+                    actor_department_id=actor_department_id,
+                )
                 if current.version != expected_version:
                     raise UserVersionConflictError(user_id)
 
-                admin_count = self._count_admins(connection)
-                if "admin" in current.roles and admin_count == 1:
+                admin_count = self._count_super_admins(connection)
+                if "super_admin" in current.roles and admin_count == 1:
                     raise LastAdminProtectionError(user_id)
 
                 cursor = connection.execute(
@@ -226,9 +276,20 @@ class UserStore:
         return int(row["count"]) if row is not None else 0
 
     @staticmethod
-    def _count_admins(connection: sqlite3.Connection) -> int:
+    def _count_super_admins(connection: sqlite3.Connection) -> int:
         rows = connection.execute("SELECT roles FROM users").fetchall()
-        return sum("admin" in _loads_list(row["roles"]) for row in rows)
+        return sum("super_admin" in _loads_list(row["roles"]) for row in rows)
+
+    @staticmethod
+    def _require_manage_scope(
+        current: "UserRecord", *, actor_is_super_admin: bool, actor_department_id: str | None
+    ) -> None:
+        if actor_is_super_admin:
+            return
+        if actor_department_id is None or actor_department_id != current.department_id:
+            raise UserManageScopeConflictError(current.id)
+        if {"super_admin", "department_admin"} & set(current.roles):
+            raise UserManageScopeConflictError(current.id)
 
     def _initialize_schema(self) -> None:
         with closing(self._connect()) as connection:
@@ -240,7 +301,8 @@ class UserStore:
                     roles TEXT NOT NULL,
                     spaces TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    version INTEGER NOT NULL DEFAULT 1
+                    version INTEGER NOT NULL DEFAULT 1,
+                    department_ids_json TEXT NOT NULL DEFAULT '[]'
                 )
                 """)
             columns = {
@@ -250,12 +312,27 @@ class UserStore:
                 connection.execute(
                     "ALTER TABLE users ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
                 )
+            if "department_ids_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE users ADD COLUMN department_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            connection.execute(
+                "UPDATE users SET roles = REPLACE(roles, '\"admin\"', '\"super_admin\"') "
+                "WHERE roles LIKE '%\"admin\"%'"
+            )
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+
+def _validate_department_ids(department_ids: list[str] | None) -> list[str]:
+    values = list(department_ids) if department_ids else []
+    if len(values) > 1:
+        raise TooManyDepartmentsError(values)
+    return values
 
 
 def _user_from_row(row: sqlite3.Row) -> UserRecord:
@@ -267,6 +344,7 @@ def _user_from_row(row: sqlite3.Row) -> UserRecord:
         spaces=_loads_list(row["spaces"]),
         created_at=row["created_at"],
         version=int(row["version"]),
+        department_ids=_loads_list(row["department_ids_json"]),
     )
 
 
