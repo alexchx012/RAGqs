@@ -17,16 +17,22 @@ from app.services.admin_user_service import (
 )
 
 
-def _client_for(tmp_path, *, roles):
+def _client_for(tmp_path, *, roles, department_id=None, target_department_id=None):
     users = UserStore(tmp_path / "auth.sqlite3")
     sessions = SessionStore(tmp_path / "auth.sqlite3")
     service = AdminUserService(user_store=users, session_store=sessions)
-    service.create_user(username="target", password="secret", roles=["viewer"], spaces=["docs"])
+    service.create_user(
+        username="target",
+        password="secret",
+        roles=["viewer"],
+        spaces=["docs"],
+        department_id=target_department_id,
+    )
     application = FastAPI()
     application.include_router(admin_users.router, prefix="/api")
     application.dependency_overrides[admin_users.admin_user_service_dependency] = lambda: service
     application.dependency_overrides[get_current_auth_context] = lambda: AuthContext(
-        user_id="caller", roles=set(roles), spaces={"*"}
+        user_id="caller", roles=set(roles), spaces={"*"}, department_id=department_id
     )
     return TestClient(application), service, users, sessions
 
@@ -63,7 +69,7 @@ def test_admin_can_list_and_view_safe_user_data(tmp_path):
 
     assert listed.status_code == 200
     user = listed.json()["data"]["users"][0]
-    assert set(user) == {"id", "username", "roles", "spaces", "version", "created_at"}
+    assert set(user) == {"id", "username", "roles", "spaces", "department_id", "version", "created_at"}
     assert "password_hash" not in listed.text
 
     detail = client.get(f"/api/admin/users/{user['id']}")
@@ -83,7 +89,7 @@ def test_admin_can_create_and_delete_user_with_json_expected_version(tmp_path):
 
     assert created.status_code == 200
     user = created.json()["data"]["user"]
-    assert set(user) == {"id", "username", "roles", "spaces", "version", "created_at"}
+    assert set(user) == {"id", "username", "roles", "spaces", "department_id", "version", "created_at"}
     assert user["username"] == "new-user"
     assert "password_hash" not in created.text
 
@@ -242,7 +248,7 @@ def test_service_error_details_are_fixed_and_safe(
         def create_user(self, **kwargs):
             self._raise()
 
-        def get_user(self, user_id):
+        def get_user(self, user_id, **kwargs):
             self._raise()
 
         def update_user(self, **kwargs):
@@ -541,3 +547,121 @@ def test_permission_dependency_runs_before_service_dependency(method, path, payl
         response = client.request(method, path, json=payload)
 
     assert response.status_code == 403
+
+
+def test_department_admin_cannot_create_user_with_admin_roles(tmp_path):
+    client, _, _, _ = _client_for(tmp_path, roles={"department_admin"}, department_id="dept-1")
+
+    response = client.post(
+        "/api/admin/users",
+        json={
+            "username": "new-admin",
+            "password": "pw",
+            "roles": ["department_admin"],
+            "spaces": [],
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "administrator scope violation"
+
+
+def test_department_admin_create_user_defaults_to_own_department(tmp_path):
+    client, _, users, _ = _client_for(tmp_path, roles={"department_admin"}, department_id="dept-1")
+
+    response = client.post(
+        "/api/admin/users",
+        json={"username": "new-user", "password": "pw", "roles": [], "spaces": []},
+    )
+
+    assert response.status_code == 200
+    user = response.json()["data"]["user"]
+    assert user["department_id"] == "dept-1"
+    assert users.get_by_id(user["id"]).department_id == "dept-1"
+
+
+def test_department_admin_create_user_with_conflicting_department_returns_403(tmp_path):
+    client, _, _, _ = _client_for(tmp_path, roles={"department_admin"}, department_id="dept-1")
+
+    response = client.post(
+        "/api/admin/users",
+        json={
+            "username": "new-user",
+            "password": "pw",
+            "roles": [],
+            "spaces": [],
+            "department_id": "dept-2",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "administrator scope violation"
+
+
+def test_super_admin_create_department_admin_without_department_returns_422(tmp_path):
+    client, _, _, _ = _client_for(tmp_path, roles={"super_admin"})
+
+    response = client.post(
+        "/api/admin/users",
+        json={
+            "username": "new-lead",
+            "password": "pw",
+            "roles": ["department_admin"],
+            "spaces": [],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_department_admin_list_users_only_returns_own_department(tmp_path):
+    client, service, _, _ = _client_for(
+        tmp_path,
+        roles={"department_admin"},
+        department_id="dept-1",
+        target_department_id="dept-1",
+    )
+    service.create_user(
+        username="other", password="pw", roles=["viewer"], spaces=[], department_id="dept-2"
+    )
+
+    response = client.get("/api/admin/users")
+
+    assert response.status_code == 200
+    usernames = {user["username"] for user in response.json()["data"]["users"]}
+    assert usernames == {"target"}
+
+
+def test_department_admin_get_user_outside_department_returns_404(tmp_path):
+    client, _, users, _ = _client_for(
+        tmp_path,
+        roles={"department_admin"},
+        department_id="dept-1",
+        target_department_id="dept-2",
+    )
+    user_id = next(iter(users.list_users())).id
+
+    response = client.get(f"/api/admin/users/{user_id}")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "administrator user not found"
+
+
+def test_department_admin_update_and_delete_user_outside_department_returns_403(tmp_path):
+    client, _, users, _ = _client_for(
+        tmp_path,
+        roles={"department_admin"},
+        department_id="dept-1",
+        target_department_id="dept-2",
+    )
+    user_id = next(iter(users.list_users())).id
+
+    update = client.patch(
+        f"/api/admin/users/{user_id}", json={"expected_version": 1, "spaces": ["updated"]}
+    )
+    delete = client.request("DELETE", f"/api/admin/users/{user_id}", json={"expected_version": 1})
+
+    assert update.status_code == 403
+    assert delete.status_code == 403
+    assert update.json()["detail"] == "administrator scope violation"
+    assert delete.json()["detail"] == "administrator scope violation"
