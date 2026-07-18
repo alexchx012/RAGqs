@@ -87,6 +87,7 @@ class LocalAuthService:
             roles=set(user.roles),
             spaces=set(user.spaces),
             provider="local_credentials",
+            department_id=user.department_id,
             metadata={},
         )
 

@@ -64,6 +64,7 @@ class AuthContext:
     roles: set[str] = field(default_factory=set)
     spaces: set[str] = field(default_factory=set)
     provider: str = "disabled"
+    department_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def has_permission(self, permission: str) -> bool:

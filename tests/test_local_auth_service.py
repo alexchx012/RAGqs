@@ -106,6 +106,32 @@ def test_resolve_returns_none_for_invalid_token(tmp_path):
     assert service.resolve("not-a-real-token") is None
 
 
+def test_resolve_backfills_department_id_from_user_record(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    users = UserStore(db_path)
+    sessions = SessionStore(db_path)
+    service = LocalAuthService(user_store=users, session_store=sessions)
+    users.create_user(
+        username="lead", password_hash=hash_password("lead-pw"), roles=["department_admin"],
+        spaces=["docs"], department_ids=["dept-1"],
+    )
+    login = service.login("lead", "lead-pw")
+
+    context = service.resolve(login.token)
+
+    assert context is not None
+    assert context.department_id == "dept-1"
+
+
+def test_resolve_department_id_is_none_when_user_has_no_department(tmp_path):
+    service = _build_service(tmp_path)
+
+    context = service.resolve(service.login("alice", "correct-password").token)
+
+    assert context is not None
+    assert context.department_id is None
+
+
 def test_logout_invalidates_token_immediately(tmp_path):
     service = _build_service(tmp_path)
     result = service.login("alice", "correct-password")
