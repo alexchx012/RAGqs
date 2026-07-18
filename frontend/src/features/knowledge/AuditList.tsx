@@ -4,11 +4,20 @@ import { apiJson } from '../../api/client';
 import type { AuditRecord, AuditData, PanelState } from '../../api/types';
 
 export default function AuditList() {
-  const { selectedSpaceId } = useKnowledge();
+  const { selectedSpaceId, spacesReady } = useKnowledge();
   const [panelState, setPanelState] = useState<PanelState<AuditRecord>>({ status: 'loading' });
   const latestRequestRef = useRef(0);
 
   const fetchAudits = useCallback(async () => {
+    if (!spacesReady) {
+      setPanelState({ status: 'loading' });
+      return;
+    }
+    if (!selectedSpaceId) {
+      // No accessible space — safe empty state, do not hit the audits API.
+      setPanelState({ status: 'empty' });
+      return;
+    }
     const requestId = ++latestRequestRef.current;
     setPanelState({ status: 'loading' });
     try {
@@ -21,7 +30,7 @@ export default function AuditList() {
       const message = err instanceof Error ? err.message : '加载审计记录失败';
       setPanelState({ status: 'error', message });
     }
-  }, [selectedSpaceId]);
+  }, [selectedSpaceId, spacesReady]);
 
   useEffect(() => { fetchAudits(); }, [fetchAudits]);
 
@@ -39,7 +48,9 @@ export default function AuditList() {
             <button type="button" onClick={fetchAudits} style={{ background: 'none', border: 'none', color: '#1a73e8', cursor: 'pointer', textDecoration: 'underline' }}>↻ 重试</button>
           </div>
         )}
-        {panelState.status === 'empty' && <div>暂无审计记录</div>}
+        {panelState.status === 'empty' && (
+          <div>{selectedSpaceId ? '暂无审计记录' : '暂无可用知识空间'}</div>
+        )}
         {panelState.status === 'ready' && panelState.items.map((audit, i) => (
           <div key={audit.id || audit.traceId || String(i)} className="ops-row">
             <div className="ops-row-main">{audit.question || audit.traceId || audit.id || 'audit'}</div>
