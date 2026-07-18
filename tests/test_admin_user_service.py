@@ -1,11 +1,13 @@
 import pytest
 
+from app.security.auth import AuthContext
 from app.security.password import hash_password, verify_password
 from app.security.session_store import SessionStore
 from app.security.user_store import UserStore
 from app.services.admin_user_service import (
     AdminUserAlreadyExistsError,
     AdminUserNotFoundError,
+    AdminUserScopeError,
     AdminUserService,
     AdminUserValidationError,
     AdminUserVersionConflictError,
@@ -27,7 +29,7 @@ def test_create_hashes_password_and_returns_only_safe_fields(tmp_path):
         username="alice", password="secret", roles=["viewer"], spaces=["docs"]
     )
 
-    assert set(result) == {"id", "username", "roles", "spaces", "version", "created_at"}
+    assert set(result) == {"id", "username", "roles", "spaces", "department_id", "version", "created_at"}
     assert "password_hash" not in result
     stored = users.get_by_username("alice")
     assert stored is not None
@@ -204,3 +206,84 @@ def test_last_admin_errors_do_not_revoke_session(tmp_path):
         service.delete_user(user_id=created["id"], expected_version=created["version"])
 
     assert sessions.get_valid_session(session.token) is not None
+
+
+def test_super_admin_creates_department_admin_with_explicit_department(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    super_admin = AuthContext(user_id="root", roles={"super_admin"}, spaces={"*"})
+
+    created = service.create_user(
+        actor=super_admin, username="lead", password="secret",
+        roles=["department_admin"], spaces=["docs"], department_id="dept-1",
+    )
+
+    assert created["department_id"] == "dept-1"
+    assert users.get_by_id(created["id"]).department_ids == ["dept-1"]
+
+
+def test_department_admin_cannot_create_user_with_admin_roles(tmp_path):
+    service, _, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces={"docs"}, department_id="dept-1"
+    )
+
+    with pytest.raises(AdminUserScopeError):
+        service.create_user(
+            actor=dept_admin, username="new-lead", password="secret",
+            roles=["department_admin"], spaces=[], department_id="dept-1",
+        )
+    with pytest.raises(AdminUserScopeError):
+        service.create_user(
+            actor=dept_admin, username="new-root", password="secret",
+            roles=["super_admin"], spaces=["*"],
+        )
+
+
+def test_department_admin_creates_user_defaults_to_own_department(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces={"docs"}, department_id="dept-1"
+    )
+
+    created = service.create_user(
+        actor=dept_admin, username="alice", password="secret", roles=["viewer"], spaces=["docs"]
+    )
+
+    assert created["department_id"] == "dept-1"
+    assert users.get_by_id(created["id"]).department_ids == ["dept-1"]
+
+
+def test_department_admin_creating_user_in_other_department_is_rejected(tmp_path):
+    service, _, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces={"docs"}, department_id="dept-1"
+    )
+
+    with pytest.raises(AdminUserScopeError):
+        service.create_user(
+            actor=dept_admin, username="alice", password="secret",
+            roles=["viewer"], spaces=["docs"], department_id="dept-2",
+        )
+
+
+def test_creating_department_admin_without_department_returns_422(tmp_path):
+    service, _, _ = _build_service(tmp_path)
+    super_admin = AuthContext(user_id="root", roles={"super_admin"}, spaces={"*"})
+
+    with pytest.raises(AdminUserValidationError):
+        service.create_user(
+            actor=super_admin, username="lead", password="secret",
+            roles=["department_admin"], spaces=["docs"],
+        )
+
+
+def test_omitting_actor_behaves_like_unrestricted_super_admin(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+
+    created = service.create_user(
+        username="lead", password="secret", roles=["department_admin"],
+        spaces=["docs"], department_id="dept-1",
+    )
+
+    assert created["department_id"] == "dept-1"
+    assert users.get_by_id(created["id"]).roles == ["department_admin"]
