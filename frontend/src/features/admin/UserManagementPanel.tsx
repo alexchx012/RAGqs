@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { apiJson, ApiError } from '../../api/client';
 import type { AdminUser, AdminUsersData, PanelState } from '../../api/types';
 
@@ -47,15 +47,19 @@ export default function UserManagementPanel() {
   const [createRoles, setCreateRoles] = useState<string[]>(['viewer']);
   const [createSpaces, setCreateSpaces] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const latestRequestRef = useRef(0);
 
   const loadUsers = useCallback(async () => {
+    const requestId = ++latestRequestRef.current;
     setPanelState({ status: 'loading' });
     setActionError(null);
     try {
       const data = await apiJson<AdminUsersData>('/admin/users');
+      if (requestId !== latestRequestRef.current) return;
       const users = Array.isArray(data.data?.users) ? data.data.users : [];
       setPanelState(users.length === 0 ? { status: 'empty' } : { status: 'ready', items: users });
     } catch (err: unknown) {
+      if (requestId !== latestRequestRef.current) return;
       setPanelState({ status: 'error', message: mapAdminUserError(err) });
     }
   }, []);

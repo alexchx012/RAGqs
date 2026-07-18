@@ -5,18 +5,17 @@ import DocumentList from '../features/knowledge/DocumentList';
 import IndexJobList from '../features/knowledge/IndexJobList';
 
 function KnowledgePageContent() {
-  const { selectedSpaceId, refreshSpaces, spaceIdOf, setSelectedSpaceId } = useKnowledge();
+  const { refreshSpaces } = useKnowledge();
 
+  // Selection correction (stale/unauthorized space → first available) already
+  // happens inside refreshSpaces itself via a race-safe functional state update.
   const handleRefresh = useCallback(async () => {
     try {
-      const spaces = await refreshSpaces();
-      if (spaces.length > 0 && !spaces.some((s) => spaceIdOf(s) === selectedSpaceId)) {
-        setSelectedSpaceId(spaceIdOf(spaces[0]));
-      }
+      await refreshSpaces();
     } catch {
       /* silent */
     }
-  }, [refreshSpaces, selectedSpaceId, spaceIdOf, setSelectedSpaceId]);
+  }, [refreshSpaces]);
 
   useEffect(() => {
     refreshSpaces().catch(() => {});

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent, act } from '@testing-library/react';
 import React from 'react';
 import { apiJson, ApiError } from '../../api/client';
 import UserManagementPanel from './UserManagementPanel';
@@ -89,6 +89,37 @@ describe('UserManagementPanel', () => {
     });
 
     confirmSpy.mockRestore();
+  });
+
+  it('ignores a stale refresh response when a newer refresh resolves first', async () => {
+    render(<UserManagementPanel />);
+    await waitFor(() => expect(screen.getByText('alice')).toBeDefined());
+
+    let resolveFirst: (value: unknown) => void;
+    let resolveSecond: (value: unknown) => void;
+    const firstPromise = new Promise((resolve) => { resolveFirst = resolve; });
+    const secondPromise = new Promise((resolve) => { resolveSecond = resolve; });
+    mockApiJson
+      .mockImplementationOnce(() => firstPromise)
+      .mockImplementationOnce(() => secondPromise);
+
+    const refreshBtn = screen.getByTitle('刷新用户');
+    fireEvent.click(refreshBtn); // stale, slower
+    fireEvent.click(refreshBtn); // fresh, resolves first
+
+    await act(async () => {
+      resolveSecond!(mockUsersList([{ ...alice, id: 'u2', username: 'bob' }]));
+      await secondPromise;
+    });
+    await waitFor(() => expect(screen.getByText('bob')).toBeDefined());
+
+    // The stale first request resolves later — it must not overwrite bob with alice.
+    await act(async () => {
+      resolveFirst!(mockUsersList([alice]));
+      await firstPromise;
+    });
+    expect(screen.getByText('bob')).toBeDefined();
+    expect(screen.queryByText('alice')).toBeNull();
   });
 
   it('maps last-administrator error to 无法删除唯一的管理员账号', async () => {

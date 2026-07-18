@@ -7,18 +7,17 @@ import AuditList from '../features/knowledge/AuditList';
 import UserManagementPanel from '../features/admin/UserManagementPanel';
 
 function AdminProjectsContent() {
-  const { selectedSpaceId, refreshSpaces, spaceIdOf, setSelectedSpaceId } = useKnowledge();
+  const { refreshSpaces } = useKnowledge();
 
+  // Selection correction (stale/unauthorized space → first available) already
+  // happens inside refreshSpaces itself via a race-safe functional state update.
   const handleRefresh = useCallback(async () => {
     try {
-      const spaces = await refreshSpaces();
-      if (spaces.length > 0 && !spaces.some((s) => spaceIdOf(s) === selectedSpaceId)) {
-        setSelectedSpaceId(spaceIdOf(spaces[0]));
-      }
+      await refreshSpaces();
     } catch {
       /* silent */
     }
-  }, [refreshSpaces, selectedSpaceId, spaceIdOf, setSelectedSpaceId]);
+  }, [refreshSpaces]);
 
   useEffect(() => {
     refreshSpaces().catch(() => {});

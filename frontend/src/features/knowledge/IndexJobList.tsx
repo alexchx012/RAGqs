@@ -1,17 +1,21 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { apiJson } from '../../api/client';
 import type { IndexJob, IndexJobsData, PanelState } from '../../api/types';
 
 export default function IndexJobList() {
   const [panelState, setPanelState] = useState<PanelState<IndexJob>>({ status: 'loading' });
+  const latestRequestRef = useRef(0);
 
   const fetchJobs = useCallback(async () => {
+    const requestId = ++latestRequestRef.current;
     setPanelState({ status: 'loading' });
     try {
       const data = await apiJson<IndexJobsData>('/index-jobs');
+      if (requestId !== latestRequestRef.current) return;
       const jobs = Array.isArray(data.data?.jobs) ? data.data.jobs : [];
       setPanelState(jobs.length === 0 ? { status: 'empty' } : { status: 'ready', items: jobs });
     } catch (err: unknown) {
+      if (requestId !== latestRequestRef.current) return;
       const message = err instanceof Error ? err.message : '加载索引任务失败';
       setPanelState({ status: 'error', message });
     }

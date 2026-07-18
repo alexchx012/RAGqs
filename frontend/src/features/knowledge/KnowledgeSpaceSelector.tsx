@@ -43,19 +43,18 @@ export default function KnowledgeSpaceSelector({ onSpaceChange, scope }: Props) 
     }
   }, [newSpaceId, newSpaceName, setSelectedSpaceId, refreshSpaces, onSpaceChange]);
 
+  // Selection correction (stale/unauthorized space → first available) already
+  // happens inside refreshSpaces itself via a race-safe functional state update.
   const handleRefresh = useCallback(async () => {
     setStatusMsg('');
     try {
-      const spaces = await refreshSpaces();
-      if (spaces.length > 0 && !spaces.some(s => spaceIdOf(s) === selectedSpaceId)) {
-        setSelectedSpaceId(spaceIdOf(spaces[0]));
-        onSpaceChange();
-      }
+      await refreshSpaces();
+      onSpaceChange();
     } catch (err: unknown) {
       setStatusMsg(err instanceof Error ? err.message : '刷新失败');
       setStatusType('error');
     }
-  }, [refreshSpaces, selectedSpaceId, spaceIdOf, setSelectedSpaceId, onSpaceChange]);
+  }, [refreshSpaces, onSpaceChange]);
 
   return (
     <section className="ops-section">

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import type { KnowledgeSpace, KnowledgeSpacesData } from '../../api/types';
 import { apiJson } from '../../api/client';
 
@@ -27,6 +27,7 @@ export function KnowledgeProvider({ children }: { children: React.ReactNode }) {
   const [selectedSpaceId, setSelectedSpaceIdState] = useState(getStoredSpaceId);
   const [knowledgeSpaces, setKnowledgeSpaces] = useState<KnowledgeSpace[]>([]);
   const [spacesReady, setSpacesReady] = useState(false);
+  const refreshRequestIdRef = useRef(0);
 
   const spaceIdOf = useCallback((space: KnowledgeSpace): string => {
     return spaceIdOfSpace(space) || 'default';
@@ -40,8 +41,17 @@ export function KnowledgeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refreshSpaces = useCallback(async (): Promise<KnowledgeSpace[]> => {
+    const requestId = ++refreshRequestIdRef.current;
     const data = await apiJson<KnowledgeSpacesData>('/knowledge-spaces');
     const spaces = Array.isArray(data.data?.spaces) ? data.data.spaces : [];
+
+    // A newer refreshSpaces() call has already started (or finished) — this
+    // response is stale. Skip applying it so it can't clobber fresher state
+    // (e.g. a space created after this call started).
+    if (requestId !== refreshRequestIdRef.current) {
+      return spaces;
+    }
+
     setKnowledgeSpaces(spaces);
 
     // Correct stale/unauthorized selection only after a successful load.

@@ -215,7 +215,11 @@ describe('KnowledgeSpaceSelector', () => {
     });
   });
 
-  it('refreshes spaces and selects first when current space is gone', async () => {
+  it('refreshes spaces and notifies parent on successful refresh', async () => {
+    // Selection correction for a gone/stale space now happens entirely inside
+    // KnowledgeContext.refreshSpaces (race-safe functional state update, see
+    // KnowledgeContext.test.tsx) — the selector just triggers the refresh and
+    // notifies the parent; it no longer re-derives the correction itself.
     setupKnowledgeContext({
       selectedSpaceId: 'gone-space',
       knowledgeSpaces: [],
@@ -235,12 +239,9 @@ describe('KnowledgeSpaceSelector', () => {
 
     await waitFor(() => {
       expect(mockRefreshSpaces).toHaveBeenCalledTimes(1);
-    });
-
-    await waitFor(() => {
-      expect(mockSetSelectedSpaceId).toHaveBeenCalledWith('new-default');
       expect(onSpaceChange).toHaveBeenCalled();
     });
+    expect(mockSetSelectedSpaceId).not.toHaveBeenCalled();
   });
 
   it('shows error status when refresh fails', async () => {
