@@ -8,7 +8,7 @@ interface Props {
 }
 
 export default function KnowledgeSpaceSelector({ onSpaceChange, scope }: Props) {
-  const { selectedSpaceId, setSelectedSpaceId, knowledgeSpaces, refreshSpaces, spaceIdOf } = useKnowledge();
+  const { selectedSpaceId, setSelectedSpaceId, knowledgeSpaces, spacesReady, refreshSpaces, spaceIdOf } = useKnowledge();
   const [newSpaceId, setNewSpaceId] = useState('');
   const [newSpaceName, setNewSpaceName] = useState('');
   const [statusMsg, setStatusMsg] = useState('');
@@ -70,7 +70,7 @@ export default function KnowledgeSpaceSelector({ onSpaceChange, scope }: Props) 
         disabled={knowledgeSpaces.length === 0}
       >
         {knowledgeSpaces.length === 0 ? (
-          <option value="">暂无可用知识空间</option>
+          <option value="">{spacesReady ? '暂无可用知识空间' : '加载中...'}</option>
         ) : (
           knowledgeSpaces.map(space => (
             <option key={spaceIdOf(space)} value={spaceIdOf(space)}>{space.name || spaceIdOf(space)}</option>

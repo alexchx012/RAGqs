@@ -34,6 +34,7 @@ describe('KnowledgeSpaceSelector', () => {
         { space_id: 'default', name: 'Default' },
         { space_id: 'sp-1', name: 'Space 1' },
       ],
+      spacesReady: true,
       refreshSpaces: mockRefreshSpaces,
       spaceIdOf: mockSpaceIdOf,
       ...overrides,
@@ -297,5 +298,20 @@ describe('KnowledgeSpaceSelector', () => {
     expect(options[0].textContent).toBe('暂无可用知识空间');
     expect(select.value).toBe('');
     expect(select.disabled).toBe(true);
+  });
+
+  it('shows loading placeholder instead of empty-space text while spaces are not ready yet', () => {
+    setupKnowledgeContext({
+      selectedSpaceId: 'finance',
+      knowledgeSpaces: [],
+      spacesReady: false,
+    });
+
+    render(<KnowledgeSpaceSelector onSpaceChange={onSpaceChange} scope="own" />);
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    expect(screen.getByText('加载中...')).toBeDefined();
+    expect(screen.queryByText('暂无可用知识空间')).toBeNull();
   });
 });

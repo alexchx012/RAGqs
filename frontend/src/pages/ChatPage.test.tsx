@@ -96,4 +96,52 @@ describe('ChatPage', () => {
 
     expect(screen.queryByText('检索审计')).toBeNull();
   });
+
+  it('disables sending and shows a banner when no knowledge space is accessible', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
+      if (path === '/auth/me') {
+        return { code: 200, data: { user_id: 'u1', roles: ['user'], spaces: [] } };
+      }
+      if (path === '/knowledge-spaces') {
+        return { code: 200, data: { spaces: [] } };
+      }
+      if (path.startsWith('/chat/sessions')) {
+        return { code: 200, data: { sessions: [] } };
+      }
+      return { code: 200, data: {} };
+    });
+
+    render(<TestChatRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByText('暂无可用知识空间，无法发送消息或上传文件')).toBeDefined();
+    });
+
+    const input = screen.getByPlaceholderText('输入你的问题...') as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+  });
+
+  it('shows a retryable error banner when loading knowledge spaces fails', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
+      if (path === '/auth/me') {
+        return { code: 200, data: { user_id: 'u1', roles: ['user'], spaces: ['personal'] } };
+      }
+      if (path === '/knowledge-spaces') {
+        throw new Error('网络错误');
+      }
+      if (path.startsWith('/chat/sessions')) {
+        return { code: 200, data: { sessions: [] } };
+      }
+      return { code: 200, data: {} };
+    });
+
+    render(<TestChatRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/知识空间加载失败: 网络错误/)).toBeDefined();
+    });
+
+    const input = screen.getByPlaceholderText('输入你的问题...') as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+  });
 });

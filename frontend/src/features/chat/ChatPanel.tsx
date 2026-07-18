@@ -7,9 +7,10 @@ import { renderMarkdown, escapeHtml } from '../../markdown/renderMarkdown';
 interface ChatPanelProps {
   spaceId: string;
   uploadSlot?: React.ReactNode;
+  disabled?: boolean;
 }
 
-export default function ChatPanel({ spaceId, uploadSlot }: ChatPanelProps) {
+export default function ChatPanel({ spaceId, uploadSlot, disabled = false }: ChatPanelProps) {
   const {
     currentChatHistory,
     isStreaming,
@@ -35,7 +36,7 @@ export default function ChatPanel({ spaceId, uploadSlot }: ChatPanelProps) {
 
   const handleSend = useCallback(async () => {
     const text = inputValue.trim();
-    if (!text || isStreaming) return;
+    if (!text || isStreaming || disabled) return;
 
     addMessage({ type: 'user', content: text });
     setInputValue('');
@@ -50,7 +51,7 @@ export default function ChatPanel({ spaceId, uploadSlot }: ChatPanelProps) {
         });
       });
     }
-  }, [inputValue, isStreaming, mode, spaceId, addMessage, sendQuick, sendStream]);
+  }, [inputValue, isStreaming, disabled, mode, spaceId, addMessage, sendQuick, sendStream]);
 
   const handleKeyPress = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -96,7 +97,7 @@ export default function ChatPanel({ spaceId, uploadSlot }: ChatPanelProps) {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyPress}
-              disabled={isStreaming}
+              disabled={isStreaming || disabled}
             />
             <div className="input-bottom-bar">
               <div className="tools-btn-wrapper">
@@ -133,7 +134,7 @@ export default function ChatPanel({ spaceId, uploadSlot }: ChatPanelProps) {
                 <button
                   className="send-btn-circle"
                   onClick={handleSend}
-                  disabled={isStreaming || !inputValue.trim()}
+                  disabled={isStreaming || disabled || !inputValue.trim()}
                   title="发送"
                 >
                   <svg viewBox="0 0 24 24" fill="none">

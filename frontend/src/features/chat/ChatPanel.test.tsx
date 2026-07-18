@@ -160,6 +160,15 @@ describe('ChatPanel', () => {
     expect(sendBtn.disabled).toBe(true);
   });
 
+  it('disables input and send button when disabled prop is true', () => {
+    render(<ChatPanel spaceId="space-1" disabled />);
+
+    const input = screen.getByPlaceholderText('输入你的问题...') as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    const sendBtn = screen.getByTitle('发送') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+  });
+
   it('toggles mode dropdown on click', async () => {
     const setMode = vi.fn();
     mockUseChat.mockReturnValue({
