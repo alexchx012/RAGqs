@@ -383,3 +383,91 @@ def test_omitting_actor_preserves_pre_change_update_and_delete_behavior(tmp_path
 
     result = service.delete_user(user_id=target.id, expected_version=2)
     assert result == {"deleted": True, "user_id": target.id}
+
+
+def test_list_users_filters_by_department_for_department_admin(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces=set(), department_id="dept-1"
+    )
+    same_dept = users.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+    users.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-2"],
+    )
+
+    result = service.list_users(actor=dept_admin)
+    assert [user["id"] for user in result] == [same_dept.id]
+
+
+def test_list_users_returns_empty_when_department_admin_has_no_department(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces=set(), department_id=None
+    )
+    users.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=[],
+    )
+
+    assert service.list_users(actor=dept_admin) == []
+
+
+def test_get_user_returns_not_found_for_department_admin_cross_department(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces=set(), department_id="dept-1"
+    )
+    other_dept = users.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-2"],
+    )
+
+    with pytest.raises(AdminUserNotFoundError):
+        service.get_user(other_dept.id, actor=dept_admin)
+
+
+def test_get_user_returns_user_in_same_department_for_department_admin(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces=set(), department_id="dept-1"
+    )
+    same_dept = users.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+
+    result = service.get_user(same_dept.id, actor=dept_admin)
+    assert result["id"] == same_dept.id
+
+
+def test_get_user_returns_not_found_when_department_admin_has_no_department(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    dept_admin = AuthContext(
+        user_id="lead", roles={"department_admin"}, spaces=set(), department_id=None
+    )
+    target = users.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=[],
+    )
+
+    with pytest.raises(AdminUserNotFoundError):
+        service.get_user(target.id, actor=dept_admin)
+
+
+def test_omitting_actor_preserves_list_and_get_behavior(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    users.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+    target = users.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-2"],
+    )
+
+    assert len(service.list_users()) == 2
+    assert service.get_user(target.id)["id"] == target.id
