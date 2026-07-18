@@ -4,6 +4,7 @@ import pytest
 
 from app.security.user_store import (
     LastAdminProtectionError,
+    TooManyDepartmentsError,
     UsernameAlreadyExistsError,
     UserNotFoundError,
     UserStore,
@@ -280,3 +281,94 @@ def test_admin_role_string_is_migrated_to_super_admin_idempotently(tmp_path):
     second = UserStore(db_path)
     assert second.get_by_id("u1").roles == ["super_admin"]
     assert second.get_by_id("u2").roles == ["viewer", "super_admin"]
+
+
+def test_create_user_supports_department_ids_and_derives_department_id(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+
+    created = store.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=["docs"],
+        department_ids=["dept-1"],
+    )
+
+    assert created.department_ids == ["dept-1"]
+    assert created.department_id == "dept-1"
+    assert store.get_by_id(created.id).department_id == "dept-1"
+    assert store.get_by_username("alice").department_id == "dept-1"
+
+
+def test_create_user_without_department_ids_defaults_to_empty_and_none(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+
+    created = store.create_user(username="bob", password_hash="h1", roles=["viewer"], spaces=[])
+
+    assert created.department_ids == []
+    assert created.department_id is None
+
+
+def test_create_user_rejects_more_than_one_department_id(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+
+    with pytest.raises(TooManyDepartmentsError):
+        store.create_user(
+            username="alice", password_hash="h1", roles=["viewer"], spaces=[],
+            department_ids=["dept-1", "dept-2"],
+        )
+
+
+def test_update_user_can_set_and_clear_department_ids(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    created = store.create_user(username="alice", password_hash="h1", roles=["viewer"], spaces=[])
+
+    assigned = store.update_user(user_id=created.id, expected_version=1, department_ids=["dept-1"])
+    assert assigned.department_id == "dept-1"
+
+    cleared = store.update_user(user_id=created.id, expected_version=2, department_ids=[])
+    assert cleared.department_id is None
+
+
+def test_update_user_omitted_department_ids_preserves_current_value(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    created = store.create_user(
+        username="alice", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+
+    updated = store.update_user(user_id=created.id, expected_version=1, roles=["maintainer"])
+
+    assert updated.department_id == "dept-1"
+
+
+def test_update_user_rejects_more_than_one_department_id(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    created = store.create_user(username="alice", password_hash="h1", roles=["viewer"], spaces=[])
+
+    with pytest.raises(TooManyDepartmentsError):
+        store.update_user(
+            user_id=created.id, expected_version=1, department_ids=["dept-1", "dept-2"]
+        )
+
+
+def test_old_users_table_gets_department_ids_column_without_data_loss(tmp_path):
+    db_path = tmp_path / "legacy_department.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute("""CREATE TABLE users (
+            id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL, roles TEXT NOT NULL,
+            spaces TEXT NOT NULL, created_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1
+        )""")
+    connection.execute(
+        "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("u1", "alice", "legacy-hash", '["viewer"]', '["default"]', "2026-01-01T00:00:00+00:00", 1),
+    )
+    connection.commit()
+    connection.close()
+
+    first = UserStore(db_path)
+    migrated = first.get_by_id("u1")
+    assert migrated.department_ids == []
+    assert migrated.department_id is None
+    assert migrated.password_hash == "legacy-hash"
+
+    second = UserStore(db_path)
+    assert second.get_by_id("u1") == migrated
