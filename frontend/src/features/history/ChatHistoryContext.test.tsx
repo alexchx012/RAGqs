@@ -8,7 +8,15 @@ vi.mock('../../api/client', () => ({
   apiJson: vi.fn(),
 }));
 
+// ChatHistoryProvider scopes its local storage key by the logged-in user
+// (see historyStorageKey); mock useAuth with a fixed test user so existing
+// provider-level tests keep exercising a stable, predictable key.
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: vi.fn(),
+}));
+
 import { apiJson } from '../../api/client';
+import { useAuth } from '../auth/AuthContext';
 import {
   ChatHistoryProvider,
   useChatHistory,
@@ -17,11 +25,16 @@ import {
   messagesContentEqual,
   loadFromStorage,
   persistToStorage,
+  historyStorageKey,
   MAX_LOCAL,
 } from './ChatHistoryContext';
 import type { HistoryEntry, ChatHistoryContextValue } from './ChatHistoryContext';
 
 const mockApiJson = apiJson as unknown as ReturnType<typeof vi.fn>;
+const mockUseAuth = useAuth as unknown as ReturnType<typeof vi.fn>;
+
+const TEST_USER_ID = 'test-user';
+const TEST_STORAGE_KEY = historyStorageKey(TEST_USER_ID);
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return React.createElement(
@@ -44,6 +57,7 @@ describe('ChatHistoryContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    mockUseAuth.mockReturnValue({ userId: TEST_USER_ID });
   });
 
   afterEach(() => {
@@ -82,7 +96,7 @@ describe('ChatHistoryContext', () => {
           source: 'local',
         },
       ];
-      localStorage.setItem('ragChatHistories', JSON.stringify(existing));
+      localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(existing));
 
       const { result } = renderHook(() => useChatHistory(), { wrapper });
 
@@ -92,11 +106,24 @@ describe('ChatHistoryContext', () => {
     });
 
     it('handles corrupt localStorage data gracefully', () => {
-      localStorage.setItem('ragChatHistories', 'not-valid-json{{{');
+      localStorage.setItem(TEST_STORAGE_KEY, 'not-valid-json{{{');
 
       const { result } = renderHook(() => useChatHistory(), { wrapper });
 
       expect(result.current.chatHistories).toEqual([]);
+    });
+
+    it('scopes storage per user so a different login does not see this user\'s histories', () => {
+      const existing: HistoryEntry[] = [
+        { id: 'session_abc', title: 'Test Chat', messages: [{ type: 'user', content: 'Hello' }], source: 'local' },
+      ];
+      localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(existing));
+
+      mockUseAuth.mockReturnValue({ userId: 'other-user' });
+      const { result } = renderHook(() => useChatHistory(), { wrapper });
+
+      expect(result.current.chatHistories).toEqual([]);
+      expect(localStorage.getItem(historyStorageKey('other-user'))).toBeNull();
     });
   });
 
@@ -109,7 +136,7 @@ describe('ChatHistoryContext', () => {
       });
 
       expect(result.current.chatHistories).toEqual([]);
-      expect(localStorage.getItem('ragChatHistories')).toBeNull();
+      expect(localStorage.getItem(TEST_STORAGE_KEY)).toBeNull();
     });
 
     it('saves current chat to history with title from first user message', () => {
@@ -195,7 +222,7 @@ describe('ChatHistoryContext', () => {
 
     it('refreshFromBackend merges and sorts by updatedAt desc', async () => {
       localStorage.setItem(
-        'ragChatHistories',
+        TEST_STORAGE_KEY,
         JSON.stringify([
           {
             id: 'local-old',
@@ -231,7 +258,7 @@ describe('ChatHistoryContext', () => {
 
     it('saveCurrentChat does not reorder when messages are unchanged (view-only)', () => {
       localStorage.setItem(
-        'ragChatHistories',
+        TEST_STORAGE_KEY,
         JSON.stringify([
           {
             id: 'newer',
@@ -273,7 +300,7 @@ describe('ChatHistoryContext', () => {
 
     it('saveCurrentChat bumps updatedAt and reorders when messages change', () => {
       localStorage.setItem(
-        'ragChatHistories',
+        TEST_STORAGE_KEY,
         JSON.stringify([
           {
             id: 'newer',
@@ -368,7 +395,7 @@ describe('ChatHistoryContext', () => {
           source: 'local',
         },
       ];
-      localStorage.setItem('ragChatHistories', JSON.stringify(existing));
+      localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(existing));
 
       const { result } = renderHook(() => useChatHistory(), { wrapper });
 
@@ -383,7 +410,7 @@ describe('ChatHistoryContext', () => {
       });
       expect(result.current.chatHistories).toHaveLength(1);
       expect(result.current.chatHistories[0].id).toBe('session_b');
-      const stored = JSON.parse(localStorage.getItem('ragChatHistories') || '[]');
+      const stored = JSON.parse(localStorage.getItem(TEST_STORAGE_KEY) || '[]');
       expect(stored).toHaveLength(1);
       expect(stored[0].id).toBe('session_b');
     });
@@ -398,7 +425,7 @@ describe('ChatHistoryContext', () => {
           source: 'local',
         },
       ];
-      localStorage.setItem('ragChatHistories', JSON.stringify(existing));
+      localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(existing));
 
       const { result } = renderHook(() => useChatHistory(), { wrapper });
 
@@ -420,7 +447,7 @@ describe('ChatHistoryContext', () => {
           source: 'local',
         },
       ];
-      localStorage.setItem('ragChatHistories', JSON.stringify(existing));
+      localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(existing));
 
       const { result } = renderHook(() => useChatHistory(), { wrapper });
 
@@ -507,7 +534,7 @@ describe('ChatHistoryContext', () => {
   describe('searchHistories', () => {
     it('merges local title matches that backend did not return', async () => {
       localStorage.setItem(
-        'ragChatHistories',
+        TEST_STORAGE_KEY,
         JSON.stringify([
           {
             id: 'local-policy',

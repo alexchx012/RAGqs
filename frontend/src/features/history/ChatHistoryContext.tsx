@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { useChat } from '../chat/ChatContext';
+import { useAuth } from '../auth/AuthContext';
 import { apiJson } from '../../api/client';
 import type { ChatMessage, SessionsData, ApiResponse } from '../../api/types';
 
@@ -55,16 +56,24 @@ export function messagesContentEqual(a: ChatMessage[], b: ChatMessage[]): boolea
   return true;
 }
 
-export function loadFromStorage(): HistoryEntry[] {
+export const DEFAULT_HISTORY_STORAGE_KEY = 'ragChatHistories';
+
+/** Per-user storage key so a shared browser can't leak one user's local
+ *  conversation cache to whoever logs in next. */
+export function historyStorageKey(userId: string | null | undefined): string {
+  return `${DEFAULT_HISTORY_STORAGE_KEY}:${userId || 'anonymous'}`;
+}
+
+export function loadFromStorage(key: string = DEFAULT_HISTORY_STORAGE_KEY): HistoryEntry[] {
   try {
-    const raw = JSON.parse(localStorage.getItem('ragChatHistories') || '[]');
+    const raw = JSON.parse(localStorage.getItem(key) || '[]');
     return sortHistoriesByActivity(normalizeHistories(raw));
   } catch { return []; }
 }
 
-export function persistToStorage(histories: HistoryEntry[]): void {
+export function persistToStorage(histories: HistoryEntry[], key: string = DEFAULT_HISTORY_STORAGE_KEY): void {
   const persisted = histories.filter(h => Array.isArray(h.messages) && h.messages.length > 0);
-  try { localStorage.setItem('ragChatHistories', JSON.stringify(persisted)); }
+  try { localStorage.setItem(key, JSON.stringify(persisted)); }
   catch { /* quota exceeded */ }
 }
 
@@ -85,7 +94,9 @@ function titleMatchesQuery(title: string, query: string): boolean {
 
 export function ChatHistoryProvider({ children }: { children: React.ReactNode }) {
   const { sessionId, currentChatHistory } = useChat();
-  const [chatHistories, setChatHistories] = useState<HistoryEntry[]>(() => loadFromStorage());
+  const { userId } = useAuth();
+  const storageKey = historyStorageKey(userId);
+  const [chatHistories, setChatHistories] = useState<HistoryEntry[]>(() => loadFromStorage(storageKey));
   const refreshRequestIdRef = useRef(0);
 
   const saveCurrentChat = useCallback(() => {
@@ -110,10 +121,10 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
       };
       const filtered = prev.filter(h => h.id !== sessionId);
       const updated = sortHistoriesByActivity([entry, ...filtered]).slice(0, MAX_LOCAL);
-      persistToStorage(updated);
+      persistToStorage(updated, storageKey);
       return updated;
     });
-  }, [currentChatHistory, sessionId]);
+  }, [currentChatHistory, sessionId, storageKey]);
 
   const loadHistory = useCallback(async (entry: HistoryEntry): Promise<HistoryEntry> => {
     if (Array.isArray(entry.messages) && entry.messages.length > 0) return entry;
@@ -135,12 +146,12 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
       const loadedEntry = { ...entry, messages };
       setChatHistories(prev => {
         const updated = prev.map(h => h.id === loadedEntry.id ? loadedEntry : h);
-        persistToStorage(updated);
+        persistToStorage(updated, storageKey);
         return updated;
       });
       return loadedEntry;
     } catch { return { ...entry, messages: [] }; }
-  }, []);
+  }, [storageKey]);
 
   const deleteHistory = useCallback(async (id: string): Promise<void> => {
     await apiJson('/chat/clear', {
@@ -150,10 +161,10 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
     });
     setChatHistories(prev => {
       const updated = prev.filter(h => h.id !== id);
-      persistToStorage(updated);
+      persistToStorage(updated, storageKey);
       return updated;
     });
-  }, []);
+  }, [storageKey]);
 
   const _refreshImpl = useCallback(async (query?: string): Promise<HistoryEntry[]> => {
     const requestId = ++refreshRequestIdRef.current;
@@ -178,7 +189,7 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
       }
       if (query) {
         const backendIds = new Set(bh.map(h => h.id));
-        const localHits = loadFromStorage().filter(
+        const localHits = loadFromStorage(storageKey).filter(
           h => !backendIds.has(h.id) && titleMatchesQuery(h.title, query),
         );
         const merged = sortHistoriesByActivity(normalizeHistories([...bh, ...localHits]));
@@ -188,7 +199,7 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
         setChatHistories(merged);
         return merged;
       }
-      const localHistories = loadFromStorage();
+      const localHistories = loadFromStorage(storageKey);
       const merged = sortHistoriesByActivity(normalizeHistories([...bh, ...localHistories]));
       if (requestId !== refreshRequestIdRef.current) {
         return [];
@@ -198,7 +209,7 @@ export function ChatHistoryProvider({ children }: { children: React.ReactNode })
     } catch {
       return requestId === refreshRequestIdRef.current ? chatHistories : [];
     }
-  }, [chatHistories]);
+  }, [chatHistories, storageKey]);
 
   const searchHistories = useCallback(async (query: string) => {
     const trimmed = query.trim();
