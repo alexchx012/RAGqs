@@ -126,6 +126,9 @@ class AdminUserService:
         if actor_is_super_admin:
             resolved_department_id = department_id
         else:
+            # Fail closed: unbound department_admin cannot create anyone.
+            if actor_department_id is None:
+                raise AdminUserScopeError(_SCOPE_ERROR)
             if department_id is not None and department_id != actor_department_id:
                 raise AdminUserScopeError(_SCOPE_ERROR)
             resolved_department_id = actor_department_id
@@ -175,6 +178,13 @@ class AdminUserService:
             and department_id is None
         ):
             raise AdminUserValidationError(_DEPARTMENT_REQUIRED_ERROR)
+
+        # Fail closed: non-super-admin cannot reassign (or clear) department.
+        # department_id is None means "field omitted" (no change); any explicit
+        # value must equal the actor's own department, and unbound actors reject all.
+        if department_id is not None and not actor_is_super_admin:
+            if actor_department_id is None or department_id != actor_department_id:
+                raise AdminUserScopeError(_SCOPE_ERROR)
 
         try:
             user = self.user_store.update_user(
