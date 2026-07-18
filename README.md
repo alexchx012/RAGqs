@@ -96,7 +96,7 @@ DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4
 
 - **Chat 配置** — 所有 chat provider 共用必填 `CHAT_MODEL`；可选 `CHAT_PROVIDER`（`deepseek` / `dashscope` / `openai_compatible` / `fake`）。不再使用 `RAG_MODEL`、`DASHSCOPE_MODEL`、`OPENAI_COMPATIBLE_MODEL`。
 - **状态存储** — 默认使用本地 SQLite（`data/*.sqlite3`），支持切换到 Postgres；`.env.example` 中设置 `SESSION_STORE_PROVIDER=sqlite`、`INDEXING_QUEUE_PROVIDER=sqlite`、`CHECKPOINT_PROVIDER=sqlite` 即可获得可重启的本地开发状态。
-- **认证与权限** — 本地开发默认 `AUTH_ENABLED=false`，以 `local-admin` 身份运行。试运行可启用 `AUTH_ENABLED=true` 并选择 `dev_header` 或 `reverse_proxy` provider，role + space 权限在后端统一校验。
+- **认证与权限** — 本地开发默认 `AUTH_ENABLED=false`，以 `local-admin` 身份运行。试运行可启用 `AUTH_ENABLED=true` 并选择 `dev_header` 或 `reverse_proxy` provider，role + space 权限在后端统一校验。**【破坏性变更】**：管理员角色字符串已从 `admin` 改名为 `super_admin`（新增部门范围受限的 `department_admin`），不提供运行时兼容别名；升级前请将 `AUTH_DEV_USERS`/`AUTH_DEFAULT_ROLES` 环境变量及反向代理下发的角色 Header 值同步改为 `super_admin`，否则相关账号会在升级后立即失去全部权限。
 - **并发控制** — 可选启用 `RUNTIME_CONTROLS_ENABLED=true` 限制进程内并发请求数、排队超时和请求超时；通过 `.\scripts\run-fake-load.ps1` 验证 API 并发路径。
 - **健康与 smoke 边界** — `/health` 与启动 preflight 只表示配置 / 依赖边界检查；真实 DeepSeek 调用需运行后续 DeepSeek smoke（opt-in，见 `docs/operations.md`）。配置完整 ≠ 真实 smoke 通过 ≠ 答案质量已验证。
 - **DeepSeek 真实 smoke（opt-in）** — `tests/integration/test_deepseek_smoke.py` 仅在 `DEEPSEEK_SMOKE=1` 且 `DEEPSEEK_API_KEY` 为非占位密钥时执行；否则 `pytest.skip`（记为未执行 / SKIPPED，不得记为 PASS）。覆盖非流式文本、普通流、以及零副作用 `get_current_time` 的 thinking+tool-call 续接（首轮强制 tool call；次轮仅要最终公开回答，并尝试 `extra_body` 开启 thinking；`reasoning_content` 仅在 live 返回时断言，完整保真由单元测试覆盖）。输出不得打印密钥。
