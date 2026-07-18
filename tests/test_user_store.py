@@ -13,7 +13,7 @@ from app.security.user_store import (
 
 def test_new_user_starts_at_version_one(tmp_path):
     user = UserStore(tmp_path / "auth.sqlite3").create_user(
-        username="alice", password_hash="h1", roles=["admin"], spaces=["*"]
+        username="alice", password_hash="h1", roles=["super_admin"], spaces=["*"]
     )
     assert user.version == 1
 
@@ -58,13 +58,13 @@ def test_create_and_get_user_round_trips_all_fields(tmp_path):
     created = store.create_user(
         username="alice",
         password_hash="hashed-value",
-        roles=["admin"],
+        roles=["super_admin"],
         spaces=["*"],
     )
 
     assert store.get_by_username("alice") == created
     assert store.get_by_id(created.id) == created
-    assert created.roles == ["admin"]
+    assert created.roles == ["super_admin"]
     assert created.spaces == ["*"]
     assert created.created_at
 
@@ -86,7 +86,7 @@ def test_count_users_reflects_number_of_rows(tmp_path):
 
     assert store.count_users() == 0
 
-    store.create_user(username="alice", password_hash="h1", roles=["admin"], spaces=["*"])
+    store.create_user(username="alice", password_hash="h1", roles=["super_admin"], spaces=["*"])
     store.create_user(username="bob", password_hash="h2", roles=["viewer"], spaces=["default"])
 
     assert store.count_users() == 2
@@ -94,7 +94,7 @@ def test_count_users_reflects_number_of_rows(tmp_path):
 
 def test_create_user_rejects_duplicate_username(tmp_path):
     store = UserStore(tmp_path / "auth.sqlite3")
-    store.create_user(username="alice", password_hash="h1", roles=["admin"], spaces=["*"])
+    store.create_user(username="alice", password_hash="h1", roles=["super_admin"], spaces=["*"])
 
     with pytest.raises(UsernameAlreadyExistsError):
         store.create_user(
@@ -105,7 +105,7 @@ def test_create_user_rejects_duplicate_username(tmp_path):
 def test_user_store_persists_across_instances(tmp_path):
     db_path = tmp_path / "auth.sqlite3"
     first_store = UserStore(db_path)
-    first_store.create_user(username="alice", password_hash="h1", roles=["admin"], spaces=["*"])
+    first_store.create_user(username="alice", password_hash="h1", roles=["super_admin"], spaces=["*"])
 
     second_store = UserStore(db_path)
 
@@ -116,7 +116,7 @@ def test_user_store_persists_across_instances(tmp_path):
 def test_list_users_is_deterministic_and_reads_versions(tmp_path):
     store = UserStore(tmp_path / "auth.sqlite3")
     store.create_user(username="zeta", password_hash="h1", roles=["viewer"], spaces=[])
-    store.create_user(username="alice", password_hash="h2", roles=["admin"], spaces=["*"])
+    store.create_user(username="alice", password_hash="h2", roles=["super_admin"], spaces=["*"])
 
     assert [user.username for user in store.list_users()] == ["alice", "zeta"]
     assert all(user.version == 1 for user in store.list_users())
@@ -156,11 +156,11 @@ def test_stale_update_rolls_back_without_overwriting_new_data(tmp_path):
 
 def test_last_admin_update_and_delete_leave_database_unchanged(tmp_path):
     store = UserStore(tmp_path / "auth.sqlite3")
-    admin = store.create_user(username="admin", password_hash="h1", roles=["admin"], spaces=["*"])
+    admin = store.create_user(username="admin", password_hash="h1", roles=["super_admin"], spaces=["*"])
 
     with pytest.raises(LastAdminProtectionError):
         store.update_user(user_id=admin.id, expected_version=1, roles=["viewer"])
-    assert store.get_by_id(admin.id).roles == ["admin"]
+    assert store.get_by_id(admin.id).roles == ["super_admin"]
     assert store.get_by_id(admin.id).version == 1
 
     with pytest.raises(LastAdminProtectionError):
@@ -170,8 +170,8 @@ def test_last_admin_update_and_delete_leave_database_unchanged(tmp_path):
 
 def test_another_admin_allows_admin_demotion_and_regular_delete(tmp_path):
     store = UserStore(tmp_path / "auth.sqlite3")
-    first = store.create_user(username="first", password_hash="h1", roles=["admin"], spaces=["*"])
-    second = store.create_user(username="second", password_hash="h2", roles=["admin"], spaces=["*"])
+    first = store.create_user(username="first", password_hash="h1", roles=["super_admin"], spaces=["*"])
+    second = store.create_user(username="second", password_hash="h2", roles=["super_admin"], spaces=["*"])
     ordinary = store.create_user(
         username="ordinary", password_hash="h3", roles=["viewer"], spaces=[]
     )
@@ -179,7 +179,7 @@ def test_another_admin_allows_admin_demotion_and_regular_delete(tmp_path):
     demoted = store.update_user(user_id=first.id, expected_version=1, roles=["viewer"])
     assert demoted.roles == ["viewer"]
     assert store.get_by_id(first.id) == demoted
-    assert store.get_by_id(second.id).roles == ["admin"]
+    assert store.get_by_id(second.id).roles == ["super_admin"]
 
     deleted = store.delete_user(user_id=ordinary.id, expected_version=1)
     assert deleted.id == ordinary.id
@@ -252,3 +252,31 @@ def test_update_user_empty_lists_clear_roles_and_spaces(tmp_path):
     assert updated.spaces == []
     assert updated.version == created.version + 1
     assert store.get_by_id(created.id) == updated
+
+
+def test_admin_role_string_is_migrated_to_super_admin_idempotently(tmp_path):
+    db_path = tmp_path / "legacy_roles.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute("""CREATE TABLE users (
+            id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL, roles TEXT NOT NULL,
+            spaces TEXT NOT NULL, created_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1
+        )""")
+    connection.execute(
+        "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("u1", "root", "h1", '["admin"]', '["*"]', "2026-01-01T00:00:00+00:00", 1),
+    )
+    connection.execute(
+        "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("u2", "bob", "h2", '["viewer", "admin"]', '["default"]', "2026-01-01T00:00:00+00:00", 1),
+    )
+    connection.commit()
+    connection.close()
+
+    first = UserStore(db_path)
+    assert first.get_by_id("u1").roles == ["super_admin"]
+    assert first.get_by_id("u2").roles == ["viewer", "super_admin"]
+
+    second = UserStore(db_path)
+    assert second.get_by_id("u1").roles == ["super_admin"]
+    assert second.get_by_id("u2").roles == ["viewer", "super_admin"]

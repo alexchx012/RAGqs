@@ -160,9 +160,9 @@ class Settings(BaseSettings):
     auth_user_header: str = "X-RAG-User"
     auth_roles_header: str = "X-RAG-Roles"
     auth_spaces_header: str = "X-RAG-Spaces"
-    auth_dev_users: str = "local-admin:admin:*"
+    auth_dev_users: str = "local-admin:super_admin:*"
     auth_default_user_id: str = "local-admin"
-    auth_default_roles: str = "admin"
+    auth_default_roles: str = "super_admin"
     auth_default_spaces: str = "*"
     auth_local_db_path: str = "data/auth.sqlite3"
     auth_local_admin_seed: str | None = None

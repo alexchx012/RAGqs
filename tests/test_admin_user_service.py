@@ -59,14 +59,14 @@ def test_create_normalizes_values_and_preserves_password_whitespace(tmp_path):
     result = service.create_user(
         username="  alice  ",
         password=" secret ",
-        roles=["VIEWER", "viewer", "ADMIN"],
+        roles=["VIEWER", "viewer", "SUPER_ADMIN"],
         spaces=[" docs ", "docs", "*"],
     )
 
     stored = users.get_by_id(result["id"])
     assert stored is not None
     assert stored.username == "alice"
-    assert stored.roles == ["viewer", "admin"]
+    assert stored.roles == ["viewer", "super_admin"]
     assert stored.spaces == ["docs", "*"]
     assert verify_password(" secret ", stored.password_hash)
 
@@ -104,11 +104,11 @@ def test_update_normalizes_values_and_returns_new_version(tmp_path):
     updated = service.update_user(
         user_id=created["id"],
         expected_version=created["version"],
-        roles=["ADMIN", "admin"],
+        roles=["SUPER_ADMIN", "super_admin"],
         spaces=[" private ", "private"],
     )
 
-    assert updated["roles"] == ["admin"]
+    assert updated["roles"] == ["super_admin"]
     assert updated["spaces"] == ["private"]
     assert updated["version"] == 2
     assert users.get_by_id(created["id"]).password_hash not in updated
@@ -168,7 +168,7 @@ def test_delete_does_not_revoke_session_when_version_is_stale(tmp_path):
 def test_stale_service_delete_does_not_revoke_session(tmp_path):
     service, users, sessions = _build_service(tmp_path)
     users.create_user(
-        username="admin", password_hash=hash_password("admin"), roles=["admin"], spaces=["*"]
+        username="admin", password_hash=hash_password("admin"), roles=["super_admin"], spaces=["*"]
     )
     target = users.create_user(
         username="bob", password_hash=hash_password("bob"), roles=["viewer"], spaces=[]
@@ -186,7 +186,7 @@ def test_stale_service_delete_does_not_revoke_session(tmp_path):
 def test_last_admin_errors_do_not_revoke_session(tmp_path):
     service, _, sessions = _build_service(tmp_path)
     created = service.create_user(
-        username="admin", password="secret", roles=["admin"], spaces=["*"]
+        username="admin", password="secret", roles=["super_admin"], spaces=["*"]
     )
     session = sessions.create_session(created["id"], ttl_seconds=3600)
 
