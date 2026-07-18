@@ -14,9 +14,9 @@ def _settings(**overrides):
         "auth_user_header": "X-RAG-User",
         "auth_roles_header": "X-RAG-Roles",
         "auth_spaces_header": "X-RAG-Spaces",
-        "auth_dev_users": "local-admin:admin:*",
+        "auth_dev_users": "local-admin:super_admin:*",
         "auth_default_user_id": "local-admin",
-        "auth_default_roles": "admin",
+        "auth_default_roles": "super_admin",
         "auth_default_spaces": "*",
     }
     values.update(overrides)

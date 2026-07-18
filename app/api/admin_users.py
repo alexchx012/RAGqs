@@ -13,6 +13,7 @@ from app.security.auth import AuthContext, require_permission
 from app.services.admin_user_service import (
     AdminUserAlreadyExistsError,
     AdminUserNotFoundError,
+    AdminUserScopeError,
     AdminUserService,
     AdminUserServiceError,
     AdminUserValidationError,
@@ -22,7 +23,7 @@ from app.services.admin_user_service import (
 
 router = APIRouter()
 
-_SAFE_USER_FIELDS = ("id", "username", "roles", "spaces", "version", "created_at")
+_SAFE_USER_FIELDS = ("id", "username", "roles", "spaces", "department_id", "version", "created_at")
 
 
 class CreateUserRequest(BaseModel):
@@ -30,12 +31,14 @@ class CreateUserRequest(BaseModel):
     password: str = Field(min_length=1)
     roles: list[str]
     spaces: list[str]
+    department_id: str | None = None
 
 
 class UpdateUserRequest(BaseModel):
     expected_version: int = Field(ge=1)
     roles: list[str] | None = None
     spaces: list[str] | None = None
+    department_id: str | None = None
 
     @model_validator(mode="after")
     def require_update_fields(self) -> Self:
@@ -57,7 +60,10 @@ def _safe_user(user: dict[str, Any]) -> dict[str, Any]:
 
 
 def _http_error(error: AdminUserServiceError) -> NoReturn:
-    if isinstance(error, AdminUserValidationError):
+    if isinstance(error, AdminUserScopeError):
+        status_code = 403
+        detail = "administrator scope violation"
+    elif isinstance(error, AdminUserValidationError):
         status_code = 422
         detail = "invalid administrator user input"
     elif isinstance(error, AdminUserNotFoundError):
@@ -83,9 +89,8 @@ def list_users(
     auth_context: AuthContext = Depends(require_permission("user:manage")),
     service: AdminUserService = Depends(admin_user_service_dependency),
 ) -> JSONResponse:
-    del auth_context
     try:
-        users = service.list_users()
+        users = service.list_users(actor=auth_context)
     except AdminUserServiceError as error:
         _http_error(error)
     return envelope_json_response({"users": [_safe_user(user) for user in users]})
@@ -97,9 +102,8 @@ def get_user(
     auth_context: AuthContext = Depends(require_permission("user:manage")),
     service: AdminUserService = Depends(admin_user_service_dependency),
 ) -> JSONResponse:
-    del auth_context
     try:
-        user = service.get_user(user_id)
+        user = service.get_user(user_id, actor=auth_context)
     except AdminUserServiceError as error:
         _http_error(error)
     return envelope_json_response({"user": _safe_user(user)})
@@ -111,13 +115,14 @@ def create_user(
     auth_context: AuthContext = Depends(require_permission("user:manage")),
     service: AdminUserService = Depends(admin_user_service_dependency),
 ) -> JSONResponse:
-    del auth_context
     try:
         user = service.create_user(
+            actor=auth_context,
             username=payload.username,
             password=payload.password,
             roles=payload.roles,
             spaces=payload.spaces,
+            department_id=payload.department_id,
         )
     except AdminUserServiceError as error:
         _http_error(error)
@@ -131,13 +136,14 @@ def update_user(
     auth_context: AuthContext = Depends(require_permission("user:manage")),
     service: AdminUserService = Depends(admin_user_service_dependency),
 ) -> JSONResponse:
-    del auth_context
     try:
         user = service.update_user(
+            actor=auth_context,
             user_id=user_id,
             expected_version=payload.expected_version,
             roles=payload.roles,
             spaces=payload.spaces,
+            department_id=payload.department_id,
         )
     except AdminUserServiceError as error:
         _http_error(error)
@@ -151,9 +157,10 @@ def delete_user(
     auth_context: AuthContext = Depends(require_permission("user:manage")),
     service: AdminUserService = Depends(admin_user_service_dependency),
 ) -> JSONResponse:
-    del auth_context
     try:
-        service.delete_user(user_id=user_id, expected_version=payload.expected_version)
+        service.delete_user(
+            actor=auth_context, user_id=user_id, expected_version=payload.expected_version
+        )
     except AdminUserServiceError as error:
         _http_error(error)
     return envelope_json_response({"deleted": True, "user_id": user_id})

@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import config
-from app.security.auth import ROLE_PERMISSIONS
+from app.security.auth import AuthContext, ROLE_PERMISSIONS
 from app.security.password import hash_password
 from app.security.session_store import SessionStore
 from app.security.user_store import (
     LastAdminProtectionError,
+    UserManageScopeConflictError,
     UsernameAlreadyExistsError,
     UserNotFoundError,
     UserRecord,
@@ -22,6 +23,8 @@ _ALREADY_EXISTS_ERROR = "administrator user already exists"
 _NOT_FOUND_ERROR = "administrator user not found"
 _VERSION_CONFLICT_ERROR = "administrator user version conflict"
 _LAST_ADMIN_ERROR = "cannot remove last administrator"
+_SCOPE_ERROR = "administrator lacks management scope for this operation"
+_DEPARTMENT_REQUIRED_ERROR = "department_admin role requires a department_id"
 
 
 class AdminUserServiceError(Exception):
@@ -48,6 +51,10 @@ class LastAdminError(AdminUserServiceError):
     """Raised when a mutation would remove the last administrator."""
 
 
+class AdminUserScopeError(AdminUserServiceError):
+    """Raised when an actor exceeds its department scope or role-write authority."""
+
+
 class AdminUserService:
     """Apply administrator user rules around the user and session stores."""
 
@@ -63,13 +70,24 @@ class AdminUserService:
         self.user_store = user_store if user_store is not None else UserStore(db_path)
         self.session_store = session_store if session_store is not None else SessionStore(db_path)
 
-    def list_users(self) -> list[dict[str, Any]]:
+    def list_users(self, *, actor: AuthContext | None = None) -> list[dict[str, Any]]:
         """Return every user without exposing credential hashes."""
 
-        return [self._safe_user(user) for user in self.user_store.list_users()]
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
 
-    def get_user(self, user_id: str) -> dict[str, Any]:
+        users = self.user_store.list_users()
+        if not actor_is_super_admin:
+            if actor_department_id is None:
+                return []
+            users = [user for user in users if user.department_id == actor_department_id]
+        return [self._safe_user(user) for user in users]
+
+    def get_user(self, user_id: str, *, actor: AuthContext | None = None) -> dict[str, Any]:
         """Return one user without exposing its credential hash."""
+
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
 
         try:
             user = self.user_store.get_by_id(user_id)
@@ -77,22 +95,46 @@ class AdminUserService:
             raise AdminUserNotFoundError(_NOT_FOUND_ERROR) from exc
         if user is None:
             raise AdminUserNotFoundError(_NOT_FOUND_ERROR)
+        if not actor_is_super_admin:
+            if actor_department_id is None or user.department_id != actor_department_id:
+                raise AdminUserNotFoundError(_NOT_FOUND_ERROR)
         return self._safe_user(user)
 
     def create_user(
         self,
         *,
+        actor: AuthContext | None = None,
         username: str,
         password: str,
         roles: list[str],
         spaces: list[str],
+        department_id: str | None = None,
     ) -> dict[str, Any]:
-        """Validate, hash, and persist a new local user."""
+        """Validate, hash, and persist a new local user within the actor's management scope."""
 
         normalized_username = _normalize_username(username)
         normalized_password = _normalize_password(password)
         normalized_roles = _normalize_roles(roles)
         normalized_spaces = _normalize_spaces(spaces)
+
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
+
+        if not actor_is_super_admin and {"super_admin", "department_admin"} & set(normalized_roles):
+            raise AdminUserScopeError(_SCOPE_ERROR)
+
+        if actor_is_super_admin:
+            resolved_department_id = department_id
+        else:
+            # Fail closed: unbound department_admin cannot create anyone.
+            if actor_department_id is None:
+                raise AdminUserScopeError(_SCOPE_ERROR)
+            if department_id is not None and department_id != actor_department_id:
+                raise AdminUserScopeError(_SCOPE_ERROR)
+            resolved_department_id = actor_department_id
+
+        if "department_admin" in normalized_roles and resolved_department_id is None:
+            raise AdminUserValidationError(_DEPARTMENT_REQUIRED_ERROR)
 
         try:
             user = self.user_store.create_user(
@@ -100,6 +142,7 @@ class AdminUserService:
                 password_hash=hash_password(normalized_password),
                 roles=normalized_roles,
                 spaces=normalized_spaces,
+                department_ids=_normalize_department_ids(resolved_department_id),
             )
         except UsernameAlreadyExistsError as exc:
             raise AdminUserAlreadyExistsError(_ALREADY_EXISTS_ERROR) from exc
@@ -108,23 +151,53 @@ class AdminUserService:
     def update_user(
         self,
         *,
+        actor: AuthContext | None = None,
         user_id: str,
         expected_version: int,
         roles: list[str] | None = None,
         spaces: list[str] | None = None,
+        department_id: str | None = None,
     ) -> dict[str, Any]:
-        """Update optional role and space fields using an optimistic version."""
+        """Update optional role, space, and department fields using an optimistic version."""
 
         normalized_roles = None if roles is None else _normalize_roles(roles)
         normalized_spaces = None if spaces is None else _normalize_spaces(spaces)
+
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
+
+        if (
+            normalized_roles is not None
+            and not actor_is_super_admin
+            and {"super_admin", "department_admin"} & set(normalized_roles)
+        ):
+            raise AdminUserScopeError(_SCOPE_ERROR)
+        if (
+            normalized_roles is not None
+            and "department_admin" in normalized_roles
+            and department_id is None
+        ):
+            raise AdminUserValidationError(_DEPARTMENT_REQUIRED_ERROR)
+
+        # Fail closed: non-super-admin cannot reassign (or clear) department.
+        # department_id is None means "field omitted" (no change); any explicit
+        # value must equal the actor's own department, and unbound actors reject all.
+        if department_id is not None and not actor_is_super_admin:
+            if actor_department_id is None or department_id != actor_department_id:
+                raise AdminUserScopeError(_SCOPE_ERROR)
 
         try:
             user = self.user_store.update_user(
                 user_id=user_id,
                 expected_version=expected_version,
+                actor_is_super_admin=actor_is_super_admin,
+                actor_department_id=actor_department_id,
                 roles=normalized_roles,
                 spaces=normalized_spaces,
+                department_ids=(None if department_id is None else [department_id]),
             )
+        except UserManageScopeConflictError as exc:
+            raise AdminUserScopeError(_SCOPE_ERROR) from exc
         except UserVersionConflictError as exc:
             raise AdminUserVersionConflictError(_VERSION_CONFLICT_ERROR) from exc
         except LastAdminProtectionError as exc:
@@ -133,11 +206,23 @@ class AdminUserService:
             raise AdminUserNotFoundError(_NOT_FOUND_ERROR) from exc
         return self._safe_user(user)
 
-    def delete_user(self, *, user_id: str, expected_version: int) -> dict[str, str | bool]:
+    def delete_user(
+        self, *, actor: AuthContext | None = None, user_id: str, expected_version: int
+    ) -> dict[str, str | bool]:
         """Delete a user and revoke its sessions only after deletion commits."""
 
+        actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
+        actor_department_id = None if actor is None else actor.department_id
+
         try:
-            self.user_store.delete_user(user_id=user_id, expected_version=expected_version)
+            self.user_store.delete_user(
+                user_id=user_id,
+                expected_version=expected_version,
+                actor_is_super_admin=actor_is_super_admin,
+                actor_department_id=actor_department_id,
+            )
+        except UserManageScopeConflictError as exc:
+            raise AdminUserScopeError(_SCOPE_ERROR) from exc
         except UserVersionConflictError as exc:
             raise AdminUserVersionConflictError(_VERSION_CONFLICT_ERROR) from exc
         except LastAdminProtectionError as exc:
@@ -150,13 +235,14 @@ class AdminUserService:
 
     @staticmethod
     def _safe_user(user: UserRecord) -> dict[str, Any]:
-        """Project a stored user to the six fields safe for service callers."""
+        """Project a stored user to the seven fields safe for service callers."""
 
         return {
             "id": user.id,
             "username": user.username,
             "roles": list(user.roles),
             "spaces": list(user.spaces),
+            "department_id": user.department_id,
             "version": user.version,
             "created_at": user.created_at,
         }
@@ -211,6 +297,10 @@ def _normalize_spaces(spaces: list[str]) -> list[str]:
             normalized.append(value)
             seen.add(value)
     return normalized
+
+
+def _normalize_department_ids(department_id: str | None) -> list[str]:
+    return [] if department_id is None else [department_id]
 
 
 def _auth_setting(settings: Any, name: str, default: Any) -> Any:

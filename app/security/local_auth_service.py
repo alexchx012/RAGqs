@@ -87,6 +87,7 @@ class LocalAuthService:
             roles=set(user.roles),
             spaces=set(user.spaces),
             provider="local_credentials",
+            department_id=user.department_id,
             metadata={},
         )
 
@@ -117,7 +118,7 @@ class LocalAuthService:
             self.user_store.create_user(
                 username=username,
                 password_hash=hash_password(password),
-                roles=["admin"],
+                roles=["super_admin"],
                 spaces=["*"],
             )
         except UsernameAlreadyExistsError:

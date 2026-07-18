@@ -629,7 +629,7 @@ def test_config_validation_does_not_warn_when_local_credentials_user_table_alrea
 
     db_path = tmp_path / "auth.sqlite3"
     UserStore(db_path).create_user(
-        username="alice", password_hash="hashed", roles=["admin"], spaces=["*"]
+        username="alice", password_hash="hashed", roles=["super_admin"], spaces=["*"]
     )
 
     report = validate_settings(
