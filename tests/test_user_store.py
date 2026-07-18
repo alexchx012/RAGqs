@@ -6,6 +6,7 @@ from app.security.user_store import (
     LastAdminProtectionError,
     TooManyDepartmentsError,
     UsernameAlreadyExistsError,
+    UserManageScopeConflictError,
     UserNotFoundError,
     UserStore,
     UserVersionConflictError,
@@ -129,7 +130,13 @@ def test_update_user_increments_version_and_preserves_omitted_field(tmp_path):
         username="alice", password_hash="h1", roles=["viewer"], spaces=["docs"]
     )
 
-    updated = store.update_user(user_id=created.id, expected_version=1, roles=["maintainer"])
+    updated = store.update_user(
+        user_id=created.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        roles=["maintainer"],
+    )
 
     assert updated.roles == ["maintainer"]
     assert updated.spaces == ["docs"]
@@ -144,10 +151,22 @@ def test_stale_update_rolls_back_without_overwriting_new_data(tmp_path):
         username="alice", password_hash="h1", roles=["viewer"], spaces=["docs"]
     )
     second = UserStore(db_path)
-    first.update_user(user_id=created.id, expected_version=1, roles=["maintainer"])
+    first.update_user(
+        user_id=created.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        roles=["maintainer"],
+    )
 
     with pytest.raises(UserVersionConflictError):
-        second.update_user(user_id=created.id, expected_version=1, spaces=["private"])
+        second.update_user(
+            user_id=created.id,
+            expected_version=1,
+            actor_is_super_admin=True,
+            actor_department_id=None,
+            spaces=["private"],
+        )
 
     current = first.get_by_id(created.id)
     assert current.roles == ["maintainer"]
@@ -160,12 +179,23 @@ def test_last_admin_update_and_delete_leave_database_unchanged(tmp_path):
     admin = store.create_user(username="admin", password_hash="h1", roles=["super_admin"], spaces=["*"])
 
     with pytest.raises(LastAdminProtectionError):
-        store.update_user(user_id=admin.id, expected_version=1, roles=["viewer"])
+        store.update_user(
+            user_id=admin.id,
+            expected_version=1,
+            actor_is_super_admin=True,
+            actor_department_id=None,
+            roles=["viewer"],
+        )
     assert store.get_by_id(admin.id).roles == ["super_admin"]
     assert store.get_by_id(admin.id).version == 1
 
     with pytest.raises(LastAdminProtectionError):
-        store.delete_user(user_id=admin.id, expected_version=1)
+        store.delete_user(
+            user_id=admin.id,
+            expected_version=1,
+            actor_is_super_admin=True,
+            actor_department_id=None,
+        )
     assert store.get_by_id(admin.id) is not None
 
 
@@ -177,12 +207,23 @@ def test_another_admin_allows_admin_demotion_and_regular_delete(tmp_path):
         username="ordinary", password_hash="h3", roles=["viewer"], spaces=[]
     )
 
-    demoted = store.update_user(user_id=first.id, expected_version=1, roles=["viewer"])
+    demoted = store.update_user(
+        user_id=first.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        roles=["viewer"],
+    )
     assert demoted.roles == ["viewer"]
     assert store.get_by_id(first.id) == demoted
     assert store.get_by_id(second.id).roles == ["super_admin"]
 
-    deleted = store.delete_user(user_id=ordinary.id, expected_version=1)
+    deleted = store.delete_user(
+        user_id=ordinary.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+    )
     assert deleted.id == ordinary.id
     assert store.get_by_id(ordinary.id) is None
 
@@ -194,10 +235,21 @@ def test_stale_delete_from_second_store_does_not_remove_user(tmp_path):
         username="alice", password_hash="h1", roles=["viewer"], spaces=[]
     )
     second_store = UserStore(db_path)
-    updated = first_store.update_user(user_id=user.id, expected_version=1, spaces=["docs"])
+    updated = first_store.update_user(
+        user_id=user.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        spaces=["docs"],
+    )
 
     with pytest.raises(UserVersionConflictError):
-        second_store.delete_user(user_id=user.id, expected_version=user.version)
+        second_store.delete_user(
+            user_id=user.id,
+            expected_version=user.version,
+            actor_is_super_admin=True,
+            actor_department_id=None,
+        )
 
     assert first_store.get_by_id(user.id) == updated
     assert second_store.get_by_id(user.id) == updated
@@ -208,7 +260,13 @@ def test_update_user_rejects_missing_user(tmp_path):
     store = UserStore(tmp_path / "auth.sqlite3")
 
     with pytest.raises(UserNotFoundError):
-        store.update_user(user_id="missing", expected_version=1, roles=["viewer"])
+        store.update_user(
+            user_id="missing",
+            expected_version=1,
+            actor_is_super_admin=True,
+            actor_department_id=None,
+            roles=["viewer"],
+        )
 
 
 def test_delete_user_returns_deleted_record_and_removes_non_admin(tmp_path):
@@ -218,7 +276,12 @@ def test_delete_user_returns_deleted_record_and_removes_non_admin(tmp_path):
     )
     count_before = store.count_users()
 
-    deleted = store.delete_user(user_id=created.id, expected_version=created.version)
+    deleted = store.delete_user(
+        user_id=created.id,
+        expected_version=created.version,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+    )
 
     assert deleted == created
     assert deleted.id == created.id
@@ -234,7 +297,12 @@ def test_delete_user_rejects_missing_user(tmp_path):
     store = UserStore(tmp_path / "auth.sqlite3")
 
     with pytest.raises(UserNotFoundError):
-        store.delete_user(user_id="missing", expected_version=1)
+        store.delete_user(
+            user_id="missing",
+            expected_version=1,
+            actor_is_super_admin=True,
+            actor_department_id=None,
+        )
 
     assert store.count_users() == 0
 
@@ -246,7 +314,12 @@ def test_update_user_empty_lists_clear_roles_and_spaces(tmp_path):
     )
 
     updated = store.update_user(
-        user_id=created.id, expected_version=created.version, roles=[], spaces=[]
+        user_id=created.id,
+        expected_version=created.version,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        roles=[],
+        spaces=[],
     )
 
     assert updated.roles == []
@@ -320,10 +393,22 @@ def test_update_user_can_set_and_clear_department_ids(tmp_path):
     store = UserStore(tmp_path / "auth.sqlite3")
     created = store.create_user(username="alice", password_hash="h1", roles=["viewer"], spaces=[])
 
-    assigned = store.update_user(user_id=created.id, expected_version=1, department_ids=["dept-1"])
+    assigned = store.update_user(
+        user_id=created.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        department_ids=["dept-1"],
+    )
     assert assigned.department_id == "dept-1"
 
-    cleared = store.update_user(user_id=created.id, expected_version=2, department_ids=[])
+    cleared = store.update_user(
+        user_id=created.id,
+        expected_version=2,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        department_ids=[],
+    )
     assert cleared.department_id is None
 
 
@@ -334,7 +419,13 @@ def test_update_user_omitted_department_ids_preserves_current_value(tmp_path):
         department_ids=["dept-1"],
     )
 
-    updated = store.update_user(user_id=created.id, expected_version=1, roles=["maintainer"])
+    updated = store.update_user(
+        user_id=created.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        roles=["maintainer"],
+    )
 
     assert updated.department_id == "dept-1"
 
@@ -345,7 +436,11 @@ def test_update_user_rejects_more_than_one_department_id(tmp_path):
 
     with pytest.raises(TooManyDepartmentsError):
         store.update_user(
-            user_id=created.id, expected_version=1, department_ids=["dept-1", "dept-2"]
+            user_id=created.id,
+            expected_version=1,
+            actor_is_super_admin=True,
+            actor_department_id=None,
+            department_ids=["dept-1", "dept-2"],
         )
 
 
@@ -372,3 +467,87 @@ def test_old_users_table_gets_department_ids_column_without_data_loss(tmp_path):
 
     second = UserStore(db_path)
     assert second.get_by_id("u1") == migrated
+
+
+def test_department_admin_can_update_and_delete_user_in_same_department(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    target = store.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+
+    updated = store.update_user(
+        user_id=target.id, expected_version=1, spaces=["docs"],
+        actor_is_super_admin=False, actor_department_id="dept-1",
+    )
+    assert updated.spaces == ["docs"]
+
+    deleted = store.delete_user(
+        user_id=target.id, expected_version=updated.version,
+        actor_is_super_admin=False, actor_department_id="dept-1",
+    )
+    assert deleted.id == target.id
+
+
+def test_department_admin_cannot_manage_user_in_another_department(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    target = store.create_user(
+        username="bob", password_hash="h1", roles=["viewer"], spaces=[],
+        department_ids=["dept-1"],
+    )
+
+    with pytest.raises(UserManageScopeConflictError):
+        store.update_user(
+            user_id=target.id, expected_version=1, spaces=["docs"],
+            actor_is_super_admin=False, actor_department_id="dept-2",
+        )
+    with pytest.raises(UserManageScopeConflictError):
+        store.delete_user(
+            user_id=target.id, expected_version=1,
+            actor_is_super_admin=False, actor_department_id="dept-2",
+        )
+    assert store.get_by_id(target.id).spaces == []
+
+
+def test_department_admin_without_department_cannot_manage_any_user(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    target = store.create_user(username="bob", password_hash="h1", roles=["viewer"], spaces=[])
+
+    with pytest.raises(UserManageScopeConflictError):
+        store.update_user(
+            user_id=target.id, expected_version=1, spaces=["docs"],
+            actor_is_super_admin=False, actor_department_id=None,
+        )
+
+
+def test_department_admin_cannot_manage_fellow_department_admin_in_same_department(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    target = store.create_user(
+        username="lead2", password_hash="h1", roles=["department_admin"], spaces=[],
+        department_ids=["dept-1"],
+    )
+
+    with pytest.raises(UserManageScopeConflictError):
+        store.update_user(
+            user_id=target.id, expected_version=1, spaces=["docs"],
+            actor_is_super_admin=False, actor_department_id="dept-1",
+        )
+    with pytest.raises(UserManageScopeConflictError):
+        store.delete_user(
+            user_id=target.id, expected_version=1,
+            actor_is_super_admin=False, actor_department_id="dept-1",
+        )
+
+
+def test_super_admin_bypasses_department_scope_and_account_protection(tmp_path):
+    store = UserStore(tmp_path / "auth.sqlite3")
+    target = store.create_user(
+        username="lead", password_hash="h1", roles=["department_admin"], spaces=[],
+        department_ids=["dept-9"],
+    )
+
+    updated = store.update_user(
+        user_id=target.id, expected_version=1, spaces=["docs"],
+        actor_is_super_admin=True, actor_department_id=None,
+    )
+    assert updated.spaces == ["docs"]

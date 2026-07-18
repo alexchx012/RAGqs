@@ -45,6 +45,10 @@ class LastAdminProtectionError(Exception):
     """Raised when a mutation would remove the last administrator."""
 
 
+class UserManageScopeConflictError(Exception):
+    """Raised when an actor lacks department scope or admin-account authority over a target."""
+
+
 class TooManyDepartmentsError(Exception):
     """Raised when department_ids exceeds the single-membership limit enforced today."""
 
@@ -144,6 +148,8 @@ class UserStore:
         *,
         user_id: str,
         expected_version: int,
+        actor_is_super_admin: bool,
+        actor_department_id: str | None,
         roles: list[str] | None = None,
         spaces: list[str] | None = None,
         department_ids: list[str] | None = None,
@@ -164,6 +170,11 @@ class UserStore:
                     raise UserNotFoundError(user_id)
 
                 current = _user_from_row(row)
+                self._require_manage_scope(
+                    current,
+                    actor_is_super_admin=actor_is_super_admin,
+                    actor_department_id=actor_department_id,
+                )
                 if current.version != expected_version:
                     raise UserVersionConflictError(user_id)
 
@@ -210,7 +221,14 @@ class UserStore:
             department_ids=new_department_ids,
         )
 
-    def delete_user(self, *, user_id: str, expected_version: int) -> UserRecord:
+    def delete_user(
+        self,
+        *,
+        user_id: str,
+        expected_version: int,
+        actor_is_super_admin: bool,
+        actor_department_id: str | None,
+    ) -> UserRecord:
         with closing(self._connect()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -227,6 +245,11 @@ class UserStore:
                     raise UserNotFoundError(user_id)
 
                 current = _user_from_row(row)
+                self._require_manage_scope(
+                    current,
+                    actor_is_super_admin=actor_is_super_admin,
+                    actor_department_id=actor_department_id,
+                )
                 if current.version != expected_version:
                     raise UserVersionConflictError(user_id)
 
@@ -256,6 +279,17 @@ class UserStore:
     def _count_super_admins(connection: sqlite3.Connection) -> int:
         rows = connection.execute("SELECT roles FROM users").fetchall()
         return sum("super_admin" in _loads_list(row["roles"]) for row in rows)
+
+    @staticmethod
+    def _require_manage_scope(
+        current: "UserRecord", *, actor_is_super_admin: bool, actor_department_id: str | None
+    ) -> None:
+        if actor_is_super_admin:
+            return
+        if actor_department_id is None or actor_department_id != current.department_id:
+            raise UserManageScopeConflictError(current.id)
+        if {"super_admin", "department_admin"} & set(current.roles):
+            raise UserManageScopeConflictError(current.id)
 
     def _initialize_schema(self) -> None:
         with closing(self._connect()) as connection:

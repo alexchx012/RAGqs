@@ -88,6 +88,8 @@ def test_resolve_reads_updated_roles_and_spaces_without_relogin(tmp_path):
     users.update_user(
         user_id=target.id,
         expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
         roles=["maintainer"],
         spaces=["private"],
     )
