@@ -174,7 +174,13 @@ def test_stale_service_delete_does_not_revoke_session(tmp_path):
         username="bob", password_hash=hash_password("bob"), roles=["viewer"], spaces=[]
     )
     session = sessions.create_session(target.id, ttl_seconds=3600)
-    users.update_user(user_id=target.id, expected_version=1, spaces=["docs"])
+    users.update_user(
+        user_id=target.id,
+        expected_version=1,
+        actor_is_super_admin=True,
+        actor_department_id=None,
+        spaces=["docs"],
+    )
 
     with pytest.raises(AdminUserVersionConflictError):
         service.delete_user(user_id=target.id, expected_version=1)

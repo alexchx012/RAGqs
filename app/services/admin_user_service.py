@@ -122,6 +122,8 @@ class AdminUserService:
             user = self.user_store.update_user(
                 user_id=user_id,
                 expected_version=expected_version,
+                actor_is_super_admin=True,
+                actor_department_id=None,
                 roles=normalized_roles,
                 spaces=normalized_spaces,
             )
@@ -137,7 +139,12 @@ class AdminUserService:
         """Delete a user and revoke its sessions only after deletion commits."""
 
         try:
-            self.user_store.delete_user(user_id=user_id, expected_version=expected_version)
+            self.user_store.delete_user(
+                user_id=user_id,
+                expected_version=expected_version,
+                actor_is_super_admin=True,
+                actor_department_id=None,
+            )
         except UserVersionConflictError as exc:
             raise AdminUserVersionConflictError(_VERSION_CONFLICT_ERROR) from exc
         except LastAdminProtectionError as exc:
