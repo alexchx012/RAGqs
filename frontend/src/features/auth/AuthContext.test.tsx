@@ -36,7 +36,7 @@ describe('AuthContext', () => {
   it('sets authenticated when /auth/me returns 200', async () => {
     (apiJson as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       code: 200,
-      data: { user_id: 'u1', roles: ['admin'], spaces: ['*'] },
+      data: { user_id: 'u1', roles: ['super_admin'], spaces: ['*'] },
     });
     render(
       <MemoryRouter>
@@ -46,7 +46,7 @@ describe('AuthContext', () => {
       </MemoryRouter>,
     );
     await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authenticated'));
-    expect(screen.getByTestId('roles').textContent).toBe('admin');
+    expect(screen.getByTestId('roles').textContent).toBe('super_admin');
   });
 
   it('sets unauthenticated when /auth/me returns 401 ApiError', async () => {
