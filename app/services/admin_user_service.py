@@ -6,6 +6,7 @@ from typing import Any
 
 from app.config import config
 from app.security.auth import AuthContext, ROLE_PERMISSIONS
+from app.security.department_store import DepartmentStore
 from app.security.password import hash_password
 from app.security.session_store import SessionStore
 from app.security.user_store import (
@@ -64,11 +65,15 @@ class AdminUserService:
         settings: Any = None,
         user_store: UserStore | None = None,
         session_store: SessionStore | None = None,
+        department_store: DepartmentStore | None = None,
     ) -> None:
         self.settings = settings if settings is not None else config
         db_path = _auth_setting(self.settings, "local_db_path", "data/auth.sqlite3")
         self.user_store = user_store if user_store is not None else UserStore(db_path)
         self.session_store = session_store if session_store is not None else SessionStore(db_path)
+        self.department_store = (
+            department_store if department_store is not None else DepartmentStore(db_path)
+        )
 
     def list_users(self, *, actor: AuthContext | None = None) -> list[dict[str, Any]]:
         """Return every user without exposing credential hashes."""
@@ -119,6 +124,7 @@ class AdminUserService:
 
         actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
         actor_department_id = None if actor is None else actor.department_id
+        actor_spaces = {"*"} if actor is None else actor.spaces
 
         if not actor_is_super_admin and {"super_admin", "department_admin"} & set(normalized_roles):
             raise AdminUserScopeError(_SCOPE_ERROR)
@@ -135,6 +141,14 @@ class AdminUserService:
 
         if "department_admin" in normalized_roles and resolved_department_id is None:
             raise AdminUserValidationError(_DEPARTMENT_REQUIRED_ERROR)
+
+        if not actor_is_super_admin and normalized_spaces:
+            _require_spaces_within_scope(actor_spaces, normalized_spaces)
+        if (
+            resolved_department_id is not None
+            and self.department_store.get_by_id(resolved_department_id) is None
+        ):
+            raise AdminUserValidationError(_VALIDATION_ERROR)
 
         try:
             user = self.user_store.create_user(
@@ -165,6 +179,7 @@ class AdminUserService:
 
         actor_is_super_admin = True if actor is None else "super_admin" in actor.roles
         actor_department_id = None if actor is None else actor.department_id
+        actor_spaces = {"*"} if actor is None else actor.spaces
 
         if (
             normalized_roles is not None
@@ -185,6 +200,11 @@ class AdminUserService:
         if department_id is not None and not actor_is_super_admin:
             if actor_department_id is None or department_id != actor_department_id:
                 raise AdminUserScopeError(_SCOPE_ERROR)
+
+        if not actor_is_super_admin and normalized_spaces is not None:
+            _require_spaces_within_scope(actor_spaces, normalized_spaces)
+        if department_id is not None and self.department_store.get_by_id(department_id) is None:
+            raise AdminUserValidationError(_VALIDATION_ERROR)
 
         try:
             user = self.user_store.update_user(
@@ -246,6 +266,15 @@ class AdminUserService:
             "version": user.version,
             "created_at": user.created_at,
         }
+
+
+def _require_spaces_within_scope(
+    actor_spaces: set[str], requested_spaces: list[str]
+) -> None:
+    if "*" in actor_spaces:
+        return
+    if not set(requested_spaces).issubset(actor_spaces):
+        raise AdminUserScopeError(_SCOPE_ERROR)
 
 
 def _normalize_username(username: str) -> str:
