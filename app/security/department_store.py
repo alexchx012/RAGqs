@@ -80,24 +80,28 @@ class DepartmentStore:
         self, *, department_id: str, name: str | None = None, description: str | None = None
     ) -> DepartmentRecord:
         with closing(self._connect()) as connection:
-            row = connection.execute(
-                "SELECT id, name, description, created_at FROM departments WHERE id = ?",
-                (department_id,),
-            ).fetchone()
-            if row is None:
-                raise DepartmentNotFoundError(department_id)
-            current = _department_from_row(row)
-            new_name = current.name if name is None else name
-            new_description = current.description if description is None else description
             try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT id, name, description, created_at FROM departments WHERE id = ?",
+                    (department_id,),
+                ).fetchone()
+                if row is None:
+                    raise DepartmentNotFoundError(department_id)
+                current = _department_from_row(row)
+                new_name = current.name if name is None else name
+                new_description = current.description if description is None else description
                 connection.execute(
                     "UPDATE departments SET name = ?, description = ? WHERE id = ?",
                     (new_name, new_description, department_id),
                 )
                 connection.commit()
-            except sqlite3.IntegrityError as e:
+            except sqlite3.IntegrityError as exc:
                 connection.rollback()
-                raise DepartmentNameAlreadyExistsError(new_name) from e
+                raise DepartmentNameAlreadyExistsError(new_name) from exc
+            except Exception:
+                connection.rollback()
+                raise
         return DepartmentRecord(
             id=current.id,
             name=new_name,
@@ -114,12 +118,17 @@ class DepartmentStore:
                 ).fetchone()
                 if row is None:
                     raise DepartmentNotFoundError(department_id)
-                try:
-                    member_rows = connection.execute(
+                users_table = connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'users'"
+                ).fetchone()
+                member_rows = (
+                    []
+                    if users_table is None
+                    else connection.execute(
                         "SELECT department_ids_json FROM users"
                     ).fetchall()
-                except sqlite3.OperationalError:
-                    member_rows = []
+                )
                 for member_row in member_rows:
                     ids = _loads_department_ids(member_row["department_ids_json"])
                     if department_id in ids:
