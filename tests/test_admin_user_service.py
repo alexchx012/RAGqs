@@ -712,3 +712,42 @@ def test_create_and_update_reject_nonexistent_department(tmp_path):
             department_id="missing-dept",
         )
     assert users.get_by_id(target.id).department_id is None
+
+
+def test_department_admin_is_rejected_before_super_admin_clears_department(tmp_path):
+    service, users, _ = _build_service(tmp_path, department_exists=False)
+    target = users.create_user(
+        username="alice",
+        password_hash="h1",
+        roles=["viewer"],
+        spaces=[],
+        department_ids=["dept-1"],
+    )
+    actor = AuthContext(
+        user_id="lead",
+        roles={"department_admin"},
+        spaces={"docs"},
+        department_id="dept-1",
+    )
+    with pytest.raises(AdminUserScopeError):
+        service.update_user(
+            actor=actor,
+            user_id=target.id,
+            expected_version=1,
+            clear_department=True,
+        )
+    unchanged = users.get_by_id(target.id)
+    assert unchanged.department_id == "dept-1"
+    assert unchanged.version == 1
+
+    root = AuthContext(user_id="root", roles={"super_admin"}, spaces={"*"})
+    cleared = service.update_user(
+        actor=root,
+        user_id=target.id,
+        expected_version=1,
+        clear_department=True,
+        department_id="ignored-dept",
+    )
+    assert cleared["department_id"] is None
+    assert cleared["version"] == 2
+    assert users.get_by_id(target.id).version == 2

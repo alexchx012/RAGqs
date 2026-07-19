@@ -335,7 +335,7 @@ def test_admin_routes_return_422_for_missing_expected_version_or_patch_fields(tm
         {
             "type": "value_error",
             "loc": ["body"],
-            "msg": "Value error, roles or spaces must be provided",
+            "msg": "Value error, roles, spaces, department_id, or clear_department must be provided",
         },
         {
             "type": "missing",
@@ -674,3 +674,23 @@ def test_department_admin_update_and_delete_user_outside_department_returns_403(
     assert delete.status_code == 403
     assert update.json()["detail"] == "administrator scope violation"
     assert delete.json()["detail"] == "administrator scope violation"
+
+
+def test_patch_accepts_department_only_and_clear_department_only(tmp_path):
+    client, _, users, _ = _client_for(
+        tmp_path, roles={"super_admin"}, target_department_id="dept-1"
+    )
+    user_id = next(iter(users.list_users())).id
+
+    reassigned = client.patch(
+        f"/api/admin/users/{user_id}",
+        json={"expected_version": 1, "department_id": "dept-2"},
+    )
+    assert reassigned.status_code == 200
+    assert reassigned.json()["data"]["user"]["department_id"] == "dept-2"
+    cleared = client.patch(
+        f"/api/admin/users/{user_id}",
+        json={"expected_version": 2, "clear_department": True},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["data"]["user"]["department_id"] is None
