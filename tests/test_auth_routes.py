@@ -356,7 +356,8 @@ def test_department_admin_real_login_filters_list_by_resolved_department(
     listed = dept_client.get("/api/admin/users")
     assert listed.status_code == 200
     usernames = {user["username"] for user in listed.json()["data"]["users"]}
-    assert usernames == {"carol", "dave"}
+    # department_admin list path hides administrator accounts (including the actor)
+    assert usernames == {"dave"}
     assert same_dept.username in usernames
 
 
