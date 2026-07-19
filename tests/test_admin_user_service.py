@@ -1,6 +1,9 @@
+from unittest.mock import Mock
+
 import pytest
 
 from app.security.auth import AuthContext
+from app.security.department_store import DepartmentStore
 from app.security.password import hash_password, verify_password
 from app.security.session_store import SessionStore
 from app.security.user_store import UserStore
@@ -15,11 +18,31 @@ from app.services.admin_user_service import (
 )
 
 
-def _build_service(tmp_path):
+def _build_service(tmp_path, *, department_exists: bool = True):
     db_path = tmp_path / "auth.sqlite3"
     users = UserStore(db_path)
     sessions = SessionStore(db_path)
-    return AdminUserService(user_store=users, session_store=sessions), users, sessions
+    departments = Mock(spec=DepartmentStore)
+    departments.get_by_id.return_value = object() if department_exists else None
+    service = AdminUserService(
+        user_store=users,
+        session_store=sessions,
+        department_store=departments,
+    )
+    return service, users, sessions
+
+
+def test_service_accepts_injected_department_store(tmp_path):
+    db_path = tmp_path / "auth.sqlite3"
+    users = UserStore(db_path)
+    sessions = SessionStore(db_path)
+    departments = Mock(spec=DepartmentStore)
+    service = AdminUserService(
+        user_store=users,
+        session_store=sessions,
+        department_store=departments,
+    )
+    assert service.department_store is departments
 
 
 def test_create_hashes_password_and_returns_only_safe_fields(tmp_path):
@@ -594,3 +617,98 @@ def test_omitting_actor_preserves_list_and_get_behavior(tmp_path):
 
     assert len(service.list_users()) == 2
     assert service.get_user(target.id)["id"] == target.id
+
+
+@pytest.mark.parametrize("requested_spaces", [["private"], ["*"]])
+def test_department_admin_create_rejects_spaces_outside_actor_scope(
+    tmp_path, requested_spaces
+):
+    service, users, _ = _build_service(tmp_path)
+    actor = AuthContext(
+        user_id="lead",
+        roles={"department_admin"},
+        spaces={"docs"},
+        department_id="dept-1",
+    )
+    with pytest.raises(AdminUserScopeError):
+        service.create_user(
+            actor=actor,
+            username="alice",
+            password="secret",
+            roles=["viewer"],
+            spaces=requested_spaces,
+        )
+    assert users.get_by_username("alice") is None
+
+
+@pytest.mark.parametrize("requested_spaces", [["docs", "private"], ["*"]])
+def test_department_admin_update_rejects_spaces_outside_actor_scope(
+    tmp_path, requested_spaces
+):
+    service, users, _ = _build_service(tmp_path)
+    target = users.create_user(
+        username="alice",
+        password_hash="h1",
+        roles=["viewer"],
+        spaces=["docs"],
+        department_ids=["dept-1"],
+    )
+    actor = AuthContext(
+        user_id="lead",
+        roles={"department_admin"},
+        spaces={"docs"},
+        department_id="dept-1",
+    )
+
+    with pytest.raises(AdminUserScopeError):
+        service.update_user(
+            actor=actor,
+            user_id=target.id,
+            expected_version=1,
+            spaces=requested_spaces,
+        )
+    assert users.get_by_id(target.id).spaces == ["docs"]
+
+
+@pytest.mark.parametrize("actor_spaces", [{"docs", "private"}, {"*"}])
+def test_department_admin_create_accepts_spaces_within_scope(tmp_path, actor_spaces):
+    service, _, _ = _build_service(tmp_path)
+    actor = AuthContext(
+        user_id="lead",
+        roles={"department_admin"},
+        spaces=actor_spaces,
+        department_id="dept-1",
+    )
+    created = service.create_user(
+        actor=actor,
+        username="alice",
+        password="secret",
+        roles=["viewer"],
+        spaces=["docs"],
+    )
+    assert created["spaces"] == ["docs"]
+
+
+def test_create_and_update_reject_nonexistent_department(tmp_path):
+    service, users, _ = _build_service(tmp_path, department_exists=False)
+    with pytest.raises(AdminUserValidationError):
+        service.create_user(
+            username="alice",
+            password="secret",
+            roles=["viewer"],
+            spaces=[],
+            department_id="missing-dept",
+        )
+    target = users.create_user(
+        username="bob",
+        password_hash="h1",
+        roles=["viewer"],
+        spaces=[],
+    )
+    with pytest.raises(AdminUserValidationError):
+        service.update_user(
+            user_id=target.id,
+            expected_version=1,
+            department_id="missing-dept",
+        )
+    assert users.get_by_id(target.id).department_id is None

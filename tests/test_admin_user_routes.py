@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -5,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.api import admin_users
 from app.main import create_app
 from app.security.auth import AuthContext, get_current_auth_context
+from app.security.department_store import DepartmentStore
 from app.security.session_store import SessionStore
 from app.security.user_store import UserStore
 from app.services.admin_user_service import (
@@ -20,7 +23,13 @@ from app.services.admin_user_service import (
 def _client_for(tmp_path, *, roles, department_id=None, target_department_id=None):
     users = UserStore(tmp_path / "auth.sqlite3")
     sessions = SessionStore(tmp_path / "auth.sqlite3")
-    service = AdminUserService(user_store=users, session_store=sessions)
+    departments = Mock(spec=DepartmentStore)
+    departments.get_by_id.return_value = object()
+    service = AdminUserService(
+        user_store=users,
+        session_store=sessions,
+        department_store=departments,
+    )
     service.create_user(
         username="target",
         password="secret",
