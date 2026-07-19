@@ -171,6 +171,7 @@ class AdminUserService:
         roles: list[str] | None = None,
         spaces: list[str] | None = None,
         department_id: str | None = None,
+        clear_department: bool = False,
     ) -> dict[str, Any]:
         """Update optional role, space, and department fields using an optimistic version."""
 
@@ -194,17 +195,31 @@ class AdminUserService:
         ):
             raise AdminUserValidationError(_DEPARTMENT_REQUIRED_ERROR)
 
-        # Fail closed: non-super-admin cannot reassign (or clear) department.
+        if clear_department and not actor_is_super_admin:
+            raise AdminUserScopeError(_SCOPE_ERROR)
+
+        # Fail closed: non-super-admin cannot reassign department.
         # department_id is None means "field omitted" (no change); any explicit
         # value must equal the actor's own department, and unbound actors reject all.
-        if department_id is not None and not actor_is_super_admin:
+        if department_id is not None and not clear_department and not actor_is_super_admin:
             if actor_department_id is None or department_id != actor_department_id:
                 raise AdminUserScopeError(_SCOPE_ERROR)
 
         if not actor_is_super_admin and normalized_spaces is not None:
             _require_spaces_within_scope(actor_spaces, normalized_spaces)
-        if department_id is not None and self.department_store.get_by_id(department_id) is None:
+        if (
+            department_id is not None
+            and not clear_department
+            and self.department_store.get_by_id(department_id) is None
+        ):
             raise AdminUserValidationError(_VALIDATION_ERROR)
+
+        if clear_department:
+            department_ids: list[str] | None = []
+        elif department_id is not None:
+            department_ids = [department_id]
+        else:
+            department_ids = None
 
         try:
             user = self.user_store.update_user(
@@ -214,7 +229,7 @@ class AdminUserService:
                 actor_department_id=actor_department_id,
                 roles=normalized_roles,
                 spaces=normalized_spaces,
-                department_ids=(None if department_id is None else [department_id]),
+                department_ids=department_ids,
             )
         except UserManageScopeConflictError as exc:
             raise AdminUserScopeError(_SCOPE_ERROR) from exc

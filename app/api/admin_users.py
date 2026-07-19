@@ -39,11 +39,19 @@ class UpdateUserRequest(BaseModel):
     roles: list[str] | None = None
     spaces: list[str] | None = None
     department_id: str | None = None
+    clear_department: bool = False
 
     @model_validator(mode="after")
     def require_update_fields(self) -> Self:
-        if self.roles is None and self.spaces is None:
-            raise ValueError("roles or spaces must be provided")
+        if (
+            self.roles is None
+            and self.spaces is None
+            and self.department_id is None
+            and not self.clear_department
+        ):
+            raise ValueError(
+                "roles, spaces, department_id, or clear_department must be provided"
+            )
         return self
 
 
@@ -144,6 +152,7 @@ def update_user(
             roles=payload.roles,
             spaces=payload.spaces,
             department_id=payload.department_id,
+            clear_department=payload.clear_department,
         )
     except AdminUserServiceError as error:
         _http_error(error)
