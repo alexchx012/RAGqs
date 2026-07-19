@@ -1,8 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { apiJson, ApiError } from '../../api/client';
-import type { AdminUser, AdminUsersData, PanelState } from '../../api/types';
+import type {
+  AdminDepartmentsData,
+  AdminUser,
+  AdminUsersData,
+  Department,
+  PanelState,
+} from '../../api/types';
 
-const ALL_ROLES = ['admin', 'viewer', 'uploader', 'maintainer', 'auditor', 'ops'] as const;
+const ALL_ROLES = [
+  'super_admin',
+  'department_admin',
+  'viewer',
+  'uploader',
+  'maintainer',
+  'auditor',
+  'ops',
+] as const;
 
 function mapAdminUserError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -46,6 +60,11 @@ export default function UserManagementPanel() {
   const [createPassword, setCreatePassword] = useState('');
   const [createRoles, setCreateRoles] = useState<string[]>(['viewer']);
   const [createSpaces, setCreateSpaces] = useState('');
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [departmentsLoaded, setDepartmentsLoaded] = useState(false);
+  const [departmentLoadError, setDepartmentLoadError] = useState<string | null>(null);
+  const [createDepartmentId, setCreateDepartmentId] = useState('');
+  const [editDepartmentId, setEditDepartmentId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const latestRequestRef = useRef(0);
 
@@ -64,14 +83,32 @@ export default function UserManagementPanel() {
     }
   }, []);
 
+  const loadDepartments = useCallback(async () => {
+    setDepartmentsLoaded(false);
+    setDepartmentLoadError(null);
+    try {
+      const data = await apiJson<AdminDepartmentsData>('/admin/departments');
+      setDepartments(
+        Array.isArray(data.data?.departments) ? data.data.departments : [],
+      );
+      setDepartmentsLoaded(true);
+    } catch (err: unknown) {
+      setDepartments([]);
+      setDepartmentsLoaded(false);
+      setDepartmentLoadError(mapAdminUserError(err));
+    }
+  }, []);
+
   useEffect(() => {
-    loadUsers();
-  }, [loadUsers]);
+    void loadUsers();
+    void loadDepartments();
+  }, [loadUsers, loadDepartments]);
 
   function startEdit(user: AdminUser) {
     setEditingId(user.id);
     setEditRoles([...user.roles]);
     setEditSpaces(user.spaces.join(', '));
+    setEditDepartmentId(user.department_id ?? '');
     setActionError(null);
   }
 
@@ -79,6 +116,7 @@ export default function UserManagementPanel() {
     setEditingId(null);
     setEditRoles([]);
     setEditSpaces('');
+    setEditDepartmentId('');
   }
 
   function toggleRole(role: string, current: string[], setter: (next: string[]) => void) {
@@ -108,12 +146,15 @@ export default function UserManagementPanel() {
           password: createPassword,
           roles: createRoles,
           spaces: parseSpaces(createSpaces),
+          department_id:
+            createDepartmentId === '' ? undefined : createDepartmentId,
         }),
       });
       setCreateUsername('');
       setCreatePassword('');
       setCreateRoles(['viewer']);
       setCreateSpaces('');
+      setCreateDepartmentId('');
       await loadUsers();
     } catch (err: unknown) {
       setActionError(mapAdminUserError(err));
@@ -129,6 +170,10 @@ export default function UserManagementPanel() {
     }
     setActionError(null);
     setSubmitting(true);
+    const departmentPatch =
+      editDepartmentId === ''
+        ? { clear_department: true }
+        : { department_id: editDepartmentId };
     try {
       await apiJson(`/admin/users/${encodeURIComponent(user.id)}`, {
         method: 'PATCH',
@@ -137,6 +182,7 @@ export default function UserManagementPanel() {
           expected_version: user.version,
           roles: editRoles,
           spaces: parseSpaces(editSpaces),
+          ...departmentPatch,
         }),
       });
       setEditingId(null);
@@ -182,6 +228,19 @@ export default function UserManagementPanel() {
         </div>
       )}
 
+      {departmentLoadError && (
+        <div
+          className="user-management-error"
+          role="alert"
+          data-testid="department-load-error"
+        >
+          {departmentLoadError}
+          <button type="button" data-testid="retry-departments" onClick={loadDepartments}>
+            重试部门目录
+          </button>
+        </div>
+      )}
+
       <div className="ops-list">
         {panelState.status === 'loading' && <div>加载中...</div>}
         {panelState.status === 'error' && (
@@ -219,11 +278,26 @@ export default function UserManagementPanel() {
                       data-testid={`edit-spaces-${user.id}`}
                     />
                   </label>
+                  <label>
+                    部门
+                    <select
+                      value={editDepartmentId}
+                      onChange={(event) => setEditDepartmentId(event.target.value)}
+                      data-testid={`edit-department-${user.id}`}
+                    >
+                      <option value="">无部门</option>
+                      {departments.map((department) => (
+                        <option key={department.id} value={department.id}>
+                          {department.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <div className="ops-row-actions">
                     <button
                       type="button"
                       data-testid={`save-user-${user.id}`}
-                      disabled={submitting}
+                      disabled={submitting || !departmentsLoaded}
                       onClick={() => handleSave(user)}
                     >
                       保存
@@ -304,7 +378,27 @@ export default function UserManagementPanel() {
             data-testid="create-spaces"
           />
         </label>
-        <button type="submit" disabled={submitting || !createUsername || !createPassword}>
+        <label>
+          部门
+          <select
+            value={createDepartmentId}
+            onChange={(event) => setCreateDepartmentId(event.target.value)}
+            data-testid="create-department"
+          >
+            <option value="">无部门</option>
+            {departments.map((department) => (
+              <option key={department.id} value={department.id}>
+                {department.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="submit"
+          disabled={
+            submitting || !departmentsLoaded || !createUsername || !createPassword
+          }
+        >
           {submitting ? '提交中...' : '创建'}
         </button>
       </form>
