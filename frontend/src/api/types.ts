@@ -97,12 +97,24 @@ export interface AdminUser {
   username: string;
   roles: string[];
   spaces: string[];
+  department_id: string | null;
   version: number;
+  created_at: string;
+}
+
+export interface Department {
+  id: string;
+  name: string;
+  description: string | null;
   created_at: string;
 }
 
 export interface AdminUsersData {
   users?: AdminUser[];
+}
+
+export interface AdminDepartmentsData {
+  departments?: Department[];
 }
 
 export interface AdminUserData {
