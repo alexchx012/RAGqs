@@ -619,6 +619,42 @@ def test_omitting_actor_preserves_list_and_get_behavior(tmp_path):
     assert service.get_user(target.id)["id"] == target.id
 
 
+def test_department_admin_read_paths_exclude_administrator_accounts(tmp_path):
+    service, users, _ = _build_service(tmp_path)
+    actor = AuthContext(
+        user_id="lead",
+        roles={"department_admin"},
+        spaces={"docs"},
+        department_id="dept-1",
+    )
+    viewer = users.create_user(
+        username="viewer",
+        password_hash="h1",
+        roles=["viewer"],
+        spaces=[],
+        department_ids=["dept-1"],
+    )
+    peer = users.create_user(
+        username="peer",
+        password_hash="h2",
+        roles=["department_admin"],
+        spaces=["docs"],
+        department_ids=["dept-1"],
+    )
+    root = users.create_user(
+        username="root",
+        password_hash="h3",
+        roles=["super_admin"],
+        spaces=["*"],
+        department_ids=["dept-1"],
+    )
+    assert [user["id"] for user in service.list_users(actor=actor)] == [viewer.id]
+    for hidden_id in (peer.id, root.id):
+        with pytest.raises(AdminUserNotFoundError):
+            service.get_user(hidden_id, actor=actor)
+    assert service.get_user(viewer.id, actor=actor)["id"] == viewer.id
+
+
 @pytest.mark.parametrize("requested_spaces", [["private"], ["*"]])
 def test_department_admin_create_rejects_spaces_outside_actor_scope(
     tmp_path, requested_spaces

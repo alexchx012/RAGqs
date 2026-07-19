@@ -86,6 +86,11 @@ class AdminUserService:
             if actor_department_id is None:
                 return []
             users = [user for user in users if user.department_id == actor_department_id]
+            users = [
+                user
+                for user in users
+                if not {"super_admin", "department_admin"} & set(user.roles)
+            ]
         return [self._safe_user(user) for user in users]
 
     def get_user(self, user_id: str, *, actor: AuthContext | None = None) -> dict[str, Any]:
@@ -101,7 +106,11 @@ class AdminUserService:
         if user is None:
             raise AdminUserNotFoundError(_NOT_FOUND_ERROR)
         if not actor_is_super_admin:
-            if actor_department_id is None or user.department_id != actor_department_id:
+            if (
+                actor_department_id is None
+                or user.department_id != actor_department_id
+                or {"super_admin", "department_admin"} & set(user.roles)
+            ):
                 raise AdminUserNotFoundError(_NOT_FOUND_ERROR)
         return self._safe_user(user)
 
