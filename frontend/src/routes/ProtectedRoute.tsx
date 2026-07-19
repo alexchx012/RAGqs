@@ -25,7 +25,7 @@ export default function ProtectedRoute({
   if (status === 'unauthenticated') {
     return <Navigate to="/login" replace />;
   }
-  if (requireAdmin && !roles.includes('admin')) {
+  if (requireAdmin && !roles.includes('super_admin')) {
     return (
       <div className="auth-forbidden" data-testid="auth-forbidden">
         无权限访问项目管理{' '}

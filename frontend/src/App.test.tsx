@@ -59,10 +59,10 @@ describe('App routes + auth guards', () => {
     expect(screen.queryByText('项目管理')).toBeNull();
   });
 
-  it('shows admin nav link for authenticated admin', async () => {
+  it('shows admin nav link for authenticated super_admin', async () => {
     (apiJson as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       code: 200,
-      data: { user_id: 'admin1', roles: ['admin'], spaces: ['*'] },
+      data: { user_id: 'admin1', roles: ['super_admin'], spaces: ['*'] },
     });
 
     render(<TestApp initialEntries={['/chat']} />);
@@ -71,5 +71,22 @@ describe('App routes + auth guards', () => {
       expect(screen.getByTestId('chat-page')).toBeDefined();
     });
     expect(screen.getByText('项目管理')).toBeDefined();
+  });
+
+  it('blocks department admin from the super-admin page', async () => {
+    (apiJson as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      code: 200,
+      data: {
+        user_id: 'lead1',
+        roles: ['department_admin'],
+        spaces: ['docs'],
+      },
+    });
+    render(<TestApp initialEntries={['/admin/projects']} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-forbidden')).toBeDefined();
+    });
+    expect(screen.queryByTestId('admin-projects-page')).toBeNull();
+    expect(screen.queryByText('项目管理')).toBeNull();
   });
 });

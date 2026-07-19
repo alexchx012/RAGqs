@@ -5,7 +5,7 @@ import { useAuth } from '../features/auth/AuthContext';
 export default function AppNav() {
   const { roles, logout } = useAuth();
   const navigate = useNavigate();
-  const isAdmin = roles.includes('admin');
+  const isAdmin = roles.includes('super_admin');
 
   const handleLogout = async () => {
     await logout();

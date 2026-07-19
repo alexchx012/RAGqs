@@ -68,7 +68,7 @@ export async function loginViaApi(
   }
 }
 
-/** admin 创建临时 viewer 用户；若后端无权限或 409 则抛错由用例处理 */
+/** super_admin 创建临时 viewer 用户；若后端无权限或 409 则抛错由用例处理 */
 export async function createViewerUser(
   page: Page,
   username: string,
