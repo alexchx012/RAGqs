@@ -191,4 +191,102 @@ describe('ChatPanel', () => {
     // Dropdown should appear with stream option
     expect(screen.getByText('流式')).toBeDefined();
   });
+
+  describe('answer mode three-state hints', () => {
+    function mockHistory(messages: Array<Record<string, unknown>>) {
+      mockUseChat.mockReturnValue({
+        currentChatHistory: messages,
+        isStreaming: false,
+        mode: 'stream',
+        setMode: vi.fn(),
+        addMessage: vi.fn(),
+      });
+    }
+
+    it('shows a source list hint for grounded answers', () => {
+      // sources list UI is not yet wired in ChatPanel; grounded must not throw
+      // and must not introduce no_context / warning hints.
+      mockHistory([
+        {
+          type: 'assistant',
+          content: 'Based on the docs...',
+          answerMode: 'grounded',
+        },
+      ]);
+
+      render(<ChatPanel spaceId="space-1" />);
+
+      const messages = document.querySelectorAll('.message.assistant-message');
+      expect(messages.length).toBe(1);
+      expect(screen.queryByTestId('answer-mode-no-context')).toBeNull();
+      expect(screen.queryByTestId('answer-mode-warning')).toBeNull();
+      expect(screen.queryByText('未在知识库中找到相关内容')).toBeNull();
+      expect(screen.queryByText('本次回答未使用知识库内容')).toBeNull();
+    });
+
+    it('shows a soft no-context hint for no_context answers', () => {
+      mockHistory([
+        {
+          type: 'assistant',
+          content: 'I do not have that information.',
+          answerMode: 'no_context',
+        },
+      ]);
+
+      render(<ChatPanel spaceId="space-1" />);
+
+      expect(screen.getByTestId('answer-mode-no-context')).toBeDefined();
+      expect(screen.getByText('未在知识库中找到相关内容')).toBeDefined();
+    });
+
+    it('shows a warning hint when the model answered without using the knowledge base', () => {
+      mockHistory([
+        {
+          type: 'assistant',
+          content: 'General knowledge answer.',
+          answerMode: 'direct',
+          usedToolsWithoutKnowledgeBase: true,
+        },
+      ]);
+
+      render(<ChatPanel spaceId="space-1" />);
+
+      expect(screen.getByTestId('answer-mode-warning')).toBeDefined();
+      expect(screen.getByText('本次回答未使用知识库内容')).toBeDefined();
+    });
+
+    it('shows no extra hint for a plain direct answer', () => {
+      mockHistory([
+        {
+          type: 'assistant',
+          content: 'Plain direct answer.',
+          answerMode: 'direct',
+          usedToolsWithoutKnowledgeBase: false,
+        },
+      ]);
+
+      render(<ChatPanel spaceId="space-1" />);
+
+      expect(screen.queryByTestId('answer-mode-no-context')).toBeNull();
+      expect(screen.queryByTestId('answer-mode-warning')).toBeNull();
+      expect(screen.queryByText('未在知识库中找到相关内容')).toBeNull();
+      expect(screen.queryByText('本次回答未使用知识库内容')).toBeNull();
+    });
+
+    it('shows no extra hint when answerMode is absent (baseline path)', () => {
+      mockHistory([
+        {
+          type: 'assistant',
+          content: 'Baseline path answer without answerMode.',
+        },
+      ]);
+
+      render(<ChatPanel spaceId="space-1" />);
+
+      expect(screen.queryByTestId('answer-mode-no-context')).toBeNull();
+      expect(screen.queryByTestId('answer-mode-warning')).toBeNull();
+      expect(screen.queryByText('未在知识库中找到相关内容')).toBeNull();
+      expect(screen.queryByText('本次回答未使用知识库内容')).toBeNull();
+    });
+  });
 });
