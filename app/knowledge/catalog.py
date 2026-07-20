@@ -23,12 +23,18 @@ class DocumentStatus(StrEnum):
     DELETED = "deleted"
 
 
+class KnowledgeSpaceNotFoundError(Exception):
+    """Raised when update_space targets a space_id that does not exist."""
+
+
 @dataclass
 class KnowledgeSpace:
     space_id: str
     name: str
     description: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    rag_path: str | None = None
+    owning_department_id: str | None = None
 
 
 @dataclass
@@ -71,6 +77,39 @@ class InMemoryKnowledgeCatalog:
 
     def list_spaces(self) -> list[KnowledgeSpace]:
         return list(self._spaces.values())
+
+    def get_space(self, space_id: str) -> KnowledgeSpace | None:
+        return self._spaces.get(_normalize_space_id(space_id))
+
+    def update_space(
+        self,
+        space_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        rag_path: str | None = None,
+        owning_department_id: str | None = None,
+        clear_rag_path: bool = False,
+        clear_owning_department_id: bool = False,
+    ) -> KnowledgeSpace:
+        normalized_space_id = _normalize_space_id(space_id)
+        existing = self._spaces.get(normalized_space_id)
+        if existing is None:
+            raise KnowledgeSpaceNotFoundError(space_id)
+        updated = KnowledgeSpace(
+            space_id=existing.space_id,
+            name=existing.name if name is None else name,
+            description=existing.description if description is None else description,
+            created_at=existing.created_at,
+            rag_path=(None if clear_rag_path else (existing.rag_path if rag_path is None else rag_path)),
+            owning_department_id=(
+                None
+                if clear_owning_department_id
+                else (existing.owning_department_id if owning_department_id is None else owning_department_id)
+            ),
+        )
+        self._spaces[normalized_space_id] = updated
+        return updated
 
     def upsert_from_job(self, job: IndexingJob) -> DocumentRecord:
         self.ensure_space(job.space_id)
