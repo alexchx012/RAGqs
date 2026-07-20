@@ -441,6 +441,78 @@ class PostgresKnowledgeCatalog:
                 rows = cursor.fetchall()
         return [_space_from_row(row) for row in rows]
 
+    def get_space(self, space_id: str) -> KnowledgeSpace | None:
+        normalized_space_id = _normalize_space_id(space_id)
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                self._prepare(cursor)
+                cursor.execute(
+                    "SELECT * FROM knowledge_spaces WHERE space_id = %s",
+                    (normalized_space_id,),
+                )
+                row = cursor.fetchone()
+        return _space_from_row(row) if row else None
+
+    def update_space(
+        self,
+        space_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        rag_path: str | None = None,
+        owning_department_id: str | None = None,
+        clear_rag_path: bool = False,
+        clear_owning_department_id: bool = False,
+    ) -> KnowledgeSpace:
+        normalized_space_id = _normalize_space_id(space_id)
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                self._prepare(cursor)
+                cursor.execute(
+                    "SELECT * FROM knowledge_spaces WHERE space_id = %s",
+                    (normalized_space_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise KnowledgeSpaceNotFoundError(space_id)
+                current = _space_from_row(row)
+                new_name = current.name if name is None else name
+                new_description = current.description if description is None else description
+                new_rag_path = (
+                    None if clear_rag_path else (current.rag_path if rag_path is None else rag_path)
+                )
+                new_owning_department_id = (
+                    None
+                    if clear_owning_department_id
+                    else (
+                        current.owning_department_id
+                        if owning_department_id is None
+                        else owning_department_id
+                    )
+                )
+                cursor.execute(
+                    """
+                    UPDATE knowledge_spaces
+                    SET name = %s, description = %s, rag_path = %s, owning_department_id = %s
+                    WHERE space_id = %s
+                    """,
+                    (
+                        new_name,
+                        new_description,
+                        new_rag_path,
+                        new_owning_department_id,
+                        normalized_space_id,
+                    ),
+                )
+        return KnowledgeSpace(
+            space_id=current.space_id,
+            name=new_name,
+            description=new_description,
+            created_at=current.created_at,
+            rag_path=new_rag_path,
+            owning_department_id=new_owning_department_id,
+        )
+
     def upsert_from_job(self, job: IndexingJob) -> DocumentRecord:
         record = DocumentRecord(
             document_id=job.document_id,
@@ -580,6 +652,17 @@ class PostgresKnowledgeCatalog:
             ON document_records(space_id, document_id)
             """
         )
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'knowledge_spaces'"
+        )
+        columns = {row["column_name"] for row in cursor.fetchall()}
+        if "rag_path" not in columns:
+            cursor.execute("ALTER TABLE knowledge_spaces ADD COLUMN rag_path TEXT")
+        if "owning_department_id" not in columns:
+            cursor.execute(
+                "ALTER TABLE knowledge_spaces ADD COLUMN owning_department_id TEXT"
+            )
         self._schema_initialized = True
 
     def _ensure_space(
