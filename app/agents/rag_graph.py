@@ -404,6 +404,71 @@ class RagGraphNodes:
             ],
         }
 
+    def agentic_no_context_response(self, state: RagGraphState) -> dict[str, Any]:
+        return {
+            "answer": NO_CONTEXT_ANSWER,
+            "final_response": {
+                "answer": NO_CONTEXT_ANSWER,
+                "success": True,
+                "errors": [],
+                "answer_mode": "no_context",
+                "used_tools_without_knowledge_base": False,
+            },
+            "events": [
+                {
+                    "type": "done",
+                    "node": "final_response",
+                    "data": {"answer": NO_CONTEXT_ANSWER},
+                },
+                {
+                    "type": "answer_mode",
+                    "node": "final_response",
+                    "data": {"mode": "no_context", "usedToolsWithoutKnowledgeBase": False},
+                },
+            ],
+        }
+
+    def agentic_final_response(self, state: RagGraphState) -> dict[str, Any]:
+        errors = list(state.get("errors", []))
+        round_signal = state.get("agentic_tool_round") or {}
+        called_knowledge_base_without_hit = bool(
+            round_signal.get("called_search_knowledge_base") and not round_signal.get("hit")
+        )
+        answer_text = state.get("answer", "")
+        if state.get("retrieval_result"):
+            answer_mode = "grounded"
+        elif called_knowledge_base_without_hit and answer_text == NO_CONTEXT_ANSWER:
+            answer_mode = "no_context"
+        else:
+            answer_mode = "direct"
+        used_tools_without_kb = called_knowledge_base_without_hit and answer_mode == "direct"
+        final_response = {
+            "answer": answer_text,
+            "success": not errors,
+            "errors": errors,
+            "answer_mode": answer_mode,
+            "used_tools_without_knowledge_base": used_tools_without_kb,
+        }
+        return {
+            "final_response": final_response,
+            "tool_request": {},
+            "events": [
+                {
+                    "type": "done",
+                    "node": "final_response",
+                    "data": final_response,
+                },
+                {
+                    "type": "answer_mode",
+                    "node": "final_response",
+                    "data": {
+                        "mode": answer_mode,
+                        "usedToolsWithoutKnowledgeBase": used_tools_without_kb,
+                    },
+                },
+            ],
+        }
+
     def route_after_decision(self, state: RagGraphState) -> str:
         action = state.get("retrieval_decision", {}).get("action")
         if action == "handoff":
@@ -528,6 +593,26 @@ class RagGraphNodes:
         }
 
 
+def route_after_agentic_answer(state: RagGraphState) -> str:
+    if state.get("errors"):
+        return "error_policy"
+    messages = state.get("messages") or []
+    if messages and _has_tool_calls(messages[-1]):
+        return "tool"
+    return "final_response"
+
+
+def route_after_agentic_tool(state: RagGraphState) -> str:
+    if state.get("errors"):
+        return "error_policy"
+    if state.get("tool_rounds", 0) >= MAX_MODEL_TOOL_ROUNDS:
+        return "error_policy"
+    round_signal = state.get("agentic_tool_round") or {}
+    if round_signal.get("called_search_knowledge_base") and round_signal.get("hit"):
+        return "answer_with_context"
+    return "answer_no_context"
+
+
 def build_rag_state_graph(
     *,
     retriever_provider: RetrieverProvider,
@@ -601,6 +686,71 @@ def build_rag_state_graph(
             "answer": "answer",
         },
     )
+    builder.add_edge("error_policy", "final_response")
+    builder.add_edge("final_response", END)
+    return builder.compile(checkpointer=checkpointer)
+
+
+def build_agentic_graph(
+    *,
+    retriever_provider: RetrieverProvider,
+    answer_generator: AnswerGenerator,
+    tool_executor: ToolExecutor | None = None,
+    available_tools: list[Any] | None = None,
+    system_prompt: str = "",
+    checkpointer=None,
+    default_top_k: int = 3,
+):
+    resolved_tools = list(available_tools or [])
+    if not resolved_tools and tool_executor is not None and hasattr(
+        tool_executor,
+        "tools_by_name",
+    ):
+        resolved_tools = list(tool_executor.tools_by_name.values())
+    resolved_system_prompt = system_prompt or getattr(
+        answer_generator,
+        "system_prompt",
+        "",
+    )
+    nodes = RagGraphNodes(
+        retriever_provider=retriever_provider,
+        answer_generator=answer_generator,
+        tool_executor=tool_executor,
+        available_tools=resolved_tools,
+        system_prompt=str(resolved_system_prompt or ""),
+        default_top_k=default_top_k,
+    )
+    builder = StateGraph(RagGraphState)
+    builder.add_node("normalize_input", nodes.normalize_input)
+    builder.add_node(
+        "answer_no_context",
+        lambda state: nodes.answer(state, prompt_builder=_build_bare_answer_prompt),
+    )
+    builder.add_node(
+        "answer_with_context",
+        lambda state: nodes.answer(state, prompt_builder=_build_answer_prompt),
+    )
+    builder.add_node("tool", nodes.tool)
+    builder.add_node("agentic_no_context_response", nodes.agentic_no_context_response)
+    builder.add_node("error_policy", nodes.error_policy)
+    builder.add_node("final_response", nodes.agentic_final_response)
+    builder.add_edge(START, "normalize_input")
+    builder.add_edge("normalize_input", "answer_no_context")
+    builder.add_conditional_edges(
+        "answer_no_context",
+        route_after_agentic_answer,
+        {"final_response": "final_response", "error_policy": "error_policy", "tool": "tool"},
+    )
+    builder.add_conditional_edges(
+        "tool",
+        route_after_agentic_tool,
+        {
+            "answer_with_context": "answer_with_context",
+            "answer_no_context": "answer_no_context",
+            "error_policy": "error_policy",
+        },
+    )
+    builder.add_edge("answer_with_context", "final_response")
     builder.add_edge("error_policy", "final_response")
     builder.add_edge("final_response", END)
     return builder.compile(checkpointer=checkpointer)
@@ -770,6 +920,17 @@ def _build_answer_prompt(state: RagGraphState) -> str:
         "Answer the user question using only the retrieved context.\n\n"
         f"Question: {state.get('normalized_question') or state.get('question', '')}\n\n"
         f"Retrieved context:\n{context}"
+    )
+
+
+def _build_bare_answer_prompt(state: RagGraphState) -> str:
+    question = state.get("normalized_question") or state.get("question", "")
+    return (
+        "尽力用你已有的知识直接回答用户的问题。\n\n"
+        "如果这个问题依赖本组织的私有/内部信息（例如内部政策、内部文档、"
+        "特定业务数据），调用 search_knowledge_base 工具查询知识库后再回答，"
+        "不要凭空编造这类信息。\n\n"
+        f"Question: {question}"
     )
 
 

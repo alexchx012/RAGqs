@@ -5,7 +5,14 @@ from unittest.mock import Mock
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agents.rag_graph import RagGraphNodes, _build_answer_prompt
+from app.agents.rag_graph import (
+    NO_CONTEXT_ANSWER,
+    RagGraphNodes,
+    _build_answer_prompt,
+    _build_bare_answer_prompt,
+    build_agentic_graph,
+    route_after_agentic_tool,
+)
 from app.providers.contracts import RetrievalResult, RetrievalSource
 
 
@@ -248,3 +255,153 @@ def test_prepare_model_messages_injects_grounded_prompt_after_tool_round_with_re
     assert human_messages, "expected grounded HumanMessage after tool round"
     assert human_messages[-1].content == _build_answer_prompt(state)
     assert "内容A" in human_messages[-1].content
+
+
+def test_build_bare_answer_prompt_does_not_mention_retrieved_context_only():
+    state = {"question": "什么是报销比例", "normalized_question": "什么是报销比例"}
+    prompt = _build_bare_answer_prompt(state)
+
+    assert "search_knowledge_base" in prompt
+    assert "仅使用检索上下文" not in prompt
+    assert "什么是报销比例" in prompt
+
+
+def test_route_after_agentic_tool_hit_goes_to_answer_with_context():
+    state = {"agentic_tool_round": {"called_search_knowledge_base": True, "hit": True}}
+    assert route_after_agentic_tool(state) == "answer_with_context"
+
+
+def test_route_after_agentic_tool_miss_returns_to_answer_no_context():
+    state = {"agentic_tool_round": {"called_search_knowledge_base": True, "hit": False}}
+    assert route_after_agentic_tool(state) == "answer_no_context"
+
+
+def test_route_after_agentic_tool_non_knowledge_base_call_returns_to_answer_no_context():
+    state = {"agentic_tool_round": {"called_search_knowledge_base": False, "hit": False}}
+    assert route_after_agentic_tool(state) == "answer_no_context"
+
+
+def test_route_after_agentic_tool_error_goes_to_error_policy():
+    state = {"errors": ["boom"], "agentic_tool_round": {"called_search_knowledge_base": True, "hit": True}}
+    assert route_after_agentic_tool(state) == "error_policy"
+
+
+class _ScriptedAnswerGenerator:
+    """Returns AI messages from a fixed script, one per invoke_messages call."""
+
+    def __init__(self, script: list):
+        self._script = list(script)
+        self.calls: list[list] = []
+
+    def invoke_messages(self, messages, tools=None):
+        self.calls.append(list(messages))
+        return self._script.pop(0)
+
+
+def test_agentic_graph_direct_answer_without_any_tool_call():
+    generator = _ScriptedAnswerGenerator([AIMessage(content="直接回答")])
+    graph = build_agentic_graph(
+        retriever_provider=Mock(),
+        answer_generator=generator,
+        tool_executor=_RecordingToolExecutor({}),
+        available_tools=[],
+    )
+    result = graph.invoke({"question": "今天天气如何", "session_id": "s1", "space_id": "default"})
+
+    assert result["final_response"]["answer"] == "直接回答"
+    assert result["final_response"]["answer_mode"] == "direct"
+    assert result["final_response"]["used_tools_without_knowledge_base"] is False
+
+
+def test_agentic_graph_hits_knowledge_base_and_grounds_answer():
+    generator = _ScriptedAnswerGenerator(
+        [
+            _ai_message_with_tool_call("search_knowledge_base", {"query": "报销比例"}),
+            AIMessage(content="报销比例是 80%"),
+        ]
+    )
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {
+                    "hit": True,
+                    "documents": [{"content": "报销比例是 80%", "metadata": {"_file_name": "policy.md"}}],
+                },
+                "metadata": {},
+            }
+        }
+    )
+    graph = build_agentic_graph(
+        retriever_provider=Mock(),
+        answer_generator=generator,
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    result = graph.invoke({"question": "报销比例是多少", "session_id": "s1", "space_id": "default"})
+
+    assert result["final_response"]["answer"] == "报销比例是 80%"
+    assert result["final_response"]["answer_mode"] == "grounded"
+    assert len(result["sources"]) == 1
+
+
+def test_agentic_graph_miss_then_direct_answer_marks_used_tools_without_kb():
+    generator = _ScriptedAnswerGenerator(
+        [
+            _ai_message_with_tool_call("search_knowledge_base", {"query": "不存在的问题"}),
+            AIMessage(content="根据常识回答"),
+        ]
+    )
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {"hit": False, "documents": []},
+                "metadata": {},
+            }
+        }
+    )
+    graph = build_agentic_graph(
+        retriever_provider=Mock(),
+        answer_generator=generator,
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    result = graph.invoke({"question": "不存在的问题", "session_id": "s1", "space_id": "default"})
+
+    assert result["final_response"]["answer"] == "根据常识回答"
+    assert result["final_response"]["answer_mode"] == "direct"
+    assert result["final_response"]["used_tools_without_knowledge_base"] is True
+
+
+def test_agentic_graph_miss_with_no_further_tool_call_ends_no_context():
+    """Model calls search_knowledge_base (miss), then on the next turn stops
+    producing tool_calls and returns nothing useful — spec still requires a
+    deterministic no_context outcome to be reachable when the model never
+    recovers with another answer. This test scripts the model to immediately
+    hand back the miss ToolMessage content as its answer, which is the
+    minimal realistic path to answer_mode == 'no_context'."""
+    generator = _ScriptedAnswerGenerator(
+        [
+            _ai_message_with_tool_call("search_knowledge_base", {"query": "不存在的问题"}),
+            AIMessage(content=NO_CONTEXT_ANSWER),
+        ]
+    )
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {"hit": False, "documents": []},
+                "metadata": {},
+            }
+        }
+    )
+    graph = build_agentic_graph(
+        retriever_provider=Mock(),
+        answer_generator=generator,
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    result = graph.invoke({"question": "不存在的问题", "session_id": "s1", "space_id": "default"})
+
+    assert result["final_response"]["answer_mode"] == "no_context"
