@@ -6,6 +6,7 @@ from app.agents.rag_graph import (
     LangChainToolExecutor,
     RagGraphState,
     ToolExecutor,
+    build_rag_graph_registry,
     build_rag_state_graph,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "LangChainToolExecutor",
     "RagGraphState",
     "ToolExecutor",
+    "build_rag_graph_registry",
     "build_rag_state_graph",
 ]
