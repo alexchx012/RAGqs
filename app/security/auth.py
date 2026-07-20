@@ -15,7 +15,7 @@ LOCAL_SESSION_COOKIE_NAME = "rag_session"
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "super_admin": {"*"},
-    "department_admin": {"user:manage"},
+    "department_admin": {"user:manage", "space:read", "space:manage"},
     "viewer": {
         "chat:write",
         "chat:read",

@@ -25,6 +25,14 @@ def test_department_admin_role_only_grants_user_manage():
     assert not context.has_permission("chat:write")
 
 
+def test_department_admin_role_grants_space_read_and_manage():
+    context = AuthContext(user_id="dept-lead", roles={"department_admin"}, spaces=set())
+
+    assert context.has_permission("space:read")
+    assert context.has_permission("space:manage")
+    assert not context.has_permission("space:write")
+
+
 def test_disabled_auth_returns_local_admin_for_compatibility():
     provider = SimpleAuthProvider(_settings(auth_enabled=False))
 
