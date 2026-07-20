@@ -87,6 +87,14 @@ class FakePostgresCatalogDatabase:
         self.dsns = []
         self.next_space_sequence = 1
         self.next_document_sequence = 1
+        # Baseline CREATE TABLE columns; ALTER TABLE ADD COLUMN extends this set.
+        self.knowledge_space_columns = {
+            "sequence",
+            "space_id",
+            "name",
+            "description",
+            "created_at",
+        }
 
     def connect(self, dsn: str):
         self.connect_count += 1
@@ -128,6 +136,23 @@ class FakeCursor:
         if normalized.startswith("create table") or normalized.startswith("create index"):
             self.results = []
             return self
+        if normalized.startswith(
+            "select column_name from information_schema.columns where table_name = 'knowledge_spaces'"
+        ):
+            self.results = [
+                {"column_name": name} for name in sorted(self.database.knowledge_space_columns)
+            ]
+            return self
+        if normalized.startswith("alter table knowledge_spaces add column"):
+            # e.g. "alter table knowledge_spaces add column rag_path text"
+            parts = normalized.split()
+            # ["alter","table","knowledge_spaces","add","column","rag_path","text"]
+            column_name = parts[5]
+            self.database.knowledge_space_columns.add(column_name)
+            for row in self.database.space_rows:
+                row.setdefault(column_name, None)
+            self.results = []
+            return self
         if normalized.startswith("select * from knowledge_spaces where space_id"):
             space_id = params[0]
             self.results = [
@@ -136,6 +161,10 @@ class FakeCursor:
             return self
         if normalized.startswith("insert into knowledge_spaces"):
             self._insert_space(params)
+            self.results = []
+            return self
+        if normalized.startswith("update knowledge_spaces set"):
+            self._update_space(normalized, params)
             self.results = []
             return self
         if normalized.startswith("select * from knowledge_spaces"):
@@ -194,9 +223,29 @@ class FakeCursor:
                 "name": name,
                 "description": description,
                 "created_at": created_at,
+                "rag_path": None,
+                "owning_department_id": None,
             }
         )
         self.database.next_space_sequence += 1
+
+    def _update_space(self, normalized: str, params):
+        # UPDATE ... WHERE space_id = %s  — last param is always space_id.
+        space_id = params[-1]
+        set_clause = normalized.split(" set ", 1)[1].split(" where ", 1)[0]
+        assignments = [part.strip() for part in set_clause.split(",")]
+        values = list(params[:-1])
+        if len(values) != len(assignments):
+            raise AssertionError(
+                f"update knowledge_spaces param mismatch: {assignments!r} vs {params!r}"
+            )
+        for row in self.database.space_rows:
+            if row["space_id"] != space_id:
+                continue
+            for assignment, value in zip(assignments, values, strict=True):
+                column = assignment.split("=", 1)[0].strip()
+                row[column] = value
+            return
 
     def _upsert_document(self, params):
         (
