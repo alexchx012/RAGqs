@@ -95,3 +95,127 @@ def test_maintainer_creating_space_with_department_succeeds():
         assert response.json()["data"]["space"]["owning_department_id"] == "dept-1"
     finally:
         file_api.vector_index_service = original_service
+
+
+def test_maintainer_can_update_name_and_rag_path():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", owning_department_id="dept-1")
+
+    client, original_service = _client_with_catalog(catalog, roles={"maintainer"})
+    try:
+        response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"name": "Finance Team", "rag_path": "agentic"},
+        )
+        assert response.status_code == 200
+        body = response.json()["data"]["space"]
+        assert body["name"] == "Finance Team"
+        assert body["rag_path"] == "agentic"
+    finally:
+        file_api.vector_index_service = original_service
+
+
+def test_maintainer_cannot_reassign_owning_department_id():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", owning_department_id="dept-1")
+
+    client, original_service = _client_with_catalog(catalog, roles={"maintainer"})
+    try:
+        response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"owning_department_id": "dept-2"},
+        )
+        assert response.status_code == 403
+    finally:
+        file_api.vector_index_service = original_service
+
+
+def test_super_admin_can_reassign_owning_department_id():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", owning_department_id="dept-1")
+
+    client, original_service = _client_with_catalog(catalog, roles={"super_admin"})
+    try:
+        response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"owning_department_id": "dept-2"},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["space"]["owning_department_id"] == "dept-2"
+    finally:
+        file_api.vector_index_service = original_service
+
+
+def test_department_admin_can_update_rag_path_for_own_space():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", owning_department_id="dept-1")
+
+    client, original_service = _client_with_catalog(
+        catalog, roles={"department_admin"}, department_id="dept-1"
+    )
+    try:
+        response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"rag_path": "agentic"},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["space"]["rag_path"] == "agentic"
+    finally:
+        file_api.vector_index_service = original_service
+
+
+def test_department_admin_cannot_update_other_department_space():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", owning_department_id="dept-1")
+
+    client, original_service = _client_with_catalog(
+        catalog, roles={"department_admin"}, department_id="dept-2"
+    )
+    try:
+        response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"rag_path": "agentic"},
+        )
+        assert response.status_code == 403
+    finally:
+        file_api.vector_index_service = original_service
+
+
+def test_department_admin_cannot_update_space_with_no_department_owner():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+
+    client, original_service = _client_with_catalog(
+        catalog, roles={"department_admin"}, department_id="dept-1"
+    )
+    try:
+        response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"rag_path": "agentic"},
+        )
+        assert response.status_code == 403
+    finally:
+        file_api.vector_index_service = original_service
+
+
+def test_department_admin_cannot_update_name_field():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", owning_department_id="dept-1")
+
+    client, original_service = _client_with_catalog(
+        catalog, roles={"department_admin"}, department_id="dept-1"
+    )
+    try:
+        response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"name": "Renamed"},
+        )
+        assert response.status_code == 403
+    finally:
+        file_api.vector_index_service = original_service

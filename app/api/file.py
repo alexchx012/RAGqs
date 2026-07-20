@@ -4,6 +4,7 @@ import inspect
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel
 
@@ -17,6 +18,7 @@ from app.security.auth import (
     active_auth_context,
     is_all_space_context,
     require_permission,
+    require_permission_any,
     require_space_access,
 )
 from app.security.uploads import (
@@ -37,6 +39,15 @@ class KnowledgeSpaceCreateRequest(BaseModel):
     name: str | None = None
     description: str = ""
     owning_department_id: str | None = None
+
+
+class UpdateKnowledgeSpaceRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    rag_path: str | None = None
+    owning_department_id: str | None = None
+    clear_rag_path: bool = False
+    clear_owning_department_id: bool = False
 
 
 @router.post("/upload")
@@ -130,6 +141,59 @@ async def create_knowledge_space(
             request.space_id, owning_department_id=request.owning_department_id
         )
     return envelope_json_response({"space": _serialize_knowledge_space(space)})
+
+
+@router.patch("/knowledge-spaces/{space_id}")
+async def update_knowledge_space(
+    space_id: str,
+    request: UpdateKnowledgeSpaceRequest,
+    auth_context: AuthContext = Depends(
+        require_permission_any(["space:write", "space:manage"])
+    ),
+) -> JSONResponse:
+    active_context = active_auth_context(auth_context)
+    space = vector_index_service.document_catalog.get_space(space_id)
+    if space is None:
+        raise HTTPException(status_code=404, detail="knowledge space not found")
+
+    is_super_admin = "super_admin" in active_context.roles
+    has_write = active_context.has_permission("space:write")
+    has_manage = active_context.has_permission("space:manage") and not has_write
+
+    if has_manage:
+        if space.owning_department_id is None or space.owning_department_id != active_context.department_id:
+            raise HTTPException(status_code=403, detail="knowledge space is outside management scope")
+        if (
+            request.name is not None
+            or request.description is not None
+            or request.owning_department_id is not None
+            or request.clear_owning_department_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="department_admin may only update rag_path",
+            )
+    elif has_write:
+        if not is_super_admin and (
+            request.owning_department_id is not None or request.clear_owning_department_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="only super_admin may reassign owning_department_id",
+            )
+    else:
+        raise HTTPException(status_code=403, detail="missing permission: space:write or space:manage")
+
+    updated = vector_index_service.document_catalog.update_space(
+        space_id,
+        name=request.name,
+        description=request.description,
+        rag_path=request.rag_path,
+        owning_department_id=request.owning_department_id,
+        clear_rag_path=request.clear_rag_path,
+        clear_owning_department_id=request.clear_owning_department_id,
+    )
+    return envelope_json_response({"space": _serialize_knowledge_space(updated)})
 
 
 @router.get("/knowledge-spaces/{space_id}/documents")
@@ -359,6 +423,7 @@ def _serialize_knowledge_space(space) -> dict:
         "space_id": space.space_id,
         "name": space.name,
         "description": getattr(space, "description", ""),
+        "rag_path": getattr(space, "rag_path", None),
         "owning_department_id": getattr(space, "owning_department_id", None),
     }
 

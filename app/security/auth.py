@@ -164,6 +164,22 @@ def require_permission(permission: str):
     return dependency
 
 
+def require_permission_any(permissions: list[str]):
+    """Return a FastAPI dependency requiring at least one of the given permissions."""
+
+    async def dependency(
+        auth_context: AuthContext = Depends(get_current_auth_context),
+    ) -> AuthContext:
+        if not any(auth_context.has_permission(permission) for permission in permissions):
+            raise HTTPException(
+                status_code=403,
+                detail=f"missing permission: one of {', '.join(permissions)}",
+            )
+        return auth_context
+
+    return dependency
+
+
 def require_context_permission(auth_context: AuthContext, permission: str) -> None:
     """Raise HTTP 403 when a context lacks a permission."""
 
