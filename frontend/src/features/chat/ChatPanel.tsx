@@ -81,6 +81,18 @@ export default function ChatPanel({ spaceId, uploadSlot, disabled = false }: Cha
                 __html: msg.type === 'user' ? escapeHtml(msg.content) : renderMarkdown(msg.content),
               }}
             />
+            {msg.type === 'assistant' && msg.answerMode === 'no_context' && (
+              <div className="answer-mode-hint answer-mode-hint-soft" data-testid="answer-mode-no-context">
+                未在知识库中找到相关内容
+              </div>
+            )}
+            {msg.type === 'assistant' &&
+              msg.answerMode === 'direct' &&
+              msg.usedToolsWithoutKnowledgeBase && (
+                <div className="answer-mode-hint answer-mode-hint-warning" data-testid="answer-mode-warning">
+                  本次回答未使用知识库内容
+                </div>
+              )}
           </div>
         ))}
         <div ref={messagesEndRef} />
