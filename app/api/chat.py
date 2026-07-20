@@ -40,6 +40,7 @@ def format_stream_chunk(chunk: dict) -> dict | None:
         "source": "source",
         "tool_call": "tool_call",
         "tool_result": "tool_result",
+        "answer_mode": "answer_mode",
         "token": "content",
         "content": "content",
         "complete": "done",

@@ -328,6 +328,26 @@ def test_chat_stream_chunk_formatter_maps_tool_result_events():
     }
 
 
+def test_format_stream_chunk_passes_through_answer_mode():
+    chunk = {
+        "type": "answer_mode",
+        "node": "final_response",
+        "data": {"mode": "grounded", "usedToolsWithoutKnowledgeBase": False},
+    }
+
+    payload = chat_api.format_stream_chunk(chunk)
+
+    assert payload == {
+        "type": "answer_mode",
+        "data": {"mode": "grounded", "usedToolsWithoutKnowledgeBase": False},
+        "node": "final_response",
+    }
+
+
+def test_format_stream_chunk_ignores_unknown_types():
+    assert chat_api.format_stream_chunk({"type": "totally_unknown_type", "data": {}}) is None
+
+
 @pytest.mark.asyncio
 async def test_chat_sessions_api_returns_searchable_session_summaries(monkeypatch):
     class FakeRagService:
