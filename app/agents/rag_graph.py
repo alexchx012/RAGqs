@@ -154,7 +154,12 @@ class RagGraphNodes:
             "events": [{"type": "handoff", "node": "handoff", "data": data}],
         }
 
-    def answer(self, state: RagGraphState) -> dict[str, Any]:
+    def answer(
+        self,
+        state: RagGraphState,
+        *,
+        prompt_builder: Callable[[RagGraphState], str] | None = None,
+    ) -> dict[str, Any]:
         try:
             if state.get("tool_rounds", 0) >= MAX_MODEL_TOOL_ROUNDS:
                 return _error_update(
@@ -162,7 +167,9 @@ class RagGraphNodes:
                     ValueError("model tool round limit exceeded"),
                 )
 
-            prepared_messages, bootstrap_messages = self._prepare_model_messages(state)
+            prepared_messages, bootstrap_messages = self._prepare_model_messages(
+                state, prompt_builder=prompt_builder
+            )
             tools = self._resolve_available_tools()
 
             if hasattr(self.answer_generator, "invoke_messages"):
@@ -420,6 +427,8 @@ class RagGraphNodes:
     def _prepare_model_messages(
         self,
         state: RagGraphState,
+        *,
+        prompt_builder: Callable[[RagGraphState], str] | None = None,
     ) -> tuple[list[BaseMessage], list[BaseMessage]]:
         existing = list(state.get("messages") or [])
         bootstrap: list[BaseMessage] = []
@@ -440,7 +449,8 @@ class RagGraphNodes:
         # Do not key only on AI/System — history may end on ToolMessage after a
         # prior tool loop, round-limit stop, or invalid-args failure.
         if state.get("tool_rounds", 0) == 0:
-            human_content = _build_answer_prompt(state)
+            build_prompt = prompt_builder or _build_answer_prompt
+            human_content = build_prompt(state)
             last = messages[-1] if messages else None
             if not (
                 isinstance(last, HumanMessage)
