@@ -36,6 +36,7 @@ class KnowledgeSpaceCreateRequest(BaseModel):
     space_id: str
     name: str | None = None
     description: str = ""
+    owning_department_id: str | None = None
 
 
 @router.post("/upload")
@@ -91,7 +92,16 @@ async def list_knowledge_spaces(
 ):
     active_context = active_auth_context(auth_context)
     spaces = vector_index_service.list_knowledge_spaces()
-    if not is_all_space_context(active_context):
+    if "super_admin" in active_context.roles:
+        pass
+    elif "department_admin" in active_context.roles:
+        spaces = [
+            space
+            for space in spaces
+            if active_context.department_id is not None
+            and space.owning_department_id == active_context.department_id
+        ]
+    elif not is_all_space_context(active_context):
         spaces = [
             space for space in spaces if active_context.can_access_space(space.space_id)
         ]
@@ -105,11 +115,20 @@ async def create_knowledge_space(
 ):
     active_context = active_auth_context(auth_context)
     require_space_access(active_context, request.space_id)
+    if "super_admin" not in active_context.roles and request.owning_department_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="owning_department_id is required for non-super_admin space creation",
+        )
     space = vector_index_service.document_catalog.ensure_space(
         request.space_id,
         name=request.name,
         description=request.description,
     )
+    if request.owning_department_id is not None:
+        space = vector_index_service.document_catalog.update_space(
+            request.space_id, owning_department_id=request.owning_department_id
+        )
     return envelope_json_response({"space": _serialize_knowledge_space(space)})
 
 
@@ -340,6 +359,7 @@ def _serialize_knowledge_space(space) -> dict:
         "space_id": space.space_id,
         "name": space.name,
         "description": getattr(space, "description", ""),
+        "owning_department_id": getattr(space, "owning_department_id", None),
     }
 
 
