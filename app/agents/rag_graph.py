@@ -801,6 +801,31 @@ def build_agentic_graph(
     return builder.compile(checkpointer=checkpointer)
 
 
+def build_rag_graph_registry(
+    *,
+    retriever_provider: RetrieverProvider,
+    answer_generator: AnswerGenerator,
+    tool_executor: ToolExecutor | None = None,
+    available_tools: list[Any] | None = None,
+    system_prompt: str = "",
+    checkpointer=None,
+    default_top_k: int = 3,
+) -> dict[str, Any]:
+    shared_kwargs = {
+        "retriever_provider": retriever_provider,
+        "answer_generator": answer_generator,
+        "tool_executor": tool_executor,
+        "available_tools": available_tools,
+        "system_prompt": system_prompt,
+        "checkpointer": checkpointer,
+        "default_top_k": default_top_k,
+    }
+    return {
+        "baseline": build_rag_state_graph(**shared_kwargs),
+        "agentic": build_agentic_graph(**shared_kwargs),
+    }
+
+
 class LangChainToolExecutor:
     """Tool executor backed by a list of LangChain tools."""
 

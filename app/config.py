@@ -122,6 +122,7 @@ class RagConfig(FrozenConfigModel):
     retrieval_profile: str
     retrieval_high_recall_top_k_multiplier: int
     retrieval_relaxed_filter_preserve_keys: str
+    default_orchestration_path: str
     query_rewriter_provider: str
     reranker_provider: str
     context_compressor_provider: str
@@ -229,6 +230,7 @@ class Settings(BaseSettings):
     retrieval_profile: str = "default"
     retrieval_high_recall_top_k_multiplier: int = 2
     retrieval_relaxed_filter_preserve_keys: str = "space_id,spaceId,tenant_id,tenantId"
+    default_orchestration_path: str = "baseline"
     query_rewriter_provider: str = "none"
     reranker_provider: str = "none"
     context_compressor_provider: str = "none"
@@ -382,6 +384,7 @@ class Settings(BaseSettings):
             retrieval_profile=self.retrieval_profile,
             retrieval_high_recall_top_k_multiplier=self.retrieval_high_recall_top_k_multiplier,
             retrieval_relaxed_filter_preserve_keys=self.retrieval_relaxed_filter_preserve_keys,
+            default_orchestration_path=self.default_orchestration_path,
             query_rewriter_provider=self.query_rewriter_provider,
             reranker_provider=self.reranker_provider,
             context_compressor_provider=self.context_compressor_provider,
