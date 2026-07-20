@@ -5,6 +5,7 @@ import pytest
 from app.knowledge.catalog import (
     InMemoryKnowledgeCatalog,
     KnowledgeSpaceNotFoundError,
+    SQLiteKnowledgeCatalog,
 )
 
 
@@ -63,5 +64,34 @@ def test_update_space_clear_owning_department_id_sets_none():
 
 def test_update_space_missing_space_raises():
     catalog = InMemoryKnowledgeCatalog()
+    with pytest.raises(KnowledgeSpaceNotFoundError):
+        catalog.update_space("missing", rag_path="agentic")
+
+
+def test_sqlite_catalog_persists_rag_path_and_owning_department_id(tmp_path):
+    db_path = tmp_path / "catalog.sqlite3"
+    catalog = SQLiteKnowledgeCatalog(db_path)
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", rag_path="agentic", owning_department_id="dept-1")
+
+    reopened = SQLiteKnowledgeCatalog(db_path)
+    space = reopened.get_space("finance")
+    assert space.rag_path == "agentic"
+    assert space.owning_department_id == "dept-1"
+
+
+def test_sqlite_catalog_schema_migration_is_idempotent(tmp_path):
+    db_path = tmp_path / "catalog.sqlite3"
+    SQLiteKnowledgeCatalog(db_path)
+    # Re-running schema init on an existing DB must not raise or drop data.
+    catalog = SQLiteKnowledgeCatalog(db_path)
+    catalog.ensure_space("finance", name="Finance")
+    catalog._initialize_schema()
+    assert catalog.get_space("finance") is not None
+
+
+def test_sqlite_catalog_update_space_missing_raises(tmp_path):
+    db_path = tmp_path / "catalog.sqlite3"
+    catalog = SQLiteKnowledgeCatalog(db_path)
     with pytest.raises(KnowledgeSpaceNotFoundError):
         catalog.update_space("missing", rag_path="agentic")
