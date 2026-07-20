@@ -170,6 +170,7 @@ class RagGraphNodes:
         state: RagGraphState,
         *,
         prompt_builder: Callable[[RagGraphState], str] | None = None,
+        replay_direct_answer: bool = False,
     ) -> dict[str, Any]:
         try:
             if state.get("tool_rounds", 0) >= MAX_MODEL_TOOL_ROUNDS:
@@ -185,27 +186,39 @@ class RagGraphNodes:
 
             if hasattr(self.answer_generator, "invoke_messages"):
                 stream_writer = _get_stream_writer_or_none()
-                # Stream pure-answer turns even when tools are bound. Tool-call
-                # turns still return a full AIMessage (with tool_calls) from the
-                # stream assembly path; public tokens are content-only.
-                use_stream = stream_writer is not None and (
-                    hasattr(self.answer_generator, "stream_ai_message")
-                    or hasattr(self.answer_generator, "stream_messages")
-                )
-                if use_stream:
-                    message = _stream_answer_message(
-                        state=state,
-                        answer_generator=self.answer_generator,
-                        stream_writer=stream_writer,
-                        messages=prepared_messages,
-                        tools=tools,
+                if replay_direct_answer:
+                    message = _coerce_ai_message(
+                        self.answer_generator.invoke_messages(prepared_messages, tools)
                     )
+                    if stream_writer is not None and not _has_tool_calls(message):
+                        _replay_answer_as_tokens(
+                            _message_text(message),
+                            lambda token: stream_writer(
+                                {"type": "token", "node": "answer", "data": token}
+                            ),
+                        )
                 else:
-                    message = self.answer_generator.invoke_messages(
-                        prepared_messages,
-                        tools,
+                    # Stream pure-answer turns even when tools are bound. Tool-call
+                    # turns still return a full AIMessage (with tool_calls) from the
+                    # stream assembly path; public tokens are content-only.
+                    use_stream = stream_writer is not None and (
+                        hasattr(self.answer_generator, "stream_ai_message")
+                        or hasattr(self.answer_generator, "stream_messages")
                     )
-                message = _coerce_ai_message(message)
+                    if use_stream:
+                        message = _stream_answer_message(
+                            state=state,
+                            answer_generator=self.answer_generator,
+                            stream_writer=stream_writer,
+                            messages=prepared_messages,
+                            tools=tools,
+                        )
+                    else:
+                        message = self.answer_generator.invoke_messages(
+                            prepared_messages,
+                            tools,
+                        )
+                    message = _coerce_ai_message(message)
             else:
                 stream_writer = _get_stream_writer_or_none()
                 if stream_writer is not None and hasattr(self.answer_generator, "stream"):
@@ -767,7 +780,9 @@ def build_agentic_graph(
     builder.add_node("normalize_input", nodes.normalize_input)
     builder.add_node(
         "answer_no_context",
-        lambda state: nodes.answer(state, prompt_builder=_build_bare_answer_prompt),
+        lambda state: nodes.answer(
+            state, prompt_builder=_build_bare_answer_prompt, replay_direct_answer=True
+        ),
     )
     builder.add_node(
         "answer_with_context",
@@ -1033,6 +1048,25 @@ def _stream_answer_tokens(
         tokens.append(text)
         stream_writer({"type": "token", "node": "answer", "data": text})
     return "".join(tokens)
+
+
+def _replay_answer_as_tokens(
+    text: str,
+    on_token: Callable[[str], None],
+    *,
+    chunk_size: int = 12,
+) -> None:
+    """Split a fully-generated answer into fixed-size chunks and emit them
+    sequentially, simulating progressive streaming without ever forwarding
+    partial content before the complete message (and its tool_calls, if any)
+    is known. Used for the agentic bare-answer turn, where the live
+    stream_ai_message path has a leak window: it cannot know in advance
+    whether the model will call a tool, so a leading content chunk emitted
+    before a later tool_calls delta cannot be un-sent."""
+    if not text:
+        return
+    for start in range(0, len(text), chunk_size):
+        on_token(text[start : start + chunk_size])
 
 
 def _stream_answer_message(

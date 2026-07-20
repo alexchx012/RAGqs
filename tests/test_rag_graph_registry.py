@@ -1,6 +1,6 @@
 """Tests for the orchestration path registry, prompt_builder wiring, and agentic routing."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -70,6 +70,57 @@ def test_answer_uses_custom_prompt_builder_when_provided():
 
     human_messages = [m for m in generator.received_messages if isinstance(m, HumanMessage)]
     assert human_messages[-1].content == "CUSTOM PROMPT"
+
+
+def test_replay_direct_answer_emits_chunked_token_events_without_live_streaming():
+    generator = _StubAnswerGenerator(AIMessage(content="这是一段完整的回答内容用于测试切片回放"))
+    nodes = RagGraphNodes(retriever_provider=Mock(), answer_generator=generator)
+    state = {"question": "q", "normalized_question": "q", "retrieval_result": None, "messages": []}
+    emitted_tokens = []
+
+    with patch("app.agents.rag_graph._get_stream_writer_or_none") as mock_writer:
+        mock_writer.return_value = lambda event: emitted_tokens.append(event)
+        result = nodes.answer(state, replay_direct_answer=True)
+
+    token_events = [e for e in emitted_tokens if e.get("type") == "token"]
+    assert len(token_events) > 1, "answer content must be split into multiple replay chunks"
+    assert "".join(e["data"] for e in token_events) == "这是一段完整的回答内容用于测试切片回放"
+    assert result["answer"] == "这是一段完整的回答内容用于测试切片回放"
+
+
+def test_replay_direct_answer_emits_nothing_when_model_calls_a_tool():
+    generator = _StubAnswerGenerator(
+        AIMessage(content="", tool_calls=[{"name": "search_knowledge_base", "args": {"query": "q"}, "id": "c1"}])
+    )
+    nodes = RagGraphNodes(retriever_provider=Mock(), answer_generator=generator)
+    state = {"question": "q", "normalized_question": "q", "retrieval_result": None, "messages": []}
+    emitted_tokens = []
+
+    with patch("app.agents.rag_graph._get_stream_writer_or_none") as mock_writer:
+        mock_writer.return_value = lambda event: emitted_tokens.append(event)
+        nodes.answer(state, replay_direct_answer=True)
+
+    token_events = [e for e in emitted_tokens if e.get("type") == "token"]
+    assert token_events == [], (
+        "a tool-calling turn must never emit any token event — the model's "
+        "full message (including tool_calls) is known before any replay "
+        "decision is made, so this must be zero by construction, not by luck"
+    )
+
+
+def test_replay_direct_answer_never_calls_stream_ai_message():
+    """The whole point of buffer+replay is to never touch the live streaming
+    path that has the leak window — assert invoke_messages is used instead."""
+    generator = _StubAnswerGenerator(AIMessage(content="ok"))
+    generator.stream_ai_message = Mock(side_effect=AssertionError("must not be called"))
+    nodes = RagGraphNodes(retriever_provider=Mock(), answer_generator=generator)
+    state = {"question": "q", "normalized_question": "q", "retrieval_result": None, "messages": []}
+
+    with patch("app.agents.rag_graph._get_stream_writer_or_none") as mock_writer:
+        mock_writer.return_value = lambda event: None
+        nodes.answer(state, replay_direct_answer=True)
+
+    generator.stream_ai_message.assert_not_called()
 
 
 def test_search_knowledge_base_hit_writes_retrieval_result_and_round_signal():
