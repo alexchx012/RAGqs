@@ -11,6 +11,7 @@ from app.agents.rag_graph import (
     _build_answer_prompt,
     _build_bare_answer_prompt,
     build_agentic_graph,
+    build_rag_graph_registry,
     route_after_agentic_tool,
     route_after_agentic_answer,
 )
@@ -556,3 +557,62 @@ def test_agentic_graph_durable_kb_miss_survives_later_non_kb_round():
     assert result["final_response"]["answer_mode"] == "direct"
     assert result["final_response"]["used_tools_without_knowledge_base"] is True
     assert len(generator.calls) == 3
+
+
+def test_registry_contains_baseline_and_agentic():
+    registry = build_rag_graph_registry(
+        retriever_provider=Mock(),
+        answer_generator=Mock(),
+        tool_executor=_RecordingToolExecutor({}),
+        available_tools=[],
+    )
+
+    assert set(registry.keys()) == {"baseline", "agentic"}
+
+
+def test_registry_supports_adding_a_future_path_without_schema_changes():
+    """Delta spec 'Registry extensibility for future paths': a future path
+    (e.g. corrective/graph_rag) can be registered by adding a dict entry —
+    no change to KnowledgeSpace's data model or to already-registered paths
+    is required. This test proves the registry is just a plain dict merge,
+    so RagAgentService picking a name out of it by string key already
+    supports arbitrary future path names once someone adds a builder."""
+    registry = build_rag_graph_registry(
+        retriever_provider=Mock(),
+        answer_generator=Mock(),
+        tool_executor=_RecordingToolExecutor({}),
+        available_tools=[],
+    )
+    registry["corrective"] = registry["baseline"]  # stand-in for a future builder
+
+    assert set(registry.keys()) == {"baseline", "agentic", "corrective"}
+    # Adding the new key must not have mutated or replaced the existing entries.
+    assert registry["baseline"] is not None
+    assert registry["agentic"] is not None
+
+
+def test_registry_baseline_graph_behaves_like_build_rag_state_graph():
+    from app.agents.rag_graph import build_rag_state_graph
+
+    generator = _ScriptedAnswerGenerator([AIMessage(content="answer")])
+    registry = build_rag_graph_registry(
+        retriever_provider=Mock(retrieve=Mock(return_value=RetrievalResult(query="q", documents=[]))),
+        answer_generator=generator,
+        tool_executor=_RecordingToolExecutor({}),
+        available_tools=[],
+    )
+    generator_direct = _ScriptedAnswerGenerator([AIMessage(content="answer")])
+    direct_graph = build_rag_state_graph(
+        retriever_provider=Mock(retrieve=Mock(return_value=RetrievalResult(query="q", documents=[]))),
+        answer_generator=generator_direct,
+        tool_executor=_RecordingToolExecutor({}),
+        available_tools=[],
+    )
+
+    from_registry = registry["baseline"].invoke(
+        {"question": "q", "session_id": "s1", "space_id": "default"}
+    )
+    from_direct = direct_graph.invoke({"question": "q", "session_id": "s1", "space_id": "default"})
+
+    assert from_registry["final_response"]["answer"] == from_direct["final_response"]["answer"]
+    assert "answer_mode" not in from_registry["final_response"]

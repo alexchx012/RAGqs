@@ -193,6 +193,7 @@ def test_settings_exposes_typed_groups_while_preserving_flat_env_fields():
         retrieval_profile="high_recall",
         retrieval_high_recall_top_k_multiplier=3,
         retrieval_relaxed_filter_preserve_keys="space_id,tenant_id",
+        default_orchestration_path="baseline",
         query_rewriter_provider="llm",
         reranker_provider="llm",
         context_compressor_provider="llm",
@@ -262,3 +263,10 @@ def test_auth_group_exposes_local_credentials_fields_when_overridden():
     assert settings.auth.local_db_path == "data/test-auth.sqlite3"
     assert settings.auth.local_admin_seed == "admin:supersecret"
     assert settings.auth.session_ttl_seconds == 3600
+
+
+def test_default_orchestration_path_defaults_to_baseline():
+    from app.config import Settings
+
+    settings = Settings()
+    assert settings.rag.default_orchestration_path == "baseline"
