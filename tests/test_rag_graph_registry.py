@@ -582,6 +582,48 @@ def test_agentic_no_context_response_emits_visible_answer_content_events():
     )
 
 
+def test_agentic_no_context_live_stream_emits_answer_text_exactly_once():
+    """custom + updates consumers must not double-emit pure-miss answer text.
+
+    agentic_no_context_response historically wrote a token via stream_writer AND
+    put a token in returned events. _stream_explicit_graph yields both custom and
+    updates channels, so the frontend concatenated NO_CONTEXT_ANSWER twice.
+    Prefer a single emission channel (match answer nodes: live tokens via
+    stream_writer only when available).
+    """
+    from app.services.rag_agent_service import (
+        _stream_chunk_from_custom_payload,
+        _stream_chunks_from_graph_update,
+    )
+
+    nodes = RagGraphNodes(retriever_provider=Mock(), answer_generator=Mock())
+    custom_payloads: list[dict] = []
+
+    with patch("app.agents.rag_graph._get_stream_writer_or_none") as mock_writer:
+        mock_writer.return_value = lambda event: custom_payloads.append(event)
+        update = nodes.agentic_no_context_response({})
+
+    content_payloads: list[object] = []
+    for payload in custom_payloads:
+        chunk = _stream_chunk_from_custom_payload(payload)
+        if chunk is not None and chunk.get("type") in {"token", "content"}:
+            content_payloads.append(chunk.get("data"))
+    for chunk in _stream_chunks_from_graph_update(update):
+        if chunk.get("type") in {"token", "content"}:
+            content_payloads.append(chunk.get("data"))
+
+    answer_hits = [data for data in content_payloads if data == NO_CONTEXT_ANSWER]
+    assert len(answer_hits) == 1
+
+    update_chunks = _stream_chunks_from_graph_update(update)
+    assert any(chunk.get("type") == "done" for chunk in update_chunks)
+    assert any(
+        chunk.get("type") == "answer_mode"
+        and (chunk.get("data") or {}).get("mode") == "no_context"
+        for chunk in update_chunks
+    )
+
+
 def test_agentic_graph_durable_kb_miss_survives_later_non_kb_round():
     """Round1 KB miss + non-KB tool, round2 only non-KB, then final answer:
     used_tools_without_knowledge_base must still reflect the earlier KB miss."""

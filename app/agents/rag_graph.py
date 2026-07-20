@@ -443,9 +443,13 @@ class RagGraphNodes:
         }
 
     def agentic_no_context_response(self, state: RagGraphState) -> dict[str, Any]:
-        # Emit content/token so stream consumers that only accumulate content
-        # (e.g. frontend useChatStream) still show the deterministic miss text.
+        # Emit answer text on exactly one channel so custom+updates consumers
+        # (e.g. _stream_explicit_graph) do not double-concatenate NO_CONTEXT_ANSWER.
+        # Match answer nodes: live token via stream_writer when available; otherwise
+        # fall back to events token for updates-only / invoke consumers.
+        # done.data.answer remains for frontend materialization when zero content tokens.
         stream_writer = _get_stream_writer_or_none()
+        events: list[dict[str, Any]] = []
         if stream_writer is not None:
             stream_writer(
                 {
@@ -454,21 +458,16 @@ class RagGraphNodes:
                     "data": NO_CONTEXT_ANSWER,
                 }
             )
-        return {
-            "answer": NO_CONTEXT_ANSWER,
-            "final_response": {
-                "answer": NO_CONTEXT_ANSWER,
-                "success": True,
-                "errors": [],
-                "answer_mode": "no_context",
-                "used_tools_without_knowledge_base": False,
-            },
-            "events": [
+        else:
+            events.append(
                 {
                     "type": "token",
                     "node": "final_response",
                     "data": NO_CONTEXT_ANSWER,
-                },
+                }
+            )
+        events.extend(
+            [
                 {
                     "type": "done",
                     "node": "final_response",
@@ -479,7 +478,18 @@ class RagGraphNodes:
                     "node": "final_response",
                     "data": {"mode": "no_context", "usedToolsWithoutKnowledgeBase": False},
                 },
-            ],
+            ]
+        )
+        return {
+            "answer": NO_CONTEXT_ANSWER,
+            "final_response": {
+                "answer": NO_CONTEXT_ANSWER,
+                "success": True,
+                "errors": [],
+                "answer_mode": "no_context",
+                "used_tools_without_knowledge_base": False,
+            },
+            "events": events,
         }
 
     def agentic_final_response(self, state: RagGraphState) -> dict[str, Any]:
