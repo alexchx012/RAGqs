@@ -400,15 +400,37 @@ class RagAgentService:
             )
             raise
 
+    def _resolve_orchestration_graph(self, space_id: str) -> Any:
+        space = self._get_knowledge_catalog().get_space(space_id)
+        rag_path = (space.rag_path if space is not None else None) or _settings_value(
+            self.settings,
+            "rag",
+            "default_orchestration_path",
+            "default_orchestration_path",
+            "baseline",
+        )
+        registry = self._get_graph_registry()
+        if rag_path not in registry:
+            logger.warning(
+                f"unknown orchestration path '{rag_path}' for space '{space_id}', "
+                "falling back to baseline"
+            )
+            rag_path = "baseline"
+        return registry[rag_path]
+
     def _invoke_explicit_graph(
         self,
         question: str,
         session_id: str,
         space_id: str = "default",
     ) -> dict[str, Any]:
-        if self.explicit_graph is None:
-            self.explicit_graph = self._build_default_explicit_graph()
-        return self.explicit_graph.invoke(
+        if self.explicit_graph is not None:
+            return self.explicit_graph.invoke(
+                {"question": question, "session_id": session_id, "space_id": space_id},
+                self._build_runtime_config(session_id=session_id, space_id=space_id),
+            )
+        graph = self._resolve_orchestration_graph(space_id)
+        return graph.invoke(
             {"question": question, "session_id": session_id, "space_id": space_id},
             self._build_runtime_config(session_id=session_id, space_id=space_id),
         )
@@ -420,21 +442,20 @@ class RagAgentService:
         space_id: str = "default",
         final_state: dict[str, Any] | None = None,
     ):
-        if self.explicit_graph is None:
-            self.explicit_graph = self._build_default_explicit_graph()
+        graph = self.explicit_graph if self.explicit_graph is not None else self._resolve_orchestration_graph(space_id)
 
         input_payload = {"question": question, "session_id": session_id, "space_id": space_id}
         config_dict = self._build_runtime_config(session_id=session_id, space_id=space_id)
         target_state = final_state if final_state is not None else {}
 
-        if not hasattr(self.explicit_graph, "stream"):
-            state = self.explicit_graph.invoke(input_payload, config_dict)
+        if not hasattr(graph, "stream"):
+            state = graph.invoke(input_payload, config_dict)
             target_state.update(state)
             yield from _stream_chunks_from_graph_state(state)
             return
 
         has_done_event = False
-        for mode, payload in self.explicit_graph.stream(
+        for mode, payload in graph.stream(
             input_payload,
             config_dict,
             stream_mode=["custom", "updates"],
