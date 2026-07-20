@@ -15,6 +15,7 @@ from app.agents import (
     ChatModelAnswerGenerator,
     LangChainToolExecutor,
     ToolExecutor,
+    build_rag_graph_registry,
     build_rag_state_graph,
 )
 from app.config import config
@@ -35,6 +36,7 @@ from app.providers.contracts import (
     SessionSummary,
     StoredMessage,
 )
+from app.services.vector_index_service import _build_default_document_catalog
 from app.tools.knowledge_tool import enforce_knowledge_space
 
 
@@ -55,6 +57,7 @@ class RagAgentService:
         checkpointer=None,
         checkpoint_provider: CheckpointProvider | None = None,
         retriever_provider: RetrieverProvider | None = None,
+        knowledge_catalog_provider: Any | None = None,
         session_store_provider: SessionStoreProvider | None = None,
         retrieval_audit_store_provider: RetrievalAuditStoreProvider | None = None,
         retrieval_top_k: int | None = None,
@@ -104,6 +107,8 @@ class RagAgentService:
             else self._get_checkpoint_provider().create_checkpointer()
         )
         self.retriever_provider = retriever_provider
+        self.knowledge_catalog_provider = knowledge_catalog_provider
+        self.graph_registry: dict[str, Any] | None = None
         self.session_store_provider = session_store_provider
         self.retrieval_audit_store_provider = retrieval_audit_store_provider
         self.retrieval_top_k = retrieval_top_k or _settings_value(
@@ -495,6 +500,27 @@ class RagAgentService:
 
             self.retriever_provider = get_default_provider_container().retriever_provider
         return self.retriever_provider
+
+    def _get_knowledge_catalog(self) -> Any:
+        if self.knowledge_catalog_provider is None:
+            self.knowledge_catalog_provider = _build_default_document_catalog(self.settings)
+        return self.knowledge_catalog_provider
+
+    def _get_graph_registry(self) -> dict[str, Any]:
+        if self.graph_registry is None:
+            self.graph_registry = build_rag_graph_registry(
+                retriever_provider=self._get_retriever_provider(),
+                answer_generator=ChatModelAnswerGenerator(
+                    chat_model_provider=self.chat_model_provider,
+                    system_prompt=self.system_prompt,
+                ),
+                tool_executor=self.tool_executor,
+                available_tools=self.tools,
+                system_prompt=self.system_prompt,
+                checkpointer=self.checkpointer,
+                default_top_k=self.retrieval_top_k,
+            )
+        return self.graph_registry
 
     def _get_chat_model_provider(self) -> ChatModelProvider:
         from app.providers.factory import get_default_provider_container
