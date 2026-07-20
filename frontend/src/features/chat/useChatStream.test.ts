@@ -210,4 +210,52 @@ describe('useChatStream', () => {
       usedToolsWithoutKnowledgeBase: false,
     });
   });
+
+  it('materializes assistant content from done.data.answer on pure no_context streams', async () => {
+    mockFetchEventSource.mockImplementation(
+      async (_url: string, options: FetchEventSourceOptions) => {
+        await options.onopen({ ok: true } as Response);
+        (options.onmessage as (ev: { data: string }) => void)({
+          data: JSON.stringify({
+            type: 'answer_mode',
+            data: {
+              mode: 'no_context',
+              usedToolsWithoutKnowledgeBase: false,
+            },
+          }),
+        });
+        (options.onmessage as (ev: { data: string }) => void)({
+          data: JSON.stringify({
+            type: 'done',
+            data: { answer: '知识库中没有足够依据回答这个问题。' },
+          }),
+        });
+      },
+    );
+
+    const { result } = renderHook(
+      () => ({
+        stream: useChatStream(),
+        chat: useChat(),
+      }),
+      { wrapper },
+    );
+    const onError = vi.fn();
+
+    await act(async () => {
+      await result.current.stream.sendStream('Hi', 'space-1', onError);
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    const assistantMessages = result.current.chat.currentChatHistory.filter(
+      (msg) => msg.type === 'assistant',
+    );
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]).toMatchObject({
+      type: 'assistant',
+      content: '知识库中没有足够依据回答这个问题。',
+      answerMode: 'no_context',
+      usedToolsWithoutKnowledgeBase: false,
+    });
+  });
 });

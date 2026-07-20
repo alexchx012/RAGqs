@@ -126,7 +126,14 @@ async def create_knowledge_space(
 ):
     active_context = active_auth_context(auth_context)
     require_space_access(active_context, request.space_id)
-    if "super_admin" not in active_context.roles and request.owning_department_id is None:
+    owning_department_id = (
+        request.owning_department_id.strip()
+        if isinstance(request.owning_department_id, str)
+        else request.owning_department_id
+    )
+    if isinstance(owning_department_id, str) and not owning_department_id:
+        owning_department_id = None
+    if "super_admin" not in active_context.roles and owning_department_id is None:
         raise HTTPException(
             status_code=422,
             detail="owning_department_id is required for non-super_admin space creation",
@@ -136,9 +143,9 @@ async def create_knowledge_space(
         name=request.name,
         description=request.description,
     )
-    if request.owning_department_id is not None:
+    if owning_department_id is not None:
         space = vector_index_service.document_catalog.update_space(
-            request.space_id, owning_department_id=request.owning_department_id
+            request.space_id, owning_department_id=owning_department_id
         )
     return envelope_json_response({"space": _serialize_knowledge_space(space)})
 

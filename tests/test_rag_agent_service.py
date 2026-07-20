@@ -1,6 +1,6 @@
 """Tests for RagAgentService lazy knowledge_catalog and graph_registry loading."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from app.knowledge.catalog import InMemoryKnowledgeCatalog
 from app.services.rag_agent_service import RagAgentService
@@ -104,7 +104,7 @@ def test_invoke_explicit_graph_uses_configured_agentic_path():
     assert len(baseline_graph.calls) == 0
 
 
-def test_invoke_explicit_graph_falls_back_to_baseline_for_unknown_path(caplog):
+def test_invoke_explicit_graph_falls_back_to_baseline_for_unknown_path():
     catalog = InMemoryKnowledgeCatalog()
     catalog.ensure_space("finance", name="Finance")
     catalog.update_space("finance", rag_path="unknown_future_path")
@@ -118,9 +118,32 @@ def test_invoke_explicit_graph_falls_back_to_baseline_for_unknown_path(caplog):
     service.knowledge_catalog_provider = catalog
     service.graph_registry = {"baseline": baseline_graph}
 
-    service._invoke_explicit_graph("q", "s1", space_id="finance")
+    with patch("app.services.rag_agent_service.logger.warning") as warning:
+        service._invoke_explicit_graph("q", "s1", space_id="finance")
 
     assert len(baseline_graph.calls) == 1
+    warning.assert_called()
+    warning_text = " ".join(str(arg) for call in warning.call_args_list for arg in call.args)
+    assert "unknown_future_path" in warning_text
+    assert "falling back to baseline" in warning_text
+
+
+def test_production_like_service_can_resolve_search_knowledge_base_tool():
+    """Agentic path requires search_knowledge_base in the production tool registry."""
+    service = RagAgentService(
+        streaming=False,
+        chat_model_provider=_FakeChatModelProvider(),
+        enabled_tool_names=[
+            "retrieve_knowledge",
+            "search_knowledge_base",
+            "get_current_time",
+        ],
+        retriever_provider=Mock(),
+    )
+
+    tool_names = [tool.name for tool in service.tools]
+    assert "search_knowledge_base" in tool_names
+    assert service.tool_executor.tools_by_name["search_knowledge_base"] is not None
 
 
 def test_invoke_explicit_graph_prefers_explicitly_injected_graph_for_backward_compat():

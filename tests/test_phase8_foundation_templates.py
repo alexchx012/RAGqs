@@ -32,9 +32,41 @@ def test_tool_registry_registers_builtin_and_business_tools():
     registry = build_default_tool_registry()
     registry.register(crm_lookup, category="business")
 
-    assert registry.names() == ["retrieve_knowledge", "get_current_time", "crm_lookup"]
+    assert registry.names() == [
+        "retrieve_knowledge",
+        "search_knowledge_base",
+        "get_current_time",
+        "crm_lookup",
+    ]
     assert [tool.name for tool in registry.build_tools(["crm_lookup"])] == ["crm_lookup"]
     assert registry.metadata("crm_lookup")["category"] == "business"
+
+
+def test_default_tool_registry_includes_search_knowledge_base():
+    from app.extensions.tools import build_default_tool_registry, build_enabled_tools
+
+    registry = build_default_tool_registry()
+    assert "search_knowledge_base" in registry.names()
+
+    tools = build_enabled_tools(
+        "retrieve_knowledge,search_knowledge_base,get_current_time",
+        registry=registry,
+    )
+    assert [tool.name for tool in tools] == [
+        "retrieve_knowledge",
+        "search_knowledge_base",
+        "get_current_time",
+    ]
+
+
+def test_config_validation_accepts_search_knowledge_base_tool():
+    report = validate_settings(
+        _settings(enabled_tools="retrieve_knowledge,search_knowledge_base,get_current_time")
+    )
+
+    assert ("ENABLED_TOOLS", "unsupported tool: search_knowledge_base") not in {
+        (issue.field, issue.message) for issue in report.errors
+    }
 
 
 def test_tool_registry_rejects_duplicate_or_unknown_tools():

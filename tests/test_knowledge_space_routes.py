@@ -69,6 +69,19 @@ def test_maintainer_creating_space_without_department_is_rejected():
         file_api.vector_index_service = original_service
 
 
+def test_maintainer_creating_space_with_blank_owning_department_id_is_rejected():
+    catalog = InMemoryKnowledgeCatalog()
+    client, original_service = _client_with_catalog(catalog, roles={"maintainer"})
+    try:
+        response = client.post(
+            "/api/knowledge-spaces",
+            json={"space_id": "ops", "name": "Ops", "owning_department_id": "   "},
+        )
+        assert response.status_code == 422
+    finally:
+        file_api.vector_index_service = original_service
+
+
 def test_super_admin_creating_space_without_department_succeeds():
     catalog = InMemoryKnowledgeCatalog()
     client, original_service = _client_with_catalog(catalog, roles={"super_admin"})
@@ -217,5 +230,36 @@ def test_department_admin_cannot_update_name_field():
             json={"name": "Renamed"},
         )
         assert response.status_code == 403
+    finally:
+        file_api.vector_index_service = original_service
+
+
+def test_department_admin_cannot_update_description_or_clear_flags():
+    catalog = InMemoryKnowledgeCatalog()
+    catalog.ensure_space("finance", name="Finance")
+    catalog.update_space("finance", owning_department_id="dept-1", rag_path="agentic")
+
+    client, original_service = _client_with_catalog(
+        catalog, roles={"department_admin"}, department_id="dept-1"
+    )
+    try:
+        description_response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"description": "not allowed"},
+        )
+        clear_owner_response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"clear_owning_department_id": True},
+        )
+        clear_path_response = client.patch(
+            "/api/knowledge-spaces/finance",
+            json={"clear_rag_path": True},
+        )
+
+        assert description_response.status_code == 403
+        assert clear_owner_response.status_code == 403
+        # clear_rag_path is part of the rag_path write surface for department_admin
+        assert clear_path_response.status_code == 200
+        assert clear_path_response.json()["data"]["space"]["rag_path"] is None
     finally:
         file_api.vector_index_service = original_service

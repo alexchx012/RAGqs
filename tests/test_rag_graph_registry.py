@@ -562,6 +562,26 @@ def test_agentic_graph_pure_miss_ends_no_context_without_second_model_call():
     assert len(generator._script) == 1  # second scripted answer never consumed
 
 
+def test_agentic_no_context_response_emits_visible_answer_content_events():
+    """Pure miss stream must surface answer text via content/token events, not only done."""
+    nodes = RagGraphNodes(retriever_provider=Mock(), answer_generator=Mock())
+    update = nodes.agentic_no_context_response({})
+
+    event_types = [event["type"] for event in update["events"]]
+    assert "token" in event_types or "content" in event_types
+    content_events = [
+        event
+        for event in update["events"]
+        if event["type"] in {"token", "content"}
+    ]
+    assert any(event.get("data") == NO_CONTEXT_ANSWER for event in content_events)
+    assert any(event["type"] == "done" for event in update["events"])
+    assert any(
+        event["type"] == "answer_mode" and event["data"]["mode"] == "no_context"
+        for event in update["events"]
+    )
+
+
 def test_agentic_graph_durable_kb_miss_survives_later_non_kb_round():
     """Round1 KB miss + non-KB tool, round2 only non-KB, then final answer:
     used_tools_without_knowledge_base must still reflect the earlier KB miss."""
