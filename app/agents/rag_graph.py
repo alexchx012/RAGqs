@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Protocol, runtime_checkable
 
+from langchain_core.documents import Document
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -35,6 +36,8 @@ class RagGraphState(TypedDict, total=False):
     tool_plan: dict[str, Any]
     tool_request: dict[str, Any]
     tool_result: dict[str, Any]
+    # Single-turn routing signal for agentic path; overwritten each tool round.
+    agentic_tool_round: dict[str, Any]
     normalized_question: str
     retrieval_decision: dict[str, Any]
     retrieval_result: RetrievalResult | None
@@ -270,6 +273,8 @@ class RagGraphNodes:
             tool_messages: list[ToolMessage] = []
             events: list[dict[str, Any]] = []
             last_result: dict[str, Any] = {}
+            round_signal = {"called_search_knowledge_base": False, "hit": False}
+            retrieval_update: dict[str, Any] = {}
             for request in requests:
                 tool_call_event = {
                     "type": "tool_call",
@@ -287,6 +292,12 @@ class RagGraphNodes:
                     {"name": request["name"], "args": request["args"]},
                     raw_result,
                 )
+                if request["name"] == "search_knowledge_base":
+                    round_signal = self._agentic_round_signal_from_raw_result(raw_result)
+                    if round_signal["hit"]:
+                        retrieval_update = self._retrieval_update_from_raw_result(
+                            request["args"].get("query", ""), raw_result
+                        )
                 tool_messages.append(
                     ToolMessage(
                         content=_tool_result_content(raw_result),
@@ -304,7 +315,9 @@ class RagGraphNodes:
             return {
                 "messages": tool_messages,
                 "tool_result": last_result,
+                "agentic_tool_round": round_signal,
                 "events": events,
+                **retrieval_update,
             }
         except Exception as exc:
             error = _error_update("tool", exc)
@@ -444,11 +457,15 @@ class RagGraphNodes:
             messages.append(system_message)
             bootstrap.append(system_message)
 
-        # On the first model call of a turn (tool_rounds == 0), always append the
-        # current-turn Human with retrieval context unless it is already last.
-        # Do not key only on AI/System — history may end on ToolMessage after a
-        # prior tool loop, round-limit stop, or invalid-args failure.
-        if state.get("tool_rounds", 0) == 0:
+        # First model call of a turn (tool_rounds == 0): inject the current-turn
+        # Human with retrieval context unless it is already last.
+        # After a search_knowledge_base hit, answer_with_context runs with
+        # tool_rounds >= 1 and must still inject a grounded prompt so the model
+        # sees retrieval_result that was written by the tool round.
+        should_inject_prompt = state.get("tool_rounds", 0) == 0 or (
+            state.get("retrieval_result") is not None and prompt_builder is not None
+        )
+        if should_inject_prompt:
             build_prompt = prompt_builder or _build_answer_prompt
             human_content = build_prompt(state)
             last = messages[-1] if messages else None
@@ -476,6 +493,38 @@ class RagGraphNodes:
         return {
             getattr(tool, "name", getattr(tool, "__name__", "")): tool
             for tool in self.available_tools
+        }
+
+    @staticmethod
+    def _agentic_round_signal_from_raw_result(raw_result: dict[str, Any]) -> dict[str, Any]:
+        output = raw_result.get("output") if isinstance(raw_result, dict) else None
+        hit = bool(isinstance(output, dict) and output.get("hit"))
+        return {"called_search_knowledge_base": True, "hit": hit}
+
+    @staticmethod
+    def _retrieval_update_from_raw_result(
+        query: str, raw_result: dict[str, Any]
+    ) -> dict[str, Any]:
+        output = raw_result.get("output") if isinstance(raw_result, dict) else {}
+        raw_documents = output.get("documents", []) if isinstance(output, dict) else []
+        documents = [
+            Document(
+                page_content=item.get("content", ""),
+                metadata=item.get("metadata", {}) or {},
+            )
+            for item in raw_documents
+            if isinstance(item, dict)
+        ]
+        sources = [_source_from_document(index, doc) for index, doc in enumerate(documents, 1)]
+        retrieval_result = RetrievalResult(
+            query=query,
+            documents=documents,
+            sources=sources,
+        )
+        retrieval_data = _serialize_retrieval_result(retrieval_result)
+        return {
+            "retrieval_result": retrieval_result,
+            "sources": retrieval_data["sources"],
         }
 
 
@@ -983,6 +1032,32 @@ def _serialize_source(source: RetrievalSource) -> dict[str, Any]:
         "documentId": source.document_id,
         "score": source.score,
     }
+
+
+def _source_from_document(index: int, document: Document) -> RetrievalSource:
+    """Build a RetrievalSource from a Document (local minimal equivalent of pipeline helper)."""
+    metadata = document.metadata or {}
+    heading_path = metadata.get("heading_path") or _heading_path_from_metadata(metadata)
+    score = metadata.get("score")
+    return RetrievalSource(
+        index=index,
+        source_path=str(
+            metadata.get("source_path")
+            or metadata.get("_source")
+            or metadata.get("source")
+            or ""
+        ),
+        file_name=str(metadata.get("file_name") or metadata.get("_file_name") or ""),
+        heading_path=str(heading_path or ""),
+        chunk_id=str(metadata.get("chunk_id") or ""),
+        document_id=str(metadata.get("document_id") or ""),
+        score=float(score) if isinstance(score, int | float) else None,
+    )
+
+
+def _heading_path_from_metadata(metadata: dict[str, Any]) -> str:
+    headings = [metadata[key] for key in ("h1", "h2", "h3", "h4") if metadata.get(key)]
+    return " > ".join(str(heading) for heading in headings)
 
 
 def _normalize_tool_result(

@@ -2,10 +2,11 @@
 
 from unittest.mock import Mock
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agents.rag_graph import RagGraphNodes, _build_answer_prompt
-from app.providers.contracts import RetrievalResult
+from app.providers.contracts import RetrievalResult, RetrievalSource
 
 
 class _StubAnswerGenerator:
@@ -16,6 +17,25 @@ class _StubAnswerGenerator:
     def invoke_messages(self, messages, tools=None):
         self.received_messages = list(messages)
         return self._message
+
+
+class _RecordingToolExecutor:
+    """Fake tool executor returning pre-programmed results keyed by tool name."""
+
+    def __init__(self, results: dict[str, dict]):
+        self._results = results
+        self.tools_by_name = {name: Mock() for name in results}
+
+    def execute(self, request):
+        name = request["name"]
+        return self._results[name]
+
+
+def _ai_message_with_tool_call(name: str, args: dict, call_id: str = "call-1"):
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": args, "id": call_id}],
+    )
 
 
 def test_answer_uses_build_answer_prompt_by_default():
@@ -41,3 +61,190 @@ def test_answer_uses_custom_prompt_builder_when_provided():
 
     human_messages = [m for m in generator.received_messages if isinstance(m, HumanMessage)]
     assert human_messages[-1].content == "CUSTOM PROMPT"
+
+
+def test_search_knowledge_base_hit_writes_retrieval_result_and_round_signal():
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {
+                    "hit": True,
+                    "documents": [{"content": "内容A", "metadata": {"_file_name": "a.md"}}],
+                },
+                "metadata": {},
+            }
+        }
+    )
+    nodes = RagGraphNodes(
+        retriever_provider=Mock(),
+        answer_generator=Mock(),
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    state = {
+        "messages": [_ai_message_with_tool_call("search_knowledge_base", {"query": "q"})],
+        "tool_rounds": 0,
+    }
+
+    update = nodes.tool(state)
+
+    assert update["agentic_tool_round"] == {"called_search_knowledge_base": True, "hit": True}
+    assert update["retrieval_result"] is not None
+    assert update["retrieval_result"].documents[0].page_content == "内容A"
+    assert len(update["sources"]) == 1
+
+
+def test_search_knowledge_base_miss_writes_round_signal_without_forcing_stop():
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {"hit": False, "documents": []},
+                "metadata": {},
+            }
+        }
+    )
+    nodes = RagGraphNodes(
+        retriever_provider=Mock(),
+        answer_generator=Mock(),
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    state = {
+        "messages": [_ai_message_with_tool_call("search_knowledge_base", {"query": "q"})],
+        "tool_rounds": 0,
+    }
+
+    update = nodes.tool(state)
+
+    # Miss still means the tool was called this round; only hit is false.
+    assert update["agentic_tool_round"] == {"called_search_knowledge_base": True, "hit": False}
+
+
+def test_search_knowledge_base_miss_alongside_successful_other_tool_does_not_block_that_result():
+    """Delta spec Scenario: 'Retrieval miss alongside a successful
+    non-knowledge-base tool call does not block the answer' — both tool
+    results (the kb miss and the other tool's success) must survive in the
+    update; the miss must not erase or shadow the other tool's ToolMessage."""
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {"hit": False, "documents": []},
+                "metadata": {},
+            },
+            "get_current_time": {
+                "name": "get_current_time",
+                "output": "2026-07-20T12:00:00",
+                "metadata": {},
+            },
+        }
+    )
+    nodes = RagGraphNodes(
+        retriever_provider=Mock(),
+        answer_generator=Mock(),
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "search_knowledge_base", "args": {"query": "q"}, "id": "call-1"},
+                    {"name": "get_current_time", "args": {}, "id": "call-2"},
+                ],
+            )
+        ],
+        "tool_rounds": 0,
+    }
+
+    update = nodes.tool(state)
+
+    assert update["agentic_tool_round"] == {"called_search_knowledge_base": True, "hit": False}
+    tool_message_names = {message.name for message in update["messages"]}
+    assert tool_message_names == {"search_knowledge_base", "get_current_time"}
+    time_result_message = next(m for m in update["messages"] if m.name == "get_current_time")
+    assert "2026-07-20T12:00:00" in time_result_message.content
+
+
+def test_non_knowledge_base_tool_call_does_not_set_called_flag():
+    executor = _RecordingToolExecutor(
+        {"get_current_time": {"name": "get_current_time", "output": "12:00", "metadata": {}}}
+    )
+    nodes = RagGraphNodes(
+        retriever_provider=Mock(),
+        answer_generator=Mock(),
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    state = {
+        "messages": [_ai_message_with_tool_call("get_current_time", {})],
+        "tool_rounds": 0,
+    }
+
+    update = nodes.tool(state)
+
+    assert update["agentic_tool_round"] == {"called_search_knowledge_base": False, "hit": False}
+
+
+def test_round_signal_does_not_leak_across_rounds():
+    """Round 1 misses; round 2 only calls a non-knowledge-base tool. Round 2's
+    signal must not inherit round 1's miss."""
+    executor = _RecordingToolExecutor(
+        {"get_current_time": {"name": "get_current_time", "output": "12:00", "metadata": {}}}
+    )
+    nodes = RagGraphNodes(
+        retriever_provider=Mock(),
+        answer_generator=Mock(),
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    state_round_2 = {
+        "messages": [_ai_message_with_tool_call("get_current_time", {})],
+        "tool_rounds": 1,
+        # Simulates leftover state from a prior round's miss, which must be overwritten.
+        "agentic_tool_round": {"called_search_knowledge_base": True, "hit": False},
+    }
+
+    update = nodes.tool(state_round_2)
+
+    assert update["agentic_tool_round"] == {"called_search_knowledge_base": False, "hit": False}
+
+
+def test_prepare_model_messages_injects_grounded_prompt_after_tool_round_with_retrieval():
+    """answer_with_context runs with tool_rounds >= 1; grounded prompt must still inject."""
+    generator = _StubAnswerGenerator(AIMessage(content="grounded"))
+    nodes = RagGraphNodes(retriever_provider=Mock(), answer_generator=generator)
+    retrieval_result = RetrievalResult(
+        query="q",
+        documents=[Document(page_content="内容A", metadata={"_file_name": "a.md"})],
+        sources=[
+            RetrievalSource(
+                index=1,
+                source_path="",
+                file_name="a.md",
+            )
+        ],
+    )
+    state = {
+        "question": "q",
+        "normalized_question": "q",
+        "retrieval_result": retrieval_result,
+        "tool_rounds": 1,
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "search_knowledge_base", "args": {"query": "q"}, "id": "call-1"}],
+            ),
+            ToolMessage(content="{}", tool_call_id="call-1", name="search_knowledge_base"),
+        ],
+    }
+
+    nodes.answer(state, prompt_builder=_build_answer_prompt)
+
+    human_messages = [m for m in generator.received_messages if isinstance(m, HumanMessage)]
+    assert human_messages, "expected grounded HumanMessage after tool round"
+    assert human_messages[-1].content == _build_answer_prompt(state)
+    assert "内容A" in human_messages[-1].content
