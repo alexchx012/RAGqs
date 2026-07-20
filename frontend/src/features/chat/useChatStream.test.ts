@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import React from 'react';
-import { ChatProvider } from './ChatContext';
+import { ChatProvider, useChat } from './ChatContext';
 import { useChatStream } from './useChatStream';
 
 // Mock @microsoft/fetch-event-source
@@ -160,5 +160,54 @@ describe('useChatStream', () => {
     });
 
     expect(capturedSignal!.aborted).toBe(true);
+  });
+
+  it('stores answerMode and usedToolsWithoutKnowledgeBase on the current assistant message', async () => {
+    mockFetchEventSource.mockImplementation(
+      async (_url: string, options: FetchEventSourceOptions) => {
+        await options.onopen({ ok: true } as Response);
+        (options.onmessage as (ev: { data: string }) => void)({
+          data: JSON.stringify({ type: 'content', data: '测试回答' }),
+        });
+        (options.onmessage as (ev: { data: string }) => void)({
+          data: JSON.stringify({
+            type: 'answer_mode',
+            data: {
+              mode: 'grounded',
+              usedToolsWithoutKnowledgeBase: false,
+            },
+          }),
+        });
+        (options.onmessage as (ev: { data: string }) => void)({
+          data: JSON.stringify({ type: 'done' }),
+        });
+      },
+    );
+
+    const { result } = renderHook(
+      () => ({
+        stream: useChatStream(),
+        chat: useChat(),
+      }),
+      { wrapper },
+    );
+    const onError = vi.fn();
+
+    await act(async () => {
+      await result.current.stream.sendStream('Hi', 'space-1', onError);
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+
+    const assistantMessages = result.current.chat.currentChatHistory.filter(
+      (msg) => msg.type === 'assistant',
+    );
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]).toMatchObject({
+      type: 'assistant',
+      content: '测试回答',
+      answerMode: 'grounded',
+      usedToolsWithoutKnowledgeBase: false,
+    });
   });
 });

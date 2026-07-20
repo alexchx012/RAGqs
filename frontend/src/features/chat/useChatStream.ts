@@ -3,8 +3,8 @@ import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { useChat } from './ChatContext';
 
 interface StreamMessage {
-  type: 'content' | 'done' | 'error';
-  data?: string;
+  type: 'content' | 'done' | 'error' | 'answer_mode';
+  data?: string | { mode: 'direct' | 'grounded' | 'no_context'; usedToolsWithoutKnowledgeBase: boolean };
 }
 
 export function useChatStream() {
@@ -38,6 +38,8 @@ export function useChatStream() {
 
       let fullResponse = '';
       let hasProgressiveMsg = false;
+      let answerMode: 'direct' | 'grounded' | 'no_context' | undefined;
+      let usedToolsWithoutKnowledgeBase: boolean | undefined;
 
       try {
         await fetchEventSource('/api/chat_stream', {
@@ -66,7 +68,7 @@ export function useChatStream() {
             try {
               const msg: StreamMessage = JSON.parse(ev.data);
               if (msg.type === 'content') {
-                fullResponse += msg.data || '';
+                fullResponse += (msg.data as string) || '';
                 if (!hasProgressiveMsg) {
                   addMessage({ type: 'assistant', content: fullResponse });
                   hasProgressiveMsg = true;
@@ -75,8 +77,23 @@ export function useChatStream() {
                 }
               } else if (msg.type === 'done') {
                 return;
+              } else if (msg.type === 'answer_mode') {
+                const modeData = msg.data as {
+                  mode: 'direct' | 'grounded' | 'no_context';
+                  usedToolsWithoutKnowledgeBase: boolean;
+                };
+                answerMode = modeData.mode;
+                usedToolsWithoutKnowledgeBase = modeData.usedToolsWithoutKnowledgeBase;
+                if (hasProgressiveMsg) {
+                  replaceLastMessage({
+                    type: 'assistant',
+                    content: fullResponse,
+                    answerMode,
+                    usedToolsWithoutKnowledgeBase,
+                  });
+                }
               } else if (msg.type === 'error') {
-                onError(msg.data || '流式请求服务端错误');
+                onError((msg.data as string) || '流式请求服务端错误');
               }
             } catch {
               /* skip unparseable messages */
@@ -89,9 +106,19 @@ export function useChatStream() {
 
         if (fullResponse) {
           if (hasProgressiveMsg) {
-            replaceLastMessage({ type: 'assistant', content: fullResponse });
+            replaceLastMessage({
+              type: 'assistant',
+              content: fullResponse,
+              answerMode,
+              usedToolsWithoutKnowledgeBase,
+            });
           } else {
-            addMessage({ type: 'assistant', content: fullResponse });
+            addMessage({
+              type: 'assistant',
+              content: fullResponse,
+              answerMode,
+              usedToolsWithoutKnowledgeBase,
+            });
           }
         }
       } catch (err: unknown) {
