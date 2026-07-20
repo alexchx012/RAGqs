@@ -12,6 +12,7 @@ from app.agents.rag_graph import (
     _build_bare_answer_prompt,
     build_agentic_graph,
     route_after_agentic_tool,
+    route_after_agentic_answer,
 )
 from app.providers.contracts import RetrievalResult, RetrievalSource
 
@@ -96,10 +97,15 @@ def test_search_knowledge_base_hit_writes_retrieval_result_and_round_signal():
 
     update = nodes.tool(state)
 
-    assert update["agentic_tool_round"] == {"called_search_knowledge_base": True, "hit": True}
+    assert update["agentic_tool_round"] == {
+        "called_search_knowledge_base": True,
+        "hit": True,
+        "had_non_knowledge_base_tool": False,
+    }
     assert update["retrieval_result"] is not None
     assert update["retrieval_result"].documents[0].page_content == "内容A"
     assert len(update["sources"]) == 1
+    assert update["agentic_kb_session"] == {"called": True, "hit": True}
 
 
 def test_search_knowledge_base_miss_writes_round_signal_without_forcing_stop():
@@ -126,7 +132,12 @@ def test_search_knowledge_base_miss_writes_round_signal_without_forcing_stop():
     update = nodes.tool(state)
 
     # Miss still means the tool was called this round; only hit is false.
-    assert update["agentic_tool_round"] == {"called_search_knowledge_base": True, "hit": False}
+    assert update["agentic_tool_round"] == {
+        "called_search_knowledge_base": True,
+        "hit": False,
+        "had_non_knowledge_base_tool": False,
+    }
+    assert update["agentic_kb_session"] == {"called": True, "hit": False}
 
 
 def test_search_knowledge_base_miss_alongside_successful_other_tool_does_not_block_that_result():
@@ -169,7 +180,12 @@ def test_search_knowledge_base_miss_alongside_successful_other_tool_does_not_blo
 
     update = nodes.tool(state)
 
-    assert update["agentic_tool_round"] == {"called_search_knowledge_base": True, "hit": False}
+    assert update["agentic_tool_round"] == {
+        "called_search_knowledge_base": True,
+        "hit": False,
+        "had_non_knowledge_base_tool": True,
+    }
+    assert update["agentic_kb_session"] == {"called": True, "hit": False}
     tool_message_names = {message.name for message in update["messages"]}
     assert tool_message_names == {"search_knowledge_base", "get_current_time"}
     time_result_message = next(m for m in update["messages"] if m.name == "get_current_time")
@@ -193,12 +209,18 @@ def test_non_knowledge_base_tool_call_does_not_set_called_flag():
 
     update = nodes.tool(state)
 
-    assert update["agentic_tool_round"] == {"called_search_knowledge_base": False, "hit": False}
+    assert update["agentic_tool_round"] == {
+        "called_search_knowledge_base": False,
+        "hit": False,
+        "had_non_knowledge_base_tool": True,
+    }
+    assert update["agentic_kb_session"] == {"called": False, "hit": False}
 
 
 def test_round_signal_does_not_leak_across_rounds():
     """Round 1 misses; round 2 only calls a non-knowledge-base tool. Round 2's
-    signal must not inherit round 1's miss."""
+    signal must not inherit round 1's miss. Durable session must still retain
+    the earlier called flag for final answer_mode aggregation."""
     executor = _RecordingToolExecutor(
         {"get_current_time": {"name": "get_current_time", "output": "12:00", "metadata": {}}}
     )
@@ -211,13 +233,24 @@ def test_round_signal_does_not_leak_across_rounds():
     state_round_2 = {
         "messages": [_ai_message_with_tool_call("get_current_time", {})],
         "tool_rounds": 1,
-        # Simulates leftover state from a prior round's miss, which must be overwritten.
-        "agentic_tool_round": {"called_search_knowledge_base": True, "hit": False},
+        # Simulates leftover state from a prior round's miss, which must be overwritten
+        # for routing, while the durable session carries the prior called flag.
+        "agentic_tool_round": {
+            "called_search_knowledge_base": True,
+            "hit": False,
+            "had_non_knowledge_base_tool": False,
+        },
+        "agentic_kb_session": {"called": True, "hit": False},
     }
 
     update = nodes.tool(state_round_2)
 
-    assert update["agentic_tool_round"] == {"called_search_knowledge_base": False, "hit": False}
+    assert update["agentic_tool_round"] == {
+        "called_search_knowledge_base": False,
+        "hit": False,
+        "had_non_knowledge_base_tool": True,
+    }
+    assert update["agentic_kb_session"] == {"called": True, "hit": False}
 
 
 def test_prepare_model_messages_injects_grounded_prompt_after_tool_round_with_retrieval():
@@ -267,23 +300,73 @@ def test_build_bare_answer_prompt_does_not_mention_retrieved_context_only():
 
 
 def test_route_after_agentic_tool_hit_goes_to_answer_with_context():
-    state = {"agentic_tool_round": {"called_search_knowledge_base": True, "hit": True}}
+    state = {
+        "agentic_tool_round": {
+            "called_search_knowledge_base": True,
+            "hit": True,
+            "had_non_knowledge_base_tool": False,
+        }
+    }
     assert route_after_agentic_tool(state) == "answer_with_context"
 
 
-def test_route_after_agentic_tool_miss_returns_to_answer_no_context():
-    state = {"agentic_tool_round": {"called_search_knowledge_base": True, "hit": False}}
+def test_route_after_agentic_tool_pure_miss_goes_to_deterministic_no_context():
+    """Pure KB miss (no other tools this round) must not re-enter model answer."""
+    state = {
+        "agentic_tool_round": {
+            "called_search_knowledge_base": True,
+            "hit": False,
+            "had_non_knowledge_base_tool": False,
+        }
+    }
+    assert route_after_agentic_tool(state) == "agentic_no_context_response"
+
+
+def test_route_after_agentic_tool_miss_with_other_tool_returns_to_answer_no_context():
+    """Miss + successful non-KB tool in the same round may continue the bare loop."""
+    state = {
+        "agentic_tool_round": {
+            "called_search_knowledge_base": True,
+            "hit": False,
+            "had_non_knowledge_base_tool": True,
+        }
+    }
     assert route_after_agentic_tool(state) == "answer_no_context"
 
 
 def test_route_after_agentic_tool_non_knowledge_base_call_returns_to_answer_no_context():
-    state = {"agentic_tool_round": {"called_search_knowledge_base": False, "hit": False}}
+    state = {
+        "agentic_tool_round": {
+            "called_search_knowledge_base": False,
+            "hit": False,
+            "had_non_knowledge_base_tool": True,
+        }
+    }
     assert route_after_agentic_tool(state) == "answer_no_context"
 
 
 def test_route_after_agentic_tool_error_goes_to_error_policy():
-    state = {"errors": ["boom"], "agentic_tool_round": {"called_search_knowledge_base": True, "hit": True}}
+    state = {
+        "errors": ["boom"],
+        "agentic_tool_round": {
+            "called_search_knowledge_base": True,
+            "hit": True,
+            "had_non_knowledge_base_tool": False,
+        },
+    }
     assert route_after_agentic_tool(state) == "error_policy"
+
+
+def test_route_after_agentic_answer_tool_calls_go_to_tool():
+    state = {
+        "messages": [_ai_message_with_tool_call("search_knowledge_base", {"query": "q"})],
+    }
+    assert route_after_agentic_answer(state) == "tool"
+
+
+def test_route_after_agentic_answer_plain_answer_goes_to_final_response():
+    state = {"messages": [AIMessage(content="直接回答")]}
+    assert route_after_agentic_answer(state) == "final_response"
 
 
 class _ScriptedAnswerGenerator:
@@ -345,10 +428,21 @@ def test_agentic_graph_hits_knowledge_base_and_grounds_answer():
     assert len(result["sources"]) == 1
 
 
-def test_agentic_graph_miss_then_direct_answer_marks_used_tools_without_kb():
+def test_agentic_graph_miss_with_other_tool_then_direct_answer_marks_used_tools_without_kb():
+    """Same-round KB miss + non-KB tool may continue; recovered direct answer is flagged."""
     generator = _ScriptedAnswerGenerator(
         [
-            _ai_message_with_tool_call("search_knowledge_base", {"query": "不存在的问题"}),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_knowledge_base",
+                        "args": {"query": "不存在的问题"},
+                        "id": "call-1",
+                    },
+                    {"name": "get_current_time", "args": {}, "id": "call-2"},
+                ],
+            ),
             AIMessage(content="根据常识回答"),
         ]
     )
@@ -358,7 +452,12 @@ def test_agentic_graph_miss_then_direct_answer_marks_used_tools_without_kb():
                 "name": "search_knowledge_base",
                 "output": {"hit": False, "documents": []},
                 "metadata": {},
-            }
+            },
+            "get_current_time": {
+                "name": "get_current_time",
+                "output": "2026-07-20T12:00:00",
+                "metadata": {},
+            },
         }
     )
     graph = build_agentic_graph(
@@ -372,19 +471,19 @@ def test_agentic_graph_miss_then_direct_answer_marks_used_tools_without_kb():
     assert result["final_response"]["answer"] == "根据常识回答"
     assert result["final_response"]["answer_mode"] == "direct"
     assert result["final_response"]["used_tools_without_knowledge_base"] is True
+    assert len(generator.calls) == 2
 
 
-def test_agentic_graph_miss_with_no_further_tool_call_ends_no_context():
-    """Model calls search_knowledge_base (miss), then on the next turn stops
-    producing tool_calls and returns nothing useful — spec still requires a
-    deterministic no_context outcome to be reachable when the model never
-    recovers with another answer. This test scripts the model to immediately
-    hand back the miss ToolMessage content as its answer, which is the
-    minimal realistic path to answer_mode == 'no_context'."""
+def test_agentic_graph_pure_miss_ends_no_context_without_second_model_call():
+    """Pure KB miss must take the deterministic no-context node: fixed text,
+    answer_mode=no_context from structure (not text equality), and no second
+    model answer invocation after the tool-calling turn."""
     generator = _ScriptedAnswerGenerator(
         [
             _ai_message_with_tool_call("search_knowledge_base", {"query": "不存在的问题"}),
-            AIMessage(content=NO_CONTEXT_ANSWER),
+            # Intentionally present: if the graph wrongly re-enters answer_no_context,
+            # this would be consumed and the test would fail on call count / mode.
+            AIMessage(content="模型不应再被调用"),
         ]
     )
     executor = _RecordingToolExecutor(
@@ -404,4 +503,56 @@ def test_agentic_graph_miss_with_no_further_tool_call_ends_no_context():
     )
     result = graph.invoke({"question": "不存在的问题", "session_id": "s1", "space_id": "default"})
 
+    assert result["final_response"]["answer"] == NO_CONTEXT_ANSWER
     assert result["final_response"]["answer_mode"] == "no_context"
+    assert result["final_response"]["used_tools_without_knowledge_base"] is False
+    assert len(generator.calls) == 1
+    assert len(generator._script) == 1  # second scripted answer never consumed
+
+
+def test_agentic_graph_durable_kb_miss_survives_later_non_kb_round():
+    """Round1 KB miss + non-KB tool, round2 only non-KB, then final answer:
+    used_tools_without_knowledge_base must still reflect the earlier KB miss."""
+    generator = _ScriptedAnswerGenerator(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_knowledge_base",
+                        "args": {"query": "不存在的问题"},
+                        "id": "call-1",
+                    },
+                    {"name": "get_current_time", "args": {}, "id": "call-2"},
+                ],
+            ),
+            _ai_message_with_tool_call("get_current_time", {}, call_id="call-3"),
+            AIMessage(content="结合时间的常识回答"),
+        ]
+    )
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {"hit": False, "documents": []},
+                "metadata": {},
+            },
+            "get_current_time": {
+                "name": "get_current_time",
+                "output": "2026-07-20T12:00:00",
+                "metadata": {},
+            },
+        }
+    )
+    graph = build_agentic_graph(
+        retriever_provider=Mock(),
+        answer_generator=generator,
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    result = graph.invoke({"question": "不存在的问题", "session_id": "s1", "space_id": "default"})
+
+    assert result["final_response"]["answer"] == "结合时间的常识回答"
+    assert result["final_response"]["answer_mode"] == "direct"
+    assert result["final_response"]["used_tools_without_knowledge_base"] is True
+    assert len(generator.calls) == 3

@@ -38,6 +38,8 @@ class RagGraphState(TypedDict, total=False):
     tool_result: dict[str, Any]
     # Single-turn routing signal for agentic path; overwritten each tool round.
     agentic_tool_round: dict[str, Any]
+    # Conversation-end aggregate for agentic answer_mode only (not used for routing).
+    agentic_kb_session: dict[str, Any]
     normalized_question: str
     retrieval_decision: dict[str, Any]
     retrieval_result: RetrievalResult | None
@@ -79,6 +81,12 @@ class RagGraphNodes:
             "tool_request": dict(state.get("tool_request") or {}),
             "tool_result": {},
             "tool_rounds": 0,
+            "agentic_tool_round": {
+                "called_search_knowledge_base": False,
+                "hit": False,
+                "had_non_knowledge_base_tool": False,
+            },
+            "agentic_kb_session": {"called": False, "hit": False},
             "retrieval_decision": {},
             "retrieval_result": None,
             "retrieval_debug": {},
@@ -273,7 +281,9 @@ class RagGraphNodes:
             tool_messages: list[ToolMessage] = []
             events: list[dict[str, Any]] = []
             last_result: dict[str, Any] = {}
-            round_signal = {"called_search_knowledge_base": False, "hit": False}
+            called_search_knowledge_base = False
+            hit = False
+            had_non_knowledge_base_tool = False
             retrieval_update: dict[str, Any] = {}
             for request in requests:
                 tool_call_event = {
@@ -293,11 +303,15 @@ class RagGraphNodes:
                     raw_result,
                 )
                 if request["name"] == "search_knowledge_base":
-                    round_signal = self._agentic_round_signal_from_raw_result(raw_result)
-                    if round_signal["hit"]:
+                    called_search_knowledge_base = True
+                    round_hit = self._agentic_hit_from_raw_result(raw_result)
+                    if round_hit:
+                        hit = True
                         retrieval_update = self._retrieval_update_from_raw_result(
                             request["args"].get("query", ""), raw_result
                         )
+                else:
+                    had_non_knowledge_base_tool = True
                 tool_messages.append(
                     ToolMessage(
                         content=_tool_result_content(raw_result),
@@ -312,10 +326,21 @@ class RagGraphNodes:
                         "data": last_result,
                     }
                 )
+            previous_session = state.get("agentic_kb_session") or {}
+            session_called = bool(previous_session.get("called")) or called_search_knowledge_base
+            session_hit = bool(previous_session.get("hit")) or hit
             return {
                 "messages": tool_messages,
                 "tool_result": last_result,
-                "agentic_tool_round": round_signal,
+                "agentic_tool_round": {
+                    "called_search_knowledge_base": called_search_knowledge_base,
+                    "hit": hit,
+                    "had_non_knowledge_base_tool": had_non_knowledge_base_tool,
+                },
+                "agentic_kb_session": {
+                    "called": session_called,
+                    "hit": session_hit,
+                },
                 "events": events,
                 **retrieval_update,
             }
@@ -430,18 +455,22 @@ class RagGraphNodes:
 
     def agentic_final_response(self, state: RagGraphState) -> dict[str, Any]:
         errors = list(state.get("errors", []))
-        round_signal = state.get("agentic_tool_round") or {}
-        called_knowledge_base_without_hit = bool(
-            round_signal.get("called_search_knowledge_base") and not round_signal.get("hit")
-        )
+        session = state.get("agentic_kb_session") or {}
+        called_knowledge_base = bool(session.get("called"))
+        ever_hit = bool(session.get("hit")) or bool(state.get("retrieval_result"))
         answer_text = state.get("answer", "")
-        if state.get("retrieval_result"):
+        if state.get("retrieval_result") or ever_hit:
             answer_mode = "grounded"
-        elif called_knowledge_base_without_hit and answer_text == NO_CONTEXT_ANSWER:
-            answer_mode = "no_context"
+        elif called_knowledge_base and not ever_hit:
+            # Recovered model answers after a miss (e.g. via other tools) stay
+            # "direct" + used_tools_without_knowledge_base. Deterministic pure
+            # misses never reach this node; they end in agentic_no_context_response.
+            answer_mode = "direct"
         else:
             answer_mode = "direct"
-        used_tools_without_kb = called_knowledge_base_without_hit and answer_mode == "direct"
+        used_tools_without_kb = (
+            called_knowledge_base and not ever_hit and answer_mode == "direct"
+        )
         final_response = {
             "answer": answer_text,
             "success": not errors,
@@ -561,10 +590,18 @@ class RagGraphNodes:
         }
 
     @staticmethod
-    def _agentic_round_signal_from_raw_result(raw_result: dict[str, Any]) -> dict[str, Any]:
+    def _agentic_hit_from_raw_result(raw_result: dict[str, Any]) -> bool:
         output = raw_result.get("output") if isinstance(raw_result, dict) else None
-        hit = bool(isinstance(output, dict) and output.get("hit"))
-        return {"called_search_knowledge_base": True, "hit": hit}
+        return bool(isinstance(output, dict) and output.get("hit"))
+
+    @staticmethod
+    def _agentic_round_signal_from_raw_result(raw_result: dict[str, Any]) -> dict[str, Any]:
+        hit = RagGraphNodes._agentic_hit_from_raw_result(raw_result)
+        return {
+            "called_search_knowledge_base": True,
+            "hit": hit,
+            "had_non_knowledge_base_tool": False,
+        }
 
     @staticmethod
     def _retrieval_update_from_raw_result(
@@ -608,8 +645,14 @@ def route_after_agentic_tool(state: RagGraphState) -> str:
     if state.get("tool_rounds", 0) >= MAX_MODEL_TOOL_ROUNDS:
         return "error_policy"
     round_signal = state.get("agentic_tool_round") or {}
-    if round_signal.get("called_search_knowledge_base") and round_signal.get("hit"):
+    called_kb = bool(round_signal.get("called_search_knowledge_base"))
+    hit = bool(round_signal.get("hit"))
+    had_other_tool = bool(round_signal.get("had_non_knowledge_base_tool"))
+    if called_kb and hit:
         return "answer_with_context"
+    # Pure retrieval miss: deterministic honest response, no further model call.
+    if called_kb and not hit and not had_other_tool:
+        return "agentic_no_context_response"
     return "answer_no_context"
 
 
@@ -747,10 +790,12 @@ def build_agentic_graph(
         {
             "answer_with_context": "answer_with_context",
             "answer_no_context": "answer_no_context",
+            "agentic_no_context_response": "agentic_no_context_response",
             "error_policy": "error_policy",
         },
     )
     builder.add_edge("answer_with_context", "final_response")
+    builder.add_edge("agentic_no_context_response", END)
     builder.add_edge("error_policy", "final_response")
     builder.add_edge("final_response", END)
     return builder.compile(checkpointer=checkpointer)
