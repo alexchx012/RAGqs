@@ -32,6 +32,8 @@ export interface ChatMessage {
   type: 'user' | 'assistant';
   content: string;
   role?: string;
+  answerMode?: 'direct' | 'grounded' | 'no_context';
+  usedToolsWithoutKnowledgeBase?: boolean;
 }
 
 export interface ChatSession {
