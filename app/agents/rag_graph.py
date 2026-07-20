@@ -443,6 +443,17 @@ class RagGraphNodes:
         }
 
     def agentic_no_context_response(self, state: RagGraphState) -> dict[str, Any]:
+        # Emit content/token so stream consumers that only accumulate content
+        # (e.g. frontend useChatStream) still show the deterministic miss text.
+        stream_writer = _get_stream_writer_or_none()
+        if stream_writer is not None:
+            stream_writer(
+                {
+                    "type": "token",
+                    "node": "final_response",
+                    "data": NO_CONTEXT_ANSWER,
+                }
+            )
         return {
             "answer": NO_CONTEXT_ANSWER,
             "final_response": {
@@ -453,6 +464,11 @@ class RagGraphNodes:
                 "used_tools_without_knowledge_base": False,
             },
             "events": [
+                {
+                    "type": "token",
+                    "node": "final_response",
+                    "data": NO_CONTEXT_ANSWER,
+                },
                 {
                     "type": "done",
                     "node": "final_response",

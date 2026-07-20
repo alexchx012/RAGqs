@@ -74,10 +74,12 @@ def parse_enabled_tool_names(value: str | Iterable[str] | None) -> list[str]:
 
 
 def build_default_tool_registry() -> ToolRegistry:
-    from app.tools import get_current_time, retrieve_knowledge
+    from app.tools import get_current_time, retrieve_knowledge, search_knowledge_base
 
     registry = ToolRegistry()
     registry.register(retrieve_knowledge, category="builtin")
+    # Independent agentic retrieval tool (not merged with retrieve_knowledge).
+    registry.register(search_knowledge_base, category="builtin")
     registry.register(get_current_time, category="builtin")
     return registry
 

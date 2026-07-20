@@ -161,6 +161,22 @@ Configure the project default in `.env`:
 DEFAULT_ORCHESTRATION_PATH=baseline
 ```
 
+### Agentic tool enablement prerequisite
+
+`agentic` depends on the independent tool `search_knowledge_base` (not
+`retrieve_knowledge`). The production tool registry registers it as a builtin, but
+it must also be present in `ENABLED_TOOLS` so `RagAgentService` binds it into the
+agentic graph. If the tool is missing, the model is prompted to call it but cannot.
+
+```env
+# Baseline keeps retrieve_knowledge; agentic requires search_knowledge_base.
+ENABLED_TOOLS=retrieve_knowledge,search_knowledge_base,get_current_time
+```
+
+Operators enabling `rag_path=agentic` (or `DEFAULT_ORCHESTRATION_PATH=agentic`)
+must keep `search_knowledge_base` in `ENABLED_TOOLS`. Config validation rejects
+unknown tool names, so unregistered tools cannot be enabled by env alone.
+
 Override per knowledge space with `PATCH /knowledge-spaces/{space_id}`:
 
 ```json
@@ -176,7 +192,7 @@ Permission notes:
 
 - `super_admin` / holders of `space:write` may update space metadata including `rag_path` and
   `owning_department_id` (only `super_admin` may reassign ownership).
-- `department_admin` (via `space:manage`) may update only `rag_path` for spaces whose
+- `department_admin` (via `space:manage`) may update only `rag_path` / `clear_rag_path` for spaces whose
   `owning_department_id` matches the admin's department; unowned spaces are out of scope (403).
 
 Adding a future path (for example Corrective RAG or GraphRAG) is a registry entry change only;

@@ -95,7 +95,7 @@ class RagAgentService:
                 "agent",
                 "enabled_tools",
                 "enabled_tools",
-                "retrieve_knowledge,get_current_time",
+                "retrieve_knowledge,search_knowledge_base,get_current_time",
             ),
             registry=tool_registry,
         )

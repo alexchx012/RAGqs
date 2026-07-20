@@ -653,7 +653,7 @@ def validate_settings(settings: Settings) -> ConfigValidationReport:
             settings,
             "enabled_tools",
             "enabled_tools",
-            default="retrieve_knowledge,get_current_time",
+            default="retrieve_knowledge,search_knowledge_base,get_current_time",
         )
     ):
         if tool_name not in known_tools:

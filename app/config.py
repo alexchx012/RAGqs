@@ -204,7 +204,7 @@ class Settings(BaseSettings):
     checkpoint_sqlite_path: str = "data/checkpoints.sqlite3"
     checkpoint_postgres_dsn: str = ""
     agent_runtime: str = "explicit_graph"
-    enabled_tools: str = "retrieve_knowledge,get_current_time"
+    enabled_tools: str = "retrieve_knowledge,search_knowledge_base,get_current_time"
     prompt_profile: str = "default"
 
     # DeepSeek provider 配置

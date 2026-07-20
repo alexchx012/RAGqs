@@ -4,7 +4,10 @@ import { useChat } from './ChatContext';
 
 interface StreamMessage {
   type: 'content' | 'done' | 'error' | 'answer_mode';
-  data?: string | { mode: 'direct' | 'grounded' | 'no_context'; usedToolsWithoutKnowledgeBase: boolean };
+  data?:
+    | string
+    | { answer?: string }
+    | { mode: 'direct' | 'grounded' | 'no_context'; usedToolsWithoutKnowledgeBase: boolean };
 }
 
 export function useChatStream() {
@@ -73,10 +76,22 @@ export function useChatStream() {
                   addMessage({ type: 'assistant', content: fullResponse });
                   hasProgressiveMsg = true;
                 } else {
-                  replaceLastMessage({ type: 'assistant', content: fullResponse });
+                  replaceLastMessage({
+                    type: 'assistant',
+                    content: fullResponse,
+                    answerMode,
+                    usedToolsWithoutKnowledgeBase,
+                  });
                 }
               } else if (msg.type === 'done') {
-                return;
+                // Pure no_context streams may only send done.data.answer
+                // without content tokens; materialize answer text for the UI.
+                if (!fullResponse && msg.data && typeof msg.data === 'object') {
+                  const doneData = msg.data as { answer?: string };
+                  if (typeof doneData.answer === 'string' && doneData.answer) {
+                    fullResponse = doneData.answer;
+                  }
+                }
               } else if (msg.type === 'answer_mode') {
                 const modeData = msg.data as {
                   mode: 'direct' | 'grounded' | 'no_context';
