@@ -39,10 +39,14 @@ class MilvusVectorStoreProvider:
     def get_vector_store(self) -> Any:
         if self._vector_store is None:
             self.milvus_manager.connect()
+            # pymilvus.MilvusClient only honors `uri` (default http://localhost:19530).
+            # Passing host/port as kwargs is ignored and silently falls back to 19530,
+            # which breaks non-default MILVUS_PORT deployments (e.g. 19630).
+            connection_args = {"uri": f"http://{self.host}:{self.port}"}
             self._vector_store = self.vector_store_factory(
                 embedding_function=self.embedding_provider,
                 collection_name=self.collection_name,
-                connection_args={"host": self.host, "port": self.port},
+                connection_args=connection_args,
                 auto_id=False,
                 drop_old=False,
                 text_field="content",

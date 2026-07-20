@@ -190,7 +190,9 @@ def test_milvus_vector_store_provider_is_lazy_and_factory_backed():
     assert provider.similarity_search("hello", k=1)[0].page_content == "hello"
     assert manager.connect_count == 1
     assert created[0].kwargs["collection_name"] == "unit_test_collection"
-    assert created[0].kwargs["connection_args"] == {"host": "127.0.0.1", "port": 19530}
+    assert created[0].kwargs["connection_args"] == {
+        "uri": "http://127.0.0.1:19530"
+    }
 
 
 def test_milvus_client_manager_prefers_grouped_settings():
