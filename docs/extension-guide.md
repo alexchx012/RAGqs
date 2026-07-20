@@ -77,6 +77,39 @@ The default retriever runs vector search through `RetrievalPipeline`. Keep `RETR
 
 Use `RETRIEVAL_HIGH_RECALL_TOP_K_MULTIPLIER` to tune widened recall and `RETRIEVAL_RELAXED_FILTER_PRESERVE_KEYS` to define filters that must never be relaxed, for example `space_id,tenant_id`. Set enhancer values to `llm` when the configured chat model should rewrite user questions before retrieval, rerank retrieved chunks before truncation, or compress each retrieved chunk before answer generation. Those LLM enhancers reuse `ProviderContainer.chat_model_provider` and therefore the shared `CHAT_MODEL`; there is no separate RAG model setting. Use `CONTEXT_COMPRESSOR_MAX_CHARACTERS` to cap each compressed chunk, for example `CONTEXT_COMPRESSOR_MAX_CHARACTERS=1200`. Treat these switches as business-profile choices and keep evaluation reports before making them default for a new agent.
 
+## RAG Orchestration Paths
+
+Conversation topology is selected from a path registry built by
+`app.agents.rag_graph.build_rag_graph_registry` (a plain `dict[str, CompiledGraph]`).
+`RagAgentService` resolves the path per request:
+
+1. knowledge-space `rag_path` when set;
+2. otherwise project default `DEFAULT_ORCHESTRATION_PATH` / `Settings.default_orchestration_path`
+   (default `baseline`);
+3. unknown names fall back to `baseline` with a warning.
+
+Shipped paths:
+
+| Path | Topology |
+| --- | --- |
+| `baseline` | retrieve → answer (legacy behavior) |
+| `agentic` | answer first; optional `search_knowledge_base` tool; hit/miss routing |
+
+Space-level override API: `PATCH /knowledge-spaces/{space_id}` with body field `rag_path`
+(or `clear_rag_path: true` to restore the project default). Ops details live in
+`docs/operations.md`.
+
+To add a future path (Corrective RAG, GraphRAG, …):
+
+1. Implement a graph builder and register it under a new string key in
+   `build_rag_graph_registry`.
+2. Point a knowledge space at that name via `rag_path` — no catalog schema migration is
+   required for new path names.
+
+Do not hard-code a single compiled graph in `RagAgentService`; keep path selection on the
+registry lookup. Known limitations of `agentic` (binary hit/miss, no relevance grading) are
+tracked in root `待实现功能.md`.
+
 ## Second-Business Template
 
 Start from `docs/templates/business-rag-template.md` when creating another business agent. The template keeps customization in environment settings, prompt profiles, tool registration, evaluation data, and docs. If the new business needs runtime behavior that cannot fit these extension points, add a new provider or registry entry instead of editing API handlers directly.

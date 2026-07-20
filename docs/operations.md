@@ -140,6 +140,49 @@ configuration readiness check; keep startup preflight and Docker health checks a
 same dependency names. A healthy `modelProvider` means the selected chat provider is configured,
 not that a real DeepSeek request has succeeded or that answer quality is validated.
 
+## RAG Orchestration Path
+
+Each knowledge space can select a RAG orchestration path (`rag_path`). Path resolution is:
+
+1. If the knowledge space has a non-empty `rag_path`, use that value.
+2. Otherwise use the project default `DEFAULT_ORCHESTRATION_PATH` (settings field
+   `default_orchestration_path`, default `baseline`).
+3. If the resolved name is not present in the runtime registry compiled by
+   `build_rag_graph_registry`, fall back to `baseline` and log a warning.
+
+Currently registered paths:
+
+- `baseline` — original retrieve-then-answer topology (behavior-preserving migration).
+- `agentic` — answer first; call `search_knowledge_base` only when the model requests retrieval.
+
+Configure the project default in `.env`:
+
+```env
+DEFAULT_ORCHESTRATION_PATH=baseline
+```
+
+Override per knowledge space with `PATCH /knowledge-spaces/{space_id}`:
+
+```json
+{
+  "rag_path": "agentic"
+}
+```
+
+Clear a space-level override (so the project default applies again) with
+`{"clear_rag_path": true}`.
+
+Permission notes:
+
+- `super_admin` / holders of `space:write` may update space metadata including `rag_path` and
+  `owning_department_id` (only `super_admin` may reassign ownership).
+- `department_admin` (via `space:manage`) may update only `rag_path` for spaces whose
+  `owning_department_id` matches the admin's department; unowned spaces are out of scope (403).
+
+Adding a future path (for example Corrective RAG or GraphRAG) is a registry entry change only;
+existing knowledge-space rows do not need schema migration to store a new path name. See
+`docs/extension-guide.md` and root `待实现功能.md`.
+
 ## Configuration Validation
 
 Startup uses the same Python config validation module as tests:
