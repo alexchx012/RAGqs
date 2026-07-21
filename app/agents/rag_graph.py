@@ -683,6 +683,15 @@ def route_after_agentic_answer(state: RagGraphState) -> str:
     return "final_response"
 
 
+def route_after_agentic_context_answer(state: RagGraphState) -> str:
+    if state.get("errors"):
+        return "error_policy"
+    messages = state.get("messages") or []
+    if messages and _has_tool_calls(messages[-1]):
+        return "tool"
+    return "final_response"
+
+
 def route_after_agentic_tool(state: RagGraphState) -> str:
     if state.get("errors"):
         return "error_policy"
@@ -840,7 +849,11 @@ def build_agentic_graph(
             "error_policy": "error_policy",
         },
     )
-    builder.add_edge("answer_with_context", "final_response")
+    builder.add_conditional_edges(
+        "answer_with_context",
+        route_after_agentic_context_answer,
+        {"final_response": "final_response", "error_policy": "error_policy", "tool": "tool"},
+    )
     builder.add_edge("agentic_no_context_response", END)
     builder.add_edge("error_policy", "final_response")
     builder.add_edge("final_response", END)
