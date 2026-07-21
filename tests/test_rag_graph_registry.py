@@ -13,8 +13,8 @@ from app.agents.rag_graph import (
     _build_bare_answer_prompt,
     build_agentic_graph,
     build_rag_graph_registry,
-    route_after_agentic_tool,
     route_after_agentic_answer,
+    route_after_agentic_tool,
 )
 from app.providers.contracts import RetrievalResult, RetrievalSource
 from app.tools.search_knowledge_base import search_knowledge_base as real_search_knowledge_base
