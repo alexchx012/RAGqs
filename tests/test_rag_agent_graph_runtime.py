@@ -5,6 +5,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage
 
 from app.extensions.tools import ToolRegistry
+from app.knowledge.catalog import InMemoryKnowledgeCatalog
 from app.providers import InMemorySessionStoreProvider, RetrievalResult, RetrievalSource
 from app.providers.checkpoints import SQLiteCheckpointProvider
 from app.services import rag_agent_service as rag_service_module
@@ -299,12 +300,14 @@ async def test_rag_agent_service_builds_default_explicit_graph_runtime():
     retriever = RecordingRetriever()
     chat_provider = SyncChatProvider()
     session_store = InMemorySessionStoreProvider()
+    catalog = InMemoryKnowledgeCatalog()
     service = RagAgentService(
         streaming=False,
         chat_model_provider=chat_provider,
         agent_factory=failing_agent_factory,
         tools=[],
         retriever_provider=retriever,
+        knowledge_catalog_provider=catalog,
         session_store_provider=session_store,
         agent_runtime="explicit_graph",
     )
