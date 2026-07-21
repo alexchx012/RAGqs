@@ -25,3 +25,4 @@ data/*.sqlite3-*
 node_modules/
 frontend/test-results/
 frontend/tsconfig.tsbuildinfo
+CLAUDE.md
