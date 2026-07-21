@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agents.rag_graph import (
     NO_CONTEXT_ANSWER,
+    LangChainToolExecutor,
     RagGraphNodes,
     _build_answer_prompt,
     _build_bare_answer_prompt,
@@ -16,6 +17,7 @@ from app.agents.rag_graph import (
     route_after_agentic_answer,
 )
 from app.providers.contracts import RetrievalResult, RetrievalSource
+from app.tools.search_knowledge_base import search_knowledge_base as real_search_knowledge_base
 
 
 class _StubAnswerGenerator:
@@ -303,6 +305,38 @@ def test_round_signal_does_not_leak_across_rounds():
         "had_non_knowledge_base_tool": True,
     }
     assert update["agentic_kb_session"] == {"called": True, "hit": False}
+
+
+def test_tool_node_binds_space_id_and_retriever_provider_for_search_knowledge_base():
+    """RagGraphNodes.tool must scope search_knowledge_base to the graph's own
+    retriever_provider and the current request's space_id, not whatever the
+    model passed as the space_id argument or the global default container."""
+    captured = {}
+
+    class _RecordingRetrieverProvider:
+        def retrieve(self, request):
+            captured["filters"] = request.filters
+            return RetrievalResult(query=request.query, documents=[])
+
+    nodes = RagGraphNodes(
+        retriever_provider=_RecordingRetrieverProvider(),
+        answer_generator=Mock(),
+        tool_executor=LangChainToolExecutor([real_search_knowledge_base]),
+        available_tools=[real_search_knowledge_base],
+    )
+    message = _ai_message_with_tool_call(
+        "search_knowledge_base", {"query": "报销比例", "space_id": "wrong-space-from-model"}
+    )
+    state = {
+        "messages": [message],
+        "space_id": "finance",
+        "tool_rounds": 0,
+        "agentic_kb_session": {},
+    }
+
+    nodes.tool(state)
+
+    assert captured["filters"] == {"space_id": "finance"}
 
 
 def test_prepare_model_messages_injects_grounded_prompt_after_tool_round_with_retrieval():

@@ -21,6 +21,8 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from app.providers import RetrievalRequest, RetrievalResult, RetrievalSource, RetrieverProvider
+from app.tools.knowledge_tool import enforce_knowledge_space
+from app.tools.search_knowledge_base import enforce_retriever_provider
 
 NO_CONTEXT_ANSWER = "知识库中没有足够依据回答这个问题。"
 RESET_EVENTS_TYPE = "__reset_events__"
@@ -267,10 +269,13 @@ class RagGraphNodes:
         messages = list(state.get("messages") or [])
         last_message = messages[-1] if messages else None
 
-        if last_message is not None and _has_tool_calls(last_message):
-            return self._execute_model_tool_calls(state, last_message)
+        with enforce_knowledge_space(state.get("space_id", "default")), enforce_retriever_provider(
+            self.retriever_provider
+        ):
+            if last_message is not None and _has_tool_calls(last_message):
+                return self._execute_model_tool_calls(state, last_message)
 
-        return self._execute_explicit_tool_request(state)
+            return self._execute_explicit_tool_request(state)
 
     def _execute_model_tool_calls(
         self,
