@@ -1,14 +1,32 @@
 """结构化知识库检索工具，供 agentic 编排路径的工具调用循环使用。"""
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from langchain_core.tools import tool
 from loguru import logger
 
 from app.config import config
-from app.providers.contracts import RetrievalRequest
+from app.providers.contracts import RetrievalRequest, RetrieverProvider
 from app.providers.factory import get_default_provider_container
 from app.tools.knowledge_tool import resolve_knowledge_space_id
+
+_active_retriever_provider: ContextVar[RetrieverProvider | None] = ContextVar(
+    "active_retriever_provider",
+    default=None,
+)
+
+
+@contextmanager
+def enforce_retriever_provider(provider: RetrieverProvider):
+    """Force search_knowledge_base to use the graph-injected retriever provider."""
+
+    token = _active_retriever_provider.set(provider)
+    try:
+        yield
+    finally:
+        _active_retriever_provider.reset(token)
 
 
 @tool
@@ -25,7 +43,11 @@ def search_knowledge_base(query: str, space_id: str = "default") -> dict[str, An
         dict: {"hit": bool, "documents": [{"content": str, "metadata": dict}, ...]}
     """
     try:
-        container = get_default_provider_container()
+        injected_provider = _active_retriever_provider.get()
+        if injected_provider is not None:
+            provider = injected_provider
+        else:
+            provider = get_default_provider_container().retriever_provider
         effective_space_id = resolve_knowledge_space_id(space_id)
         filters = (
             {"space_id": effective_space_id}
@@ -35,7 +57,7 @@ def search_knowledge_base(query: str, space_id: str = "default") -> dict[str, An
         top_k = getattr(getattr(config, "rag", None), "top_k", None) or getattr(
             config, "rag_top_k", 3
         )
-        result = container.retriever_provider.retrieve(
+        result = provider.retrieve(
             RetrievalRequest(query=query, top_k=top_k, filters=filters)
         )
         documents = [
