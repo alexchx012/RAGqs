@@ -5,7 +5,7 @@ import importlib
 from langchain_core.documents import Document
 
 from app.providers.contracts import RetrievalRequest, RetrievalResult
-from app.tools.search_knowledge_base import search_knowledge_base
+from app.tools.search_knowledge_base import enforce_retriever_provider, search_knowledge_base
 
 # importlib avoids package re-export shadowing the module name for monkeypatch
 _skb_module = importlib.import_module("app.tools.search_knowledge_base")
@@ -65,3 +65,40 @@ def test_search_knowledge_base_result_is_json_serializable(monkeypatch):
 
     result = search_knowledge_base.invoke({"query": "问题", "space_id": "finance"})
     json.dumps(result)  # must not raise
+
+
+def test_search_knowledge_base_prefers_context_provider_over_default_container(monkeypatch):
+    default_provider = _FakeRetrieverProvider(
+        [Document(page_content="默认容器文档", metadata={})]
+    )
+    injected_provider = _FakeRetrieverProvider(
+        [Document(page_content="注入的文档", metadata={"_file_name": "injected.md"})]
+    )
+    monkeypatch.setattr(
+        _skb_module,
+        "get_default_provider_container",
+        lambda: type("Container", (), {"retriever_provider": default_provider})(),
+    )
+
+    with enforce_retriever_provider(injected_provider):
+        result = search_knowledge_base.invoke({"query": "q", "space_id": "default"})
+
+    assert default_provider.last_request is None
+    assert injected_provider.last_request is not None
+    assert result["documents"][0]["content"] == "注入的文档"
+
+
+def test_search_knowledge_base_falls_back_to_default_container_without_context(monkeypatch):
+    default_provider = _FakeRetrieverProvider(
+        [Document(page_content="默认容器文档", metadata={})]
+    )
+    monkeypatch.setattr(
+        _skb_module,
+        "get_default_provider_container",
+        lambda: type("Container", (), {"retriever_provider": default_provider})(),
+    )
+
+    result = search_knowledge_base.invoke({"query": "q", "space_id": "default"})
+
+    assert default_provider.last_request is not None
+    assert result["documents"][0]["content"] == "默认容器文档"
