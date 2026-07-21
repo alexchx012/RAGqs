@@ -706,6 +706,48 @@ def test_agentic_graph_durable_kb_miss_survives_later_non_kb_round():
     assert len(generator.calls) == 3
 
 
+def test_agentic_graph_second_tool_call_during_answer_with_context_is_executed_not_dropped():
+    """After a KB hit routes to answer_with_context, if the model calls a tool
+    again instead of answering directly, the graph must execute that tool
+    (via the `tool` node) rather than silently falling through to
+    final_response with an empty answer."""
+    generator = _ScriptedAnswerGenerator(
+        [
+            _ai_message_with_tool_call("search_knowledge_base", {"query": "报销比例"}),
+            _ai_message_with_tool_call("get_current_time", {}, call_id="call-2"),
+            AIMessage(content="报销比例是 80%，现在是 2026-07-20"),
+        ]
+    )
+    executor = _RecordingToolExecutor(
+        {
+            "search_knowledge_base": {
+                "name": "search_knowledge_base",
+                "output": {
+                    "hit": True,
+                    "documents": [{"content": "报销比例是 80%", "metadata": {"_file_name": "policy.md"}}],
+                },
+                "metadata": {},
+            },
+            "get_current_time": {
+                "name": "get_current_time",
+                "output": "2026-07-20T12:00:00",
+                "metadata": {},
+            },
+        }
+    )
+    graph = build_agentic_graph(
+        retriever_provider=Mock(),
+        answer_generator=generator,
+        tool_executor=executor,
+        available_tools=list(executor.tools_by_name.values()),
+    )
+    result = graph.invoke({"question": "报销比例是多少，现在几点", "session_id": "s1", "space_id": "default"})
+
+    assert result["final_response"]["answer"] == "报销比例是 80%，现在是 2026-07-20"
+    assert result["final_response"]["success"] is True
+    assert len(generator.calls) == 3
+
+
 def test_registry_contains_baseline_and_agentic():
     registry = build_rag_graph_registry(
         retriever_provider=Mock(),
