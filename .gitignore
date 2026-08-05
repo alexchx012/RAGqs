@@ -24,6 +24,6 @@ data/*.sqlite3-*
 .worktrees/
 node_modules/
 frontend/test-results/
-frontend/tsconfig.tsbuildinfo
 CLAUDE.md
 .kimi-code/
+AGENTS.md.bak
