@@ -1,0 +1,62 @@
+/* Login page specifics (登录页设计 §2/§5/§6): layout anchors, entrance/error motion, loading dots. */
+
+.login-brand-block {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  max-width: 400px;
+  padding: 0 24px;
+}
+
+@keyframes login-enter {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.login-enter {
+  animation: login-enter var(--duration-base) var(--ease-out) both;
+}
+
+.login-enter-late {
+  animation-delay: 100ms;
+}
+
+@keyframes login-error-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.login-error-enter {
+  animation: login-error-enter var(--duration-fast) var(--ease-out) both;
+}
+
+@keyframes login-eye-crossfade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.login-eye-icon {
+  animation: login-eye-crossfade var(--duration-fast) ease both;
+}
+
+.login-page-fade {
+  transition: opacity var(--duration-fast) ease;
+}

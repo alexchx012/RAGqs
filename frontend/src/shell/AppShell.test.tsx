@@ -1,39 +1,31 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import * as Dialog from '@radix-ui/react-dialog';
-import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { copy } from '../copy';
 import { AppRoutes } from '../router/AppRoutes';
+import { createAuthedStore, renderWithAuth } from '../test/auth-fixtures';
 
 describe('应用壳与路由骨架', () => {
-  it('占位页渲染单一文案常量文件中的文案', () => {
-    render(
-      <MemoryRouter>
-        <AppRoutes />
-      </MemoryRouter>,
-    );
-    expect(screen.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeInTheDocument();
+  it('占位页渲染单一文案常量文件中的文案', async () => {
+    renderWithAuth(<AppRoutes />, await createAuthedStore());
+    expect(
+      await screen.findByRole('heading', { name: copy.shell.placeholderTitle }),
+    ).toBeInTheDocument();
     expect(screen.getByText(copy.shell.placeholderBody)).toBeInTheDocument();
   });
 
-  it('未知路径渲染 404 占位，返回链接可用', () => {
-    render(
-      <MemoryRouter initialEntries={['/no-such-route']}>
-        <AppRoutes />
-      </MemoryRouter>,
-    );
-    expect(screen.getByRole('heading', { name: copy.shell.notFoundTitle })).toBeInTheDocument();
+  it('未知路径渲染 404 占位，返回链接可用', async () => {
+    renderWithAuth(<AppRoutes />, await createAuthedStore(), ['/no-such-route']);
+    expect(
+      await screen.findByRole('heading', { name: copy.shell.notFoundTitle }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: copy.shell.notFoundBack })).toHaveAttribute('href', '/');
   });
 
-  it('跳转主内容链接存在（可达性基线）', () => {
-    render(
-      <MemoryRouter>
-        <AppRoutes />
-      </MemoryRouter>,
-    );
-    expect(screen.getByRole('link', { name: copy.shell.skipToContent })).toHaveAttribute(
+  it('跳转主内容链接存在（可达性基线）', async () => {
+    renderWithAuth(<AppRoutes />, await createAuthedStore());
+    expect(await screen.findByRole('link', { name: copy.shell.skipToContent })).toHaveAttribute(
       'href',
       '#main',
     );

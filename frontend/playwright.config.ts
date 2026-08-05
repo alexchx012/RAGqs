@@ -1,8 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * e2e 骨架：自包含，不依赖后端（API 代理在 fe-auth-login 落地）。
- * 只启动 vite dev server，验证应用壳、主题机制与动效降级。
+ * e2e 骨架：自包含（契约 mock MSW 接管 API，不依赖后端）。
+ * 只启动 vite dev server，验证应用壳、主题机制、动效降级与登录链路。
  *
  * 运行: cd frontend && npm run test:e2e
  */
