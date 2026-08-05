@@ -120,7 +120,7 @@ npm install
 npm run dev
 ```
 
-开发服务器默认运行在 `http://localhost:5173`，API 请求自动代理到 `http://localhost:9900`（FastAPI 后端默认端口）。
+开发服务器默认运行在 `http://localhost:5173`。API 代理（转发到 FastAPI 后端）将在 fe-auth-login change 落地，当前基座不配置。
 
 ### 生产构建
 
@@ -147,5 +147,5 @@ npm run build
 
 cd frontend
 npm test              # Vitest 单元测试
-npx playwright test   # Playwright E2E 测试（需先启动后端）
+npx playwright test   # Playwright E2E 骨架（自包含，只启动 vite dev server）
 ```

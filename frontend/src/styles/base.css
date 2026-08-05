@@ -1,0 +1,62 @@
+/* 全局样式基线（共用基座 §2.2 字号落地、§3 键盘与焦点约定、§2.5 动效语言）。 */
+
+html {
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+body {
+  font-family: var(--font-sohne);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-ink-black);
+  background-color: var(--surface-canvas);
+}
+
+/* 中文标题不使用斜体（中文斜体为伪斜体）；Steep 的斜体强调仅适用于西文。 */
+:lang(zh) em,
+:lang(zh) i {
+  font-style: normal;
+}
+
+/* 键盘焦点可见：:focus-visible 2px 描边 + 2px 偏移，圆角随元素（outline 自动跟随 border-radius）。 */
+:focus-visible {
+  outline: 2px solid var(--color-ink-black);
+  outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/*
+ * 主题切换即时生效：切换瞬间由 theme.ts 在 <html> 上挂 .theme-switching，
+ * 为全站颜色加 250ms（--duration-base）过渡；prefers-reduced-motion 时不加过渡（直出）。
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .theme-switching,
+  .theme-switching *,
+  .theme-switching *::before,
+  .theme-switching *::after {
+    transition-property:
+      color, background-color, border-color, outline-color, box-shadow, fill, stroke;
+    transition-duration: var(--duration-base);
+    transition-timing-function: var(--ease-in-out);
+  }
+}
+
+/* prefers-reduced-motion：全部动效降级为仅透明度变化或直出（此处统一直出）。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

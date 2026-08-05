@@ -1,0 +1,167 @@
+/*
+ * Steep 设计 token 运行时全量表。
+ * 唯一事实源：docs/项目设计/前端/tokens.json、theme.css、variables.css 与 docs/设计规范/DESIGN.md。
+ * 暗色映射：docs/项目设计/前端/共用基座设计.md §2.1（token 名不变、按主题换值）。
+ * 字体栈：共用基座 §2.2（西文在前、中文系统字体回退；不内嵌商业字体文件）。
+ */
+
+/* Tailwind v4 主题层：清空默认调色板，只允许 Steep 9 色 + 发丝边 + 功能色三例外（色彩纪律）。 */
+@theme {
+  --color-*: initial;
+
+  /* 字体（共用基座 §2.2；中文标题不使用斜体） */
+  --font-signifier: 'Signifier', 'Source Han Serif SC', 'Noto Serif CJK SC', 'Songti SC', 'SimSun', serif;
+  --font-sohne: 'Sohne', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'PingFang SC', 'Hiragana Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+
+  /* 字重 5 档：400 → 430 → 450 → 480 → 500 半级递进，不跳 600+ */
+  --font-weight-regular: 400;
+  --font-weight-w430: 430;
+  --font-weight-w450: 450;
+  --font-weight-w480: 480;
+  --font-weight-medium: 500;
+
+  /* 字号阶梯（theme.css） */
+  --text-caption: 15px;
+  --leading-caption: 1.5;
+  --text-body: 17px;
+  --leading-body: 1.35;
+  --text-body-lg: 20px;
+  --leading-body-lg: 1.35;
+  --text-subheading: 22px;
+  --leading-subheading: 1.5;
+  --text-heading-sm: 26px;
+  --leading-heading-sm: 1.18;
+  --tracking-heading-sm: -0.23px;
+  --text-heading: 44px;
+  --leading-heading: 1.3;
+  --tracking-heading: -0.66px;
+  --text-heading-lg: 64px;
+  --leading-heading-lg: 1.3;
+  --tracking-heading-lg: -0.96px;
+  --text-display: 90px;
+  --leading-display: 1.3;
+  --tracking-display: -2.25px;
+
+  /* 间距（theme.css；4px 基准） */
+  --spacing-4: 4px;
+  --spacing-8: 8px;
+  --spacing-12: 12px;
+  --spacing-16: 16px;
+  --spacing-20: 20px;
+  --spacing-24: 24px;
+  --spacing-28: 28px;
+  --spacing-32: 32px;
+  --spacing-40: 40px;
+  --spacing-64: 64px;
+  --spacing-80: 80px;
+  --spacing-96: 96px;
+  --spacing-124: 124px;
+  --spacing-128: 128px;
+  --spacing-160: 160px;
+
+  /* 圆角（theme.css 数值档 + variables.css named radii） */
+  --radius-sm: 0.01px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-2xl-2: 20px;
+  --radius-3xl: 24px;
+  --radius-cards: 24px;
+  --radius-images: 12px;
+  --radius-inputs: 16px;
+  --radius-buttons: 9999px;
+  --radius-smallcards: 16px;
+  --radius-elevatedcards: 20px;
+
+  /* 阴影三档（内容卡无阴影无边框；暗色沿用同一 token，按 共用基座 §2.1 由实现侧按需加深） */
+  --shadow-subtle: oklab(0 0 0 / 0.05) 0px 0px 0px 1px, rgba(0, 0, 0, 0.08) 0px 4px 24px 0px;
+  --shadow-subtle-2: oklab(0 0 0 / 0.05) 0px 0px 0px 1px, rgba(0, 0, 0, 0.1) 0px 8px 40px 0px;
+  --shadow-subtle-3:
+    rgba(4, 23, 43, 0.05) 0px 0px 0px 1px, rgba(0, 0, 0, 0.1) 0px 20px 25px -5px,
+    rgba(0, 0, 0, 0.1) 0px 8px 10px -6px;
+
+  /* 窄屏断点 768px：base 为窄屏，md: 起为桌面（与 Tailwind 默认值对齐，显式声明） */
+  --breakpoint-md: 48rem;
+}
+
+/*
+ * 颜色 token 经 @theme inline 引用运行时变量：
+ * Tailwind 工具类内联 var(--color-*)，变量值由下方 :root / [data-theme='dark'] 按主题切换。
+ */
+@theme inline {
+  --color-ink-black: var(--color-ink-black);
+  --color-paper-white: var(--color-paper-white);
+  --color-mist-gray: var(--color-mist-gray);
+  --color-fog-white: var(--color-fog-white);
+  --color-slate-gray: var(--color-slate-gray);
+  --color-ash-gray: var(--color-ash-gray);
+  --color-smoke-gray: var(--color-smoke-gray);
+  --color-blush-peach: var(--color-blush-peach);
+  --color-sienna-brown: var(--color-sienna-brown);
+  --color-hairline: var(--color-hairline);
+  --color-danger: var(--color-danger);
+  --color-warning: var(--color-warning);
+  --color-success: var(--color-success);
+}
+
+/* 亮色主题（默认）。surface 5 层映射到颜色 token，随主题联动。 */
+:root {
+  /* Steep 颜色 9 色 */
+  --color-ink-black: #17191c;
+  --color-paper-white: #ffffff;
+  --color-mist-gray: #f2f2f3;
+  --color-fog-white: #fafafb;
+  --color-slate-gray: #777b86;
+  --color-ash-gray: #979799;
+  --color-smoke-gray: #a3a6af;
+  --color-blush-peach: #fbe1d1;
+  --color-sienna-brown: #5d2a1a;
+
+  /* 发丝边 1px（内容卡一律无边框） */
+  --color-hairline: #ececec;
+
+  /* 功能色例外仅三种（低饱和、小面积；大面积铺底用 10% 透明度） */
+  --color-danger: #b6492f;
+  --color-warning: #8f6410;
+  --color-success: #4a7c59;
+
+  /* surface 5 层（tokens.json） */
+  --surface-canvas: var(--color-paper-white);
+  --surface-card-mist: var(--color-mist-gray);
+  --surface-section-fog: var(--color-fog-white);
+  --surface-accent-blush: var(--color-blush-peach);
+  --surface-elevated-white: var(--color-paper-white);
+
+  /* 布局（variables.css） */
+  --page-max-width: 1200px;
+  --section-gap: 80px;
+  --card-padding: 20px;
+  --element-gap: 8px;
+  --spacing-unit: 4px;
+
+  /* 动效（DESIGN.md Tokens — Motion / 共用基座 §2.5） */
+  --duration-fast: 150ms;
+  --duration-base: 250ms;
+  --duration-slow: 400ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 暗色主题：token 名不变，值按 共用基座 §2.1 对照表切换。 */
+:root[data-theme='dark'] {
+  --color-ink-black: #f2f2f3;
+  --color-paper-white: #1c1f24;
+  --color-fog-white: #23262c;
+  --color-mist-gray: #2c3038;
+  --color-slate-gray: #9aa0ab;
+  --color-ash-gray: #7d828c;
+  --color-smoke-gray: #6b7079;
+  --color-blush-peach: #3a2d25;
+  --color-sienna-brown: #dfa88d;
+
+  --color-hairline: #2f333b;
+
+  --color-danger: #d1826f;
+  --color-warning: #d3a24f;
+  --color-success: #8ab69b;
+}

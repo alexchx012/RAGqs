@@ -1,21 +1,16 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * e2e 前置条件（硬性）:
- * 1. 后端以 environment=local（DEPLOYMENT_ENVIRONMENT=local）启动，
- *    否则会话 cookie 带 Secure，Playwright 的 http:// 上下文不会存储 cookie。
- * 2. AUTH_ENABLED=true + AUTH_PROVIDER=local_credentials
- * 3. AUTH_LOCAL_ADMIN_SEED=user:pass（或 E2E_ADMIN_USER/E2E_ADMIN_PASS）
- * 4. 后端监听 :9900（vite 代理目标）
+ * e2e 骨架：自包含，不依赖后端（API 代理在 fe-auth-login 落地）。
+ * 只启动 vite dev server，验证应用壳、主题机制与动效降级。
  *
  * 运行: cd frontend && npm run test:e2e
- * 可传: AUTH_LOCAL_ADMIN_SEED=admin:secret npm run test:e2e
  */
 export default defineConfig({
   testDir: './e2e',
   timeout: 30000,
   expect: { timeout: 10000 },
-  fullyParallel: false,
+  fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   use: {
@@ -27,9 +22,5 @@ export default defineConfig({
     command: 'npx vite --port 5173',
     port: 5173,
     reuseExistingServer: !process.env.CI,
-    // 仅启动前端；后端须由外部以 environment=local 启动
-    env: {
-      ...process.env,
-    },
   },
 });
