@@ -1,5 +1,3 @@
-"""RAG Knowledge Agent"""
+"""RAGqs core platform."""
 
-__version__ = "1.0.0"
-
-from app.utils import logger  # noqa: F401
+__version__ = "0.1.0"

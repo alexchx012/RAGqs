@@ -1,0 +1,72 @@
+name: Core Platform CI
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      RAG_DATABASE_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs
+      RAGQS_TEST_POSTGRES_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs
+      RAGQS_TEST_S3_ENDPOINT: http://localhost:9000
+      RAGQS_TEST_S3_ACCESS_KEY: minioadmin
+      RAGQS_TEST_S3_SECRET_KEY: minioadmin
+      RAGQS_TEST_S3_BUCKET: ragqs-ci
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ragqs
+          POSTGRES_USER: ragqs
+          POSTGRES_PASSWORD: ragqs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ragqs -d ragqs"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        command: server /data
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev,postgres]"
+      - name: Create object bucket
+        run: |
+          python - <<'PY'
+          import boto3
+          import time
+          client = boto3.client(
+              "s3",
+              endpoint_url="http://localhost:9000",
+              aws_access_key_id="minioadmin",
+              aws_secret_access_key="minioadmin",
+          )
+          for _ in range(30):
+              try:
+                  client.list_buckets()
+                  break
+              except Exception:
+                  time.sleep(1)
+          else:
+              raise RuntimeError("MinIO did not become ready")
+          client.create_bucket(Bucket="ragqs-ci")
+          PY
+      - run: python -m alembic upgrade head
+      - run: python -m ruff check app alembic tests
+      - run: python -m black --check app alembic tests
+      - run: python -m isort --check-only app alembic tests
+      - run: python -m mypy app
+      - run: python -m pytest -q

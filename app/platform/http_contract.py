@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from .context import current_context
+from .errors import PlatformError, map_exception
+
+
+def _request_id() -> str:
+    context = current_context()
+    return context.request_id if context is not None else "req_system"
+
+
+def request_error_payload(error: PlatformError, request_id: str | None = None) -> dict[str, Any]:
+    return {
+        "error": {
+            "code": error.code,
+            "message": error.message,
+            "details": dict(error.details),
+            "request_id": (
+                request_id if request_id and request_id.startswith("req_") else _request_id()
+            ),
+        }
+    }
+
+
+def batch_item_error(error: PlatformError) -> dict[str, Any]:
+    return {
+        "error": {
+            "code": error.code,
+            "message": error.message,
+            "details": dict(error.details),
+        }
+    }
+
+
+def sse_error_event(error: PlatformError, request_id: str | None = None) -> str:
+    payload = request_error_payload(error, request_id)["error"]
+    return (
+        f"event: error\ndata: {json.dumps(payload, ensure_ascii=True, separators=(',', ':'))}\n\n"
+    )
+
+
+def parse_idempotency_key(headers: Mapping[str, str]) -> str | None:
+    for key, value in headers.items():
+        if key.casefold() == "idempotency-key":
+            normalized = value.strip()
+            return normalized or None
+    return None
+
+
+def parse_if_match(headers: Mapping[str, str]) -> str | None:
+    for key, value in headers.items():
+        if key.casefold() != "if-match":
+            continue
+        normalized = value.strip()
+        if not normalized or "\r" in normalized or "\n" in normalized:
+            return None
+        if normalized.startswith('"') and normalized.endswith('"') and len(normalized) > 1:
+            normalized = normalized[1:-1]
+        return normalized or None
+    return None
+
+
+def paginated_response(
+    items: list[Any], *, total: int, page: int, page_size: int
+) -> dict[str, Any]:
+    if total < 0 or page < 1 or page_size < 1:
+        raise ValueError(
+            "pagination values must be non-negative with page and page_size starting at one"
+        )
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def _validation_error(exc: RequestValidationError) -> PlatformError:
+    fields = []
+    for item in exc.errors():
+        location = [str(part) for part in item.get("loc", ()) if part != "body"]
+        fields.append({"loc": location, "code": str(item.get("type", "invalid"))})
+    return PlatformError(
+        code="validation_error",
+        message="Request validation failed",
+        details={"fields": fields},
+        status_code=422,
+    )
+
+
+def _http_error(exc: StarletteHTTPException) -> PlatformError:
+    code_by_status = {
+        400: "bad_request",
+        401: "authentication_required",
+        403: "forbidden",
+        404: "not_found",
+        409: "conflict",
+        422: "validation_error",
+        429: "rate_limited",
+    }
+    message_by_status = {
+        400: "The request is invalid",
+        401: "Authentication is required",
+        403: "The operation is not allowed",
+        404: "The requested resource was not found",
+        409: "The request conflicts with current state",
+        422: "Request validation failed",
+        429: "Too many requests",
+    }
+    return PlatformError(
+        code=code_by_status.get(exc.status_code, "http_error"),
+        message=message_by_status.get(exc.status_code, "The request could not be completed"),
+        details={},
+        status_code=exc.status_code,
+        retryable=exc.status_code == 429,
+    )
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(PlatformError)
+    async def handle_platform_error(request: Request, exc: PlatformError) -> JSONResponse:
+        del request
+        return JSONResponse(request_error_payload(exc), status_code=exc.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        del request
+        error = _validation_error(exc)
+        return JSONResponse(request_error_payload(error), status_code=error.status_code)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        del request
+        error = _http_error(exc)
+        return JSONResponse(request_error_payload(error), status_code=error.status_code)
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        del request
+        error = map_exception(exc)
+        return JSONResponse(request_error_payload(error), status_code=error.status_code)

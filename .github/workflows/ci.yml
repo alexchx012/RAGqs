@@ -28,7 +28,7 @@ jobs:
             "docs/operations.md"
             "alembic.ini"
             "alembic/env.py"
-            "alembic/versions/0001_initial_schema.py"
+            "alembic/versions/0001_core_platform_initial.py"
           )
 
           for file in "${required_files[@]}"; do
@@ -120,12 +120,12 @@ jobs:
 
       - name: Apply migration to an empty PostgreSQL database
         env:
-          RAGQS_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
+          RAG_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
         run: alembic upgrade head
 
       - name: Verify database migration head
         env:
-          RAGQS_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
+          RAG_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
         run: alembic current --check-heads
 
 # New runtime behavior belongs in design-driven contract tests written with each

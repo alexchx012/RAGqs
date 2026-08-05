@@ -1,0 +1,33 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from .config import PlatformSettings
+from .runtime import PlatformRuntime, build_runtime
+
+
+@dataclass(slots=True)
+class MaintenanceRuntime:
+    runtime: PlatformRuntime
+    owns_runtime: bool = True
+
+    def run_retention_once(self) -> None:
+        metrics: Any = self.runtime.resolve("observability_metrics")
+        prune = getattr(metrics, "prune", None)
+        if not callable(prune):
+            raise RuntimeError("observability adapter does not support retention maintenance")
+        prune()
+
+    def close(self) -> None:
+        if self.owns_runtime:
+            self.runtime.close()
+
+
+def create_maintenance_runtime(
+    settings: PlatformSettings,
+    *,
+    runtime: PlatformRuntime | None = None,
+) -> MaintenanceRuntime:
+    owns_runtime = runtime is None
+    return MaintenanceRuntime(runtime=runtime or build_runtime(settings), owns_runtime=owns_runtime)

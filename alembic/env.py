@@ -1,36 +1,28 @@
-"""Alembic environment for the Postgres business schema.
-
-The migration environment deliberately has no dependency on application
-models. The design documents are the schema authority until an ORM model
-layer is introduced, so revisions use handwritten operations and keep
-``target_metadata`` empty.
-"""
+"""Alembic environment for the core platform schema."""
 
 from __future__ import annotations
 
 import os
+from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import create_engine, pool
 
+from alembic import context
+from app.platform.database import core_metadata
 
 config = context.config
-target_metadata = None
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = core_metadata
 
 
 def _database_url() -> str:
-    """Return the configured SQLAlchemy URL without exposing it in config files."""
+    """Return the configured SQLAlchemy URL without exposing credentials."""
 
-    url = (
-        os.getenv("RAGQS_DATABASE_URL")
-        or os.getenv("DATABASE_URL")
-        or os.getenv("POSTGRES_DSN")
-        or config.get_main_option("sqlalchemy.url")
-    )
+    url = config.get_main_option("sqlalchemy.url") or os.getenv("RAG_DATABASE_URL")
     if not url:
-        raise RuntimeError(
-            "Set RAGQS_DATABASE_URL (or DATABASE_URL/POSTGRES_DSN) before running Alembic."
-        )
+        raise RuntimeError("Set RAG_DATABASE_URL before running Alembic.")
     if url.startswith("postgresql://"):
         url = "postgresql+psycopg://" + url[len("postgresql://") :]
     return url
@@ -53,7 +45,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations against the configured Postgres database."""
+    """Run migrations against the configured database."""
 
     engine = create_engine(
         _database_url(),
