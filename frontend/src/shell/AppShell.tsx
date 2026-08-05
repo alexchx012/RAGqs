@@ -15,7 +15,7 @@ export function AppShell() {
       >
         {copy.shell.skipToContent}
       </a>
-      <main id="main">
+      <main id="main" className="app-fade-in">
         <Outlet />
       </main>
     </div>

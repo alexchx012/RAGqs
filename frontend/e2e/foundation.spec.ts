@@ -3,8 +3,9 @@ import type { Page } from '@playwright/test';
 import { copy } from '../src/copy';
 
 /*
- * e2e 骨架：自包含（不依赖后端），验证应用壳渲染、亮/暗主题机制、
+ * e2e 骨架：自包含（契约 mock MSW 接管 API，不依赖后端），验证登录页渲染、亮/暗主题机制、
  * reduced-motion 降级与 :focus-visible 基线。
+ * 业务页在 RequireAuth 之下：未认证访问一律落在 /login（fe-auth-login）。
  */
 
 function readToken(page: Page, name: string): Promise<string> {
@@ -62,29 +63,40 @@ async function probeSwitchDuration(page: Page): Promise<number> {
   return Number.parseFloat(duration);
 }
 
-test('shell renders placeholder page with copy from the single copy file', async ({ page }) => {
+test('unauthenticated visit to a business page redirects to /login', async ({ page }) => {
   await page.goto('/');
   await expect(page).toHaveTitle(copy.appName);
-  await expect(page.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeVisible();
-  await expect(page.getByText(copy.shell.placeholderBody)).toBeVisible();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole('heading', { name: copy.login.title })).toBeVisible();
+  await expect(page.getByText(copy.login.guide)).toBeVisible();
 });
 
 test('unauthenticated page follows light system scheme with light token values', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
-  await page.goto('/');
+  await page.goto('/login');
+  await expect(page.getByText(copy.login.tagline)).toBeVisible();
   await expect.poll(() => readDataTheme(page)).toBe('light');
   await expect.poll(() => readToken(page, '--color-paper-white')).toBe('#ffffff');
   await expect.poll(() => readToken(page, '--color-ink-black')).toBe('#17191c');
   await expect.poll(() => readToken(page, '--color-hairline')).toBe('#ececec');
   // Tailwind 工具类经 @theme inline 解析到运行时变量（text-slate-gray → #777b86）
   await expect
-    .poll(() => page.evaluate(() => getComputedStyle(document.querySelector('p')!).color))
+    .poll(() =>
+      page.evaluate(
+        (tagline) =>
+          getComputedStyle(
+            [...document.querySelectorAll('p')].find((p) => p.textContent === tagline)!,
+          ).color,
+        copy.login.tagline,
+      ),
+    )
     .toBe('rgb(119, 123, 134)');
 });
 
 test('same token names resolve to dark values under dark scheme (base doc 2.1 table)', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
-  await page.goto('/');
+  await page.goto('/login');
+  await expect(page.getByText(copy.login.tagline)).toBeVisible();
   await expect.poll(() => readDataTheme(page)).toBe('dark');
   await expect.poll(() => readToken(page, '--color-paper-white')).toBe('#1c1f24');
   await expect.poll(() => readToken(page, '--color-ink-black')).toBe('#f2f2f3');
@@ -99,14 +111,22 @@ test('same token names resolve to dark values under dark scheme (base doc 2.1 ta
   await expect.poll(() => readToken(page, '--color-success')).toBe('#8ab69b');
   // 同一工具类 text-slate-gray 解析到暗色值（token 名不变换值）
   await expect
-    .poll(() => page.evaluate(() => getComputedStyle(document.querySelector('p')!).color))
+    .poll(() =>
+      page.evaluate(
+        (tagline) =>
+          getComputedStyle(
+            [...document.querySelectorAll('p')].find((p) => p.textContent === tagline)!,
+          ).color,
+        copy.login.tagline,
+      ),
+    )
     .toBe('rgb(154, 160, 171)');
 });
 
 test('theme switch applies instantly with a 250ms site-wide color transition', async ({ page }) => {
   await installThemeProbe(page);
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
-  await page.goto('/');
+  await page.goto('/login');
   const seconds = await probeSwitchDuration(page);
   expect(seconds).toBeCloseTo(0.25, 2);
 });
@@ -114,13 +134,14 @@ test('theme switch applies instantly with a 250ms site-wide color transition', a
 test('motion degrades to instant under prefers-reduced-motion', async ({ page }) => {
   await installThemeProbe(page);
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
-  await page.goto('/');
+  await page.goto('/login');
   const seconds = await probeSwitchDuration(page);
   expect(seconds).toBeLessThan(0.001);
 });
 
 test('keyboard focus shows a 2px focus-visible outline', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/login');
+  await page.waitForSelector('#login-username');
   await page.keyboard.press('Tab');
   const outline = await page.evaluate(() => {
     const element = document.activeElement;

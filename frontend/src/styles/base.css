@@ -60,3 +60,48 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* 主站进入淡入 250ms（登录成功落地后的主站淡入沿用同一规则）。 */
+@keyframes app-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.app-fade-in {
+  animation: app-fade-in var(--duration-base) var(--ease-out);
+}
+
+/* 内联加载点（沿用「保存」键加载态；认证等待与提交中共用）。 */
+.loading-dots {
+  display: inline-flex;
+  gap: var(--spacing-4);
+}
+
+.loading-dots > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: currentcolor;
+  animation: loading-dot-pulse var(--duration-slow) var(--ease-in-out) infinite alternate;
+}
+
+.loading-dots > span:nth-child(2) {
+  animation-delay: calc(var(--duration-slow) / 3);
+}
+
+.loading-dots > span:nth-child(3) {
+  animation-delay: calc(var(--duration-slow) / 3 * 2);
+}
+
+@keyframes loading-dot-pulse {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
