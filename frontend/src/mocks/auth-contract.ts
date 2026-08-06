@@ -318,10 +318,12 @@ export class MockAuthController {
       lastConsumed: null,
     });
     this.csrfBySession.set(sessionId, csrfToken);
+    // access token 必须在 persist 前签发：me 每请求 rehydrate，快照不含内存新 token 会 401
+    const accessToken = this.issueAccessToken(sessionId, record.user.id);
     this.persist();
     return {
       user: record.user,
-      accessToken: this.issueAccessToken(sessionId, record.user.id),
+      accessToken,
       refreshToken,
       csrfToken,
     };
@@ -367,9 +369,11 @@ export class MockAuthController {
         if (this.now() - consumed.at < this.config.reuseWindowMs) {
           // 5 秒内并发重用同一前驱：返回第一次轮换产生的同一后继结果，不视为失败
           session.lastActiveAt = this.now();
+          // 同 login：access token 先于 persist 签发
+          const accessToken = this.issueAccessToken(session.id, replay.userId);
           this.persist();
           return {
-            accessToken: this.issueAccessToken(session.id, replay.userId),
+            accessToken,
             refreshToken: consumed.successor,
           };
         }

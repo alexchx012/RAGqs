@@ -15,7 +15,7 @@ import { copy } from '../../copy';
 import { mockAuth, mockServer } from '../../mocks/testing';
 import { AppRoutes } from '../../router/AppRoutes';
 import { AUTO_OPEN_ADMIN_DRAWER_STATE_KEY } from '../../router/landing';
-import { renderWithAuth } from '../../test/auth-fixtures';
+import { renderWithAuth, renderWithShell } from '../../test/auth-fixtures';
 import { LoginPage } from './LoginPage';
 
 function createIntegrationStore(): AuthSessionStore {
@@ -32,7 +32,7 @@ function createIntegrationStore(): AuthSessionStore {
 }
 
 async function renderLoginPage(store: AuthSessionStore = createIntegrationStore()) {
-  renderWithAuth(<AppRoutes />, store, ['/login']);
+  renderWithShell(<AppRoutes />, store, ['/login']);
   // bootstrap 静默 refresh（无 Cookie → 失败）后渲染登录页
   const heading = await screen.findByRole('heading', { name: copy.login.title });
   return { store, heading };

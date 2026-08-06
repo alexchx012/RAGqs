@@ -15,6 +15,7 @@ import {
   createTestStore,
   fakeAuthApi,
   renderWithAuth,
+  renderWithShell,
   testUser,
 } from '../test/auth-fixtures';
 
@@ -49,7 +50,7 @@ describe('路由守卫（规格 §4）', () => {
 
   it('已认证访问 /login → 按角色重定向落地页（普通用户 → 聊天主页）', async () => {
     const store = await createAuthedStore();
-    renderWithAuth(<AppRoutes />, store, ['/login']);
+    renderWithShell(<AppRoutes />, store, ['/login']);
     expect(
       await screen.findByRole('heading', { name: copy.shell.placeholderTitle }),
     ).toBeInTheDocument();

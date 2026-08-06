@@ -4,11 +4,11 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { describe, expect, it, vi } from 'vitest';
 import { copy } from '../copy';
 import { AppRoutes } from '../router/AppRoutes';
-import { createAuthedStore, renderWithAuth } from '../test/auth-fixtures';
+import { createAuthedStore, renderWithShell } from '../test/auth-fixtures';
 
 describe('应用壳与路由骨架', () => {
   it('占位页渲染单一文案常量文件中的文案', async () => {
-    renderWithAuth(<AppRoutes />, await createAuthedStore());
+    renderWithShell(<AppRoutes />, await createAuthedStore());
     expect(
       await screen.findByRole('heading', { name: copy.shell.placeholderTitle }),
     ).toBeInTheDocument();
@@ -16,7 +16,7 @@ describe('应用壳与路由骨架', () => {
   });
 
   it('未知路径渲染 404 占位，返回链接可用', async () => {
-    renderWithAuth(<AppRoutes />, await createAuthedStore(), ['/no-such-route']);
+    renderWithShell(<AppRoutes />, await createAuthedStore(), ['/no-such-route']);
     expect(
       await screen.findByRole('heading', { name: copy.shell.notFoundTitle }),
     ).toBeInTheDocument();
@@ -24,7 +24,7 @@ describe('应用壳与路由骨架', () => {
   });
 
   it('跳转主内容链接存在（可达性基线）', async () => {
-    renderWithAuth(<AppRoutes />, await createAuthedStore());
+    renderWithShell(<AppRoutes />, await createAuthedStore());
     expect(await screen.findByRole('link', { name: copy.shell.skipToContent })).toHaveAttribute(
       'href',
       '#main',

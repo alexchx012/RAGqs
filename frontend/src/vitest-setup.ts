@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { afterAll, beforeAll, beforeEach } from 'vitest';
-import { mockServer, resetMockAuth } from './mocks/testing';
+import { mockServer, resetMockAuth, resetMockNotifications } from './mocks/testing';
 
 // 契约 mock（规格 §1）：全部用例在同一进程内经 MSW 访问模拟服务端，用例间状态复位
 beforeAll(() => {
@@ -10,6 +10,7 @@ beforeAll(() => {
 beforeEach(() => {
   mockServer.resetHandlers();
   resetMockAuth();
+  resetMockNotifications();
 });
 
 afterAll(() => {

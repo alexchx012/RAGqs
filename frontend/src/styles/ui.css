@@ -1,0 +1,127 @@
+/* Steep 通用控件库补充样式（fe-shared-shell src/ui/）：骨架呼吸等循环动画。 */
+
+/* 骨架呼吸：透明度 0.6↔1，1200ms --ease-in-out 无限交替（共用基座 §2.5 循环动画表）。 */
+@keyframes ui-skeleton-breathe {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.ui-skeleton {
+  animation: ui-skeleton-breathe 1200ms var(--ease-in-out) infinite alternate;
+}
+
+/* 状态点脉冲：透明度 0.4↔1，1000ms --ease-in-out 无限（共用基座 §2.5 循环动画表）。 */
+@keyframes ui-status-pulse {
+  from {
+    opacity: 0.4;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.ui-status-pulse {
+  animation: ui-status-pulse 1000ms var(--ease-in-out) infinite alternate;
+}
+
+/* 浮层进入 / 退出（⋯ 菜单共用基座 §3.2、悬停卡 §3.4）：进入 opacity 0→1 + 上移 4px，退出反向。 */
+@keyframes ui-overlay-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ui-overlay-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ui-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.ui-menu-content[data-state='open'] {
+  animation: ui-overlay-enter var(--duration-base) var(--ease-out) both;
+}
+
+.ui-menu-content[data-state='closed'] {
+  animation: ui-overlay-exit var(--duration-fast) var(--ease-in-out) both;
+}
+
+.ui-hovercard-content[data-state='open'] {
+  animation: ui-overlay-enter var(--duration-fast) var(--ease-out) both;
+}
+
+/* 悬停卡退出仅 150ms 淡出（共用基座 §3.4）。 */
+.ui-hovercard-content[data-state='closed'] {
+  animation: ui-fade-out var(--duration-fast) var(--ease-in-out) both;
+}
+
+/* 对话框（共用基座 §5.6）：遮罩淡入淡出；内容 opacity 0→1 + scale 0.97→1，退出反向。 */
+.ui-dialog-overlay[data-state='open'] {
+  animation: ui-fade-in var(--duration-base) var(--ease-out) both;
+}
+
+.ui-dialog-overlay[data-state='closed'] {
+  animation: ui-fade-out var(--duration-fast) var(--ease-in-out) both;
+}
+
+/* 内容居中位移并入关键帧（避免与定位 translate 叠加）；fill both 保证动画结束后持终态居中。 */
+@keyframes ui-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes ui-dialog-exit {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+}
+
+.ui-dialog-content[data-state='open'] {
+  animation: ui-dialog-enter var(--duration-base) var(--ease-out) both;
+}
+
+.ui-dialog-content[data-state='closed'] {
+  animation: ui-dialog-exit var(--duration-fast) var(--ease-in-out) both;
+}

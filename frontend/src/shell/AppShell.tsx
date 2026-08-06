@@ -1,12 +1,22 @@
+/*
+ * 应用壳（规格 §5）：全局基线的承载层 + 共享壳层（fe-shared-shell）接线。
+ * - DrawerHost：URL 驱动的全屏抽屉宿主（/settings、/admin 路径段），聊天主页在其下保持挂载；
+ *   页头右侧挂铃铛（共用基座 §5.1；主页右上角铃铛由 HomePage 挂）。
+ * - 通知轮询仅已认证时运行：本层位于 RequireAuth 之下，mount 启动、unmount 停止（规格 §4）。
+ */
+import { useEffect } from 'react';
 import { Outlet } from 'react-router';
 import { copy } from '../copy';
+import { useNotifications } from '../notifications/NotificationsProvider';
+import { DrawerHost } from './drawer/DrawerHost';
+import { ShellBell } from './ShellBell';
 
-/*
- * 应用壳（规格 §5）：全局基线的承载层。
- * 业务导航、铃铛、抽屉触发器等在 fe-shared-shell / 各业务 change 落地；
- * 本层只提供跳转主内容的可达性基线与 Outlet。
- */
 export function AppShell() {
+  const notifications = useNotifications();
+  useEffect(() => {
+    notifications.start();
+    return () => notifications.stop();
+  }, [notifications]);
   return (
     <div className="min-h-screen bg-paper-white text-ink-black">
       <a
@@ -18,6 +28,7 @@ export function AppShell() {
       <main id="main" className="app-fade-in">
         <Outlet />
       </main>
+      <DrawerHost headerRight={<ShellBell store={notifications} />} />
     </div>
   );
 }
