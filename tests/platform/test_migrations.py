@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from alembic import command
 from alembic.config import Config
+from app.identity.schema import IDENTITY_TABLE_NAMES
 from app.platform.config import load_platform_settings
 from app.platform.database import CORE_TABLE_NAMES, core_metadata, create_engine_for_settings
 
@@ -24,7 +25,7 @@ def test_empty_database_upgrade_creates_only_core_owned_tables(
     database_url = f"sqlite:///{tmp_path / 'empty.sqlite3'}"
     config = alembic_config(database_url)
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0001_core_platform_initial")
     engine = create_engine(database_url)
     tables = set(inspect(engine).get_table_names())
     engine.dispose()
@@ -33,6 +34,18 @@ def test_empty_database_upgrade_creates_only_core_owned_tables(
     assert "identity_user" not in tables
     assert "provider_call" not in tables
     assert "outbox_event" not in tables
+
+
+def test_head_upgrade_creates_identity_owned_tables(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'identity.sqlite3'}"
+    config = alembic_config(database_url)
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    tables = set(inspect(engine).get_table_names())
+    engine.dispose()
+
+    assert IDENTITY_TABLE_NAMES <= tables
 
 
 def test_initial_revision_can_downgrade_to_empty_database(tmp_path: Path) -> None:

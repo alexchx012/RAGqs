@@ -25,6 +25,8 @@ class ObjectStorePort(Protocol):
 
     def get(self, key: str) -> tuple[bytes, ObjectMetadata]: ...
 
+    def exists(self, key: str) -> bool: ...
+
     def delete(self, key: str) -> None: ...
 
 
@@ -45,6 +47,11 @@ class MemoryObjectStore:
         except KeyError as exc:
             raise StorageKeyError(key) from exc
         return bytes(content), metadata
+
+    def exists(self, key: str) -> bool:
+        if not key:
+            raise ValueError("object key must not be empty")
+        return key in self._objects
 
     def delete(self, key: str) -> None:
         if key not in self._objects:
@@ -117,12 +124,36 @@ class S3ObjectStore:
             raise StorageKeyError(key)
         return content, metadata
 
+    def exists(self, key: str) -> bool:
+        self._validate(key)
+        try:
+            self._active_client().head_object(Bucket=self._bucket, Key=key)
+        except Exception as exc:
+            if self._is_missing_object_error(exc):
+                return False
+            raise StorageKeyError(key) from exc
+        return True
+
     def delete(self, key: str) -> None:
         self._validate(key)
         try:
             self._active_client().delete_object(Bucket=self._bucket, Key=key)
         except Exception as exc:
             raise StorageKeyError(key) from exc
+
+    @staticmethod
+    def _is_missing_object_error(exc: Exception) -> bool:
+        if isinstance(exc, KeyError):
+            return True
+        response = getattr(exc, "response", None)
+        if not isinstance(response, dict):
+            return False
+        error = response.get("Error")
+        if not isinstance(error, dict):
+            return False
+        code = str(error.get("Code", ""))
+        status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        return code in {"404", "NoSuchKey", "NotFound"} or status == 404
 
     def close(self) -> None:
         close = getattr(self._client, "close", None)

@@ -309,6 +309,8 @@ Secret references are resolved by the platform before the workload starts. At mi
 
 The `admin` manifest is declarative deployment input. It contains at least one active administrator and the account identity, role, and lifecycle policy needed to reconcile that account. It may contain secret references but not secret values. Runtime APIs cannot create, edit, or delete an `admin` account. A manifest change is applied as a deployment change, audited, and followed by immediate session revocation/archive behavior for removed administrators.
 
+On a new deployment, run `ragqs-identity-bootstrap-admin` once after Alembic and before any API or worker workload. Its Job alone receives the complete `RAG_AUTH_BOOTSTRAP_USERNAME`, `RAG_AUTH_BOOTSTRAP_PASSWORD`, `RAG_AUTH_BOOTSTRAP_REAL_NAME`, and `RAG_AUTH_BOOTSTRAP_DISPLAY_NAME` group; the password is a secret reference and is never mounted into API or worker workloads, command arguments, logs, audits, or metrics. The requested username must be an active seat in the resolved administrator manifest. Re-running the Job only accepts the already-active matching initial seat and never repairs or replaces a nonempty identity database.
+
 ## 7. Deployment gates
 
 No workload is considered ready until all applicable gates pass. A failing gate keeps the workload out of service; it does not start in a degraded mode that hides the failed dependency.
@@ -332,7 +334,7 @@ No workload is considered ready until all applicable gates pass. A failing gate 
 1. Create the isolated namespace, service accounts, network policies, storage namespaces, and secret references.
 2. Create the PostgreSQL database and private object namespace; record the initial backup profile.
 3. Run the single-head Alembic migration through a one-shot migration workload using `alembic upgrade head`, then verify it with `alembic current --check-heads`. Multiple migration heads are a release failure. Record the schema revision and release ID.
-4. Reconcile the administrator manifest and verify audit output and session behavior.
+4. Run the one-shot administrator bootstrap Job, then reconcile the administrator manifest and verify audit output and session behavior.
 5. Deploy maintenance, API/query, and worker workloads in that order. Workers must not claim work until the migration and readiness gates pass.
 6. Create the baseline index generation, build it from the empty or supplied source snapshot, and run the full consistency gate before exposing retrieval.
 7. Run smoke checks for authentication/CSRF, upload and publication, query/SSE/reconnect, non-stream `/chat`, notification delivery, job cancel/replay authorization, and metrics redaction.

@@ -9,7 +9,7 @@ from .context import current_context
 from .persistence import FenceViolation, IdempotencyConflict, LeaseUnavailable
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class PlatformError(Exception):
     code: str
     message: str

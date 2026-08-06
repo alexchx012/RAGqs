@@ -6,6 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Column, Integer, MetaData, String, Table, select, update
 
+from app.identity.revocation import DurableGenerationRevocationPort
+from app.identity.schema import identity_metadata, identity_revocation_command_table
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.context import TaskContext
@@ -132,6 +134,40 @@ def test_runtime_assembles_sql_adapters_from_one_configuration() -> None:
     assert isinstance(runtime.resolve("observability_metrics"), SqlAlchemyObservabilityMetrics)
     assert isinstance(runtime.resolve("object_store"), S3ObjectStore)
 
+    runtime.close()
+
+
+def test_default_runtime_persists_generation_revocation_commands() -> None:
+    runtime = build_runtime(settings())
+    engine = runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    service = runtime.resolve("identity_access")
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    login = service.login(username="alice", password="Password1")
+
+    assert isinstance(
+        runtime.resolve("generation_revocation_port"), DurableGenerationRevocationPort
+    )
+    assert service.revoke_session(
+        user_id=user["id"],
+        session_id=login.session_id,
+        reason="user_logout",
+    )
+
+    with engine.connect() as connection:
+        command = connection.execute(identity_revocation_command_table.select()).mappings().one()
+    assert command["user_id"] == user["id"]
+    assert command["auth_session_id"] == login.session_id
+    assert command["receipt_state"] == "accepted"
+    assert str(command["receipt_reference"]).startswith("generation-outbox:")
     runtime.close()
 
 

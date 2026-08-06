@@ -4,6 +4,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
+from app.identity.revocation import DurableGenerationRevocationPort
+from app.identity.service import IdentityAccessService
+
 from .config import PlatformSettings, validate_startup_settings
 from .database import (
     SqlAlchemyDatabaseClock,
@@ -83,4 +87,22 @@ def build_runtime(
     configured.setdefault("lease_store", lease_store)
     configured.setdefault("observability_metrics", observability_metrics)
     configured.setdefault("object_store", object_store)
+    generation_revocation_port = configured.get("generation_revocation_port") or (
+        DurableGenerationRevocationPort()
+    )
+    configured.setdefault("generation_revocation_port", generation_revocation_port)
+    deletion_cleanup_port = configured.get("account_deletion_cleanup_port") or (
+        ObjectStoreAccountDeletionCleanupPort(object_store)
+    )
+    configured.setdefault("account_deletion_cleanup_port", deletion_cleanup_port)
+    identity_access = configured.get("identity_access") or IdentityAccessService(
+        engine,
+        settings.auth,
+        now=clock.now_utc,
+        revocation_port=generation_revocation_port,
+        department_work_check=configured.get("department_work_check_port"),
+        deletion_cleanup_port=deletion_cleanup_port,
+        object_store=object_store,
+    )
+    configured.setdefault("identity_access", identity_access)
     return PlatformRuntime(settings=settings, adapters=configured)

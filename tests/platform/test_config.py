@@ -29,6 +29,9 @@ def production_environment(**overrides: str) -> dict[str, str]:
         "RAG_PROVIDER_API_KEY": "provider-secret",
         "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS": "90",
         "RAG_DEBUG": "false",
+        "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
+        "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
+        "RAG_AUTH_ADMIN_ROSTER": "admin",
     }
     values.update(overrides)
     return values
@@ -49,6 +52,24 @@ def test_production_profile_requires_database_and_object_storage() -> None:
     values.pop("RAG_OBJECT_STORAGE_BUCKET")
 
     with pytest.raises((ValidationError, ValueError), match="database|object_storage"):
+        load_platform_settings(values)
+
+
+@pytest.mark.parametrize(
+    "key, message",
+    [
+        ("RAG_AUTH_SECRET_KEY", "auth secret"),
+        ("RAG_AUTH_ALLOWED_ORIGINS", "allowed origins"),
+        ("RAG_AUTH_ADMIN_ROSTER", "admin roster"),
+    ],
+)
+def test_production_profile_requires_identity_access_security_configuration(
+    key: str, message: str
+) -> None:
+    values = production_environment()
+    values.pop(key)
+
+    with pytest.raises((ValidationError, ValueError), match=message):
         load_platform_settings(values)
 
 
@@ -142,3 +163,24 @@ def test_production_rejects_unsafe_flags_and_fake_provider() -> None:
             )
         )
         validate_startup_settings(settings)
+
+
+def test_bootstrap_admin_settings_must_be_configured_as_a_complete_group() -> None:
+    with pytest.raises((ValidationError, ValueError), match="bootstrap.*together"):
+        load_platform_settings(
+            development_environment(
+                RAG_AUTH_BOOTSTRAP_USERNAME="admin",
+            )
+        )
+
+    settings = load_platform_settings(
+        development_environment(
+            RAG_AUTH_BOOTSTRAP_USERNAME="admin",
+            RAG_AUTH_BOOTSTRAP_PASSWORD="Password1",
+            RAG_AUTH_BOOTSTRAP_REAL_NAME="Initial Admin",
+            RAG_AUTH_BOOTSTRAP_DISPLAY_NAME="Admin",
+        )
+    )
+
+    assert settings.auth.bootstrap_username == "admin"
+    assert settings.auth.bootstrap_password is not None

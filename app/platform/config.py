@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
@@ -74,6 +75,39 @@ class ObservabilitySettings(_StrictModel):
     max_route_templates: int = Field(default=100, ge=1, le=1000)
 
 
+class AuthSettings(_StrictModel):
+    access_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    refresh_ttl_seconds: int = Field(default=604800, ge=3600, le=2592000)
+    refresh_reuse_grace_seconds: int = Field(default=5, ge=1, le=60)
+    login_max_attempts: int = Field(default=5, ge=1, le=20)
+    login_lock_seconds: int = Field(default=60, ge=1, le=3600)
+    secret_key: SecretStr | None = None
+    allowed_origins: tuple[str, ...] = ()
+    admin_roster: tuple[str, ...] = ()
+    bootstrap_username: str | None = None
+    bootstrap_password: SecretStr | None = None
+    bootstrap_real_name: str | None = None
+    bootstrap_display_name: str | None = None
+
+    @model_validator(mode="after")
+    def validate_bootstrap_settings(self) -> AuthSettings:
+        values = (
+            self.bootstrap_username,
+            self.bootstrap_password,
+            self.bootstrap_real_name,
+            self.bootstrap_display_name,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("auth bootstrap settings must be configured together")
+        return self
+
+    @property
+    def refresh_ttl(self) -> timedelta:
+        return timedelta(seconds=self.refresh_ttl_seconds)
+
+
 class PlatformSettings(BaseSettings):
     """Validated, versioned configuration for API and worker processes."""
 
@@ -92,6 +126,7 @@ class PlatformSettings(BaseSettings):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     debug: bool = False
 
 
@@ -114,6 +149,18 @@ _ENV_KEYS = {
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
     "RAG_OBSERVABILITY_SUCCESS_SAMPLE_RATE",
     "RAG_OBSERVABILITY_MAX_ROUTE_TEMPLATES",
+    "RAG_AUTH_ACCESS_TTL_SECONDS",
+    "RAG_AUTH_REFRESH_TTL_SECONDS",
+    "RAG_AUTH_REFRESH_REUSE_GRACE_SECONDS",
+    "RAG_AUTH_LOGIN_MAX_ATTEMPTS",
+    "RAG_AUTH_LOGIN_LOCK_SECONDS",
+    "RAG_AUTH_SECRET_KEY",
+    "RAG_AUTH_ALLOWED_ORIGINS",
+    "RAG_AUTH_ADMIN_ROSTER",
+    "RAG_AUTH_BOOTSTRAP_USERNAME",
+    "RAG_AUTH_BOOTSTRAP_PASSWORD",
+    "RAG_AUTH_BOOTSTRAP_REAL_NAME",
+    "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME",
     "RAG_DEBUG",
 }
 _LEGACY_OR_FORBIDDEN_KEYS = {
@@ -147,6 +194,13 @@ def _int(env: Mapping[str, str], key: str) -> int | None:
 def _float(env: Mapping[str, str], key: str) -> float | None:
     value = _optional(env, key)
     return float(value) if value is not None else None
+
+
+def _csv(env: Mapping[str, str], key: str) -> tuple[str, ...]:
+    value = _optional(env, key)
+    if value is None:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def load_platform_settings(
@@ -210,6 +264,24 @@ def load_platform_settings(
             }.items()
             if value is not None
         },
+        "auth": {
+            key: value
+            for key, value in {
+                "access_ttl_seconds": _int(env, "RAG_AUTH_ACCESS_TTL_SECONDS"),
+                "refresh_ttl_seconds": _int(env, "RAG_AUTH_REFRESH_TTL_SECONDS"),
+                "refresh_reuse_grace_seconds": _int(env, "RAG_AUTH_REFRESH_REUSE_GRACE_SECONDS"),
+                "login_max_attempts": _int(env, "RAG_AUTH_LOGIN_MAX_ATTEMPTS"),
+                "login_lock_seconds": _int(env, "RAG_AUTH_LOGIN_LOCK_SECONDS"),
+                "secret_key": _optional(env, "RAG_AUTH_SECRET_KEY"),
+                "allowed_origins": _csv(env, "RAG_AUTH_ALLOWED_ORIGINS"),
+                "admin_roster": _csv(env, "RAG_AUTH_ADMIN_ROSTER"),
+                "bootstrap_username": _optional(env, "RAG_AUTH_BOOTSTRAP_USERNAME"),
+                "bootstrap_password": _optional(env, "RAG_AUTH_BOOTSTRAP_PASSWORD"),
+                "bootstrap_real_name": _optional(env, "RAG_AUTH_BOOTSTRAP_REAL_NAME"),
+                "bootstrap_display_name": _optional(env, "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME"),
+            }.items()
+            if value not in (None, ())
+        },
         "debug": _parse_bool(env["RAG_DEBUG"], "RAG_DEBUG") if "RAG_DEBUG" in env else False,
     }
     settings = PlatformSettings.model_validate(data)
@@ -229,3 +301,9 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production provider api key is required")
         if settings.debug:
             raise ValueError("production debug must be disabled")
+        if settings.auth.secret_key is None or not settings.auth.secret_key.get_secret_value():
+            raise ValueError("production auth secret key is required")
+        if not settings.auth.allowed_origins:
+            raise ValueError("production auth allowed origins are required")
+        if not settings.auth.admin_roster:
+            raise ValueError("production auth admin roster is required")

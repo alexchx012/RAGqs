@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from sqlalchemy import text
 
 from app.api.v1 import router as v1_router
+from app.identity.service import IdentityAccessService
 
 from .config import PlatformSettings, load_platform_settings
 from .context import new_request_context
@@ -33,6 +34,10 @@ def create_platform_app(
         if engine is not None:
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
+        if settings.auth.admin_roster:
+            identity_access = runtime.resolve("identity_access")
+            if isinstance(identity_access, IdentityAccessService):
+                identity_access.reconcile_admin_roster()
         try:
             yield
         finally:

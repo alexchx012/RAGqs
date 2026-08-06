@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import create_engine
 
 from app.platform.config import load_platform_settings
 from app.platform.context import (
@@ -72,6 +73,16 @@ def test_platform_error_has_stable_request_error_shape() -> None:
 def test_platform_error_rejects_non_snake_case_codes() -> None:
     with pytest.raises(ValueError, match="snake_case"):
         PlatformError(code="CamelCase", message="invalid")
+
+
+def test_platform_error_propagates_out_of_a_sqlalchemy_transaction() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    with pytest.raises(PlatformError) as exc_info:
+        with engine.begin():
+            raise PlatformError("validation_error", "Invalid input", {}, 422)
+
+    assert exc_info.value.code == "validation_error"
 
 
 def test_unknown_exception_is_mapped_without_internal_text() -> None:
