@@ -6,12 +6,24 @@
 import { setupServer } from 'msw/node';
 import { MockAuthController } from './auth-contract';
 import { clearAuthCookies } from './dev-cookies';
-import { createAuthHandlers } from './handlers';
+import { createAuthHandlers, createNotificationHandlers } from './handlers';
+import { MockNotificationsController } from './notifications-contract';
 
 export const mockAuth = new MockAuthController();
-export const mockServer = setupServer(...createAuthHandlers(mockAuth));
+export const mockNotifications = new MockNotificationsController((header) => ({
+  userId: mockAuth.me(header).id,
+}));
+
+export const mockServer = setupServer(
+  ...createAuthHandlers(mockAuth),
+  ...createNotificationHandlers(mockNotifications, mockAuth),
+);
 
 export function resetMockAuth(): void {
   mockAuth.reset();
   clearAuthCookies();
+}
+
+export function resetMockNotifications(): void {
+  mockNotifications.reset();
 }

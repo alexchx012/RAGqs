@@ -1,5 +1,5 @@
 /*
- * MSW handlers：把《前端接口需求.md》§1–§2（本 change 范围）的 HTTP 边界接到契约 mock 核心。
+ * MSW handlers：把《前端接口需求.md》§1–§2、§5（本 change 范围）的 HTTP 边界接到契约 mock 核心。
  * 错误体固定为 { error: { code, message, details, request_id } }，details 始终为对象。
  */
 
@@ -7,6 +7,7 @@ import { http, HttpResponse } from 'msw';
 import { CSRF_COOKIE_NAME } from '../auth/cookies';
 import { MockHttpError, type MockAuthController } from './auth-contract';
 import { clearAuthCookies, getMockCookie, REFRESH_COOKIE_NAME, setMockCookie } from './dev-cookies';
+import type { MockNotificationsController } from './notifications-contract';
 
 let requestSeq = 0;
 
@@ -111,6 +112,73 @@ export function createAuthHandlers(controller: MockAuthController) {
       try {
         controller.revokeAllSessions(request.headers.get('Authorization'));
         clearAuthCookies();
+        return new HttpResponse(null, { status: 204 });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+  ];
+}
+
+function parseLimitParam(url: string): number | undefined {
+  const raw = new URL(url).searchParams.get('limit');
+  return raw === null ? undefined : Number(raw);
+}
+
+/*
+ * 站内提醒 HTTP 边界（契约 §5）：鉴权在控制器内经构造注入的 validateAuth 完成，
+ * 该回调在装配处（testing.ts / start.ts）用 authController.me 实现——无有效 Bearer
+ * 时 me 抛 MockHttpError(401, 'invalid_token')；authController 形参显式表达这一装配依赖。
+ */
+export function createNotificationHandlers(
+  controller: MockNotificationsController,
+  authController: MockAuthController,
+) {
+  void authController;
+  return [
+    http.get('/v1/notifications', ({ request }) => {
+      try {
+        const items = controller.list(
+          request.headers.get('Authorization'),
+          parseLimitParam(request.url),
+        );
+        return HttpResponse.json({ items });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.get('/v1/notifications/unread-count', ({ request }) => {
+      try {
+        const count = controller.unreadCount(request.headers.get('Authorization'));
+        return HttpResponse.json({ count });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.post('/v1/notifications/:id/read', ({ request, params }) => {
+      try {
+        controller.markRead(request.headers.get('Authorization'), String(params['id']));
+        return new HttpResponse(null, { status: 204 });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    // read-all 不接收请求体（契约 §5.3）：忽略 body，一律按水位推进处理
+    http.post('/v1/notifications/read-all', ({ request }) => {
+      try {
+        controller.markAllRead(request.headers.get('Authorization'));
+        return new HttpResponse(null, { status: 204 });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.post('/v1/notifications/events/:eventId/ack', ({ request, params }) => {
+      try {
+        controller.ack(request.headers.get('Authorization'), String(params['eventId']));
         return new HttpResponse(null, { status: 204 });
       } catch (error) {
         return errorResponse(error);

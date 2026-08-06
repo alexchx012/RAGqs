@@ -16,6 +16,12 @@ export interface EscStack {
   push(layer: EscLayer): () => void;
   /** 当前登记层数。 */
   depth(): number;
+  /**
+   * 挂接 keydown 监听（幂等）。构造时已挂接一次；本方法为 React StrictMode
+   * 双调用 effect 准备：cleanup 里的 dispose 摘除监听后，第二轮 setup 必须重新挂接，
+   * 否则整个会话 Esc 静默失效（生产 dev 环境实测复现）。
+   */
+  attach(): void;
   dispose(): void;
 }
 
@@ -26,6 +32,7 @@ export interface EscEventTarget {
 
 export function createEscStack(target: EscEventTarget): EscStack {
   const layers: EscLayer[] = [];
+  let listening = false;
 
   const onKeydown = (event: Event) => {
     if ((event as KeyboardEvent).key !== 'Escape' || layers.length === 0) {
@@ -34,9 +41,7 @@ export function createEscStack(target: EscEventTarget): EscStack {
     layers[layers.length - 1].onEscape();
   };
 
-  target.addEventListener('keydown', onKeydown);
-
-  return {
+  const stack: EscStack = {
     push(layer) {
       layers.push(layer);
       let active = true;
@@ -54,9 +59,22 @@ export function createEscStack(target: EscEventTarget): EscStack {
     depth() {
       return layers.length;
     },
+    attach() {
+      if (listening) {
+        return;
+      }
+      listening = true;
+      target.addEventListener('keydown', onKeydown);
+    },
     dispose() {
-      target.removeEventListener('keydown', onKeydown);
+      if (listening) {
+        listening = false;
+        target.removeEventListener('keydown', onKeydown);
+      }
       layers.length = 0;
     },
   };
+  // 构造即挂接，渲染期创建的实例立即可用；StrictMode 第二轮 setup 由 provider 再 attach（幂等）
+  stack.attach();
+  return stack;
 }

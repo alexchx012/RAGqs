@@ -1,0 +1,109 @@
+/* 铃铛与通知面板补充样式（fe-shared-shell src/notifications/）：徽标脉冲、面板进出。 */
+
+/* 未读徽标（共用基座 §4）：出现 scale 0.5→1 + opacity 0→1（--duration-fast --ease-out）；
+   数字变化 scale 1→1.15→1 脉冲；清零 150ms（--duration-fast）缩放淡出。 */
+@keyframes notification-badge-in {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes notification-badge-pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes notification-badge-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+
+.notification-badge-enter {
+  animation: notification-badge-in var(--duration-fast) var(--ease-out);
+}
+
+.notification-badge-pulse {
+  animation: notification-badge-pulse var(--duration-fast) var(--ease-out);
+}
+
+.notification-badge-exit {
+  animation: notification-badge-out var(--duration-fast) var(--ease-in-out) forwards;
+}
+
+/* 面板（共用基座 §4）：展开 opacity 0→1 + translateY(-4px)→0（--duration-base --ease-out）；
+   关闭反向（--duration-fast --ease-in-out）。Radix data-state 驱动，Presence 等待动画结束再卸载。 */
+@keyframes notification-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes notification-panel-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.notification-panel[data-state='open'] {
+  animation: notification-panel-in var(--duration-base) var(--ease-out);
+}
+
+.notification-panel[data-state='closed'] {
+  animation: notification-panel-out var(--duration-fast) var(--ease-in-out);
+}
+
+/* 条目底色（共用基座 §4）：hover 进入 --duration-fast；标为已读后底色 --duration-base 过渡回透明。 */
+.notification-item {
+  transition: background-color var(--duration-base) var(--ease-in-out);
+}
+
+.notification-item:hover {
+  transition-duration: var(--duration-fast);
+}
+
+/* 未读圆点：标为已读后 --duration-fast 淡出（保留占位，已读 / 未读标题左缘对齐）。 */
+.notification-unread-dot {
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+/* 加载态骨架条目：bg-mist-gray 呼吸（共用基座 §4 面板状态）。 */
+@keyframes notification-skeleton-breathe {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.notification-skeleton {
+  animation: notification-skeleton-breathe 1200ms var(--ease-in-out) infinite alternate;
+}

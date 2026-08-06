@@ -1,17 +1,24 @@
 /*
  * 测试辅助：构造认证层测试装配（内存总线 + 可覆盖的 fake AuthApi），
  * 以及经 AuthProvider + MemoryRouter 渲染的便捷入口。
+ * renderWithShell 额外包共享壳层 provider（Esc 栈 / 抽屉注册表 / 通知轮询层），
+ * 供 AppShell、DrawerHost、铃铛等壳层组件测试使用。
  */
 
 import { render, type RenderResult } from '@testing-library/react';
 import type { ReactElement } from 'react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, type InitialEntry } from 'react-router';
 import { vi } from 'vitest';
 import type { AuthApi } from '../auth/api';
 import { AuthProvider } from '../auth/AuthProvider';
 import { createMemoryAuthHub } from '../auth/channel';
 import { AuthSessionStore } from '../auth/session';
 import type { User } from '../auth/types';
+import { EscStackProvider } from '../lib/esc-stack-provider';
+import type { NotificationsApi } from '../notifications/api';
+import { NotificationsProvider } from '../notifications/NotificationsProvider';
+import { NotificationsStore } from '../notifications/store';
+import { createDrawerRegistry, DrawerRegistryProvider } from '../shell/drawer/DrawerRegistryProvider';
 
 export function testUser(overrides: Partial<User> = {}): User {
   return {
@@ -60,6 +67,39 @@ export function renderWithAuth(
   return render(
     <AuthProvider store={store}>
       <MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>
+    </AuthProvider>,
+  );
+}
+
+/** fake 通知 API：默认空列表、未读 0；可按用例覆盖。 */
+export function fakeNotificationsApi(overrides: Partial<NotificationsApi> = {}): NotificationsApi {
+  return {
+    list: vi.fn(async () => ({ items: [] })),
+    unreadCount: vi.fn(async () => ({ count: 0 })),
+    markRead: vi.fn(async () => {}),
+    markAllRead: vi.fn(async () => {}),
+    ack: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+/** 共享壳层装配渲染：AuthProvider + Esc 栈 + 抽屉注册表 + 通知轮询层。 */
+export function renderWithShell(
+  ui: ReactElement,
+  store: AuthSessionStore,
+  initialEntries: InitialEntry[] = ['/'],
+  options: { notifications?: NotificationsStore } = {},
+): RenderResult {
+  const notifications = options.notifications ?? new NotificationsStore(fakeNotificationsApi());
+  return render(
+    <AuthProvider store={store}>
+      <MemoryRouter initialEntries={initialEntries}>
+        <EscStackProvider>
+          <DrawerRegistryProvider registry={createDrawerRegistry()}>
+            <NotificationsProvider store={notifications}>{ui}</NotificationsProvider>
+          </DrawerRegistryProvider>
+        </EscStackProvider>
+      </MemoryRouter>
     </AuthProvider>,
   );
 }

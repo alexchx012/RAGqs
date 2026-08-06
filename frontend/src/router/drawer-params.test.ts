@@ -1,36 +1,40 @@
 import { describe, expect, it } from 'vitest';
 import { formatDrawerLocation, parseDrawerLocation } from './drawer-params';
 
-describe('drawer-params（URL 表达抽屉开关与无限下钻层级）', () => {
-  it('无参数表示抽屉关闭', () => {
-    expect(parseDrawerLocation('')).toEqual({ drawer: null, drill: [] });
-    expect(parseDrawerLocation('?foo=1')).toEqual({ drawer: null, drill: [] });
+describe('drawer-params（路径段式 URL 表达抽屉开关与无限下钻层级）', () => {
+  it('非抽屉路径表示抽屉关闭', () => {
+    expect(parseDrawerLocation('/')).toEqual({ open: false, segment: null, drill: [] });
+    expect(parseDrawerLocation('/chat/abc')).toEqual({ open: false, segment: null, drill: [] });
   });
 
-  it('drawer 参数表达抽屉开关', () => {
-    expect(parseDrawerLocation('?drawer=settings')).toEqual({ drawer: 'settings', drill: [] });
+  it('根路径段表达抽屉开关与所在段', () => {
+    expect(parseDrawerLocation('/settings')).toEqual({ open: true, segment: 'personal', drill: [] });
+    expect(parseDrawerLocation('/settings/')).toEqual({ open: true, segment: 'personal', drill: [] });
+    expect(parseDrawerLocation('/admin')).toEqual({ open: true, segment: 'admin', drill: [] });
   });
 
-  it('drill 有序可重复参数表达无限下钻层级', () => {
-    const parsed = parseDrawerLocation('?drawer=settings&drill=personal&drill=profile&drill=security');
-    expect(parsed.drawer).toBe('settings');
-    expect(parsed.drill).toEqual(['personal', 'profile', 'security']);
+  it('路径段有序表达无限下钻层级', () => {
+    const parsed = parseDrawerLocation('/settings/knowledge/uploads/deep/deeper');
+    expect(parsed.open).toBe(true);
+    expect(parsed.segment).toBe('personal');
+    expect(parsed.drill).toEqual(['knowledge', 'uploads', 'deep', 'deeper']);
   });
 
   it('parse 与 format 互逆', () => {
-    const location = { drawer: 'settings', drill: ['personal', 'profile'] } as const;
-    const search = formatDrawerLocation(location);
-    expect(search).toBe('?drawer=settings&drill=personal&drill=profile');
-    expect(parseDrawerLocation(search)).toEqual(location);
+    const location = { open: true, segment: 'admin', drill: ['spaces', 'public'] } as const;
+    const path = formatDrawerLocation(location);
+    expect(path).toBe('/admin/spaces/public');
+    expect(parseDrawerLocation(path)).toEqual(location);
   });
 
   it('抽屉关闭时忽略下钻层级', () => {
-    expect(formatDrawerLocation({ drawer: null, drill: ['personal'] })).toBe('');
+    expect(formatDrawerLocation({ open: false, segment: null, drill: ['knowledge'] })).toBe('/');
   });
 
-  it('空层级被过滤；特殊字符正确编码', () => {
-    expect(parseDrawerLocation('?drawer=settings&drill=')).toEqual({ drawer: 'settings', drill: [] });
-    const search = formatDrawerLocation({ drawer: 'admin', drill: ['section/sub'] });
-    expect(parseDrawerLocation(search)).toEqual({ drawer: 'admin', drill: ['section/sub'] });
+  it('顶层与深层格式稳定', () => {
+    expect(formatDrawerLocation({ open: true, segment: 'personal', drill: [] })).toBe('/settings');
+    expect(formatDrawerLocation({ open: true, segment: 'personal', drill: ['knowledge'] })).toBe(
+      '/settings/knowledge',
+    );
   });
 });

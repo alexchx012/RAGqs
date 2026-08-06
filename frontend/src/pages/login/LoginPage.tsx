@@ -7,7 +7,7 @@
  * - 成功：整页 opacity 1→0 150ms 后按角色落地；暗色跟随系统（theme.ts 默认 'system'）。
  */
 
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { ApiError } from '../../api/errors';
 import { useAuthStore } from '../../auth/AuthProvider';
@@ -30,6 +30,20 @@ export function LoginPage() {
   const [errorKind, setErrorKind] = useState<ErrorKind>(null);
   const [retryAfter, setRetryAfter] = useState(0);
   const [leaving, setLeaving] = useState(false);
+  const leaveTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+
+  // 卸载：置 mounted=false 并取消待发的延迟落地跳转（见 onSubmit）
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (leaveTimerRef.current !== null) {
+        window.clearTimeout(leaveTimerRef.current);
+        leaveTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // 429 限流倒计时：期满恢复登录键
   useEffect(() => {
@@ -70,9 +84,17 @@ export function LoginPage() {
     setErrorKind(null);
     try {
       const user = await store.login(username, password);
+      // 组件已被 RedirectIfAuthenticated 带离卸载时，落地跳转由守卫的 <Navigate>
+      // （携同一 state）完成；丢弃这里的延迟跳转。否则 await 续体会在卸载后照样设下
+      // 幽灵定时器，150ms 后把用户随后的手动导航（如立刻点开抽屉）顶回落地页
+      // （e2e 弹回 / 的根因）。
+      if (!mountedRef.current) {
+        return;
+      }
       const target = landingTargetFor(user.role);
       setLeaving(true);
-      setTimeout(() => {
+      leaveTimerRef.current = window.setTimeout(() => {
+        leaveTimerRef.current = null;
         navigate(target.path, { replace: true, state: target.state });
       }, LEAVE_FADE_MS);
     } catch (error) {

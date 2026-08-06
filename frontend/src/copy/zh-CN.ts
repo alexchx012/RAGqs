@@ -12,9 +12,65 @@ export const zhCN = {
     notFoundTitle: '页面不存在', // 措辞后定
     notFoundBack: '返回首页', // 措辞后定
     loading: '加载中', // 措辞后定
+    home: {
+      composerPlaceholder: '输入你的问题…', // 措辞后定
+      openDrawerAria: '打开设置抽屉', // 措辞后定
+    },
+    drawer: {
+      personalTitle: '设置', // 措辞后定：个人段页级标题
+      personalSegmentLabel: '个人', // 措辞后定
+      adminSegmentLabel: '管理', // 措辞后定
+      backAria: (layerName: string) => `返回${layerName}`, // 措辞后定
+      closeAria: '关闭', // 措辞后定
+      placeholderBody: '该模块内容将在后续版本逐步到来。', // 措辞后定
+      topPlaceholderBody: '从左侧选择要查看的模块。', // 措辞后定
+      modules: {
+        profile: '个人资料', // 措辞后定
+        security: '安全', // 措辞后定
+        appearance: '外观', // 措辞后定
+        knowledge: '知识库', // 措辞后定
+        dashboard: '总览', // 措辞后定
+        approvals: '审批中心', // 措辞后定
+        spaces: '知识空间', // 措辞后定
+        evaluation: '评测与校准', // 措辞后定
+        operations: '系统运维', // 措辞后定
+        usersOps: '用户管理', // 措辞后定（运维端 §7）
+        usersAdmin: '人员与权限', // 措辞后定（超管端 §7）
+        uploads: '上传结果', // 措辞后定
+        submissions: '我的投稿', // 措辞后定
+        publicSpace: '公共库', // 措辞后定
+      },
+    },
   },
   a11y: {
     dialogClose: '关闭', // 措辞后定
+  },
+  notifications: {
+    title: '提醒', // 措辞后定
+    bellAria: '提醒', // 措辞后定
+    unreadBadgeAria: (count: number) => `未读提醒 ${count} 条`, // 措辞后定
+    readAll: '全部已读', // 措辞后定
+    empty: '暂无提醒', // 措辞后定
+    error: '提醒加载失败，请稍后重试', // 措辞后定
+    retry: '重试', // 措辞后定
+    relative: {
+      justNow: '刚刚', // 措辞后定
+      minutes: (n: number) => `${n} 分钟前`, // 措辞后定
+      hours: (n: number) => `${n} 小时前`, // 措辞后定
+      days: (n: number) => `${n} 天前`, // 措辞后定
+    },
+  },
+  states: {
+    empty: '暂无内容', // 措辞后定
+    error: '内容加载失败', // 措辞后定
+    retry: '重试', // 措辞后定
+  },
+  controls: {
+    cancel: '取消', // 措辞后定
+    confirm: '确认', // 措辞后定
+    paginatorPrev: '上一页', // 措辞后定
+    paginatorNext: '下一页', // 措辞后定
+    pageIndicator: (current: number, total: number) => `第 ${current} / ${total} 页`, // 措辞后定
   },
   login: {
     title: '登录', // 措辞后定

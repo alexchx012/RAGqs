@@ -47,6 +47,9 @@ function collectScannedFiles(): string[] {
     (path) =>
       // src/copy/ 是文案唯一归宿，自身不受扫描
       !path.includes(`${sep}copy${sep}`) &&
+      // src/mocks/ 是模拟服务端：种子数据里的中文是「后端下发」内容（如提醒 title），
+      // 前端原样展示，不属于 UI 文案（契约 §5.1）
+      !path.includes(`${sep}mocks${sep}`) &&
       // 单元测试不参与渲染，describe/it 描述面向开发者，可用中文
       !/\.test\.(ts|tsx)$/.test(path),
   );
