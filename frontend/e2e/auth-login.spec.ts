@@ -23,11 +23,11 @@ test('login success lands on the chat home, and a page reload silently restores 
 
   // 成功：整页淡出后落地聊天主页
   await page.getByRole('button', { name: copy.login.submit }).click();
-  await expect(page.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeVisible();
+  await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
 
   // 页面刷新后 access token 丢失：静默 refresh 恢复会话，停留在主站而非回登录页
   await page.reload();
-  await expect(page.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeVisible();
+  await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
   await expect(page).not.toHaveURL(/\/login$/);
 });
 
@@ -36,9 +36,9 @@ test('authenticated visit to /login redirects to the role landing page', async (
   await page.getByLabel(copy.login.usernameLabel, { exact: true }).fill('zhangsan');
   await page.getByLabel(copy.login.passwordLabel, { exact: true }).fill('password123');
   await page.getByRole('button', { name: copy.login.submit }).click();
-  await expect(page.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeVisible();
+  await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
 
   await page.goto('/login');
   await expect(page).not.toHaveURL(/\/login$/);
-  await expect(page.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeVisible();
+  await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
 });

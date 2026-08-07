@@ -7,12 +7,13 @@ import { AppRoutes } from '../router/AppRoutes';
 import { createAuthedStore, renderWithShell } from '../test/auth-fixtures';
 
 describe('应用壳与路由骨架', () => {
-  it('占位页渲染单一文案常量文件中的文案', async () => {
+  it('聊天主页（fe-chat-home）渲染单一文案常量文件中的文案（输入区 placeholder）', async () => {
     renderWithShell(<AppRoutes />, await createAuthedStore());
     expect(
-      await screen.findByRole('heading', { name: copy.shell.placeholderTitle }),
+      await screen.findByLabelText(copy.chat.composer.inputPlaceholder),
     ).toBeInTheDocument();
-    expect(screen.getByText(copy.shell.placeholderBody)).toBeInTheDocument();
+    // 侧边栏搜索占位（同样来自 copy）
+    expect(screen.getAllByLabelText(copy.chat.sidebar.searchPlaceholder).length).toBeGreaterThan(0);
   });
 
   it('未知路径渲染 404 占位，返回链接可用', async () => {

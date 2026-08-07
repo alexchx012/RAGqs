@@ -77,7 +77,7 @@ describe('登录页（规格 §5）', () => {
     expect(screen.getByRole('button', { name: copy.login.submit })).toHaveFocus();
 
     await user.keyboard('{Enter}');
-    expect(await screen.findByRole('heading', { name: copy.shell.placeholderTitle })).toBeInTheDocument();
+    expect(await screen.findByLabelText(copy.chat.composer.inputPlaceholder)).toBeInTheDocument();
     expect(store.getState().status).toBe('authenticated');
   });
 
@@ -159,7 +159,7 @@ describe('登录页（规格 §5）', () => {
     await fillCredentials(user, 'zhangsan', 'password123');
     await user.click(screen.getByRole('button', { name: copy.login.submit }));
 
-    expect(await screen.findByRole('heading', { name: copy.shell.placeholderTitle })).toBeInTheDocument();
+    expect(await screen.findByLabelText(copy.chat.composer.inputPlaceholder)).toBeInTheDocument();
     expect(store.getState()).toMatchObject({ status: 'authenticated', user: expect.objectContaining({ role: 'user' }) });
   });
 

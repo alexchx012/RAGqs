@@ -1,4 +1,5 @@
 import { Route, Routes, useLocation } from 'react-router';
+import { DocumentPreviewPlaceholder } from '../chat/ui/document-preview-placeholder';
 import { LoginPage } from '../pages/login/LoginPage';
 import { AppShell } from '../shell/AppShell';
 import { HomePage } from '../shell/HomePage';
@@ -29,6 +30,8 @@ export function AppRoutes() {
       </Route>
       <Route element={<RequireAuth />}>
         <Route element={<AppShell />}>
+          {/* m12：原文预览占位路由（引用角标新窗口打开；透传 document_id + document_version_id） */}
+          <Route path="/documents/:documentId/preview" element={<DocumentPreviewPlaceholder />} />
           <Route path="*" element={<HomeOrNotFound />} />
         </Route>
       </Route>

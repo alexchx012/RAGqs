@@ -8,6 +8,8 @@
 import { setupWorker } from 'msw/browser';
 import { MockAuthController } from './auth-contract';
 import { createAuthHandlers, createNotificationHandlers } from './handlers';
+import { createChatHandlers } from './chat-handlers';
+import { MockChatController } from './chat-contract';
 import { MockNotificationsController } from './notifications-contract';
 
 const PERSISTENCE_KEY = 'ragqs.mock-auth.v1';
@@ -28,9 +30,15 @@ export async function startMockWorker(): Promise<void> {
       save: (snapshot) => localStorage.setItem(NOTIFICATIONS_PERSISTENCE_KEY, snapshot),
     },
   );
+  // 会话与问答域：mock 状态随会话共享（内存态，页面刷新后按读模型恢复是前端职责，非 mock 持久化）
+  const chatController = new MockChatController((header) => {
+    const user = authController.me(header);
+    return { userId: user.id, role: user.role, departmentId: user.department?.id ?? null };
+  });
   const worker = setupWorker(
     ...createAuthHandlers(authController),
     ...createNotificationHandlers(notificationsController, authController),
+    ...createChatHandlers(chatController),
   );
   await worker.start({ onUnhandledRequest: 'bypass' });
 }

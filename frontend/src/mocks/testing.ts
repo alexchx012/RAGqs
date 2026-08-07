@@ -7,16 +7,24 @@ import { setupServer } from 'msw/node';
 import { MockAuthController } from './auth-contract';
 import { clearAuthCookies } from './dev-cookies';
 import { createAuthHandlers, createNotificationHandlers } from './handlers';
+import { createChatHandlers } from './chat-handlers';
+import { MockChatController } from './chat-contract';
 import { MockNotificationsController } from './notifications-contract';
 
 export const mockAuth = new MockAuthController();
 export const mockNotifications = new MockNotificationsController((header) => ({
   userId: mockAuth.me(header).id,
 }));
+// 会话与问答域：鉴权 + 角色 + 部门经 mockAuth.me 装配（§6.1 空间权限按角色推导）
+export const mockChat = new MockChatController((header) => {
+  const user = mockAuth.me(header);
+  return { userId: user.id, role: user.role, departmentId: user.department?.id ?? null };
+});
 
 export const mockServer = setupServer(
   ...createAuthHandlers(mockAuth),
   ...createNotificationHandlers(mockNotifications, mockAuth),
+  ...createChatHandlers(mockChat),
 );
 
 export function resetMockAuth(): void {
@@ -26,4 +34,8 @@ export function resetMockAuth(): void {
 
 export function resetMockNotifications(): void {
   mockNotifications.reset();
+}
+
+export function resetMockChat(): void {
+  mockChat.reset();
 }

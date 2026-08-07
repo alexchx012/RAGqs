@@ -1,0 +1,207 @@
+/* 聊天主页（fe-chat-home）动效与布局补充。只使用设计 token；reduced-motion 由 base.css 全局降级为直出。 */
+
+/* 打字光标：文末 2px×1em 墨色竖条，1000ms 明灭阶跃（共用基座 §2.5 循环动画表，不用缓动）。 */
+@keyframes chat-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.chat-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background-color: var(--color-ink-black);
+  animation: chat-caret-blink 1000ms steps(1) infinite;
+}
+
+/* 新消息进入：opacity 0→1 + 上移 8px→0，--duration-base --ease-out（共用基座 §3.4）。 */
+@keyframes chat-message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-message-enter {
+  animation: chat-message-enter var(--duration-base) var(--ease-out) both;
+}
+
+/* 系统提示条出现：opacity 0→1 + 下移 4px，--duration-base --ease-out；常驻不自动消失。 */
+@keyframes chat-notice-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-notice-enter {
+  animation: chat-notice-enter var(--duration-base) var(--ease-out) both;
+}
+
+/* 深度研究新步骤追加：opacity + 上移 4px，--duration-base --ease-out（§3.4）。 */
+@keyframes chat-step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-step-enter {
+  animation: chat-step-enter var(--duration-base) var(--ease-out) both;
+}
+
+/* 阶段状态切换：旧文字淡出、新文字淡入 --duration-fast（§3.4）。 */
+.chat-stage-swap {
+  transition: opacity var(--duration-fast) var(--ease-in-out);
+}
+
+/* A/B 第二条自右侧进入：opacity 0→1 + 左移 8px→0，--duration-base --ease-out，错开 100ms 由组件延时启动。 */
+@keyframes chat-ab-second-enter {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.chat-ab-second-enter {
+  animation: chat-ab-second-enter var(--duration-base) var(--ease-out) both;
+}
+
+/* 回到底部小圆钮（40px）：paper-white + shadow-subtle（§3.4），出现与点击平滑滚底。 */
+.chat-scroll-bottom {
+  box-shadow: var(--shadow-subtle);
+}
+
+/* 侧边栏窄屏滑出抽屉：280px 自左滑入 --duration-slow --ease-out，反向回放 --ease-in-out（§3.1）。 */
+.chat-drawer-panel {
+  transform: translateX(-100%);
+  transition: transform var(--duration-slow) var(--ease-in-out);
+  will-change: transform;
+}
+
+.chat-drawer-panel[data-open='true'] {
+  transform: translateX(0);
+  transition-timing-function: var(--ease-out);
+}
+
+/* 遮罩：--color-ink-black 24% 透明度同步淡入（§3.1）。 */
+.chat-drawer-overlay {
+  background-color: rgb(23 25 28 / 0.24);
+  animation: ui-fade-in var(--duration-slow) var(--ease-out) both;
+}
+
+/* 空态问候语：Signifier 400 44px（§3.1）；首条消息后淡出并收拢高度（保持挂载使动画可达）。 */
+.chat-empty-greeting {
+  max-height: 6rem;
+  overflow: hidden;
+  transition:
+    opacity var(--duration-slow) var(--ease-in-out),
+    transform var(--duration-slow) var(--ease-in-out),
+    max-height var(--duration-slow) var(--ease-in-out),
+    margin var(--duration-slow) var(--ease-in-out),
+    padding var(--duration-slow) var(--ease-in-out);
+}
+
+.chat-empty-greeting[data-hidden='true'] {
+  opacity: 0;
+  max-height: 0;
+  margin: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+}
+
+/* 输入区落底：空态居中 → 消息态粘底，400ms --ease-in-out（§3.1 / M11）。 */
+.chat-composer-settle {
+  transition:
+    margin-top var(--duration-slow) var(--ease-in-out),
+    padding-top var(--duration-slow) var(--ease-in-out),
+    padding-bottom var(--duration-slow) var(--ease-in-out);
+}
+
+.chat-composer-settle[data-empty='true'] {
+  /* 与顶/底 flex spacer 配合：空态时输入区贴问候语下方 */
+  margin-top: 0;
+}
+
+/* 自定义分组折叠：箭头旋转 90° + 组内条目高度过渡 --duration-base --ease-in-out（§3.2）。 */
+.chat-group-chevron {
+  transition: transform var(--duration-base) var(--ease-in-out);
+}
+
+.chat-group-chevron[data-open='false'] {
+  transform: rotate(-90deg);
+}
+
+.chat-group-items {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--duration-base) var(--ease-in-out);
+}
+
+.chat-group-items[data-open='false'] {
+  grid-template-rows: 0fr;
+}
+
+.chat-group-items > * {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 深度研究步骤折叠：各行高度与透明度同步收拢 --duration-base --ease-in-out（§3.4）。 */
+.chat-steps-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--duration-base) var(--ease-in-out);
+}
+
+.chat-steps-collapse[data-open='false'] {
+  grid-template-rows: 0fr;
+}
+
+.chat-steps-collapse > * {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.chat-steps-collapse-chevron {
+  transition: transform var(--duration-base) var(--ease-in-out);
+}
+
+.chat-steps-collapse-chevron[data-open='false'] {
+  transform: rotate(-90deg);
+}
+
+/* A/B 对比：第一条容器 100%→50% 宽度过渡 --duration-slow --ease-in-out；投票后收拢/回全宽（§3.4）。 */
+.chat-ab-column {
+  transition:
+    width var(--duration-slow) var(--ease-in-out),
+    opacity var(--duration-base) var(--ease-in-out);
+}
+
+/* 引用角标 hover：悬停卡由 Radix HoverCard 驱动（ui-hovercard-content 已含进入动效）。 */

@@ -17,7 +17,7 @@ async function login(page: Page, username: string): Promise<void> {
   await page.getByLabel(copy.login.usernameLabel, { exact: true }).fill(username);
   await page.getByLabel(copy.login.passwordLabel, { exact: true }).fill('password123');
   await page.getByRole('button', { name: copy.login.submit }).click();
-  await expect(page.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeVisible();
+  await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
 }
 
 test('drawer opens from the avatar row, drills down, restores the same layer on reload, and closes layer by layer via Esc', async ({
@@ -74,7 +74,7 @@ test('drawer opens from the avatar row, drills down, restores the same layer on 
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   // 主页保持挂载
-  await expect(page.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeVisible();
+  await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
 });
 
 test('bell badge, panel, unknown-type fallback, per-item read with navigation, and read-all', async ({

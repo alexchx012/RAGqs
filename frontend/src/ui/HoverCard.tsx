@@ -15,13 +15,15 @@ export interface HoverCardProps {
   children: ReactNode;
   /** 默认 120ms（共用基座 §3.4）。 */
   openDelay?: number;
+  /** 移出后淡出延迟；规格 §3.4 为 150ms（Radix 默认 300ms，此处显式收紧）。 */
+  closeDelay?: number;
 }
 
-export function HoverCard({ trigger, children, openDelay = 120 }: HoverCardProps) {
+export function HoverCard({ trigger, children, openDelay = 120, closeDelay = 150 }: HoverCardProps) {
   const [open, setOpen] = useState(false);
   useEscShield(open);
   return (
-    <RadixHoverCard.Root open={open} onOpenChange={setOpen} openDelay={openDelay}>
+    <RadixHoverCard.Root open={open} onOpenChange={setOpen} openDelay={openDelay} closeDelay={closeDelay}>
       <RadixHoverCard.Trigger asChild>{trigger}</RadixHoverCard.Trigger>
       <RadixHoverCard.Portal>
         <RadixHoverCard.Content

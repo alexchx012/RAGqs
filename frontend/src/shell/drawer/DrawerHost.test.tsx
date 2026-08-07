@@ -52,7 +52,7 @@ describe('抽屉开合与 URL 同步', () => {
 
   it('/ 与未知路径不打开抽屉', async () => {
     await renderApp('/');
-    await screen.findByRole('heading', { name: copy.shell.placeholderTitle });
+    await screen.findByLabelText(copy.chat.composer.inputPlaceholder);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
@@ -172,8 +172,8 @@ describe('下钻、返回与 Esc 逐层', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {
       timeout: 2000,
     });
-    // 聊天主页在抽屉下方保持挂载，关闭后立即呈现
-    expect(screen.getByRole('heading', { name: copy.shell.placeholderTitle })).toBeInTheDocument();
+    // 聊天主页在抽屉下方保持挂载，关闭后立即呈现（输入区在场）
+    expect(screen.getByLabelText(copy.chat.composer.inputPlaceholder)).toBeInTheDocument();
   });
 
   it('下滑手势：跟手位移超过阈值即关闭（规格 §1）', async () => {
