@@ -22,6 +22,11 @@ export interface ConfirmDialogProps {
   /** 危险操作（删除等）：确认键红底白字（共用基座 §5.6）。 */
   danger?: boolean;
   onConfirm: () => void;
+  /**
+   * 确认进行中（single-flight，review A5）：第一次点击后确认键立即 disabled/loading，
+   * 取消/遮罩/Esc 一并禁用，直到当前 operation 完成；旧操作 completion 不会关闭/覆盖新确认框。
+   */
+  confirming?: boolean;
 }
 
 export function ConfirmDialog({
@@ -32,6 +37,7 @@ export function ConfirmDialog({
   confirmLabel,
   cancelLabel,
   danger = false,
+  confirming = false,
   onConfirm,
 }: ConfirmDialogProps) {
   useEscShield(open);
@@ -62,10 +68,10 @@ export function ConfirmDialog({
             {description}
           </Dialog.Description>
           <div className="mt-6 flex justify-end gap-2">
-            <Pill variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            <Pill variant="ghost" size="sm" disabled={confirming} onClick={() => onOpenChange(false)}>
               {cancelLabel ?? copy.controls.cancel}
             </Pill>
-            <Pill size="sm" danger={danger} onClick={onConfirm}>
+            <Pill size="sm" danger={danger} loading={confirming} disabled={confirming} onClick={onConfirm}>
               {confirmLabel ?? copy.controls.confirm}
             </Pill>
           </div>

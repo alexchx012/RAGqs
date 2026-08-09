@@ -59,3 +59,14 @@ export function networkError(cause: unknown): ApiError {
 export function timeoutError(): ApiError {
   return new ApiError({ status: null, code: 'timeout', message: '', details: {}, requestId: null });
 }
+
+/** 请求捕获的逻辑会话与当前会话不一致（本地侧 guard，非服务端 envelope）。 */
+export function staleAuthSessionError(): ApiError {
+  return new ApiError({
+    status: null,
+    code: 'stale_auth_session',
+    message: '',
+    details: {},
+    requestId: null,
+  });
+}

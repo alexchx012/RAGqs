@@ -31,12 +31,14 @@ test('drawer opens from the avatar row, drills down, restores the same layer on 
   await expect(dialog).toBeVisible();
   await expect(page).toHaveURL(/\/settings$/);
 
-  // 下钻两层到上传结果层
+  // 下钻到知识库层（真实模块内容；上传入口/我的投稿为模块内入口，上传结果层走深链）
   await dialog.getByRole('button', { name: copy.shell.drawer.modules.knowledge }).click();
   await expect(page).toHaveURL(/\/settings\/knowledge$/);
-  await dialog
-    .getByRole('button', { name: copy.shell.drawer.modules.uploads, exact: true })
-    .click();
+  await expect(
+    dialog.getByText(copy.settings.knowledge.quota.title),
+  ).toBeVisible();
+  // 上传结果层：经铃铛深链跳转（模块内不提供独立上传按钮；上传对话框为唯一上传入口）
+  await page.goto('/settings/knowledge/uploads');
   await expect(page).toHaveURL(/\/settings\/knowledge\/uploads$/);
   // 下钻动画窗口内内容区会短暂并存 exit/enter 两份拷贝；层名断言限定在左栏导航内
   await expect(
@@ -51,7 +53,7 @@ test('drawer opens from the avatar row, drills down, restores the same layer on 
   await expect(
     page
       .getByRole('dialog', { name: copy.shell.drawer.personalTitle })
-      .getByRole('button', { name: copy.shell.drawer.modules.submissions }),
+      .getByRole('button', { name: copy.settings.knowledge.submissions.entry }),
   ).toBeVisible();
 
   // 返回键（浏览器后退）：URL 同步驱动抽屉逐层回退恢复（后退整页加载亦恢复到对应层）
@@ -64,7 +66,7 @@ test('drawer opens from the avatar row, drills down, restores the same layer on 
   await expect(
     page
       .getByRole('dialog', { name: copy.shell.drawer.personalTitle })
-      .getByRole('button', { name: copy.shell.drawer.modules.submissions }),
+      .getByRole('button', { name: copy.settings.knowledge.submissions.entry }),
   ).toBeVisible();
 
   // Esc 逐层：知识库层 → 顶层 → 关闭回聊天主页

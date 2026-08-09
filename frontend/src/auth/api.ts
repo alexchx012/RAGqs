@@ -36,7 +36,8 @@ export function createAuthApi(client: ApiClient): AuthApi {
       });
     },
     logout() {
-      return client.request<void>('/auth/logout', { method: 'POST' });
+      const authSessionGuard = client.captureAuthSessionGuard();
+      return client.request<void>('/auth/logout', { method: 'POST', authSessionGuard });
     },
     refresh() {
       // refresh 不携带 Bearer、无 body；从 CSRF Cookie 读值经 X-CSRF-Token 原样回传
@@ -51,14 +52,20 @@ export function createAuthApi(client: ApiClient): AuthApi {
       return client.request<User>('/auth/me');
     },
     async listSessions() {
-      const response = await client.request<SessionsResponse>('/auth/sessions');
+      const authSessionGuard = client.captureAuthSessionGuard();
+      const response = await client.request<SessionsResponse>('/auth/sessions', { authSessionGuard });
       return response.items;
     },
     revokeSession(id) {
-      return client.request<void>(`/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const authSessionGuard = client.captureAuthSessionGuard();
+      return client.request<void>(`/auth/sessions/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        authSessionGuard,
+      });
     },
     revokeAllSessions() {
-      return client.request<void>('/auth/sessions', { method: 'DELETE' });
+      const authSessionGuard = client.captureAuthSessionGuard();
+      return client.request<void>('/auth/sessions', { method: 'DELETE', authSessionGuard });
     },
   };
 }

@@ -38,6 +38,9 @@ export const zhCN = {
         usersAdmin: '人员与权限', // 措辞后定（超管端 §7）
         uploads: '上传结果', // 措辞后定
         submissions: '我的投稿', // 措辞后定
+        versions: '版本记录', // 措辞后定（知识库下钻）
+        manage: '部门库管理', // 措辞后定（知识库下钻，仅部长）
+        knowledgeApprovals: '投稿审核', // 措辞后定（知识库下钻，仅部长）
         publicSpace: '公共库', // 措辞后定
       },
     },
@@ -71,6 +74,277 @@ export const zhCN = {
     paginatorPrev: '上一页', // 措辞后定
     paginatorNext: '下一页', // 措辞后定
     pageIndicator: (current: number, total: number) => `第 ${current} / ${total} 页`, // 措辞后定
+  },
+  settings: {
+    profile: {
+      sectionLabel: '个人资料', // 措辞后定
+      avatarAlt: '个人头像', // 措辞后定
+      avatarInputLabel: '更换头像', // 措辞后定
+      displayNameLabel: '显示名', // 措辞后定
+      save: '保存', // 措辞后定
+      saveError: '保存失败，请稍后重试', // 措辞后定
+      avatarError: '头像上传失败，请稍后重试', // 措辞后定
+      realNameLabel: '姓名', // 措辞后定
+      departmentLabel: '部门', // 措辞后定
+      roleLabel: '角色', // 措辞后定
+      roleUser: '普通用户', // 措辞后定
+      roleMinister: '部长', // 措辞后定
+      roleOps: '运维', // 措辞后定
+      roleAdmin: '管理员', // 措辞后定
+      adminManaged: '由管理员维护', // 措辞后定
+    },
+    security: {
+      sectionLabel: '安全', // 措辞后定
+      passwordTitle: '修改密码', // 措辞后定
+      oldPasswordLabel: '当前密码', // 措辞后定
+      newPasswordLabel: '新密码', // 措辞后定
+      changePassword: '修改密码', // 措辞后定
+      passwordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
+      invalidPasswordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
+      wrongOldPassword: '当前密码不正确', // 措辞后定
+      passwordChangeError: '密码修改失败，请稍后重试', // 措辞后定
+      sessionsTitle: '活跃会话', // 措辞后定
+      sessionsLoading: '正在加载活跃会话', // 措辞后定
+      sessionsError: '活跃会话加载失败，请稍后重试', // 措辞后定
+      currentDevice: '当前设备', // 措辞后定
+      lastActiveAt: (value: string) => `最近活跃：${value}`, // 措辞后定
+      logoutCurrent: '退出登录', // 措辞后定
+      logoutOther: '退出此设备', // 措辞后定
+      logoutAll: '退出全部设备', // 措辞后定
+      sessionActionError: '会话操作失败，请稍后重试', // 措辞后定
+    },
+    appearance: {
+      sectionLabel: '外观', // 措辞后定
+      themeTitle: '主题', // 措辞后定
+      themeDescription: '选择界面主题，跟随系统会根据设备设置自动切换', // 措辞后定
+      themeAria: '主题', // 措辞后定
+      themeLight: '浅色', // 措辞后定
+      themeDark: '深色', // 措辞后定
+      themeSystem: '跟随系统', // 措辞后定
+      fontSizeTitle: '对话字号', // 措辞后定
+      fontSizeDescription: '只调整对话正文大小，不影响其他界面文字', // 措辞后定
+      fontSizeAria: '对话字号', // 措辞后定
+      fontStandard: '标准', // 措辞后定
+      fontLarge: '大号', // 措辞后定
+      privacyTitle: '隐私', // 措辞后定
+      abOptOutLabel: '不参与答案对比测试', // 措辞后定
+      abOptOutDescription: '采样由系统决定，用户只有退出权；已创建的对比对不受影响。', // 措辞后定
+      loading: '正在加载外观设置', // 措辞后定
+      loadError: '外观设置加载失败，请稍后重试', // 措辞后定
+      retry: '重试', // 措辞后定
+      saveError: '保存失败，已恢复上次设置，请稍后重试', // 措辞后定
+    },
+    knowledge: {
+      sectionLabel: '知识库', // 措辞后定
+      quota: {
+        title: '本月配额', // 措辞后定
+        usedOfLimit: (used: number, limit: number) => `${used} / ${limit} 页`, // 措辞后定
+        unlimited: '不限', // 措辞后定
+        unlimitedHint: '当前角色不设页面上限', // 措辞后定
+        resetsAt: (value: string) => `重置时间：${value}`, // 措辞后定：按 reset_at 倒计时
+        days: (count: number) => `${count} 天`, // 措辞后定：倒计时天数单位
+        timezone: (value: string) => `以业务时区 ${value} 为准`, // 措辞后定
+        pendingRequest: '申请已提交，等待处理', // 措辞后定：常驻行
+        requestMore: '申请增加页数', // 措辞后定
+        requestDialogTitle: '申请增加页数', // 措辞后定
+        requestDescription: '输入需要增加的页数（1–500），提交后等待审批', // 措辞后定
+        requestedPagesLabel: '页数', // 措辞后定
+        invalidPages: '请输入 1–500 的整数', // 措辞后定：15px 危险红提示
+        pendingRequestExists: '当月已有待处理申请，请等待审批结果', // 措辞后定：409
+        requestError: '提交失败，请稍后重试', // 措辞后定
+      },
+      documents: {
+        title: '文档', // 措辞后定
+        searchPlaceholder: '搜索文档', // 措辞后定
+        searchAria: '搜索文档', // 措辞后定
+        empty: '暂无文档', // 措辞后定
+        loadError: '文档加载失败，请稍后重试', // 措辞后定
+        updating: '更新处理中', // 措辞后定：active_operation 非空
+        usageDetail: (pages: number, images: number) => `${pages} 页正文${images > 0 ? ` + ${images} 张图` : ''}`, // 措辞后定
+        fileSize: (bytes: number) => `${bytes} B`, // 措辞后定：保留简单字节呈现
+        uploadedAt: (value: string) => `上传于 ${value}`, // 措辞后定
+        uploadNewVersion: '上传新版本', // 措辞后定
+        versions: '版本记录', // 措辞后定
+        reindex: '重建索引', // 措辞后定
+        delete: '删除', // 措辞后定
+        deleteConfirmTitle: '删除文档？', // 措辞后定
+        deleteConfirmDescription: (name: string) => `将永久删除「${name}」，此操作不可撤销。`, // 措辞后定
+        reindexConfirmTitle: '重建索引？', // 措辞后定
+        reindexConfirmDescription: (name: string) => `将对「${name}」重新解析并建立索引，处理期间文档继续可检索。`, // 措辞后定
+        rowMenuAria: (name: string) => `文档 ${name} 操作`, // 措辞后定
+        loading: '正在加载文档', // 措辞后定
+      },
+      upload: {
+        button: '上传文档', // 措辞后定：知识库首页唯一上传入口
+        dialogTitle: '上传文档', // 措辞后定
+        dialogDescription: '选择目标空间，可一次上传多个文件', // 措辞后定
+        targetLabel: '目标空间', // 措辞后定
+        manageTargetHint: '上传后直接写入该空间', // 措辞后定
+        contributeTargetHint: '需审核后才能发布，先进入「我的投稿」', // 措辞后定：contribute 分支提示
+        chooseFiles: '选择文件', // 措辞后定
+        noFiles: '尚未选择文件', // 措辞后定
+        fileListAria: '已选文件', // 措辞后定
+        upload: '上传', // 措辞后定
+        uploading: '正在上传', // 措辞后定
+        accepted: '已接收', // 措辞后定
+        deduplicated: '内容重复，未新增任务', // 措辞后定：deduplicated 提示
+        submissionCreated: '已创建投稿', // 措辞后定：投稿项
+        quotaExceeded: '配额已达上限，本次上传已整批拒绝', // 措辞后定：409
+        itemError: (code: string) => {
+          switch (code) {
+            case 'upload_too_large':
+              return '文件过大，超出上传上限';
+            case 'unsupported_media_type':
+              return '不支持该文件类型';
+            case 'upload_content_type_mismatch':
+              return '文件内容与声明类型不符';
+            case 'unsafe_archive':
+              return '压缩包存在安全风险';
+            case 'malware_detected':
+              return '检测到恶意内容';
+            default:
+              return '文件上传失败';
+          }
+        }, // 措辞后定：服务端错误对象映射，未知 code 通用兜底
+        resultSummary: (accepted: number, failed: number) =>
+          `成功 ${accepted} 项${failed > 0 ? `，失败 ${failed} 项` : ''}`, // 措辞后定
+        noSpaceSelected: '请选择目标空间', // 措辞后定
+        newVersionDialogTitle: '上传新版本', // 措辞后定：固定目标对话框
+        newVersionDescription: (name: string) => `为「${name}」上传新版本，处理完成后替换当前版本`, // 措辞后定
+        newVersionSingle: '新版本上传为单文件', // 措辞后定
+      },
+      uploads: {
+        title: '上传结果', // 措辞后定
+        loading: '正在加载上传任务', // 措辞后定
+        loadError: '上传任务加载失败，请稍后重试', // 措辞后定
+        empty: '暂无上传任务', // 措辞后定
+        historyTitle: '最近一次上传结果', // 措辞后定：上传结果历史入口（不随对话框卸载丢失）
+        historyEmpty: '本次会话还没有上传记录', // 措辞后定
+        historyEntry: '上传结果', // 措辞后定：知识库首页工具行入口按钮
+        historyAt: (value: string) => `上传于 ${value}`, // 措辞后定
+        historyTarget: (name: string) => `目标：${name}`, // 措辞后定
+        recentWindow: '仅显示最近的上传任务', // 措辞后定：has_more 窗口提示
+        batchTitle: (id: string) => `批次 ${id}`, // 措辞后定
+        batchPartial: '部分任务尚未完成', // 措辞后定：partial 批次标题提示
+        stage: {
+          queued: '排队中', // 措辞后定
+          parsing: '解析中', // 措辞后定
+          indexing: '索引中', // 措辞后定
+        }, // 仅 pending/running 显示，不做假进度条
+        nextAttemptAt: (value: string) => `下次尝试：${value}`, // 措辞后定：retry_wait
+        usageSucceeded: (pages: number, images: number) => `已入库 ${pages} 页${images > 0 ? ` + ${images} 张图` : ''}`, // 措辞后定
+        failureReason: (reason: string) => `失败原因：${reason}`, // 措辞后定
+        ocrLowConfidence: '识别置信度较低，建议人工核对', // 措辞后定：琥珀标记
+        cancel: '取消任务', // 措辞后定
+        replay: '人工重放', // 措辞后定
+        cancelConfirmTitle: '取消任务？', // 措辞后定
+        cancelConfirmDescription: (name: string) => `将取消「${name}」的处理，此操作不可撤销。`, // 措辞后定
+        enteringAt: (value: string) => `进入时间：${value}`, // 措辞后定
+        targetSpace: (name: string) => `目标：${name}`, // 措辞后定
+        stateLabel: (state: string) => {
+          switch (state) {
+            case 'pending':
+              return '排队中';
+            case 'running':
+              return '处理中';
+            case 'retry_wait':
+              return '等待重试';
+            case 'succeeded':
+              return '成功';
+            case 'failed':
+              return '失败';
+            case 'dead_letter':
+              return '已丢弃';
+            case 'cancelled':
+              return '已取消';
+            default:
+              return state;
+          }
+        }, // 措辞后定：§1 完整 job 状态集标签
+        actionConflict: '状态已变化，已刷新', // 措辞后定：竞态 409/403 刷新提示
+      },
+      versions: {
+        title: '版本记录', // 措辞后定
+        loading: '正在加载版本记录', // 措辞后定
+        loadError: '版本记录加载失败，请稍后重试', // 措辞后定
+        empty: '暂无版本记录', // 措辞后定
+        active: '当前版本', // 措辞后定
+        versionNumber: (n: number) => `v${n}`, // 措辞后定
+        createdAt: (value: string) => `创建于 ${value}`, // 措辞后定
+        contentUnavailable: '内容已不可用', // 措辞后定：purging/purged
+        preview: '预览', // 措辞后定
+        restore: '恢复', // 措辞后定
+        restoreConfirmTitle: '恢复该版本？', // 措辞后定
+        restoreConfirmDescription: '恢复会创建新版本并重新处理，处理成功前当前版本继续服务。', // 措辞后定
+        restoreSuccess: '已创建恢复任务，请在上传结果中查看进度', // 措辞后定
+        versionPurged: '该版本已被清理，内容不可用', // 措辞后定：409 document_version_purged
+        restoreError: '恢复失败，请稍后重试', // 措辞后定
+      },
+      submissions: {
+        title: '我的投稿', // 措辞后定
+        entry: '我的投稿', // 措辞后定：无边框按钮
+        loading: '正在加载投稿', // 措辞后定
+        loadError: '投稿加载失败，请稍后重试', // 措辞后定
+        empty: '暂无投稿', // 措辞后定
+        filters: {
+          all: '全部', // 措辞后定
+          pending: '待审核', // 措辞后定
+          approved: '已通过', // 措辞后定
+          rejected: '已驳回', // 措辞后定
+          withdrawn: '已撤回', // 措辞后定
+          invalidated: '已失效', // 措辞后定
+        },
+        filterAria: (name: string) => `筛选：${name}`, // 措辞后定
+        statusTag: {
+          pending: '待审核', // 措辞后定：ash-gray
+          approved: '已通过', // 措辞后定：成功绿
+          rejected: '已驳回', // 措辞后定：危险红
+          withdrawn: '已撤回', // 措辞后定：slate-gray
+          invalidated: '已失效', // 措辞后定：警告琥珀
+        },
+        rejectReason: (reason: string) => `驳回原因：${reason}`, // 措辞后定：tag 下方
+        invalidatedReason: '因规则变更或内容问题已失效，如需重新提交请删除后重新上传', // 措辞后定：机器原因固定提示
+        targetSpace: (name: string) => `目标：${name}`, // 措辞后定
+        submittedAt: (value: string) => `投稿于 ${value}`, // 措辞后定
+        viewContent: '查看内容', // 措辞后定
+        withdraw: '撤回', // 措辞后定
+        delete: '删除', // 措辞后定
+        withdrawConfirmTitle: '撤回投稿？', // 措辞后定
+        withdrawConfirmDescription: '撤回后不再进入审核且不可改回；原文件将被清理，需要重新上传。', // 措辞后定：固定两点说明
+        deleteConfirmTitle: '删除投稿？', // 措辞后定
+        deleteConfirmDescription: (name: string) => `将永久删除「${name}」，此操作不可撤销。`, // 措辞后定
+        contentUnavailable: '内容已不可用', // 措辞后定：404 submission_content_unavailable
+        contentOpenBlocked: '浏览器拦截了新窗口，请允许弹出后重试', // 措辞后定：popup 被拦截
+        actionError: '操作失败，请稍后重试', // 措辞后定
+        versionConflict: '内容已变化，已刷新，请确认后重试', // 措辞后定：409 version_conflict
+        stateConflict: '投稿状态已变化，已刷新', // 措辞后定：409 submission_state_conflict
+        retry: '重试', // 措辞后定：行尾重试文字链
+      },
+      manage: {
+        title: '部门库管理', // 措辞后定：部长入口
+        approvals: '投稿审核', // 措辞后定
+        approvalsBadgeAria: (count: number) => `待处理投稿 ${count} 条`, // 措辞后定
+        approvalsLoading: '正在加载待审核投稿', // 措辞后定
+        approvalsError: '待审核投稿加载失败，请稍后重试', // 措辞后定
+        approvalsEmpty: '暂无待审核投稿', // 措辞后定
+        submitter: (name: string) => `投稿人：${name}`, // 措辞后定
+        submittedAt: (value: string) => `投稿于 ${value}`, // 措辞后定
+        fileMeta: (kind: string, size: string) => `${kind} · ${size}`, // 措辞后定
+        approve: '通过', // 措辞后定：filled 小 pill
+        reject: '驳回', // 措辞后定：ghost 小 pill
+        rejectDialogTitle: '驳回投稿？', // 措辞后定
+        rejectDialogDescription: '可填写一句原因，将随通知送达投稿人。', // 措辞后定
+        rejectReasonPlaceholder: '可填一句原因', // 措辞后定
+        approvedNotice: '已通过，投稿人将收到通知', // 措辞后定：页头下轻提示
+        rejectedNotice: '已驳回，原因将随通知送达投稿人', // 措辞后定
+        duplicateDocument: '该文件已存在，投稿人需处理后重新提交', // 措辞后定：duplicate_document 行内提示
+        versionConflict: '投稿内容已变化，已刷新，请确认后重试', // 措辞后定：version_conflict
+        scopeChanged: '投稿状态已变化，已刷新', // 措辞后定：submission_scope_changed / already_reviewed
+        actionError: '操作失败，请稍后重试', // 措辞后定
+        viewContent: '查看内容', // 措辞后定
+        contentUnavailable: '内容已不可用', // 措辞后定：404
+      },
+    },
   },
   login: {
     title: '登录', // 措辞后定

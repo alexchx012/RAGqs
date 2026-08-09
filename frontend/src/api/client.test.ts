@@ -164,4 +164,272 @@ describe('API 客户端基座（规格 §2）', () => {
     const client = createApiClient({ getAccessToken: () => 'tok', refresh: vi.fn(), fetchFn: fetchMock });
     await expect(client.request<void>('/auth/logout', { method: 'POST' })).resolves.toBeUndefined();
   });
+
+  it('sends FormData unchanged without forcing a JSON content type', async () => {
+    const payload = new FormData();
+    payload.set('file', new File(['avatar'], 'avatar.png', { type: 'image/png' }));
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(200, { avatar_url: '/avatar.png' }));
+    const client = createApiClient({ getAccessToken: () => 'tok', refresh: vi.fn(), fetchFn: fetchMock });
+
+    await client.request('/users/me/avatar', { method: 'POST', body: payload });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBe(payload);
+    expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer tok');
+  });
+
+  it('Blob 成功响应保留二进制 bytes 和 MIME type', async () => {
+    const expectedBytes = new Uint8Array([0, 1, 2, 255]);
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(expectedBytes, { status: 200, headers: { 'Content-Type': 'application/pdf' } }),
+    );
+    const client = createApiClient({ getAccessToken: () => 'tok', refresh: vi.fn(), fetchFn: fetchMock });
+
+    const result = await client.request('/submissions/sub_1/content', { responseType: 'blob' });
+
+    expect(Object.prototype.toString.call(result)).toBe('[object Blob]');
+    expect(result.type).toBe('application/pdf');
+    expect([...new Uint8Array(await result.arrayBuffer())]).toEqual([...expectedBytes]);
+  });
+
+  it('Blob 请求的 JSON 401 只 refresh/replay 一次，并返回重试后的 Blob', async () => {
+    let token: string | null = 'tok_old';
+    const expectedBytes = new Uint8Array([3, 1, 4, 1]);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () => contractError(401, 'invalid_token'))
+      .mockImplementationOnce(async () =>
+        new Response(expectedBytes, { status: 200, headers: { 'Content-Type': 'application/pdf' } }),
+      );
+    const refresh = vi.fn(async () => {
+      token = 'tok_new';
+      return 'tok_new';
+    });
+    const client = createApiClient({ getAccessToken: () => token, refresh, fetchFn: fetchMock });
+
+    const result = await client.request('/submissions/sub_1/content', { responseType: 'blob' });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, retryInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect((retryInit.headers as Record<string, string>)['Authorization']).toBe('Bearer tok_new');
+    expect(result.type).toBe('application/pdf');
+    expect([...new Uint8Array(await result.arrayBuffer())]).toEqual([...expectedBytes]);
+  });
+
+  it('Blob 成功响应在 headers 后正文解码卡住时仍会在 deadline 超时', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const blob = vi.fn(() => new Promise<Blob>(() => {}));
+      const fetchMock = vi.fn<typeof fetch>((_url, init) => {
+        signal = init?.signal ?? undefined;
+        return Promise.resolve({ ok: true, status: 200, blob } as unknown as Response);
+      });
+      const client = createApiClient({
+        getAccessToken: () => 'tok',
+        refresh: vi.fn(),
+        fetchFn: fetchMock,
+        timeoutMs: 10,
+      });
+      let outcome: unknown;
+      void client.request('/submissions/sub_1/content', { responseType: 'blob' }).then(
+        () => {
+          outcome = 'resolved';
+        },
+        (error: unknown) => {
+          outcome = error;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(blob).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(signal?.aborted).toBe(true);
+      expect(outcome).toBeInstanceOf(ApiError);
+      expect((outcome as ApiError).code).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Blob 请求的 401 在 headers 后错误正文卡住时超时且不 refresh/replay', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const json = vi.fn(() => new Promise<unknown>(() => {}));
+      const fetchMock = vi.fn<typeof fetch>((_url, init) => {
+        signal = init?.signal ?? undefined;
+        return Promise.resolve({ ok: false, status: 401, json } as unknown as Response);
+      });
+      const refresh = vi.fn(async () => 'tok_new');
+      const client = createApiClient({
+        getAccessToken: () => 'tok_old',
+        refresh,
+        fetchFn: fetchMock,
+        timeoutMs: 10,
+      });
+      let outcome: unknown;
+      void client.request('/submissions/sub_1/content', { responseType: 'blob' }).then(
+        () => {
+          outcome = 'resolved';
+        },
+        (error: unknown) => {
+          outcome = error;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(json).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(signal?.aborted).toBe(true);
+      expect(outcome).toBeInstanceOf(ApiError);
+      expect((outcome as ApiError).code).toBe('timeout');
+      expect(refresh).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Blob 正文 reader 拒绝时归一化为 ApiError', async () => {
+    const decoderFailure = new TypeError('stream reader failed');
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      ({
+        ok: true,
+        status: 200,
+        blob: vi.fn(async () => {
+          throw decoderFailure;
+        }),
+      }) as unknown as Response,
+    );
+    const client = createApiClient({ getAccessToken: () => 'tok', refresh: vi.fn(), fetchFn: fetchMock });
+
+    const error = await client
+      .request('/submissions/sub_1/content', { responseType: 'blob' })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).not.toBe(decoderFailure);
+    expect((error as ApiError).code).toBe('network_error');
+  });
+
+  it('guarded JSON 401 does not refresh or replay after the logical session changes', async () => {
+    let token: string | null = 'tok_a';
+    let authSessionId: string | null = 'logical_a';
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      token = 'tok_b';
+      authSessionId = 'logical_b';
+      return contractError(401, 'invalid_token');
+    });
+    const refresh = vi.fn(async () => 'tok_b');
+    const client = createApiClient({
+      getAccessToken: () => token,
+      getAuthSessionId: () => authSessionId,
+      refresh,
+      fetchFn: fetchMock,
+    });
+
+    const authSessionGuard = client.captureAuthSessionGuard();
+    await expect(
+      client.request('/users/me/profile', {
+        method: 'PATCH',
+        body: { display_name: 'from A' },
+        authSessionGuard,
+      }),
+    ).rejects.toMatchObject({ code: 'stale_auth_session', status: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('guarded successful response is discarded after the logical session changes while it is in flight', async () => {
+    let authSessionId: string | null = 'logical_a';
+    let resolveResponse: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveResponse = resolve;
+        }),
+    );
+    const refresh = vi.fn(async () => 'tok_b');
+    const client = createApiClient({
+      getAccessToken: () => 'tok_a',
+      getAuthSessionId: () => authSessionId,
+      refresh,
+      fetchFn: fetchMock,
+    });
+
+    const authSessionGuard = client.captureAuthSessionGuard();
+    const pending = client.request('/users/me/preferences', { authSessionGuard });
+    authSessionId = 'logical_b';
+    resolveResponse?.(jsonResponse(200, { theme: 'dark' }));
+
+    await expect(pending).rejects.toMatchObject({ code: 'stale_auth_session', status: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('guarded FormData 401 does not replay after refresh changes the logical session', async () => {
+    let token: string | null = 'tok_a';
+    let authSessionId: string | null = 'logical_a';
+    const payload = new FormData();
+    payload.set('file', new File(['avatar'], 'avatar.png', { type: 'image/png' }));
+    const fetchMock = vi.fn<typeof fetch>(async () => contractError(401, 'invalid_token'));
+    const refresh = vi.fn(async () => {
+      token = 'tok_b';
+      authSessionId = 'logical_b';
+      return 'tok_b';
+    });
+    const client = createApiClient({
+      getAccessToken: () => token,
+      getAuthSessionId: () => authSessionId,
+      refresh,
+      fetchFn: fetchMock,
+    });
+
+    const authSessionGuard = client.captureAuthSessionGuard();
+    await expect(
+      client.request('/users/me/avatar', {
+        method: 'POST',
+        body: payload,
+        authSessionGuard,
+      }),
+    ).rejects.toMatchObject({ code: 'stale_auth_session', status: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBe(payload);
+    expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer tok_a');
+  });
+
+  it('guarded same logical session still refreshes once and replays with the new bearer', async () => {
+    let token: string | null = 'tok_old';
+    let authSessionId: string | null = 'logical_same';
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () => contractError(401, 'invalid_token'))
+      .mockImplementationOnce(async () => jsonResponse(200, { ok: true }));
+    const refresh = vi.fn(async () => {
+      token = 'tok_new';
+      return 'tok_new';
+    });
+    const client = createApiClient({
+      getAccessToken: () => token,
+      getAuthSessionId: () => authSessionId,
+      refresh,
+      fetchFn: fetchMock,
+    });
+
+    const authSessionGuard = client.captureAuthSessionGuard();
+    const result = await client.request<{ ok: boolean }>('/conversations', { authSessionGuard });
+    expect(result.ok).toBe(true);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, secondInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect((secondInit.headers as Record<string, string>)['Authorization']).toBe('Bearer tok_new');
+  });
 });

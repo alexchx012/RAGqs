@@ -19,6 +19,9 @@ import type { NotificationsApi } from '../notifications/api';
 import { NotificationsProvider } from '../notifications/NotificationsProvider';
 import { NotificationsStore } from '../notifications/store';
 import { createDrawerRegistry, DrawerRegistryProvider } from '../shell/drawer/DrawerRegistryProvider';
+import type { SettingsApi } from '../settings/api';
+import { SettingsProvider } from '../settings/SettingsProvider';
+import { ThemeController } from '../theme/theme';
 
 export function testUser(overrides: Partial<User> = {}): User {
   return {
@@ -71,6 +74,36 @@ export function renderWithAuth(
   );
 }
 
+export interface SettingsRenderDependencies {
+  readonly api: SettingsApi;
+  readonly theme: ThemeController;
+  readonly notifications?: NotificationsStore;
+}
+
+/** 设置模块装配：AuthProvider + MemoryRouter + SettingsProvider。 */
+export function renderWithSettings(
+  ui: ReactElement,
+  store: AuthSessionStore,
+  dependencies: SettingsRenderDependencies,
+  initialEntries: InitialEntry[] = ['/'],
+): RenderResult {
+  const notifications = dependencies.notifications ?? new NotificationsStore(fakeNotificationsApi());
+  return render(
+    <AuthProvider store={store}>
+      <MemoryRouter initialEntries={initialEntries}>
+        <SettingsProvider
+          api={dependencies.api}
+          authStore={store}
+          theme={dependencies.theme}
+          notifications={notifications}
+        >
+          {ui}
+        </SettingsProvider>
+      </MemoryRouter>
+    </AuthProvider>,
+  );
+}
+
 /** fake 通知 API：默认空列表、未读 0；可按用例覆盖。 */
 export function fakeNotificationsApi(overrides: Partial<NotificationsApi> = {}): NotificationsApi {
   return {
@@ -83,22 +116,56 @@ export function fakeNotificationsApi(overrides: Partial<NotificationsApi> = {}):
   };
 }
 
-/** 共享壳层装配渲染：AuthProvider + Esc 栈 + 抽屉注册表 + 通知轮询层。 */
+/** 共享壳层装配渲染：与 App.tsx 同序——AuthProvider → SettingsProvider → Esc 栈 → 抽屉注册表 → 通知轮询层。 */
 export function renderWithShell(
   ui: ReactElement,
   store: AuthSessionStore,
   initialEntries: InitialEntry[] = ['/'],
-  options: { notifications?: NotificationsStore } = {},
+  options: { notifications?: NotificationsStore; settingsApi?: SettingsApi } = {},
 ): RenderResult {
   const notifications = options.notifications ?? new NotificationsStore(fakeNotificationsApi());
+  const settingsApi: SettingsApi = options.settingsApi ?? ({
+    getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
+    updatePreferences: vi.fn(async (next: { theme: string; chat_font_size: string; ab_opt_out: boolean }) => next),
+    getQuota: vi.fn(async () => ({
+      used: 120,
+      base_limit: 500,
+      extra_granted: 0,
+      effective_limit: 500,
+      unlimited: false,
+      reset_at: '2026-09-01T00:00:00+08:00',
+      business_timezone: 'Asia/Shanghai',
+      quota_period: '2026-08',
+      business_calendar_version_id: 'calendar_1',
+      pending_request: null,
+    })),
+    listDocuments: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 10 })),
+    listJobs: vi.fn(async () => ({ items: [], limit: 50, max_limit: 200, has_more: false })),
+    listUploadSpaces: vi.fn(async () => ({ items: [] })),
+    listManageSpaces: vi.fn(async () => ({ items: [] })),
+    getApprovalSummary: vi.fn(async () => ({ quota_pending: 0, submission_pending: 0 })),
+    listSubmissions: vi.fn(async () => ({ items: [] })),
+    listVersions: vi.fn(async () => ({ document_id: 'doc_1', version: 1, active_version_id: null, items: [] })),
+    listApprovals: vi.fn(async () => ({ items: [] })),
+  } as unknown as SettingsApi);
   return render(
     <AuthProvider store={store}>
       <MemoryRouter initialEntries={initialEntries}>
-        <EscStackProvider>
-          <DrawerRegistryProvider registry={createDrawerRegistry()}>
-            <NotificationsProvider store={notifications}>{ui}</NotificationsProvider>
-          </DrawerRegistryProvider>
-        </EscStackProvider>
+        <SettingsProvider
+          api={settingsApi}
+          authStore={store}
+          theme={new ThemeController(
+            { dataset: {}, classList: { add: () => {}, remove: () => {} }, style: { colorScheme: '' } },
+            { matches: false, addEventListener: () => {}, removeEventListener: () => {} },
+          )}
+          notifications={notifications}
+        >
+          <EscStackProvider>
+            <DrawerRegistryProvider registry={createDrawerRegistry()}>
+              <NotificationsProvider store={notifications}>{ui}</NotificationsProvider>
+            </DrawerRegistryProvider>
+          </EscStackProvider>
+        </SettingsProvider>
       </MemoryRouter>
     </AuthProvider>,
   );

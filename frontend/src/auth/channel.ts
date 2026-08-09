@@ -8,11 +8,40 @@
 import type { User } from './types';
 
 export type AuthBusMessage =
-  | { readonly type: 'login'; readonly token: string; readonly user: User }
-  | { readonly type: 'refresh'; readonly token: string }
-  | { readonly type: 'logout' }
-  | { readonly type: 'session-revoked'; readonly id: string; readonly current: boolean }
-  | { readonly type: 'sessions-revoked-all' };
+  | {
+      readonly type: 'login';
+      readonly token: string;
+      readonly user: User;
+      /** 逻辑认证会话 identity：同一次 login 内 refresh 保持不变。 */
+      readonly authSessionId: string;
+    }
+  | {
+      readonly type: 'refresh';
+      readonly token: string;
+      readonly authSessionId: string;
+    }
+  | {
+      readonly type: 'logout';
+      /** 仅清理仍绑定该逻辑会话的标签页（延迟 logout 完成不得清新会话）。 */
+      readonly authSessionId: string;
+    }
+  | {
+      readonly type: 'session-revoked';
+      readonly id: string;
+      readonly current: true;
+      /** current=true 必须绑定发起时的逻辑会话 identity；缺 id 的 payload 接收端 fail-closed。 */
+      readonly authSessionId: string;
+    }
+  | {
+      readonly type: 'session-revoked';
+      readonly id: string;
+      readonly current: false;
+    }
+  | {
+      readonly type: 'sessions-revoked-all';
+      /** 仅清理仍绑定该逻辑会话的标签页。 */
+      readonly authSessionId: string;
+    };
 
 export type AuthBusListener = (message: AuthBusMessage) => void;
 

@@ -6,7 +6,11 @@
  *   后重试原请求一次；refresh 失败按认证失效处理（会话层清理状态），错误继续上抛。
  */
 
-import { ApiError, networkError, normalizeApiError, timeoutError } from './errors';
+import { ApiError, networkError, normalizeApiError, staleAuthSessionError, timeoutError } from './errors';
+
+export interface AuthSessionGuard {
+  readonly authSessionId: string | null;
+}
 
 export interface ApiRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -15,12 +19,18 @@ export interface ApiRequestOptions {
   readonly auth?: boolean;
   readonly headers?: Record<string, string>;
   readonly timeoutMs?: number;
+  /** 成功响应解码方式；默认 JSON，二进制内容端点显式选择 blob。 */
+  readonly responseType?: 'json' | 'blob';
+  /** 可选：捕获时的逻辑会话；与当前会话不一致时 fail-closed，不 refresh/replay。 */
+  readonly authSessionGuard?: AuthSessionGuard;
 }
 
 export interface ApiClientDeps {
   /** 默认 '/v1'。 */
   readonly baseUrl?: string;
   readonly getAccessToken: () => string | null;
+  /** 当前逻辑认证会话 id；缺省时 guard 视作始终 null。 */
+  readonly getAuthSessionId?: () => string | null;
   /** 业务请求 401 时调用；须为 single-flight 实现，resolve 新 access token。 */
   readonly refresh: () => Promise<string>;
   readonly fetchFn?: typeof fetch;
@@ -28,8 +38,18 @@ export interface ApiClientDeps {
   readonly timeoutMs?: number;
 }
 
+export interface JsonApiRequestOptions extends ApiRequestOptions {
+  readonly responseType?: 'json';
+}
+
+export interface BlobApiRequestOptions extends ApiRequestOptions {
+  readonly responseType: 'blob';
+}
+
 export interface ApiClient {
-  request<T>(path: string, options?: ApiRequestOptions): Promise<T>;
+  captureAuthSessionGuard(): AuthSessionGuard;
+  request<T>(path: string, options?: JsonApiRequestOptions): Promise<T>;
+  request(path: string, options: BlobApiRequestOptions): Promise<Blob>;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -40,15 +60,56 @@ export function resolveUrl(path: string): string {
   return new URL(path, base).toString();
 }
 
+function readBodyWithDeadline<T>(read: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(timeoutError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      reject(timeoutError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve()
+      .then(read)
+      .then(
+        (body) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(body);
+        },
+        (cause) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(cause);
+        },
+      );
+  });
+}
+
 export function createApiClient(deps: ApiClientDeps): ApiClient {
   const baseUrl = deps.baseUrl ?? '/v1';
   const fetchFn = deps.fetchFn ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+  const currentAuthSessionId = (): string | null => deps.getAuthSessionId?.() ?? null;
+
+  function assertAuthSessionGuard(guard: AuthSessionGuard | undefined): void {
+    if (guard !== undefined && guard.authSessionId !== currentAuthSessionId()) {
+      throw staleAuthSessionError();
+    }
+  }
 
   async function rawRequest<T>(path: string, options: ApiRequestOptions): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const headers: Record<string, string> = { ...options.headers };
-    if (options.body !== undefined) {
+    // multipart 请求体不强制 JSON Content-Type：
+    // - FormData / multipart Blob：边界由 body 自带；
+    // - 字节级手工 multipart：调用方已在 headers 显式给出 multipart Content-Type（含边界）。
+    const multipartHeader =
+      typeof headers['Content-Type'] === 'string' && headers['Content-Type'].startsWith('multipart/form-data');
+    const isMultipartBody =
+      options.body instanceof FormData ||
+      (typeof Blob !== 'undefined' && options.body instanceof Blob && options.body.type.startsWith('multipart/form-data')) ||
+      multipartHeader;
+    if (options.body !== undefined && !isMultipartBody) {
       headers['Content-Type'] = 'application/json';
     }
     if (options.auth !== false) {
@@ -57,16 +118,40 @@ export function createApiClient(deps: ApiClientDeps): ApiClient {
         headers['Authorization'] = `Bearer ${token}`;
       }
     }
-    let response: Response;
+    const requestBody =
+      options.body === undefined ? undefined : isMultipartBody ? options.body : JSON.stringify(options.body);
     try {
-      response = await fetchFn(resolveUrl(`${baseUrl}${path}`), {
+      const response = await fetchFn(resolveUrl(`${baseUrl}${path}`), {
         method: options.method ?? 'GET',
         headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        body: requestBody as BodyInit | undefined,
         credentials: 'include',
         signal: controller.signal,
       });
+      if (response.status === 204) {
+        return undefined as T;
+      }
+      // 错误响应始终读取 JSON 契约；仅成功二进制内容改走 Blob 解码。
+      const body: unknown =
+        response.ok && options.responseType === 'blob'
+          ? await readBodyWithDeadline(() => response.blob(), controller.signal)
+          : await readBodyWithDeadline(() => response.json(), controller.signal).catch((cause) => {
+              if (cause instanceof ApiError) {
+                throw cause;
+              }
+              if (controller.signal.aborted) {
+                throw timeoutError();
+              }
+              return null;
+            });
+      if (!response.ok) {
+        throw normalizeApiError(body, response.status);
+      }
+      return body as T;
     } catch (cause) {
+      if (cause instanceof ApiError) {
+        throw cause;
+      }
       if (controller.signal.aborted) {
         throw timeoutError();
       }
@@ -74,29 +159,34 @@ export function createApiClient(deps: ApiClientDeps): ApiClient {
     } finally {
       clearTimeout(timeout);
     }
-    if (response.status === 204) {
-      return undefined as T;
+  }
+
+  async function request<T>(path: string, options?: JsonApiRequestOptions): Promise<T>;
+  async function request(path: string, options: BlobApiRequestOptions): Promise<Blob>;
+  async function request(path: string, options: ApiRequestOptions = {}): Promise<unknown> {
+    assertAuthSessionGuard(options.authSessionGuard);
+    try {
+      const result = await rawRequest<unknown>(path, options);
+      // Guarded responses must fail closed even when the original request succeeded after a session switch.
+      assertAuthSessionGuard(options.authSessionGuard);
+      return result;
+    } catch (error) {
+      const isUnauthorized = error instanceof ApiError && error.status === 401;
+      if (options.auth === false || !isUnauthorized) {
+        throw error;
+      }
+      // 业务请求 401：先 single-flight refresh 一次，再重试原请求；refresh 失败按认证失效上抛
+      assertAuthSessionGuard(options.authSessionGuard);
+      await deps.refresh();
+      assertAuthSessionGuard(options.authSessionGuard);
+      const result = await rawRequest<unknown>(path, options);
+      assertAuthSessionGuard(options.authSessionGuard);
+      return result;
     }
-    const body: unknown = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw normalizeApiError(body, response.status);
-    }
-    return body as T;
   }
 
   return {
-    async request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
-      try {
-        return await rawRequest<T>(path, options);
-      } catch (error) {
-        const isUnauthorized = error instanceof ApiError && error.status === 401;
-        if (options.auth === false || !isUnauthorized) {
-          throw error;
-        }
-        // 业务请求 401：先 single-flight refresh 一次，再重试原请求；refresh 失败按认证失效上抛
-        await deps.refresh();
-        return await rawRequest<T>(path, options);
-      }
-    },
+    captureAuthSessionGuard: () => ({ authSessionId: currentAuthSessionId() }),
+    request,
   };
 }

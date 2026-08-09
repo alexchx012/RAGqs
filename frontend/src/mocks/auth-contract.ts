@@ -129,6 +129,7 @@ export interface MockAuthPersistence {
 }
 
 interface MockAuthSnapshot {
+  users: MockUserRecord[];
   accessTokens: [string, AccessTokenRecord][];
   families: [string, RefreshFamily][];
   sessions: [string, SessionRecord][];
@@ -177,6 +178,7 @@ export class MockAuthController {
 
   private snapshot(): MockAuthSnapshot {
     return {
+      users: this.users,
       accessTokens: [...this.accessTokens],
       families: [...this.families],
       sessions: [...this.sessions],
@@ -201,6 +203,9 @@ export class MockAuthController {
   private hydrateFrom(raw: string): void {
     try {
       const snapshot = JSON.parse(raw) as MockAuthSnapshot;
+      if (Array.isArray(snapshot.users)) {
+        this.users = snapshot.users;
+      }
       this.accessTokens = new Map(snapshot.accessTokens);
       this.families = new Map(snapshot.families);
       this.sessions = new Map(snapshot.sessions);
@@ -236,6 +241,13 @@ export class MockAuthController {
       throw new MockHttpError(401, 'session_revoked');
     }
     return record;
+  }
+
+  private replaceUserRecord(userId: string, next: MockUserRecord): void {
+    const index = this.users.findIndex((candidate) => candidate.user.id === userId);
+    if (index !== -1) {
+      this.users[index] = next;
+    }
   }
 
   private issueAccessToken(sessionId: string, userId: string): string {
@@ -414,6 +426,52 @@ export class MockAuthController {
   me(authorization: string | null): User {
     this.rehydrate();
     return this.userByAccessToken(authorization).record.user;
+  }
+
+  /** Settings mock 通过同一认证域用户记录更新唯一允许的展示字段。 */
+  updateCurrentUserDisplayName(authorization: string | null, displayName: string): User {
+    this.rehydrate();
+    const { record } = this.userByAccessToken(authorization);
+    const next: MockUserRecord = {
+      ...record,
+      user: { ...record.user, display_name: displayName },
+    };
+    this.replaceUserRecord(record.user.id, next);
+    this.persist();
+    return next.user;
+  }
+
+  /** Settings mock 通过同一认证域用户记录保存头像展示 URL。 */
+  updateCurrentUserAvatar(authorization: string | null, avatarUrl: string): User {
+    this.rehydrate();
+    const { record } = this.userByAccessToken(authorization);
+    const next: MockUserRecord = {
+      ...record,
+      user: { ...record.user, avatar_url: avatarUrl },
+    };
+    this.replaceUserRecord(record.user.id, next);
+    this.persist();
+    return next.user;
+  }
+
+  /** 密码更新成功后服务端立即撤销该用户的全部设备会话。 */
+  changeCurrentUserPasswordAndRevokeAll(
+    authorization: string | null,
+    oldPassword: string,
+    newPassword: string,
+  ): void {
+    this.rehydrate();
+    const { record } = this.userByAccessToken(authorization);
+    if (record.password !== oldPassword) {
+      throw new MockHttpError(403, 'wrong_old_password');
+    }
+    this.replaceUserRecord(record.user.id, { ...record, password: newPassword });
+    for (const candidate of this.sessions.values()) {
+      if (candidate.userId === record.user.id && candidate.revokedAt === null) {
+        this.revokeSessionRecord(candidate);
+      }
+    }
+    this.persist();
   }
 
   listSessions(authorization: string | null): DeviceSession[] {

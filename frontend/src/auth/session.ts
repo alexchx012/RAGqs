@@ -10,7 +10,7 @@
  */
 
 import type { AuthApi } from './api';
-import type { AuthBus, AuthBusMessage } from './channel';
+import type { AuthBus } from './channel';
 import type { User } from './types';
 
 export type AuthStatus = 'unknown' | 'authenticated' | 'unauthenticated';
@@ -20,6 +20,15 @@ export interface AuthState {
   readonly token: string | null;
   readonly user: User | null;
 }
+
+/** 设置域仅可同步当前用户的展示字段，不能覆盖身份或权限数据。 */
+export type CurrentUserPresentationPatch = Readonly<Partial<Pick<User, 'display_name' | 'avatar_url'>>>;
+
+/** 发起保存时声明其影响的当前用户展示字段。 */
+export type CurrentUserPresentationField = keyof CurrentUserPresentationPatch;
+
+/** 发起保存时捕获的受控提交能力；账号已切换或登出时静默失效。 */
+export type CurrentUserPresentationSync = (patch: CurrentUserPresentationPatch) => void;
 
 export interface AuthSessionDeps {
   readonly api: AuthApi;
@@ -33,12 +42,37 @@ export interface AuthSessionDeps {
 const ACCESS_TOKEN_TTL_MS = 15 * 60_000;
 const REFRESH_LEAD_MS = 60_000;
 
+/** 仅在本 store 内部标识认证生命周期，绝不进入状态、持久化或总线。 */
+interface LifecycleKey {
+  readonly authSessionId: string | null;
+  readonly lifecycleEpoch: number;
+}
+
+interface RefreshOutcome {
+  readonly token: string;
+  readonly applied: boolean;
+}
+
+interface RefreshFlight {
+  readonly key: LifecycleKey;
+  readonly promise: Promise<RefreshOutcome>;
+}
+
 export class AuthSessionStore {
   private state: AuthState = { status: 'unknown', token: null, user: null };
   private readonly listeners = new Set<() => void>();
-  private inflightRefresh: Promise<string> | null = null;
+  private inflightRefresh: RefreshFlight | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private bootstrapped = false;
+  /** 与展示补丁计数器分离的私有认证生命周期版本。 */
+  private lifecycleEpoch = 0;
+  /** 仅供展示补丁绑定本地认证会话实例；普通已认证 refresh 不推进。 */
+  private presentationSessionInstance = 0;
+  /**
+   * 逻辑认证会话 identity：在 login（或从 unauthenticated 恢复）时绑定，
+   * 同会话普通 refresh 保持不变，用于改密/all-sessions 跨会话 race 防护。
+   */
+  private authSessionId: string | null = null;
   private readonly unsubscribeBus: () => void;
   private readonly ttlMs: number;
   private readonly leadMs: number;
@@ -53,9 +87,45 @@ export class AuthSessionStore {
     return this.state;
   }
 
+  /** 当前逻辑认证会话 identity；未认证时为 null。同会话 refresh 不改变该值。 */
+  getAuthSessionId(): string | null {
+    return this.authSessionId;
+  }
+
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * 在保存请求发起时绑定当前 user id 和本地认证会话实例。只接受展示字段，且账号切换/登出后不再写入。
+   * 同一认证会话的普通 refresh 不推进实例，因此不干扰正在进行的个人资料保存。
+   */
+  createCurrentUserPresentationSync(): CurrentUserPresentationSync {
+    const capturedUser = this.state.user;
+    const capturedSessionInstance = this.presentationSessionInstance;
+    if (this.state.status !== 'authenticated' || capturedUser === null) {
+      return () => undefined;
+    }
+    return (patch) => {
+      const currentUser = this.state.user;
+      if (
+        this.state.status !== 'authenticated' ||
+        currentUser === null ||
+        currentUser.id !== capturedUser.id ||
+        this.presentationSessionInstance !== capturedSessionInstance ||
+        (patch.display_name === undefined && patch.avatar_url === undefined)
+      ) {
+        return;
+      }
+      this.setState({
+        user: {
+          ...currentUser,
+          ...(patch.display_name === undefined ? {} : { display_name: patch.display_name }),
+          ...(patch.avatar_url === undefined ? {} : { avatar_url: patch.avatar_url }),
+        },
+      });
+    };
   }
 
   private setState(next: Partial<AuthState>): void {
@@ -65,6 +135,31 @@ export class AuthSessionStore {
     }
   }
 
+  private advancePresentationSessionInstance(): void {
+    this.presentationSessionInstance += 1;
+  }
+
+  private advanceLifecycleEpoch(): void {
+    this.lifecycleEpoch += 1;
+  }
+
+  private captureLifecycleKey(): LifecycleKey {
+    return { authSessionId: this.authSessionId, lifecycleEpoch: this.lifecycleEpoch };
+  }
+
+  private matchesLifecycleKey(key: LifecycleKey): boolean {
+    return this.authSessionId === key.authSessionId && this.lifecycleEpoch === key.lifecycleEpoch;
+  }
+
+  private sameLifecycleKey(left: LifecycleKey, right: LifecycleKey): boolean {
+    return left.authSessionId === right.authSessionId && left.lifecycleEpoch === right.lifecycleEpoch;
+  }
+
+  /** True only when still authenticated under the given lifecycle key (post-setState fence). */
+  private isAuthenticatedLifecycle(key: LifecycleKey): boolean {
+    return this.state.status === 'authenticated' && this.matchesLifecycleKey(key);
+  }
+
   /** 应用启动时调用一次：静默 refresh 恢复会话；失败则进入未认证态。幂等。 */
   async bootstrap(): Promise<void> {
     if (this.bootstrapped) {
@@ -72,54 +167,115 @@ export class AuthSessionStore {
     }
     this.bootstrapped = true;
     try {
-      await this.refresh();
-      await this.ensureUser();
+      const outcome = await this.refreshForCurrentLifecycle();
+      if (outcome.applied) {
+        await this.ensureUser();
+      }
     } catch {
-      // refresh 失败已在 refresh() 内按认证失效清理
+      // refresh 失败已在 refreshForCurrentLifecycle() 内按认证失效清理
     }
   }
 
   async login(username: string, password: string): Promise<User> {
     const { token, user } = await this.deps.api.login(username, password);
+    const authSessionId = token;
+    this.advancePresentationSessionInstance();
+    this.advanceLifecycleEpoch();
+    this.authSessionId = authSessionId;
     this.setState({ status: 'authenticated', token, user });
     this.scheduleRefresh();
-    this.deps.bus.post({ type: 'login', token, user });
+    this.deps.bus.post({ type: 'login', token, user, authSessionId });
     return user;
   }
 
-  /** 只退出当前设备（契约 §2.2）；服务端幂等 204，本地无论如何都清理。 */
+  /** 只退出当前设备（契约 §2.2）；服务端幂等 204，本地在仍匹配发起 identity 时清理。 */
   async logout(): Promise<void> {
+    // 必须在请求前捕获 identity：延迟完成时若已切到 B / 新 A，不得清理新会话。
+    const initiatedAuthSessionId = this.authSessionId;
     try {
       await this.deps.api.logout();
     } catch {
-      // 登出入口无二次确认、无错误界面：服务端失败不阻塞本地清理
+      // 登出入口无二次确认、无错误界面：服务端失败不阻塞本地清理（仍按发起 identity 判定）
     }
-    this.clearAuth();
-    this.deps.bus.post({ type: 'logout' });
+    if (initiatedAuthSessionId === null) {
+      // 未认证发起：仅当完成时仍未登录才本地清理；期间若已登录 B 则不得 clearAuth，也不发无 id 广播。
+      if (this.authSessionId === null) {
+        this.clearAuth();
+      }
+      return;
+    }
+    this.deps.bus.post({ type: 'logout', authSessionId: initiatedAuthSessionId });
+    if (this.authSessionId === initiatedAuthSessionId) {
+      this.clearAuth();
+    }
   }
 
-  /** single-flight refresh：并发调用等待同一次结果（契约 §2.10）。 */
+  /** 保持公共 refresh 返回 token；内部 outcome 供 bootstrap 判断该 flight 是否实际落地。 */
   refresh(): Promise<string> {
-    if (this.inflightRefresh !== null) {
-      return this.inflightRefresh;
+    return this.refreshForCurrentLifecycle().then(({ token }) => token);
+  }
+
+  /** 以完整生命周期 key 分区的 single-flight refresh。 */
+  private refreshForCurrentLifecycle(): Promise<RefreshOutcome> {
+    const key = this.captureLifecycleKey();
+    const existingFlight = this.inflightRefresh;
+    if (existingFlight !== null && this.sameLifecycleKey(existingFlight.key, key)) {
+      return existingFlight.promise;
     }
-    const inflight = (async () => {
-      try {
-        const { token } = await this.deps.api.refresh();
-        this.setState({ status: 'authenticated', token });
-        this.scheduleRefresh();
-        this.deps.bus.post({ type: 'refresh', token });
-        return token;
-      } catch (error) {
-        // refresh 失败（含四类认证失效码与网络失败）按认证失效处理
+
+    let resolveOutcome!: (outcome: RefreshOutcome) => void;
+    let rejectOutcome!: (reason?: unknown) => void;
+    const promise = new Promise<RefreshOutcome>((resolve, reject) => {
+      resolveOutcome = resolve;
+      rejectOutcome = reject;
+    });
+    const flight: RefreshFlight = { key, promise };
+
+    // 必须先注册 flight，再同步启动 worker；api.refresh() 同步 throw 时也不会遗留已结束的 slot。
+    this.inflightRefresh = flight;
+    void this.runRefreshFlight(flight).then(resolveOutcome, rejectOutcome);
+    return promise;
+  }
+
+  private async runRefreshFlight(flight: RefreshFlight): Promise<RefreshOutcome> {
+    try {
+      const { token } = await this.deps.api.refresh();
+      if (!this.matchesLifecycleKey(flight.key)) {
+        // 旧调用者仍可取得自己的 token，但不得把它应用到新生命周期。
+        return { token, applied: false };
+      }
+
+      // 非认证态建立会话会推进 epoch；fence 必须用推进后的 key，而非 flight 的 pre-transition key。
+      const establishingFromNonAuth = this.state.status !== 'authenticated';
+      if (establishingFromNonAuth) {
+        // 从 unknown/unauthenticated 建立认证是一次新的本地生命周期。
+        this.advancePresentationSessionInstance();
+        this.advanceLifecycleEpoch();
+        this.authSessionId = token;
+      }
+      const authSessionId = this.authSessionId ?? token;
+      this.authSessionId = authSessionId;
+      const appliedKey = establishingFromNonAuth ? this.captureLifecycleKey() : flight.key;
+      this.setState({ status: 'authenticated', token });
+      // setState 同步通知订阅者；重入 clearAuth 后不得 schedule / 广播 / 标记 applied。
+      if (!this.isAuthenticatedLifecycle(appliedKey)) {
+        return { token, applied: false };
+      }
+      this.scheduleRefresh();
+      this.deps.bus.post({ type: 'refresh', token, authSessionId });
+      return { token, applied: true };
+    } catch (error) {
+      // 仅当前仍是本 flight 的完整生命周期时才清理；始终 rethrow 原错误。
+      if (this.matchesLifecycleKey(flight.key)) {
         this.clearAuth();
-        throw error;
-      } finally {
+      }
+      throw error;
+    } finally {
+      // A 的 finally 不得清掉后来注册的 B flight。
+      if (this.inflightRefresh === flight) {
         this.inflightRefresh = null;
       }
-    })();
-    this.inflightRefresh = inflight;
-    return inflight;
+    }
   }
 
   /** 用户档案缺失时用 GET /auth/me 拉取。 */
@@ -127,25 +283,74 @@ export class AuthSessionStore {
     if (this.state.user !== null) {
       return this.state.user;
     }
+    const key = this.captureLifecycleKey();
     const user = await this.deps.api.me();
-    this.setState({ user });
+    if (this.state.status === 'authenticated' && this.matchesLifecycleKey(key)) {
+      this.setState({ user });
+    }
     return user;
+  }
+
+  /** 设置页读取当前账号的活跃设备会话（会话端点仍归认证域）。 */
+  listSessions(): ReturnType<AuthApi['listSessions']> {
+    return this.deps.api.listSessions();
   }
 
   /** 撤销指定设备会话；目标为当前设备时本地等同登出（契约 §2.8）。 */
   async revokeSession(id: string, options: { current?: boolean } = {}): Promise<void> {
-    await this.deps.api.revokeSession(id);
     const current = options.current ?? false;
-    this.deps.bus.post({ type: 'session-revoked', id, current });
+    // current 设备撤销与 logout / revoke-all 相同：在 await 前捕获 identity，避免延迟完成清新会话。
+    const initiatedAuthSessionId = current ? this.authSessionId : null;
+    await this.deps.api.revokeSession(id);
     if (current) {
-      this.clearAuth();
+      if (initiatedAuthSessionId === null) {
+        // 未认证发起：仅当完成时仍 null 才本地清理；绝不广播无 id 的 current-revoke wildcard。
+        if (this.authSessionId === null) {
+          this.clearAuth();
+        }
+        return;
+      }
+      this.deps.bus.post({
+        type: 'session-revoked',
+        id,
+        current: true,
+        authSessionId: initiatedAuthSessionId,
+      });
+      if (this.authSessionId === initiatedAuthSessionId) {
+        this.clearAuth();
+      }
+      return;
     }
+    this.deps.bus.post({ type: 'session-revoked', id, current: false });
   }
 
-  /** 退出全部设备：清理认证状态并回登录页（契约 §2.8）。 */
+  /** 退出全部设备：先请求 DELETE /auth/sessions，再清理认证状态（契约 §2.8）。 */
   async revokeAllSessions(): Promise<void> {
+    // 必须在 DELETE 发起前捕获 identity：响应延迟期间若已切到 B / 新 A，不得按响应时的可变 identity 清理。
+    const initiatedAuthSessionId = this.authSessionId;
     await this.deps.api.revokeAllSessions();
-    this.deps.bus.post({ type: 'sessions-revoked-all' });
+    this.handleServerAllSessionsRevoked(initiatedAuthSessionId);
+  }
+
+  /**
+   * 服务端已在其他成功操作中撤销全部会话（例如修改密码）后的本地收尾。
+   * 此路径绝不能再调用 DELETE /auth/sessions：当前 Bearer 此时已可能失效。
+   *
+   * @param expectedAuthSessionId 发起操作时捕获的逻辑会话 identity。
+   *   传入时仅当仍匹配当前 identity 才清理本地；无论是否匹配都广播该 identity，供仍绑定旧会话的 peer 清理。
+   *   省略时使用当前 identity（兼容即时收尾调用）。
+   */
+  handleServerAllSessionsRevoked(expectedAuthSessionId?: string | null): void {
+    const targetId = expectedAuthSessionId === undefined ? this.authSessionId : expectedAuthSessionId;
+    if (targetId === null || targetId === undefined) {
+      return;
+    }
+    if (this.authSessionId !== targetId) {
+      // 当前 tab 已切到其他逻辑会话：不清理本地；仍广播旧 identity，供仍匹配的 peer 清理。
+      this.deps.bus.post({ type: 'sessions-revoked-all', authSessionId: targetId });
+      return;
+    }
+    this.deps.bus.post({ type: 'sessions-revoked-all', authSessionId: targetId });
     this.clearAuth();
   }
 
@@ -156,6 +361,9 @@ export class AuthSessionStore {
   }
 
   private clearAuth(): void {
+    this.advancePresentationSessionInstance();
+    this.advanceLifecycleEpoch();
+    this.authSessionId = null;
     this.stopAutoRefresh();
     this.setState({ status: 'unauthenticated', token: null, user: null });
   }
@@ -174,27 +382,136 @@ export class AuthSessionStore {
     }
   }
 
-  private onBusMessage(message: AuthBusMessage): void {
-    switch (message.type) {
-      case 'login':
-        this.setState({ status: 'authenticated', token: message.token, user: message.user });
+  /**
+   * BroadcastChannel / 测试总线 payload 在运行时不可信。
+   * 入口按 unknown 处理：先拒绝 null/非对象/非 string type，再在各分支校验字段。
+   * 保持内部实现；不改 channel.ts 的编译期 AuthBusMessage 契约。
+   */
+  private onBusMessage(message: unknown): void {
+    if (message === null || typeof message !== 'object') {
+      return;
+    }
+    const payload = message as Record<string, unknown>;
+    if (typeof payload.type !== 'string') {
+      return;
+    }
+
+    switch (payload.type) {
+      case 'login': {
+        const token = payload.token;
+        const authSessionId = payload.authSessionId;
+        const user = payload.user;
+        // 缺/空/非法凭据不得写入状态；合法既有 login 消息继续生效。
+        if (
+          typeof token !== 'string' ||
+          token.length === 0 ||
+          typeof authSessionId !== 'string' ||
+          authSessionId.length === 0 ||
+          !this.isBusUser(user)
+        ) {
+          break;
+        }
+        this.advancePresentationSessionInstance();
+        this.advanceLifecycleEpoch();
+        this.authSessionId = authSessionId;
+        this.setState({ status: 'authenticated', token, user });
         this.scheduleRefresh();
         break;
-      case 'refresh':
-        // 其他标签页完成轮换：采纳新 token 并重排自动 refresh，避免各标签页各自轮换
-        this.setState({ status: 'authenticated', token: message.token });
-        this.scheduleRefresh();
-        void this.ensureUser().catch(() => undefined);
+      }
+      case 'refresh': {
+        // refresh 必须带非空 string token 与 authSessionId（含 id 匹配 / unknown 准入路径）。
+        if (
+          typeof payload.token !== 'string' ||
+          payload.token.length === 0 ||
+          typeof payload.authSessionId !== 'string' ||
+          payload.authSessionId.length === 0
+        ) {
+          break;
+        }
+        const token = payload.token;
+        const authSessionId = payload.authSessionId;
+        if (this.state.status === 'unknown' && this.authSessionId === null) {
+          // 初始 unknown 才可由 peer refresh 建立新生命周期。
+          this.advancePresentationSessionInstance();
+          this.advanceLifecycleEpoch();
+          this.authSessionId = authSessionId;
+          const appliedKey = this.captureLifecycleKey();
+          this.setState({ status: 'authenticated', token });
+          // 重入 clear 后不得 schedule / ensureUser。
+          if (!this.isAuthenticatedLifecycle(appliedKey)) {
+            break;
+          }
+          this.scheduleRefresh();
+          void this.ensureUser().catch(() => undefined);
+          break;
+        }
+        if (this.state.status === 'authenticated' && this.authSessionId === authSessionId) {
+          // 同一逻辑会话的 refresh 仅轮换 token，保留 user/id/epoch。
+          const appliedKey = this.captureLifecycleKey();
+          this.setState({ token });
+          if (!this.isAuthenticatedLifecycle(appliedKey)) {
+            break;
+          }
+          this.scheduleRefresh();
+          if (this.state.user === null) {
+            void this.ensureUser().catch(() => undefined);
+          }
+        }
         break;
-      case 'logout':
-      case 'sessions-revoked-all':
-        this.clearAuth();
-        break;
-      case 'session-revoked':
-        if (message.current) {
+      }
+      case 'logout': {
+        // 仅非空 string id 才参与比较；延迟 logout 不得清已切换的新会话。
+        if (typeof payload.authSessionId !== 'string' || payload.authSessionId.length === 0) {
+          break;
+        }
+        if (this.authSessionId === payload.authSessionId) {
           this.clearAuth();
         }
         break;
+      }
+      case 'sessions-revoked-all': {
+        // 仅非空 string id 才参与比较；已切到 B / 新 A 的 tab 忽略旧事件。
+        if (typeof payload.authSessionId !== 'string' || payload.authSessionId.length === 0) {
+          break;
+        }
+        if (this.authSessionId === payload.authSessionId) {
+          this.clearAuth();
+        }
+        break;
+      }
+      case 'session-revoked': {
+        // Fail-closed：BroadcastChannel payload 可畸形，不依赖 TS 类型保证。
+        // 仅 current===true 且非空 string authSessionId 与当前 logical id 匹配时才 clear。
+        if (
+          payload.current === true &&
+          typeof payload.authSessionId === 'string' &&
+          payload.authSessionId.length > 0 &&
+          this.authSessionId === payload.authSessionId
+        ) {
+          this.clearAuth();
+        }
+        break;
+      }
+      default:
+        break;
     }
+  }
+
+  /** 运行时粗校验 bus login 的 user；缺字段/非对象不得写入。 */
+  private isBusUser(value: unknown): value is User {
+    if (value === null || typeof value !== 'object') {
+      return false;
+    }
+    const candidate = value as Record<string, unknown>;
+    return (
+      typeof candidate.id === 'string' &&
+      typeof candidate.username === 'string' &&
+      typeof candidate.display_name === 'string' &&
+      typeof candidate.real_name === 'string' &&
+      typeof candidate.role === 'string' &&
+      (candidate.avatar_url === null || typeof candidate.avatar_url === 'string') &&
+      (candidate.department === null ||
+        (typeof candidate.department === 'object' && candidate.department !== null))
+    );
   }
 }

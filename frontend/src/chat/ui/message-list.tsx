@@ -126,7 +126,7 @@ function UserBubble({ content, createdAt }: { content: string; createdAt: string
   return (
     <div className="chat-message-enter flex justify-end">
       <div className="group flex max-w-[70%] flex-col items-end">
-        <div className="rounded-[var(--radius-smallcards)] bg-mist-gray px-4 py-3 text-[17px] text-ink-black">
+        <div className="chat-body-text rounded-[var(--radius-smallcards)] bg-mist-gray px-4 py-3 text-ink-black">
           {content}
         </div>
         <span className="mt-1 text-[15px] text-slate-gray opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">

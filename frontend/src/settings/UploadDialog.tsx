@@ -1,0 +1,359 @@
+/*
+ * 上传对话框（settings-personal §5，全角色唯一上传入口；review A2/A3/D16）。
+ * - 目标空间单选列表：GET /spaces?usage=upload；manage 目标 = 直接写入、contribute 目标 =
+ *   需审核分支提示；任何子界面不提供独立上传按钮、不预填目标、不直接调用上传接口。
+ * - 多文件上传：逐文件结果呈现（accepted 含 deduplicated / 投稿项含 submission_id 与
+ *   quota_exempt / 失败项按服务端错误对象），前端不以浏览器解码结果预拒文件。
+ * - 409 quota_exceeded 整批拒绝提示（不预扣不冻结）；投稿创建不检查页额度。
+ * - 确认后：manage 目标自动下钻上传结果层；contribute 目标自动下钻「我的投稿」层。
+ * - Idempotency-Key 绑定 target(space)+payload(文件指纹)：未知网络/超时复用同键同体，
+ *   明确业务响应清键不自动重发（含 idempotency_key_conflict）。
+ * - 上传结果历史按 sessionKey 隔离写入（旧会话回调拒绝落库）。
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
+import { ApiError } from '../api/errors';
+import { copy } from '../copy';
+import { formatDrawerLocation } from '../router/drawer-params';
+import { Pill } from '../ui/Pill';
+import { useSettings } from './SettingsProvider';
+import { createIdempotencyScope, isBusinessResponse } from './idempotency';
+import { useModalDialog } from './use-modal-dialog';
+import type { SpaceItem, UploadItem, UploadResponse } from './types';
+import { recordUploadHistory } from './upload-history';
+
+export interface UploadDialogProps {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  /** 当前逻辑会话 key（sessionId:userId）；null 时上传历史拒绝落库（未认证）。 */
+  readonly sessionKey: string | null;
+}
+
+type UploadPhase = 'idle' | 'uploading' | 'done';
+
+export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogProps) {
+  const { api } = useSettings();
+  const navigate = useNavigate();
+  const dialogRef = useModalDialog(open, () => {
+    invalidateOperation();
+    onOpenChange(false);
+  });
+  const [spaces, setSpaces] = useState<readonly SpaceItem[]>([]);
+  const [spacesError, setSpacesError] = useState(false);
+  const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [files, setFiles] = useState<readonly File[]>([]);
+  const [phase, setPhase] = useState<UploadPhase>('idle');
+  const [result, setResult] = useState<UploadResponse | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const idem = useRef(createIdempotencyScope());
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const spacesSeqRef = useRef(0);
+  // operation token（review A2）：关闭、重开、文件/目标切换时递增，
+  // 旧上传的迟到 completion 不得清 B 的 key、污染 B 状态或导航。
+  const operationTokenRef = useRef(0);
+  const invalidateOperation = () => {
+    operationTokenRef.current += 1;
+  };
+
+  const loadSpaces = useCallback(async () => {
+    const seq = ++spacesSeqRef.current;
+    setSpacesError(false);
+    try {
+      const response = await api.listUploadSpaces();
+      if (seq !== spacesSeqRef.current) {
+        return;
+      }
+      setSpaces(response.items);
+      // 默认选中第一个 manage 目标（若无 manage 则第一个 contribute 目标）
+      const firstManage = response.items.find((space) => space.permission === 'manage');
+      const firstContribute = response.items.find((space) => space.permission === 'contribute');
+      setSelectedSpaceId(firstManage?.id ?? firstContribute?.id ?? null);
+    } catch {
+      if (seq === spacesSeqRef.current) {
+        setSpacesError(true);
+      }
+    }
+  }, [api]);
+
+  useEffect(() => {
+    if (open) {
+      // 重开：旧 operation 失效（A 的迟到 completion 不得清 B 的 key/状态）
+      invalidateOperation();
+      setPhase('idle');
+      setResult(null);
+      setQuotaError(null);
+      setSubmitError(null);
+      setFiles([]);
+      setSelectedSpaceId(null);
+      idem.current.clear();
+      void loadSpaces();
+    }
+  }, [open, loadSpaces]);
+
+  const selectedSpace = spaces.find((space) => space.id === selectedSpaceId) ?? null;
+
+  const addFiles = (next: readonly File[]) => {
+    if (phase === 'uploading') {
+      return; // 上传进行中：禁止变更文件（否则 A completion 可能写 B 的文件集状态）
+    }
+    // 文件变更：旧 operation 失效（A 迟到 completion 不得清 B 的 key/写 A 结果）
+    invalidateOperation();
+    setFiles((current) => [...current, ...next]);
+    setResult(null);
+    setPhase('idle');
+    setQuotaError(null);
+    setSubmitError(null);
+  };
+
+  const confirmUpload = async () => {
+    if (phase === 'uploading' || selectedSpace === null || files.length === 0) {
+      return;
+    }
+    const token = operationTokenRef.current;
+    const wasUploading = true;
+    // key 绑定 target(space)+payload(文件指纹)：目标/文件变化自动换键
+    const payloadFingerprint = files
+      .map((file) => `${file.name}:${file.size}:${file.lastModified}`)
+      .join('|');
+    const idempotencyKey = idem.current.keyFor('upload-documents', selectedSpace.id, payloadFingerprint);
+    setPhase('uploading');
+    setQuotaError(null);
+    setSubmitError(null);
+    try {
+      const response = await api.uploadDocuments(selectedSpace.id, files, idempotencyKey);
+      if (token !== operationTokenRef.current) {
+        return; // 已关闭/重开/切换：旧上传 completion no-op（不清 B 的 key、不污染状态、不导航）
+      }
+      idem.current.clear();
+      setResult(response);
+      setPhase('done');
+      // 上传结果历史：按会话隔离写入（旧会话回调返回 false 被拒，不落库）
+      recordUploadHistory(
+        { response, target: selectedSpace, at: new Date().toISOString() },
+        sessionKey,
+      );
+      // 确认后自动下钻：manage → 上传结果层；contribute → 我的投稿层
+      if (selectedSpace.permission === 'manage') {
+        navigate(
+          formatDrawerLocation({ open: true, segment: 'personal', drill: ['knowledge', 'uploads'] }),
+        );
+      } else {
+        navigate(
+          formatDrawerLocation({ open: true, segment: 'personal', drill: ['knowledge', 'submissions'] }),
+        );
+      }
+    } catch (error) {
+      if (token !== operationTokenRef.current) {
+        return; // 旧上传 error no-op
+      }
+      if (isBusinessResponse(error)) {
+        // 明确业务响应（含 quota_exceeded / idempotency_key_conflict）：清键，不自动重发
+        idem.current.businessResponse();
+        if (error instanceof ApiError && error.status === 409 && error.code === 'quota_exceeded') {
+          setQuotaError(copy.settings.knowledge.upload.quotaExceeded);
+        } else {
+          setSubmitError(copy.settings.knowledge.upload.itemError('upload_error'));
+        }
+        setPhase('idle');
+      } else {
+        // 网络未知/超时：复用同键同体重试
+        setSubmitError(copy.settings.knowledge.upload.itemError('upload_error'));
+        setPhase('idle');
+      }
+    } finally {
+      if (token === operationTokenRef.current && wasUploading) {
+        setPhase('idle');
+      }
+    }
+  };
+
+  const requestClose = () => {
+    invalidateOperation();
+    onOpenChange(false);
+  };
+
+  const acceptedCount = result?.items.filter((item) => item.accepted).length ?? 0;
+  const failedCount = result === null ? 0 : result.items.length - acceptedCount;
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={dialogRef}
+      tabIndex={-1}
+      className="fixed inset-0 z-50 outline-none"
+      role="dialog"
+      aria-modal="true"
+      aria-label={copy.settings.knowledge.upload.dialogTitle}
+    >
+      <div
+        className="fixed inset-0 bg-ink-black/24"
+        onClick={() => {
+          if (phase !== 'uploading') {
+            requestClose();
+          }
+        }}
+        aria-hidden="true"
+      />
+      <div className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+        <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.upload.dialogTitle}</h2>
+        <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.upload.dialogDescription}</p>
+
+        {/* 目标空间单选列表 */}
+        <fieldset className="mt-4">
+          <legend className="mb-2 text-caption text-slate-gray">{copy.settings.knowledge.upload.targetLabel}</legend>
+          {spacesError ? (
+            <div className="flex items-center gap-3">
+              <p className="text-caption text-danger">{copy.states.error}</p>
+              <Pill variant="ghost" size="xs" onClick={() => void loadSpaces()}>
+                {copy.states.retry}
+              </Pill>
+            </div>
+          ) : spaces.length === 0 ? (
+            <p className="text-caption text-smoke-gray">{copy.states.empty}</p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {spaces.map((space) => (
+                <li key={space.id}>
+                  <label
+                    className={`flex cursor-pointer items-center gap-3 rounded-[var(--radius-images)] border px-3 py-2.5 ${
+                      selectedSpaceId === space.id ? 'border-ink-black bg-mist-gray' : 'border-[var(--color-hairline)]'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="upload-target"
+                      value={space.id}
+                      checked={selectedSpaceId === space.id}
+                      disabled={phase === 'uploading'}
+                      onChange={() => {
+                        if (phase === 'uploading') {
+                          return;
+                        }
+                        // 目标变化：旧 operation 失效（不跨目标复用 key/不污染）
+                        invalidateOperation();
+                        setSelectedSpaceId(space.id);
+                      }}
+                      className="accent-ink-black disabled:cursor-not-allowed"
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate text-body text-ink-black">{space.name}</span>
+                      <span className="block text-caption text-smoke-gray">
+                        {space.permission === 'manage'
+                          ? copy.settings.knowledge.upload.manageTargetHint
+                          : copy.settings.knowledge.upload.contributeTargetHint}
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
+        </fieldset>
+
+        {/* 文件选择 */}
+        <div className="mt-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            disabled={phase === 'uploading'}
+            aria-label={copy.settings.knowledge.upload.chooseFiles}
+            onChange={(event) => {
+              const picked = Array.from(event.target.files ?? []);
+              if (picked.length > 0) {
+                addFiles(picked);
+              }
+              event.target.value = '';
+            }}
+            className="hidden"
+          />
+          <Pill variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} disabled={phase === 'uploading'}>
+            {copy.settings.knowledge.upload.chooseFiles}
+          </Pill>
+          {files.length > 0 && (
+            <ul aria-label={copy.settings.knowledge.upload.fileListAria} className="mt-3 flex max-h-40 flex-col gap-1 overflow-y-auto">
+              {files.map((file) => (
+                <li key={`${file.name}:${file.size}`} className="truncate text-caption text-slate-gray">
+                  {file.name}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* 逐文件结果呈现（服务端错误对象，不以浏览器解码预拒） */}
+        {result !== null && (
+          <div className="mt-4">
+            <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto" aria-live="polite">
+              {result.items.map((item, index) => (
+                <UploadItemRow key={`${item.name}:${index}`} item={item} />
+              ))}
+            </ul>
+            <p className="mt-2 text-caption text-slate-gray">
+              {copy.settings.knowledge.upload.resultSummary(acceptedCount, failedCount)}
+            </p>
+          </div>
+        )}
+
+        {quotaError !== null && (
+          <p role="alert" className="mt-3 text-[15px] text-danger">
+            {quotaError}
+          </p>
+        )}
+        {submitError !== null && (
+          <p role="alert" className="mt-3 text-[15px] text-danger">
+            {submitError}
+          </p>
+        )}
+
+        <div className="mt-6 flex justify-end gap-2">
+          <Pill variant="ghost" size="sm" disabled={phase === 'uploading'} onClick={requestClose}>
+            {copy.controls.cancel}
+          </Pill>
+          <Pill
+            size="sm"
+            loading={phase === 'uploading'}
+            disabled={phase === 'uploading' || selectedSpace === null || files.length === 0}
+            onClick={() => void confirmUpload()}
+          >
+            {phase === 'uploading' ? copy.settings.knowledge.upload.uploading : copy.settings.knowledge.upload.upload}
+          </Pill>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UploadItemRow({ item }: { item: UploadItem }) {
+  if (item.accepted) {
+    if (item.deduplicated === true) {
+      return (
+        <li className="text-caption text-slate-gray">
+          {`${item.name} · ${copy.settings.knowledge.upload.deduplicated}`}
+        </li>
+      );
+    }
+    if (item.submission_id !== undefined) {
+      return (
+        <li className="text-caption text-slate-gray">
+          {`${item.name} · ${copy.settings.knowledge.upload.submissionCreated}`}
+        </li>
+      );
+    }
+    return (
+      <li className="text-caption text-success">
+        {`${item.name} · ${copy.settings.knowledge.upload.accepted}`}
+      </li>
+    );
+  }
+  return (
+    <li className="text-caption text-danger">
+      {`${item.name} · ${copy.settings.knowledge.upload.itemError(item.error.code)}`}
+    </li>
+  );
+}

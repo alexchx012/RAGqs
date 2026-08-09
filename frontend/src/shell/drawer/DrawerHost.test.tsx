@@ -64,8 +64,10 @@ describe('抽屉开合与 URL 同步', () => {
     expect(
       within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
     ).toBeInTheDocument();
-    // uploads 层尚未实现业务内容 → 通用占位
-    expect(within(dialog).getByText(drawerCopy.placeholderBody)).toBeInTheDocument();
+    // uploads 层渲染真实上传结果内容（空态；fake api 无任务）
+    expect(
+      await within(dialog).findByText(copy.settings.knowledge.uploads.empty),
+    ).toBeInTheDocument();
   });
 
   it('未注册层深链落抽屉首层占位（规格 §3）', async () => {
@@ -116,30 +118,29 @@ describe('左栏按角色渲染与跨段切换', () => {
 });
 
 describe('下钻、返回与 Esc 逐层', () => {
-  it('点模块下钻到子层列表，再下钻到叶子层；返回按钮逐层回退', async () => {
+  it('点模块下钻到知识库内容，再经模块内入口下钻到「我的投稿」；返回按钮逐层回退', async () => {
     const probe = await renderApp('/settings');
     const user = userEvent.setup();
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
     await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
-    // 知识库层：右栏渲染下钻行（上传结果全角色；我的投稿仅普通用户与部长）
-    expect(await within(dialog).findByRole('button', { name: modules.uploads })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: modules.submissions })).toBeInTheDocument();
+    // 知识库层：渲染真实模块内容（配额计数器 + 我的投稿入口）
+    expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge');
-    await user.click(within(dialog).getByRole('button', { name: modules.uploads }));
-    expect(await within(dialog).findByText(modules.uploads)).toBeInTheDocument();
-    expect(probe.textContent).toBe('/settings/knowledge/uploads');
+    await user.click(within(dialog).getByRole('button', { name: modules.submissions }));
+    expect(await within(dialog).findByText(copy.settings.knowledge.submissions.title)).toBeInTheDocument();
+    expect(probe.textContent).toBe('/settings/knowledge/submissions');
     // 返回按钮回到知识库层
     await user.click(
       within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
     );
-    expect(await within(dialog).findByRole('button', { name: modules.submissions })).toBeInTheDocument();
+    expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge');
   });
 
   it('运维在知识库层不渲染「我的投稿」（无权限模块不渲染）', async () => {
     await renderApp('/settings/knowledge', 'ops');
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
-    expect(await within(dialog).findByRole('button', { name: modules.uploads })).toBeInTheDocument();
+    expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
     expect(
       within(dialog).queryByRole('button', { name: modules.submissions }),
     ).not.toBeInTheDocument();
@@ -218,7 +219,7 @@ describe('抽屉页头铃铛与窄屏单栏化', () => {
       expect(dialog.querySelector('[data-nav-variant="modules"]')).not.toBeNull();
       const user = userEvent.setup();
       await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
-      expect(await within(dialog).findByRole('button', { name: modules.uploads })).toBeInTheDocument();
+      expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
       expect(probe.textContent).toBe('/settings/knowledge');
     } finally {
       window.matchMedia = original;
@@ -245,7 +246,7 @@ describe('prefers-reduced-motion 降级', () => {
       const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
       await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
       // 直出：点击后的提交里内容已切换，无需等待动画时序
-      expect(within(dialog).getByRole('button', { name: modules.uploads })).toBeInTheDocument();
+      expect(within(dialog).getByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
       expect(probe.textContent).toBe('/settings/knowledge');
       expect(document.querySelector('.drill-flip-clone')).toBeNull();
     } finally {

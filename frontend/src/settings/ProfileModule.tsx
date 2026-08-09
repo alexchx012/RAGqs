@@ -1,0 +1,145 @@
+import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useAuthState } from '../auth/AuthProvider';
+import type { Role } from '../auth/types';
+import { copy } from '../copy';
+import { Pill } from '../ui/Pill';
+import { useSettings } from './SettingsProvider';
+
+function roleLabel(role: Role | undefined): string {
+  switch (role) {
+    case 'minister':
+      return copy.settings.profile.roleMinister;
+    case 'ops':
+      return copy.settings.profile.roleOps;
+    case 'admin':
+      return copy.settings.profile.roleAdmin;
+    case 'user':
+    default:
+      return copy.settings.profile.roleUser;
+  }
+}
+
+export function ProfileModule() {
+  const { api, beginCurrentUserPresentationSync } = useSettings();
+  const { user } = useAuthState();
+  const [displayName, setDisplayName] = useState(user?.display_name ?? '');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisplayName(user?.display_name ?? '');
+  }, [user?.display_name]);
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (savingProfile) {
+      return;
+    }
+    const sync = beginCurrentUserPresentationSync(['display_name']);
+    setSavingProfile(true);
+    setProfileError(null);
+    try {
+      const updated = await api.updateProfile({ display_name: displayName });
+      sync.commit({ display_name: updated.display_name });
+    } catch {
+      setProfileError(copy.settings.profile.saveError);
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
+  async function uploadAvatar(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.item(0) ?? null;
+    if (file === null || uploadingAvatar) {
+      return;
+    }
+    const sync = beginCurrentUserPresentationSync(['avatar_url']);
+    setUploadingAvatar(true);
+    setAvatarError(null);
+    try {
+      const updated = await api.uploadAvatar(file);
+      sync.commit({ avatar_url: updated.avatar_url });
+    } catch {
+      setAvatarError(copy.settings.profile.avatarError);
+    } finally {
+      setUploadingAvatar(false);
+    }
+  }
+
+  return (
+    <section aria-label={copy.settings.profile.sectionLabel} className="pb-10">
+      <div className="flex items-center gap-4">
+        <img
+          src={user?.avatar_url ?? ''}
+          alt={copy.settings.profile.avatarAlt}
+          className="h-16 w-16 rounded-[var(--radius-images)] bg-mist-gray object-cover"
+        />
+        <div>
+          <label htmlFor="settings-avatar" className="text-caption text-slate-gray">
+            {copy.settings.profile.avatarInputLabel}
+          </label>
+          <input
+            id="settings-avatar"
+            type="file"
+            accept="image/*"
+            onChange={(event) => void uploadAvatar(event)}
+            disabled={uploadingAvatar}
+            className="mt-2 block text-caption text-ink-black"
+          />
+          {avatarError !== null && (
+            <p role="alert" className="mt-2 text-caption text-danger">
+              {avatarError}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <form className="mt-8" onSubmit={(event) => void saveProfile(event)} noValidate>
+        <label htmlFor="settings-display-name" className="mb-2 block text-caption text-slate-gray">
+          {copy.settings.profile.displayNameLabel}
+        </label>
+        <input
+          id="settings-display-name"
+          value={displayName}
+          onChange={(event) => setDisplayName(event.target.value)}
+          className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
+        />
+        {profileError !== null && (
+          <p role="alert" className="mt-2 text-caption text-danger">
+            {profileError}
+          </p>
+        )}
+        <Pill type="submit" loading={savingProfile} className="mt-4">
+          {copy.settings.profile.save}
+        </Pill>
+      </form>
+
+      <dl className="mt-10 divide-y divide-[var(--color-hairline)]">
+        <ReadOnlyProfileRow
+          label={copy.settings.profile.realNameLabel}
+          value={user?.real_name ?? copy.states.empty}
+        />
+        <ReadOnlyProfileRow
+          label={copy.settings.profile.departmentLabel}
+          value={user?.department?.name ?? copy.states.empty}
+        />
+        <ReadOnlyProfileRow
+          label={copy.settings.profile.roleLabel}
+          value={roleLabel(user?.role)}
+        />
+      </dl>
+    </section>
+  );
+}
+
+function ReadOnlyProfileRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="py-4">
+      <dt className="text-caption text-slate-gray">{label}</dt>
+      <dd className="mt-1 text-body text-ink-black">{value}</dd>
+      <p className="mt-1 text-caption text-smoke-gray">{copy.settings.profile.adminManaged}</p>
+    </div>
+  );
+}

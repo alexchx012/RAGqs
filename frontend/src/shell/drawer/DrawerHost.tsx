@@ -25,7 +25,7 @@ import {
 } from 'react';
 import { ArrowLeft, ChevronRight, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router';
-import { useAuthState } from '../../auth/AuthProvider';
+import { useAuthState, useAuthStore } from '../../auth/AuthProvider';
 import type { Role } from '../../auth/types';
 import { copy } from '../../copy';
 import { useEscLayer } from '../../lib/esc-stack-provider';
@@ -102,7 +102,13 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
   const navigate = useNavigate();
   const registry = useDrawerRegistry();
   const authState = useAuthState();
+  const authStore = useAuthStore();
   const role: Role = authState.user?.role ?? 'user';
+  // 逻辑会话键：authSessionId:userId；变化时抽屉内容子树重挂载（跨会话数据残留防护）。
+  const sessionKey =
+    authState.status === 'authenticated' && authState.user !== null && authStore.getAuthSessionId() !== null
+      ? `${authStore.getAuthSessionId()}:${authState.user.id}`
+      : null;
   const reducedMotion = useReducedMotion();
   const narrow = useNarrow();
 
@@ -496,7 +502,13 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       );
     }
     if (layer.render !== undefined) {
-      return <div className={phaseClass}>{layer.render({ path: shownDrill })}</div>;
+      // 会话键：authSessionId:userId 变化时强制重挂载内容子树，
+      // 立即清空账号相关 state（跨逻辑会话数据残留防护；review Major 1）。
+      return (
+        <div key={sessionKey ?? 'no-session'} className={phaseClass}>
+          {layer.render({ path: shownDrill })}
+        </div>
+      );
     }
     if (layer.children !== undefined && layer.children.length > 0) {
       return (

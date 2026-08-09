@@ -1,5 +1,9 @@
+import { isValidElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { copy } from '../../copy';
+import { AppearanceModule } from '../../settings/AppearanceModule';
+import { ProfileModule } from '../../settings/ProfileModule';
+import { SecurityModule } from '../../settings/SecurityModule';
 import { createDrawerRegistry } from './DrawerRegistryProvider';
 import { createPlaceholderModules } from './placeholder-modules';
 
@@ -20,20 +24,53 @@ describe('内置占位模块：个人段（全角色四模块，顺序固定）'
     ]);
   });
 
-  it('knowledge 注册 uploads 与 submissions 两个下层（标题取自文案常量）', () => {
+  it('在首次 placeholder 注册内合成 Profile/Security/Appearance real render，不重复登记模块 ID', () => {
+    const registry = createDrawerRegistry();
+    const list = registry.listModules('personal', 'user');
+    const profile = registry.resolve('personal', ['profile'], 'user').layers[0];
+    const security = registry.resolve('personal', ['security'], 'user').layers[0];
+    const appearance = registry.resolve('personal', ['appearance'], 'user').layers[0];
+
+    expect(new Set(ids(list)).size).toBe(list.length);
+    expect(profile?.render).toBeDefined();
+    expect(security?.render).toBeDefined();
+    expect(appearance?.render).toBeDefined();
+
+    const profileNode = profile?.render?.({ path: ['profile'] });
+    const securityNode = security?.render?.({ path: ['security'] });
+    const appearanceNode = appearance?.render?.({ path: ['appearance'] });
+    expect(isValidElement(profileNode)).toBe(true);
+    expect(isValidElement(securityNode)).toBe(true);
+    expect(isValidElement(appearanceNode)).toBe(true);
+    if (!isValidElement(profileNode) || !isValidElement(securityNode) || !isValidElement(appearanceNode)) {
+      throw new Error('profile, security, and appearance renderers must return elements');
+    }
+    expect(profileNode.type).toBe(ProfileModule);
+    expect(securityNode.type).toBe(SecurityModule);
+    expect(appearanceNode.type).toBe(AppearanceModule);
+  });
+
+  it('knowledge 注册 uploads/submissions/versions/manage 下层，approvals 为 manage 的子层（标题取自文案常量）', () => {
     const knowledge = createPlaceholderModules().find((module) => module.id === 'knowledge');
     expect(knowledge?.title).toBe(modules.knowledge);
-    expect(ids(knowledge?.children ?? [])).toEqual(['uploads', 'submissions']);
+    expect(ids(knowledge?.children ?? [])).toEqual(['uploads', 'submissions', 'versions', 'manage']);
     expect(knowledge?.children?.map((child) => child.title)).toEqual([
       modules.uploads,
       modules.submissions,
+      modules.versions,
+      modules.manage,
     ]);
+    // 投稿审核是部门库管理下的正确子层（返回回到部门库管理）
+    const manage = knowledge?.children?.find((child) => child.id === 'manage');
+    expect(ids(manage?.children ?? [])).toEqual(['approvals']);
+    expect(manage?.children?.map((child) => child.title)).toEqual([modules.knowledgeApprovals]);
   });
 
-  it('uploads 全角色可解析；submissions 仅 user/minister 可解析', () => {
+  it('uploads/versions 全角色可解析；submissions 仅 user/minister；manage 仅部长，approvals 为 manage 子层', () => {
     const registry = createDrawerRegistry();
     for (const role of ALL_ROLES) {
       expect(registry.resolve('personal', ['knowledge', 'uploads'], role).exact).toBe(true);
+      expect(registry.resolve('personal', ['knowledge', 'versions'], role).exact).toBe(true);
     }
     for (const role of ['user', 'minister'] as const) {
       const resolved = registry.resolve('personal', ['knowledge', 'submissions'], role);
@@ -44,6 +81,16 @@ describe('内置占位模块：个人段（全角色四模块，顺序固定）'
       const resolved = registry.resolve('personal', ['knowledge', 'submissions'], role);
       expect(resolved.exact).toBe(false);
       expect(ids(resolved.layers)).toEqual(['knowledge']);
+    }
+    for (const role of ALL_ROLES) {
+      const resolved = registry.resolve('personal', ['knowledge', 'manage'], role);
+      expect(resolved.exact).toBe(role === 'minister');
+      // 部长经 manage 子层解析 approvals；非部长停在 knowledge（manage 不可见）
+      const approvals = registry.resolve('personal', ['knowledge', 'manage', 'approvals'], role);
+      expect(approvals.exact).toBe(role === 'minister');
+      expect(ids(approvals.layers)).toEqual(
+        role === 'minister' ? ['knowledge', 'manage', 'approvals'] : ['knowledge'],
+      );
     }
   });
 });

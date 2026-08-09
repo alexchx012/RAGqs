@@ -17,6 +17,7 @@ export function createAuth(): AuthAssembly {
   let store: AuthSessionStore;
   const client = createApiClient({
     getAccessToken: () => store.getState().token,
+    getAuthSessionId: () => store.getAuthSessionId(),
     refresh: () => store.refresh(),
   });
   store = new AuthSessionStore({

@@ -53,7 +53,7 @@ export function AbCompare({ messageId, candidates, leftCandidate, onVote, disabl
               (index === 1 ? 'chat-ab-second-enter' : '')
             }
           >
-            <div className="text-[17px] leading-[var(--leading-body)] text-ink-black">
+            <div className="chat-body-text leading-[var(--leading-body)] text-ink-black">
               <Markdown markdown={candidate.content} />
               <CitationBadges citations={candidate.citations} />
             </div>

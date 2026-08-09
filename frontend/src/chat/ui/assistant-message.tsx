@@ -101,7 +101,7 @@ export function AssistantMessage({
     // m13：ab_start 后候选尚未到达——分档占位区（打字光标 + 阶段状态行），正文到达后由候选接管
     const single = abCandidates[0];
     body = (
-      <div className="text-[17px] leading-[var(--leading-body)] text-ink-black">
+      <div className="chat-body-text leading-[var(--leading-body)] text-ink-black">
         {single !== undefined && (
           <>
             <Markdown markdown={single.content} />
@@ -134,7 +134,7 @@ export function AssistantMessage({
     );
   } else {
     body = (
-      <div className="text-[17px] leading-[var(--leading-body)] text-ink-black">
+      <div className="chat-body-text leading-[var(--leading-body)] text-ink-black">
         <Markdown markdown={message.content} />
         <CitationBadges citations={message.citations} />
         {generating && <span className="chat-caret" aria-hidden="true" />}

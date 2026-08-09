@@ -1,5 +1,15 @@
 /* 聊天主页（fe-chat-home）动效与布局补充。只使用设计 token；reduced-motion 由 base.css 全局降级为直出。 */
 
+/* 外观设置的对话字号：只挂在用户/assistant/A-B 正文，不影响聊天 chrome 或设置抽屉。 */
+.chat-body-text {
+  font-size: var(--text-body);
+  transition: font-size var(--duration-base) var(--ease-in-out);
+}
+
+:root[data-chat-font-size='large'] .chat-body-text {
+  font-size: var(--text-body-lg);
+}
+
 /* 打字光标：文末 2px×1em 墨色竖条，1000ms 明灭阶跃（共用基座 §2.5 循环动画表，不用缓动）。 */
 @keyframes chat-caret-blink {
   0%,

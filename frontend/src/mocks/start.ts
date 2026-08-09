@@ -10,7 +10,12 @@ import { MockAuthController } from './auth-contract';
 import { createAuthHandlers, createNotificationHandlers } from './handlers';
 import { createChatHandlers } from './chat-handlers';
 import { MockChatController } from './chat-contract';
+import { MockKnowledgeController } from './knowledge-contract';
+import { createKnowledgeHandlers } from './knowledge-handlers';
 import { MockNotificationsController } from './notifications-contract';
+import { MockQuotaStore } from './quota-contract';
+import { MockSettingsController } from './settings-contract';
+import { createSettingsHandlers } from './settings-handlers';
 
 const PERSISTENCE_KEY = 'ragqs.mock-auth.v1';
 const NOTIFICATIONS_PERSISTENCE_KEY = 'ragqs.mock-notifications.v1';
@@ -23,6 +28,13 @@ export async function startMockWorker(): Promise<void> {
       save: (snapshot) => localStorage.setItem(PERSISTENCE_KEY, snapshot),
     },
   );
+  const quota = new MockQuotaStore([
+    { userId: 'u_user', unlimited: false, used: 120, baseLimit: 500 },
+    { userId: 'u_minister', unlimited: false, used: 120, baseLimit: 500 },
+    { userId: 'u_ops', unlimited: true, used: 0, baseLimit: 500 },
+    { userId: 'u_admin', unlimited: true, used: 0, baseLimit: 500 },
+  ]);
+  const settingsController = new MockSettingsController(authController, quota);
   const notificationsController = new MockNotificationsController(
     (header) => ({ userId: authController.me(header).id }),
     {
@@ -35,9 +47,18 @@ export async function startMockWorker(): Promise<void> {
     const user = authController.me(header);
     return { userId: user.id, role: user.role, departmentId: user.department?.id ?? null };
   });
+  const knowledgeController = new MockKnowledgeController(
+    (header) => authController.me(header),
+    quota,
+    notificationsController,
+  );
   const worker = setupWorker(
     ...createAuthHandlers(authController),
+    ...createSettingsHandlers(settingsController),
     ...createNotificationHandlers(notificationsController, authController),
+    // 知识库 handler 先于 chat handler 注册：两者都匹配 GET /v1/spaces/:id/documents，
+    // 按注册顺序首匹配命中；chat 检索范围 chip 只消费 items。
+    ...createKnowledgeHandlers(knowledgeController),
     ...createChatHandlers(chatController),
   );
   await worker.start({ onUnhandledRequest: 'bypass' });
