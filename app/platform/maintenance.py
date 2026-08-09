@@ -18,6 +18,16 @@ class MaintenanceRuntime:
         if not callable(prune):
             raise RuntimeError("observability adapter does not support retention maintenance")
         prune()
+        retention = self.runtime.resolve("notification_retention_maintenance")
+        if retention is not None:
+            retired = getattr(retention, "run_once", None)
+            if not callable(retired):
+                raise RuntimeError("notification retention maintenance does not support run_once")
+            retired()
+        dispatcher = self.runtime.resolve("outbox_dispatcher")
+        compact = getattr(dispatcher, "compact_due_events", None)
+        if callable(compact):
+            compact()
 
     def close(self) -> None:
         if self.owns_runtime:

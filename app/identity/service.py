@@ -37,9 +37,13 @@ from .ports import (
     AccountDeletionCleanupCommand,
     AccountDeletionCleanupPort,
     AccountDeletionCleanupReceipt,
+    AccountRetirementConfirmation,
+    AccountRetirementGateway,
+    AccountRetirementRequest,
     DepartmentWorkCheckPort,
     DepartmentWorkState,
     UnavailableAccountDeletionCleanupPort,
+    UnavailableAccountRetirementGateway,
     UnavailableDepartmentWorkCheckPort,
 )
 from .revocation import (
@@ -203,6 +207,8 @@ class IdentityAccessService:
         department_work_check: DepartmentWorkCheckPort | None = None,
         deletion_cleanup_port: AccountDeletionCleanupPort | None = None,
         object_store: ObjectStorePort | None = None,
+        account_retirement_gateway: AccountRetirementGateway | None = None,
+        archive_issuer: Any = None,
     ) -> None:
         self._engine = engine
         self._settings = settings
@@ -214,6 +220,10 @@ class IdentityAccessService:
         self._deletion_cleanup_port = (
             deletion_cleanup_port or UnavailableAccountDeletionCleanupPort()
         )
+        self._account_retirement_gateway = (
+            account_retirement_gateway or UnavailableAccountRetirementGateway()
+        )
+        self._archive_issuer = archive_issuer
         self._object_store = object_store
 
     def _current_time(self) -> datetime:
@@ -1456,6 +1466,72 @@ class IdentityAccessService:
                     503,
                     True,
                 )
+            # Identity-owned archive proof: produced by identity, verified by
+            # the outbox retirement lifecycle against this completed proof.
+            archive_ref = str(workflow["archive_ref"] or "")
+            archive_checksum = str(workflow["archive_checksum"] or "")
+            if not archive_ref or not archive_checksum:
+                issuer = self._archive_issuer
+                if issuer is None or not callable(getattr(issuer, "issue", None)):
+                    raise PlatformError(
+                        "archive_proof_unavailable",
+                        "Archive proof issuance is not configured",
+                        {"retryable": True},
+                        503,
+                        True,
+                    )
+                archive_ref, archive_checksum = issuer.issue(
+                    user_id=user_id,
+                    deletion_id=str(workflow["cleanup_operation_id"]),
+                    cleanup_operation_id=str(workflow["cleanup_operation_id"]),
+                    requested_at=_utc(workflow["requested_at_utc"]).isoformat(),
+                )
+            retirement_receipt_id = str(workflow["retirement_receipt_id"] or "")
+            if not retirement_receipt_id:
+                try:
+                    confirmation = self._account_retirement_gateway.retire(
+                        AccountRetirementRequest(
+                            operation_id=f"identity-retire:{user_id}:{workflow['cleanup_operation_id']}",
+                            user_id=user_id,
+                            deletion_id=str(workflow["cleanup_operation_id"]),
+                            verified_archive_ref=archive_ref,
+                            archive_checksum=archive_checksum,
+                            transaction_id=f"identity-delete:{user_id}",
+                            mode="inline",
+                        ),
+                        connection=connection,
+                    )
+                except Exception as exc:
+                    raise PlatformError(
+                        "account_retirement_unconfirmed",
+                        "Outbox retirement could not be confirmed",
+                        {"retryable": True},
+                        503,
+                        True,
+                    ) from exc
+                if (
+                    not isinstance(confirmation, AccountRetirementConfirmation)
+                    or confirmation.state != "completed"
+                ):
+                    raise PlatformError(
+                        "account_retirement_unconfirmed",
+                        "Outbox retirement receipt is not completed",
+                        {"retryable": True},
+                        503,
+                        True,
+                    )
+                retirement_receipt_id = (
+                    f"identity-retire:{user_id}:{workflow['cleanup_operation_id']}"
+                )
+            connection.execute(
+                update(identity_deletion_workflow_table)
+                .where(identity_deletion_workflow_table.c.user_id == user_id)
+                .values(
+                    archive_ref=archive_ref,
+                    archive_checksum=archive_checksum,
+                    retirement_receipt_id=retirement_receipt_id,
+                )
+            )
             session_ids = select(auth_session_table.c.id).where(
                 auth_session_table.c.user_id == user_id
             )

@@ -87,3 +87,57 @@ class UnavailableAccountDeletionCleanupPort:
     ) -> AccountDeletionCleanupReceipt:
         del command, connection
         raise RuntimeError("Account deletion cleanup is not configured")
+
+
+@dataclass(frozen=True, slots=True)
+class AccountRetirementRequest:
+    operation_id: str
+    user_id: str
+    deletion_id: str
+    verified_archive_ref: str
+    archive_checksum: str
+    transaction_id: str
+    mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class AccountRetirementConfirmation:
+    state: str
+    receipt_count: int
+
+
+class AccountRetirementGateway(Protocol):
+    """Outbox-owned boundary: obtain a completed account-retirement receipt."""
+
+    def retire(
+        self,
+        request: AccountRetirementRequest,
+        *,
+        connection: Connection,
+    ) -> AccountRetirementConfirmation: ...
+
+
+class NoopAccountRetirementGateway:
+    """Explicit test adapter that confirms retirement without an outbox."""
+
+    def retire(
+        self,
+        request: AccountRetirementRequest,
+        *,
+        connection: Connection,
+    ) -> AccountRetirementConfirmation:
+        del connection
+        return AccountRetirementConfirmation(state="completed", receipt_count=0)
+
+
+class UnavailableAccountRetirementGateway:
+    """Fail closed until the runtime bridges the outbox lifecycle."""
+
+    def retire(
+        self,
+        request: AccountRetirementRequest,
+        *,
+        connection: Connection,
+    ) -> AccountRetirementConfirmation:
+        del request, connection
+        raise RuntimeError("Account retirement gateway is not configured")

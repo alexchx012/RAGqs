@@ -33,6 +33,9 @@ dev = [
 [project.scripts]
 ragqs-identity-bootstrap-admin = "app.identity.bootstrap:main"
 ragqs-identity-deletion-worker = "app.identity.worker:main"
+ragqs-outbox-worker = "app.outbox.worker:main"
+ragqs-outbox-retirement-worker = "app.outbox.retirement_worker:main"
+ragqs-outbox-compaction-worker = "app.outbox.compaction_worker:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

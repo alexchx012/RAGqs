@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import update
 
 from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
+from app.identity.ports import NoopAccountRetirementGateway
 from app.identity.schema import identity_deletion_workflow_table, identity_metadata
 from app.identity.worker import IdentityDeletionWorker
 from app.platform.config import load_platform_settings
@@ -48,7 +49,13 @@ class ExpireDeletionFenceOnce:
 def test_default_runtime_worker_finalizes_due_deletions_and_cleans_avatar() -> None:
     configured = settings()
     object_store = MemoryObjectStore()
-    runtime = build_runtime(configured, adapters={"object_store": object_store})
+    runtime = build_runtime(
+        configured,
+        adapters={
+            "object_store": object_store,
+            "account_retirement_gateway": NoopAccountRetirementGateway(),
+        },
+    )
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
@@ -114,7 +121,13 @@ def test_default_runtime_worker_finalizes_due_deletions_and_cleans_avatar() -> N
 def test_deletion_worker_processes_pending_avatar_cleanup() -> None:
     configured = settings()
     object_store = MemoryObjectStore()
-    runtime = build_runtime(configured, adapters={"object_store": object_store})
+    runtime = build_runtime(
+        configured,
+        adapters={
+            "object_store": object_store,
+            "account_retirement_gateway": NoopAccountRetirementGateway(),
+        },
+    )
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
@@ -157,7 +170,13 @@ def test_account_finalization_waits_for_replaced_avatar_cleanup() -> None:
 
     configured = settings()
     object_store = FailOldAvatarDeleteStore()
-    runtime = build_runtime(configured, adapters={"object_store": object_store})
+    runtime = build_runtime(
+        configured,
+        adapters={
+            "object_store": object_store,
+            "account_retirement_gateway": NoopAccountRetirementGateway(),
+        },
+    )
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
@@ -226,6 +245,7 @@ def test_deletion_worker_retries_cleanup_after_a_fenced_transaction_rolls_back()
         adapters={
             "object_store": object_store,
             "account_deletion_cleanup_port": cleanup_port,
+            "account_retirement_gateway": NoopAccountRetirementGateway(),
         },
     )
     engine = runtime.resolve("database_engine")

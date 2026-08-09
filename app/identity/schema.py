@@ -52,6 +52,9 @@ identity_deletion_workflow_table = Table(
     Column("cleanup_operation_id", String(128), nullable=False, unique=True),
     Column("cleanup_reference", String(256), nullable=True),
     Column("cleanup_completed_at_utc", DateTime(timezone=True), nullable=True),
+    Column("archive_ref", String(512), nullable=True),
+    Column("archive_checksum", String(128), nullable=True),
+    Column("retirement_receipt_id", String(128), nullable=True),
     Column("completed_at_utc", DateTime(timezone=True), nullable=True),
 )
 

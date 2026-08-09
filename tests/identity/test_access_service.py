@@ -6,9 +6,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
+from app.identity.archive import IdentityArchiveProofIssuer
 from app.identity.ports import (
     DepartmentWorkState,
     NoopAccountDeletionCleanupPort,
+    NoopAccountRetirementGateway,
     NoopDepartmentWorkCheckPort,
 )
 from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationRevocationPort
@@ -30,6 +32,11 @@ def make_service(**kwargs: object) -> IdentityAccessService:
     kwargs.setdefault("revocation_port", NoopGenerationRevocationPort())
     kwargs.setdefault("department_work_check", NoopDepartmentWorkCheckPort())
     kwargs.setdefault("deletion_cleanup_port", NoopAccountDeletionCleanupPort())
+    kwargs.setdefault("account_retirement_gateway", NoopAccountRetirementGateway())
+    kwargs.setdefault(
+        "archive_issuer",
+        IdentityArchiveProofIssuer(secret=b"test-secret-archive-key"),
+    )
     return IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),

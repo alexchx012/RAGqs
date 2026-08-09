@@ -173,7 +173,12 @@ def test_default_runtime_persists_generation_revocation_commands() -> None:
 
 def test_maintenance_runtime_uses_the_same_platform_runtime() -> None:
     runtime = build_runtime(settings())
-    core_metadata.create_all(runtime.resolve("database_engine"))
+    engine = runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    # Outbox-owned tables are required by the notification retention scan.
+    from app.outbox.schema import outbox_metadata
+
+    outbox_metadata.create_all(engine)
     maintenance = create_maintenance_runtime(settings(), runtime=runtime)
 
     maintenance.run_retention_once()

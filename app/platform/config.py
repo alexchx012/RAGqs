@@ -75,6 +75,11 @@ class ObservabilitySettings(_StrictModel):
     max_route_templates: int = Field(default=100, ge=1, le=1000)
 
 
+class OutboxSettings(_StrictModel):
+    notification_retention_days: int = Field(default=90, gt=0)
+    outbox_delivered_retention_days: int = Field(default=30, gt=0)
+
+
 class AuthSettings(_StrictModel):
     access_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     refresh_ttl_seconds: int = Field(default=604800, ge=3600, le=2592000)
@@ -126,6 +131,7 @@ class PlatformSettings(BaseSettings):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    outbox: OutboxSettings = Field(default_factory=OutboxSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     debug: bool = False
 
@@ -149,6 +155,8 @@ _ENV_KEYS = {
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
     "RAG_OBSERVABILITY_SUCCESS_SAMPLE_RATE",
     "RAG_OBSERVABILITY_MAX_ROUTE_TEMPLATES",
+    "RAG_OUTBOX_NOTIFICATION_RETENTION_DAYS",
+    "RAG_OUTBOX_DELIVERED_RETENTION_DAYS",
     "RAG_AUTH_ACCESS_TTL_SECONDS",
     "RAG_AUTH_REFRESH_TTL_SECONDS",
     "RAG_AUTH_REFRESH_REUSE_GRACE_SECONDS",
@@ -261,6 +269,14 @@ def load_platform_settings(
                 ),
                 "success_sample_rate": _float(env, "RAG_OBSERVABILITY_SUCCESS_SAMPLE_RATE"),
                 "max_route_templates": _int(env, "RAG_OBSERVABILITY_MAX_ROUTE_TEMPLATES"),
+            }.items()
+            if value is not None
+        },
+        "outbox": {
+            key: value
+            for key, value in {
+                "notification_retention_days": _int(env, "RAG_OUTBOX_NOTIFICATION_RETENTION_DAYS"),
+                "outbox_delivered_retention_days": _int(env, "RAG_OUTBOX_DELIVERED_RETENTION_DAYS"),
             }.items()
             if value is not None
         },
