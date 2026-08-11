@@ -121,3 +121,47 @@ test('unavailable document shows only the unavailable notice and leaks no metada
   await expect(page.getByLabel(copy.preview.navAria)).toHaveCount(0);
   await expect(page.locator('mark.preview-hit')).toHaveCount(0);
 });
+
+test('narrow viewport: hit nav panel closes via swipe-down gesture (fe-preview-swipe-close)', async ({
+  browser,
+}) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  const page = await context.newPage();
+  try {
+    await login(page);
+    await page.goto(`/preview/${PREVIEW_SEED.excelDocId}?message_id=m_1`);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(PREVIEW_SEED.excelDocName);
+
+    // 窄屏：桌面侧栏不渲染，「命中点 N」按钮打开底部半屏面板
+    await expect(page.getByLabel(copy.preview.navAria)).toHaveCount(0);
+    await page.getByRole('button', { name: copy.preview.navTitle(2) }).click();
+    const panel = page.getByRole('dialog');
+    await expect(panel).toBeVisible();
+
+    // 下滑手势（pointer 序列：处理器接受任意 pointer 类型；dy=200 ≥ 阈值 80）
+    const box = (await panel.boundingBox()) as { x: number; y: number; width: number; height: number };
+    const startX = box.x + box.width / 2;
+    const startY = box.y + 24;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX, startY + 200, { steps: 10 });
+    await page.mouse.up();
+    await expect(panel).toHaveCount(0);
+
+    // 再次打开：面板复位（无 translateY 内联残留），且手势仍可再次关闭
+    await page.getByRole('button', { name: copy.preview.navTitle(2) }).click();
+    const panel2 = page.getByRole('dialog');
+    await expect(panel2).toBeVisible();
+    await expect(panel2).not.toHaveAttribute('style', /translateY/);
+    const box2 = (await panel2.boundingBox()) as { x: number; y: number; width: number; height: number };
+    const startX2 = box2.x + box2.width / 2;
+    const startY2 = box2.y + 24;
+    await page.mouse.move(startX2, startY2);
+    await page.mouse.down();
+    await page.mouse.move(startX2, startY2 + 200, { steps: 10 });
+    await page.mouse.up();
+    await expect(panel2).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});

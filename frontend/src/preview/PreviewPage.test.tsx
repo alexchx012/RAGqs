@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Route, Routes } from 'react-router';
@@ -236,6 +236,131 @@ describe('PreviewPage 窄屏（<768px）', () => {
     await user.click(toggle);
     await screen.findByRole('dialog');
     await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+});
+
+
+describe('PreviewPage 窄屏下滑关闭（fe-preview-swipe-close）', () => {
+  function stubMedia(narrow: boolean, reducedMotion = false) {
+    vi.stubGlobal(
+      'matchMedia',
+      (query: string): MediaQueryList =>
+        ({
+          matches:
+            query === '(max-width: 767px)' ? narrow : query === '(prefers-reduced-motion: reduce)' ? reducedMotion : false,
+          media: query,
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+          dispatchEvent: () => false,
+        }) as MediaQueryList,
+    );
+  }
+
+  function pointer(panel: Element, type: 'pointerdown' | 'pointermove' | 'pointerup', clientY: number) {
+    // fireEvent 包 act：jsdom PointerEvent 构造器可用，clientY 正常下发
+    const init = { clientY };
+    if (type === 'pointerdown') {
+      fireEvent.pointerDown(panel, init);
+    } else if (type === 'pointermove') {
+      fireEvent.pointerMove(panel, init);
+    } else {
+      fireEvent.pointerUp(panel, init);
+    }
+  }
+
+  async function openPanel(api: PreviewApi): Promise<HTMLElement> {
+    const user = userEvent.setup();
+    await renderPage(api, '/preview/doc_md?message_id=m_1');
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('年假政策.md'));
+    await user.click(screen.getByRole('button', { name: copy.preview.navTitle(2) }));
+    return screen.findByRole('dialog');
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('下滑超过阈值松手：拖动跟手，松手后滑出关闭', async () => {
+    stubMedia(true);
+    const panel = await openPanel(fakeApi());
+    pointer(panel, 'pointerdown', 100);
+    pointer(panel, 'pointermove', 140);
+    expect(panel.style.transform).toBe('translateY(40px)');
+    pointer(panel, 'pointermove', 200);
+    pointer(panel, 'pointerup', 200); // dy=100 ≥ 阈值（jsdom 高度 0 → 回退 80px）
+    expect(panel.style.transform).toBe('translateY(100%)');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('未达阈值且非快滑：回弹展开位置，面板保持打开', async () => {
+    stubMedia(true);
+    const panel = await openPanel(fakeApi());
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    pointer(panel, 'pointerdown', 100);
+    pointer(panel, 'pointermove', 130);
+    expect(panel.style.transform).toBe('translateY(30px)');
+    nowSpy.mockReturnValue(1400); // dt=400ms → v=0.075 < 0.3px/ms
+    pointer(panel, 'pointerup', 130); // dy=30 < 阈值 80
+    expect(panel.style.transform).toBe('translateY(0px)');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('快速下滑（flick）未达阈值距离也关闭', async () => {
+    stubMedia(true);
+    const panel = await openPanel(fakeApi());
+    pointer(panel, 'pointerdown', 100);
+    pointer(panel, 'pointermove', 120);
+    pointer(panel, 'pointerup', 120); // dt≈0 → 平均速度 ≥ 0.3px/ms
+    expect(panel.style.transform).toBe('translateY(100%)');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('列表滚动容器不在顶部时向下拖：不进入关闭手势（保持列表滚动）', async () => {
+    stubMedia(true);
+    const panel = await openPanel(fakeApi());
+    const scroller = panel.querySelector('[data-swipe-scroll]') as HTMLElement;
+    Object.defineProperty(scroller, 'scrollTop', { value: 120, configurable: true });
+    pointer(panel, 'pointerdown', 100);
+    pointer(panel, 'pointermove', 200);
+    expect(panel.style.transform).toBe('');
+    pointer(panel, 'pointerup', 200);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('prefers-reduced-motion：关闭直出，无滑出动画', async () => {
+    stubMedia(true, true);
+    const panel = await openPanel(fakeApi());
+    pointer(panel, 'pointerdown', 100);
+    pointer(panel, 'pointermove', 220);
+    pointer(panel, 'pointerup', 220);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('下滑关闭后再次打开：面板复位可见，手势仍可关闭', async () => {
+    stubMedia(true);
+    const user = userEvent.setup();
+    const panel = await openPanel(fakeApi());
+    pointer(panel, 'pointerdown', 100);
+    pointer(panel, 'pointermove', 200);
+    pointer(panel, 'pointerup', 200);
+    expect(panel.style.transform).toBe('translateY(100%)');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    // 再次打开：无残留 transform/animation，面板以入场动画正常出现
+    await user.click(screen.getByRole('button', { name: copy.preview.navTitle(2) }));
+    const panel2 = await screen.findByRole('dialog');
+    expect(panel2.style.transform).toBe('');
+    expect(panel2.style.animation).toBe('');
+
+    // 再次下滑仍可关闭
+    pointer(panel2, 'pointerdown', 100);
+    pointer(panel2, 'pointermove', 200);
+    pointer(panel2, 'pointerup', 200);
+    expect(panel2.style.transform).toBe('translateY(100%)');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

@@ -4,7 +4,8 @@
  * query 携带 message_id? / document_version_id? / sheet?，深链粘贴可恢复。
  * - 页头：文档名（Signifier 400 44px 一行截断）+ 载体类型标签（14px ash-gray）；右侧关闭（window.close()）。
  * - 主体两栏：左预览区（flex、padding 40px、内容限宽 880px 居中），右命中导航 280px + 1px hairline。
- * - 窄屏（<768px）：导航收起为「命中点 N」按钮，点击自底部滑上半屏面板（250ms ease-out），Esc 关闭。
+ * - 窄屏（<768px）：导航收起为「命中点 N」按钮，点击自底部滑上半屏面板（250ms ease-out），
+ *   Esc / 下滑关闭（use-swipe-close：拖动跟手、阈值或 flick 关闭、未达阈值回弹）。
  * - 不可用态（文档删除 / 版本 purging/purged / 无权限 → 404/410/403）：只显示「内容已不可用」，
  *   不显示文档名、snippet、原文或下载入口，不从缓存 / 旧状态恢复已删除元数据。
  */
@@ -19,6 +20,7 @@ import { EmptyState } from '../ui/states';
 import { TextLink } from '../ui/TextLink';
 import type { PreviewApi } from './api';
 import { HitNav } from './HitNav';
+import { useSwipeClose } from './use-swipe-close';
 import { ImageRenderer } from './renderers/ImageRenderer';
 import { SheetRenderer } from './renderers/SheetRenderer';
 import { TextRenderer } from './renderers/TextRenderer';
@@ -113,6 +115,9 @@ export function PreviewPage({ api }: PreviewPageProps) {
   const [currentHit, setCurrentHit] = useState<number | null>(null);
   const isNarrow = useMediaQuery('(max-width: 767px)');
   const [panelOpen, setPanelOpen] = useState(false);
+  const { panelProps } = useSwipeClose(
+    useCallback(() => setPanelOpen(false), []),
+  );
 
   // 加载预览元数据（重试经 retryNonce；竞态以 nonce 作废旧响应）
   useEffect(() => {
@@ -355,11 +360,12 @@ export function PreviewPage({ api }: PreviewPageProps) {
               aria-modal="true"
               aria-label={copy.preview.navTitle(hits.length)}
               className="preview-nav-panel fixed inset-x-0 bottom-0 z-50 flex h-[50vh] flex-col rounded-t-[var(--radius-cards)] bg-paper-white shadow-[var(--shadow-subtle-3)]"
+              {...panelProps}
             >
-              <div className="shrink-0 border-b border-hairline px-4 py-2 text-[15px] text-slate-gray">
+              <div className="shrink-0 touch-none border-b border-hairline px-4 py-2 text-[15px] text-slate-gray">
                 {copy.preview.navTitle(hits.length)}
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div data-swipe-scroll="" className="min-h-0 flex-1 overflow-y-auto">
                 <HitNav
                   hits={hits}
                   current={currentHit}
