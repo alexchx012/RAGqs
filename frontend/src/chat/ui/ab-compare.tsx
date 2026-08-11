@@ -55,7 +55,7 @@ export function AbCompare({ messageId, candidates, leftCandidate, onVote, disabl
           >
             <div className="chat-body-text leading-[var(--leading-body)] text-ink-black">
               <Markdown markdown={candidate.content} />
-              <CitationBadges citations={candidate.citations} />
+              <CitationBadges citations={candidate.citations} messageId={messageId} />
             </div>
             <div className="mt-4 flex justify-center">
               <button

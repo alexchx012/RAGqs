@@ -5,8 +5,8 @@ import { CHAT_SEED_DOCUMENT_NAMES, CHAT_SEED_TITLES } from '../src/mocks/chat-co
 /*
  * 聊天主页 e2e（fe-chat-home）：真实浏览器 + 契约 mock（MSW worker），自包含不起后端。
  * 覆盖 Acceptance examples 关键路径：
- * - 提问 → 模拟渲染 → 引用角标悬停卡 → 点击新窗口占位预览路由（透传 document_id + document_version_id）
- *   → 常设 👍 反馈；
+ * - 提问 → 模拟渲染 → 引用角标悬停卡 → 点击新窗口打开原文预览页（/preview/:document_id，
+ *   透传 message_id + document_version_id，fe-doc-preview）→ 常设 👍 反馈；
  * - 思考档阶段状态行呈现（think 档提问）；
  * - 盲测 A/B：种子未投票对比对重建 → 投票 0 → 所选恢复常设反馈。
  * mock 账号：zhangsan / password123（普通用户，个人库含 doc_1 员工手册.pdf）。
@@ -50,14 +50,18 @@ test('ask renders, citation hover card opens preview in a new window, and upvote
   ).toBeVisible();
   await expect(page.getByText(copy.chat.message.citePageSpan(12, 345, 412))).toBeVisible();
 
-  // 点击角标：新窗口打开占位预览路由并透传 document_version_id
+  // 点击角标：新窗口打开原文预览页（fe-doc-preview）并透传 message_id + document_version_id
   const [preview] = await Promise.all([
     context.waitForEvent('page'),
     badge.click({ modifiers: ['Control'] }),
   ]);
   await preview.waitForLoadState();
-  expect(preview.url()).toContain('/documents/doc_1/preview');
+  expect(preview.url()).toContain('/preview/doc_1');
   expect(preview.url()).toContain('document_version_id=v_1');
+  expect(preview.url()).toContain('message_id=');
+  // 预览加载出页头文档名（深链 / 命中导航等由 doc-preview.spec.ts 覆盖）
+  await expect(preview.getByRole('heading', { level: 1 })).toHaveText(CHAT_SEED_DOCUMENT_NAMES.employeeHandbook);
+  await preview.close();
 
   // 常设 👍 反馈：点击后固化（store 刷新读模型呈现已投态）
   await answerBlock.getByRole('button', { name: copy.chat.feedbackUpAria }).click();

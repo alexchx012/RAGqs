@@ -7,7 +7,7 @@
  *   确认文案说明恢复创建新版本并重新处理、处理成功前当前版本继续服务；成功后任务进上传结果层。
  * - 409 document_version_purged 刷新本层、该行转内容不可用。
  * - documentId 来自抽屉下钻路径（/settings/knowledge/versions/<documentId>）；无 id 时清空旧状态。
- * - 预览：打开原文预览占位页并带明确 document_id + version id。
+ * - 预览：新窗口打开原文预览页（fe-doc-preview /preview/:document_id），带明确 version id、不带 message_id（只读形态）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -263,9 +263,11 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
   );
 
   function openPreview(version: DocumentVersionItem) {
-    // 原文预览占位页（fe-doc-preview 本体未实现）：透传明确的 document_id 与 version id
-    navigate(
-      `/documents/${encodeURIComponent(documentId)}/preview?document_version_id=${encodeURIComponent(version.document_version_id)}`,
+    // 原文预览页（fe-doc-preview）：新窗口打开，不携带 message_id = 管理侧只读形态（hits 为空）
+    window.open(
+      `/preview/${encodeURIComponent(documentId)}?document_version_id=${encodeURIComponent(version.document_version_id)}`,
+      '_blank',
+      'noopener,noreferrer',
     );
   }
 }

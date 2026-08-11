@@ -2,7 +2,8 @@
  * 引用角标 + 悬停卡（共用基座 §3.4；规格 spec §4）。
  * 上标数字形如 [1]，Sohne 500 12px slate-gray，多来源并列间距 4px；hover/focus 变 ink；
  * 悬停 120ms 出 280px 悬停卡：首行「引自《文档名》」+ 次行定位信息（按载体固有单位）；
- * 点击角标新窗口打开预览占位路由（/documents/{id}/preview?document_version_id=…，fe-doc-preview 本体未实现）。
+ * 点击角标新窗口打开原文预览页（/preview/{id}?message_id=…&document_version_id=…，fe-doc-preview）：
+ * message_id 取所属 assistant 消息（预览接口据此返回该次回答的全部 hits）。
  * 契约 Citation 无可用性字段：mock 引用一律可用，悬停卡始终显示文档名与定位行；
  * 「内容已不可用」分支在契约补充可用性信号前不可达（见 chat-contract 注释）。
  */
@@ -14,6 +15,8 @@ import type { Citation } from '../types';
 
 export interface CitationBadgeProps {
   readonly citations: readonly Citation[];
+  /** 所属 assistant 消息 id：预览接口 message_id 参数（该次回答引用本文档的全部 hits）。 */
+  readonly messageId: string;
 }
 
 function locatorLine(citation: Citation): string | null {
@@ -46,11 +49,17 @@ function documentTitle(citation: Citation): string {
   return copy.chat.message.citeFromFallback;
 }
 
-export function CitationBadges({ citations }: CitationBadgeProps) {
-  const openPreview = useCallback((citation: Citation) => {
-    const url = `/documents/${encodeURIComponent(citation.document_id)}/preview?document_version_id=${encodeURIComponent(citation.document_version_id)}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }, []);
+export function CitationBadges({ citations, messageId }: CitationBadgeProps) {
+  const openPreview = useCallback(
+    (citation: Citation) => {
+      const url =
+        `/preview/${encodeURIComponent(citation.document_id)}` +
+        `?message_id=${encodeURIComponent(messageId)}` +
+        `&document_version_id=${encodeURIComponent(citation.document_version_id)}`;
+      window.open(url, '_blank', 'noopener,noreferrer');
+    },
+    [messageId],
+  );
 
   if (citations.length === 0) {
     return null;

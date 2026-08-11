@@ -105,7 +105,7 @@ export function AssistantMessage({
         {single !== undefined && (
           <>
             <Markdown markdown={single.content} />
-            <CitationBadges citations={single.citations} />
+            <CitationBadges citations={single.citations} messageId={message.id} />
           </>
         )}
         {generating && (
@@ -136,7 +136,7 @@ export function AssistantMessage({
     body = (
       <div className="chat-body-text leading-[var(--leading-body)] text-ink-black">
         <Markdown markdown={message.content} />
-        <CitationBadges citations={message.citations} />
+        <CitationBadges citations={message.citations} messageId={message.id} />
         {generating && <span className="chat-caret" aria-hidden="true" />}
         {generating && message.content === '' && generation.stage !== null && (
           <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-gray">

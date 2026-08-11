@@ -13,6 +13,8 @@ import { MockChatController } from './chat-contract';
 import { MockKnowledgeController } from './knowledge-contract';
 import { createKnowledgeHandlers } from './knowledge-handlers';
 import { MockNotificationsController } from './notifications-contract';
+import { MockPreviewController } from './preview-contract';
+import { createPreviewHandlers } from './preview-handlers';
 import { MockQuotaStore } from './quota-contract';
 import { MockSettingsController } from './settings-contract';
 import { createSettingsHandlers } from './settings-handlers';
@@ -52,6 +54,8 @@ export async function startMockWorker(): Promise<void> {
     quota,
     notificationsController,
   );
+  // 原文预览域（fe-doc-preview）：内存态即可，页面刷新后预览经接口重新拉取
+  const previewController = new MockPreviewController((header) => ({ userId: authController.me(header).id }));
   const worker = setupWorker(
     ...createAuthHandlers(authController),
     ...createSettingsHandlers(settingsController),
@@ -60,6 +64,7 @@ export async function startMockWorker(): Promise<void> {
     // 按注册顺序首匹配命中；chat 检索范围 chip 只消费 items。
     ...createKnowledgeHandlers(knowledgeController),
     ...createChatHandlers(chatController),
+    ...createPreviewHandlers(previewController),
   );
   await worker.start({ onUnhandledRequest: 'bypass' });
 }

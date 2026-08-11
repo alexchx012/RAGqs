@@ -492,13 +492,34 @@ export const zhCN = {
       citeOpenAria: '打开引用预览', // 措辞后定
       timeAria: '消息时间', // 措辞后定
     },
-    // 原文预览占位页（fe-doc-preview 本体未实现；brief：落占位路由并透传两个 id）
-    preview: {
-      title: '原文预览', // 措辞后定
-      documentLabel: '文档 ID', // 措辞后定
-      versionLabel: '版本 ID', // 措辞后定
-      placeholderBody: '原文预览页由 fe-doc-preview 提供，当前为占位。', // 措辞后定
-      closeAria: '关闭', // 措辞后定
+  },
+  // 原文预览页（fe-doc-preview；共用基座 §6）：独立窗口页，/preview/:document_id
+  preview: {
+    closeAria: '关闭', // 措辞后定
+    unavailable: '内容已不可用', // 措辞后定：文档删除 / 版本 purging/purged / 无权限，不泄露任何元数据
+    error: '预览加载失败，请稍后重试', // 措辞后定
+    retry: '重试', // 措辞后定
+    loadingAria: '正在加载预览', // 措辞后定
+    navAria: '命中导航', // 措辞后定
+    navTitle: (count: number) => `命中点 ${count}`, // 措辞后定：窄屏收起按钮与面板标题
+    navEmpty: '暂无命中点', // 措辞后定：无 message_id 管理侧只读形态 / 错误态导航空态
+    hitLocatorPage: (page: number) => `第 ${page} 页`, // 措辞后定
+    hitLocatorSection: (path: readonly string[], paragraph?: number) =>
+      `${path.join(' / ')}${paragraph !== undefined ? ` 第 ${paragraph} 段` : ''}`, // 措辞后定
+    hitLocatorSheet: (sheet: string, range: string) => `${sheet} ${range}`, // 措辞后定
+    sheetTabsAria: '工作表', // 措辞后定：Sheet 页签分段开关
+    // 载体类型标签（页头文档名下方 14px ash-gray；未知载体回退通用「文档」）
+    mediaKind: {
+      pdf: 'PDF 文档', // 措辞后定
+      word: 'Word 文档', // 措辞后定
+      md: 'Markdown 文档', // 措辞后定
+      txt: '文本文件', // 措辞后定
+      excel: '表格文档', // 措辞后定
+      csv: 'CSV 表格', // 措辞后定
+      image: '图片', // 措辞后定
+      code: '代码文件', // 措辞后定
+      data: '数据文件', // 措辞后定
+      fallback: '文档', // 措辞后定
     },
   },
 } as const;

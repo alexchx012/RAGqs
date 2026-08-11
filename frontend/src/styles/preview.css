@@ -1,0 +1,100 @@
+/* 原文预览页（fe-doc-preview）补充样式。只使用设计 token；reduced-motion 由 base.css 全局降级为直出。 */
+
+/* 命中高亮（共用基座 §6）：当前命中 blush-peach 100% 底、文字保持 ink-black；
+   其余命中同底色 50% 透明度浅标；切换时旧命中 150ms 过渡为浅标、新命中 150ms 淡入。 */
+.preview-hit {
+  background-color: color-mix(in srgb, var(--color-blush-peach) 50%, transparent);
+  color: var(--color-ink-black);
+  border-radius: 2px;
+  transition: background-color var(--duration-fast) var(--ease-in-out);
+}
+
+.preview-hit--current {
+  background-color: var(--color-blush-peach);
+}
+
+/* 建树 Word 命中段落 / 章节块：与 .preview-hit 同规则（块级载体）。 */
+.preview-hit-block {
+  background-color: color-mix(in srgb, var(--color-blush-peach) 50%, transparent);
+  transition: background-color var(--duration-fast) var(--ease-in-out);
+}
+
+.preview-hit-block--current {
+  background-color: var(--color-blush-peach);
+}
+
+/* 表格命中单元格（共用基座 §6）：blush-peach 底 + 1px sienna-brown 内框；其余命中 50% 浅标。 */
+.preview-hit-cell {
+  background-color: color-mix(in srgb, var(--color-blush-peach) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-sienna-brown);
+  transition: background-color var(--duration-fast) var(--ease-in-out);
+}
+
+.preview-hit-cell--current {
+  background-color: var(--color-blush-peach);
+}
+
+/* 只读表格：单元格 1px hairline 发丝边、padding 8px 12px、表头 mist-gray 底。 */
+.preview-sheet-table {
+  border-collapse: collapse;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  color: var(--color-ink-black);
+}
+
+.preview-sheet-table th,
+.preview-sheet-table td {
+  border: 1px solid var(--color-hairline);
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.preview-sheet-table thead th {
+  background-color: var(--color-mist-gray);
+}
+
+/* 窄屏命中列表面板：自底部滑上 250ms --ease-out（顶部两角 radius-cards 由组件类给出）。 */
+@keyframes preview-nav-panel-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.preview-nav-panel {
+  animation: preview-nav-panel-up var(--duration-base) var(--ease-out) both;
+}
+
+/* PDF 页卡：白底 shadow-subtle（页容器类在组件上；此处约束内部 canvas 自适应）。 */
+.preview-pdf-page canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* 代码载体：hljs 配色的最小 token 映射（Steep 低饱和小面积；项目无 hljs 主题色先例）。 */
+.preview-code .hljs-keyword,
+.preview-code .hljs-literal,
+.preview-code .hljs-selector-tag {
+  color: var(--color-sienna-brown);
+}
+
+.preview-code .hljs-string,
+.preview-code .hljs-attr,
+.preview-code .hljs-attribute {
+  color: var(--color-success);
+}
+
+.preview-code .hljs-comment,
+.preview-code .hljs-quote {
+  color: var(--color-slate-gray);
+}
+
+.preview-code .hljs-number,
+.preview-code .hljs-built_in,
+.preview-code .hljs-title {
+  color: var(--color-warning);
+}

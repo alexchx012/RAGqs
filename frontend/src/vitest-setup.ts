@@ -6,6 +6,7 @@ import {
   resetMockChat,
   resetMockKnowledge,
   resetMockNotifications,
+  resetMockPreview,
 } from './mocks/testing';
 
 // 契约 mock（规格 §1）：全部用例在同一进程内经 MSW 访问模拟服务端，用例间状态复位
@@ -19,6 +20,7 @@ beforeEach(() => {
   resetMockNotifications();
   resetMockChat();
   resetMockKnowledge();
+  resetMockPreview();
 });
 
 afterAll(() => {

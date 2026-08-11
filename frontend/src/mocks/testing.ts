@@ -12,6 +12,8 @@ import { MockChatController } from './chat-contract';
 import { MockKnowledgeController } from './knowledge-contract';
 import { createKnowledgeHandlers } from './knowledge-handlers';
 import { MockNotificationsController } from './notifications-contract';
+import { MockPreviewController } from './preview-contract';
+import { createPreviewHandlers } from './preview-handlers';
 import { MockQuotaStore } from './quota-contract';
 import { MockSettingsController } from './settings-contract';
 import { createSettingsHandlers } from './settings-handlers';
@@ -38,6 +40,8 @@ export const mockKnowledge = new MockKnowledgeController(
   mockQuota,
   mockNotifications,
 );
+// 原文预览域：鉴权经 mockAuth.me 装配（fe-doc-preview）
+export const mockPreview = new MockPreviewController((header) => ({ userId: mockAuth.me(header).id }));
 
 export const mockServer = setupServer(
   ...createAuthHandlers(mockAuth),
@@ -47,6 +51,8 @@ export const mockServer = setupServer(
   // MSW 按注册顺序首匹配命中；知识库实现带分页与 page_size，chat 的检索范围 chip 只消费 items。
   ...createKnowledgeHandlers(mockKnowledge),
   ...createChatHandlers(mockChat),
+  // 预览 handler 路径（/documents/:id/preview|content）与既有 /documents/:id/... 均不冲突，殿后注册
+  ...createPreviewHandlers(mockPreview),
 );
 
 export function resetMockAuth(): void {
@@ -66,4 +72,8 @@ export function resetMockChat(): void {
 
 export function resetMockKnowledge(): void {
   mockKnowledge.reset();
+}
+
+export function resetMockPreview(): void {
+  mockPreview.reset();
 }
