@@ -5,8 +5,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
 
+from app.documents.public_graph import PublicGraphSourceService
+from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
+from app.documents.submissions import DocumentsSubmissionInvalidationPort
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
 from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
 from app.identity.ports import (
@@ -22,8 +26,11 @@ from app.outbox.maintenance import NotificationRetentionMaintenance
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
 from app.outbox.publisher import (
+    SqlAlchemyIngestionOutboxAdapter,
     SqlAlchemyOutboxPublisher,
+    SqlAlchemyPublicGraphSourceOutboxAdapter,
     SqlAlchemyQuotaOutboxEnqueueAdapter,
+    SqlAlchemySubmissionOutboxAdapter,
 )
 from app.outbox.service import NotificationService
 from app.usage.calendar import CalendarLock, get_calendar_service
@@ -116,6 +123,10 @@ def build_runtime(
     configured.setdefault("lease_store", lease_store)
     configured.setdefault("observability_metrics", observability_metrics)
     configured.setdefault("object_store", object_store)
+    department_work_check_port = configured.get("department_work_check_port") or DocumentsDepartmentWorkCheckPort(
+        engine
+    )
+    configured.setdefault("department_work_check_port", department_work_check_port)
     generation_revocation_port = configured.get("generation_revocation_port") or (
         DurableGenerationRevocationPort()
     )
@@ -140,13 +151,14 @@ def build_runtime(
         settings.auth,
         now=clock.now_utc,
         revocation_port=generation_revocation_port,
-        department_work_check=configured.get("department_work_check_port"),
+        department_work_check=department_work_check_port,
         deletion_cleanup_port=deletion_cleanup_port,
         object_store=object_store,
         account_retirement_gateway=configured.get("account_retirement_gateway"),
         archive_issuer=archive_issuer,
     )
     configured.setdefault("identity_access", identity_access)
+    documents_service = configured.get("documents_service")
     notification_materializer = configured.get("notification_materializer") or (
         NotificationMaterializer(
             engine,
@@ -229,6 +241,18 @@ def build_runtime(
         capability_secret=None,
     )
     configured.setdefault("outbox_publisher", outbox_publisher)
+    public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (
+        SqlAlchemyPublicGraphSourceOutboxAdapter(outbox_publisher)
+    )
+    public_graph_source_service = configured.get("public_graph_source_service") or (
+        PublicGraphSourceService(
+            engine,
+            now=clock.now_utc,
+            trusted_consumers=configured.get("public_graph_source_trusted_consumers"),
+            outbox_port=public_source_outbox_port,
+        )
+    )
+    configured.setdefault("public_graph_source_service", public_graph_source_service)
     calendar = configured.get("business_calendar") or get_calendar_service(
         engine,
         clock,
@@ -239,6 +263,12 @@ def build_runtime(
     quota_service = configured.get("quota_service") or QuotaService(engine, clock, calendar)
     outbox_port = configured.get("outbox_enqueue_port") or (
         SqlAlchemyQuotaOutboxEnqueueAdapter(outbox_publisher)
+    )
+    submission_outbox_port = configured.get("submission_outbox_port") or (
+        SqlAlchemySubmissionOutboxAdapter(outbox_publisher)
+    )
+    ingestion_outbox_port = configured.get("ingestion_outbox_port") or (
+        SqlAlchemyIngestionOutboxAdapter(outbox_publisher)
     )
     quota_request_service = configured.get("quota_request_service") or QuotaRequestService(
         engine,
@@ -252,7 +282,48 @@ def build_runtime(
     configured.setdefault("usage_ledger", ledger)
     configured.setdefault("quota_service", quota_service)
     configured.setdefault("outbox_enqueue_port", outbox_port)
+    configured.setdefault("submission_outbox_port", submission_outbox_port)
+    configured.setdefault("ingestion_outbox_port", ingestion_outbox_port)
     configured.setdefault("quota_request_service", quota_request_service)
+    document_capability_token_provider = configured.pop(
+        "document_lifecycle_capability_provider", None
+    )
+    if documents_service is None:
+        documents_service = DocumentsService(
+            engine,
+            now=clock.now_utc,
+            object_store=object_store,
+            identity_access=identity_access,
+            lifecycle_port=configured.get("document_lifecycle_port"),
+            indexing_handoff_port=configured.get("indexing_handoff_port"),
+            quota_service=quota_service,
+            capability_token_provider=document_capability_token_provider,
+            submission_notification_port=submission_outbox_port,
+            ingestion_notification_port=ingestion_outbox_port,
+            public_graph_source_service=public_graph_source_service,
+        )
+    elif isinstance(documents_service, DocumentsService):
+        if documents_service._quota_service is None:
+            documents_service._quota_service = quota_service
+        if documents_service._capability_token_provider is None:
+            documents_service._capability_token_provider = document_capability_token_provider
+        if documents_service._submission_notification_port is None:
+            documents_service._submission_notification_port = submission_outbox_port
+        if documents_service._ingestion_notification_port is None:
+            documents_service._ingestion_notification_port = ingestion_outbox_port
+        if documents_service._public_graph_source_service is None:
+            documents_service._public_graph_source_service = public_graph_source_service
+    configured.setdefault("documents_service", documents_service)
+    submission_invalidation_port = configured.get("submission_invalidation_port")
+    if submission_invalidation_port is None:
+        with engine.connect() as connection:
+            documents_schema_available = inspect(connection).has_table("knowledge_submissions")
+        if documents_schema_available:
+            submission_invalidation_port = DocumentsSubmissionInvalidationPort(documents_service)
+    if submission_invalidation_port is not None:
+        configured.setdefault("submission_invalidation_port", submission_invalidation_port)
+        if identity_access._pending_submission_invalidation_port is None:
+            identity_access._pending_submission_invalidation_port = submission_invalidation_port
     runtime = PlatformRuntime(settings=settings, adapters=configured)
     # Assemble the scoped workers around THIS runtime. Both workers use the
     # lifecycle's INTERNAL no-token entries; the worker object graphs contain

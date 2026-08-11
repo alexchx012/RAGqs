@@ -36,6 +36,28 @@ class UnavailableDepartmentWorkCheckPort:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingSubmissionInvalidationCommand:
+    """Identity-owned authorization facts for pending document submissions."""
+
+    user_id: str
+    role: str
+    department_id: str | None
+    lifecycle_status: Literal["active", "pending_delete", "deleted"]
+    reason: str
+
+
+class PendingSubmissionInvalidationPort(Protocol):
+    """Invalidate submissions that the supplied identity may no longer contribute."""
+
+    def invalidate_pending_submissions(
+        self,
+        command: PendingSubmissionInvalidationCommand,
+        *,
+        connection: Connection,
+    ) -> int: ...
+
+
+@dataclass(frozen=True, slots=True)
 class AccountDeletionCleanupCommand:
     operation_id: str
     user_id: str

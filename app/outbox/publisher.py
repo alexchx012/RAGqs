@@ -30,6 +30,7 @@ from app.platform.errors import PlatformError
 from .capabilities import verify_token
 from .ports import (
     NOTIFICATION_EVENT_TYPES,
+    OUTBOX_ONLY_EVENT_TYPES,
     V1_CONSUMER,
     OutboxPublishCommand,
     OutboxPublishReceipt,
@@ -60,6 +61,7 @@ PRODUCER_MATRIX: dict[str, tuple[frozenset[str], str]] = {
         "calibration_window_suggestion",
     ),
     "graph_build_completed": (frozenset({"knowledge_graph"}), "graph_build_run"),
+    "public_graph_source_changed": (frozenset({"documents"}), "public_graph_source"),
 }
 
 # strict field -> type map per event type; None allows an explicit null value.
@@ -90,6 +92,13 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
         "graph_generation_id": (str, None),
         "index_generation_id": (str, None),
         "failure_class": (str, None),
+    },
+    "public_graph_source_changed": {
+        "source_revision": int,
+        "source_manifest_id": str,
+        "source_manifest_hash": str,
+        "document_id": str,
+        "change_type": str,
     },
 }
 
@@ -370,6 +379,13 @@ class SqlAlchemyOutboxPublisher:
         # assembly time. The caller_principal string is an audit label; a
         # missing, forged or unverifiable token is fail-closed 403.
         caller = self._verify_capability(command)
+        if command.event_type not in NOTIFICATION_EVENT_TYPES:
+            raise PlatformError(
+                "unsupported_event_type",
+                f"Event type {command.event_type} is not a notification event",
+                {},
+                422,
+            )
         return self._publish_authorized(command, connection=connection, caller=caller)
 
     def _publish_authorized(
@@ -381,7 +397,7 @@ class SqlAlchemyOutboxPublisher:
     ) -> OutboxPublishReceipt:
         """Persist one already assembly-scoped command in the caller transaction."""
         _validate_payload(command.event_type, command.schema_version, command.payload)
-        if command.event_type not in NOTIFICATION_EVENT_TYPES:
+        if command.event_type not in NOTIFICATION_EVENT_TYPES | OUTBOX_ONLY_EVENT_TYPES:
             raise PlatformError(
                 "unsupported_event_type",
                 f"Event type {command.event_type} is not a notification event",
@@ -510,24 +526,25 @@ class SqlAlchemyOutboxPublisher:
             raise
         if recipients:
             connection.execute(outbox_recipient_table.insert().values(recipients))
-        connection.execute(
-            outbox_delivery_table.insert().values(
-                event_id=command.event_id,
-                consumer_name=V1_CONSUMER,
-                status="pending",
-                version=1,
-                replay_generation=1,
-                attempt_number=0,
-                cycle_attempt_number=0,
-                error_category=None,
-                error_code=None,
-                next_attempt_at_utc=now,
-                lease_owner=None,
-                lease_expires_at_utc=None,
-                fence_token=None,
-                delivered_at_utc=None,
+        if command.event_type not in OUTBOX_ONLY_EVENT_TYPES:
+            connection.execute(
+                outbox_delivery_table.insert().values(
+                    event_id=command.event_id,
+                    consumer_name=V1_CONSUMER,
+                    status="pending",
+                    version=1,
+                    replay_generation=1,
+                    attempt_number=0,
+                    cycle_attempt_number=0,
+                    error_category=None,
+                    error_code=None,
+                    next_attempt_at_utc=now,
+                    lease_owner=None,
+                    lease_expires_at_utc=None,
+                    fence_token=None,
+                    delivered_at_utc=None,
+                )
             )
-        )
         return OutboxPublishReceipt(
             event_id=command.event_id,
             fingerprint=fingerprint,
@@ -761,6 +778,15 @@ class SqlAlchemyOutboxPublisher:
         )
 
     def _validate_recipients(self, command: OutboxPublishCommand) -> None:
+        if command.event_type in OUTBOX_ONLY_EVENT_TYPES:
+            if command.recipients:
+                raise PlatformError(
+                    "invalid_recipients",
+                    "Public graph source events do not have notification recipients",
+                    {},
+                    422,
+                )
+            return
         if not command.recipients:
             raise PlatformError(
                 "invalid_recipients",
@@ -940,3 +966,203 @@ class SqlAlchemyQuotaOutboxEnqueueAdapter:
             connection=connection,
             caller="quota",
         )
+
+
+class SqlAlchemySubmissionOutboxAdapter:
+    """Submission-scoped, no-token facade over the outbox publisher."""
+
+    _EVENT_TYPES = frozenset(
+        {"submission_approved", "submission_rejected", "submission_invalidated"}
+    )
+
+    def __init__(self, publisher: SqlAlchemyOutboxPublisher) -> None:
+        self._publisher = publisher
+
+    @staticmethod
+    def _event_id(*, event_type: str, submission_id: str, transition_version: int) -> str:
+        return f"evt_submission_{event_type}_{submission_id}_{transition_version}"
+
+    def publish_submission_event(
+        self,
+        *,
+        event_type: Literal[
+            "submission_approved", "submission_rejected", "submission_invalidated"
+        ],
+        submission_id: str,
+        transition_version: int,
+        recipient_user_id: str,
+        occurred_at: datetime,
+        connection: Connection,
+    ) -> str:
+        if event_type not in self._EVENT_TYPES:
+            raise PlatformError(
+                "invalid_submission_outbox_event",
+                "Submission events must use the submission event family",
+                {},
+                422,
+            )
+        context = current_context()
+        command = OutboxPublishCommand(
+            event_id=self._event_id(
+                event_type=event_type,
+                submission_id=submission_id,
+                transition_version=transition_version,
+            ),
+            caller_principal="submissions",
+            event_type=event_type,
+            schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
+            aggregate_type="knowledge_submission",
+            aggregate_id=submission_id,
+            transition_version=transition_version,
+            occurred_at=occurred_at,
+            payload={"submission_id": submission_id},
+            recipients=(
+                RecipientSelection(
+                    recipient_user_id=recipient_user_id,
+                    recipient_kind="identity",
+                    selection_reason="knowledge_submission_participant",
+                ),
+            ),
+            trace_id=context.trace_id if context is not None else None,
+        )
+        self._publisher._publish_authorized(
+            command,
+            connection=connection,
+            caller="submissions",
+        )
+        return command.event_id
+
+
+class SqlAlchemyPublicGraphSourceOutboxAdapter:
+    """Documents-scoped outbox facade for immutable public source changes."""
+
+    def __init__(self, publisher: SqlAlchemyOutboxPublisher) -> None:
+        self._publisher = publisher
+
+    def publish_public_graph_source_change(
+        self,
+        *,
+        source_revision: int,
+        source_manifest_id: str,
+        source_manifest_hash: str,
+        document_id: str,
+        change_type: str,
+        occurred_at: datetime,
+        connection: Connection,
+    ) -> str:
+        if source_revision < 1:
+            raise PlatformError("validation_error", "source_revision must be positive", {}, 422)
+        context = current_context()
+        command = OutboxPublishCommand(
+            event_id=f"evt_public_graph_source_{source_revision}",
+            caller_principal="documents",
+            event_type="public_graph_source_changed",
+            schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
+            aggregate_type="public_graph_source",
+            aggregate_id="public",
+            transition_version=source_revision,
+            occurred_at=occurred_at,
+            payload={
+                "source_revision": source_revision,
+                "source_manifest_id": source_manifest_id,
+                "source_manifest_hash": source_manifest_hash,
+                "document_id": document_id,
+                "change_type": change_type,
+            },
+            recipients=(),
+            trace_id=context.trace_id if context is not None else None,
+        )
+        self._publisher._publish_authorized(
+            command,
+            connection=connection,
+            caller="documents",
+        )
+        return command.event_id
+
+
+class SqlAlchemyIngestionOutboxAdapter:
+    """Ingestion-completion scoped, no-token facade over the outbox publisher."""
+
+    def __init__(self, publisher: SqlAlchemyOutboxPublisher) -> None:
+        self._publisher = publisher
+
+    @staticmethod
+    def _event_id(*, event_type: str, job_id: str, transition_version: int) -> str:
+        return f"evt_ingestion_{event_type}_{job_id}_{transition_version}"
+
+    def publish_ingestion_events(
+        self,
+        *,
+        job_id: str,
+        document_id: str,
+        document_version_id: str,
+        publication_id: str,
+        transition_version: int,
+        recipient_user_id: str,
+        occurred_at: datetime,
+        ocr_low_confidence: bool,
+        ocr_low_confidence_fact: Mapping[str, object] | None,
+        connection: Connection,
+    ) -> tuple[str, ...]:
+        base_payload = {
+            "job_id": job_id,
+            "document_id": document_id,
+            "document_version_id": document_version_id,
+            "publication_id": publication_id,
+        }
+        events: list[tuple[str, dict[str, object]]] = [("ingestion_completed", base_payload)]
+        if ocr_low_confidence:
+            if not isinstance(ocr_low_confidence_fact, Mapping):
+                raise PlatformError(
+                    "invalid_processing_receipt",
+                    "Low-confidence processing receipts require a machine fact",
+                    {},
+                    422,
+                )
+            events.append(
+                (
+                    "ocr_low_confidence",
+                    {
+                        **base_payload,
+                        "machine_low_confidence_fact": dict(ocr_low_confidence_fact),
+                    },
+                )
+            )
+        context = current_context()
+        event_ids: list[str] = []
+        for event_type, payload in events:
+            command = OutboxPublishCommand(
+                event_id=self._event_id(
+                    event_type=event_type,
+                    job_id=job_id,
+                    transition_version=transition_version,
+                ),
+                caller_principal="ingestion",
+                event_type=event_type,
+                schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
+                aggregate_type="ingestion_job",
+                aggregate_id=job_id,
+                transition_version=transition_version,
+                occurred_at=occurred_at,
+                payload=payload,
+                recipients=(
+                    RecipientSelection(
+                        recipient_user_id=recipient_user_id,
+                        recipient_kind="identity",
+                        selection_reason="ingestion_job_creator",
+                    ),
+                ),
+                trace_id=context.trace_id if context is not None else None,
+            )
+            try:
+                self._publisher._publish_authorized(
+                    command,
+                    connection=connection,
+                    caller="ingestion",
+                )
+            except PlatformError as error:
+                if error.code == "recipient_account_inactive":
+                    return ()
+                raise
+            event_ids.append(command.event_id)
+        return tuple(event_ids)

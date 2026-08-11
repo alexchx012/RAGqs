@@ -42,6 +42,8 @@ from .ports import (
     AccountRetirementRequest,
     DepartmentWorkCheckPort,
     DepartmentWorkState,
+    PendingSubmissionInvalidationCommand,
+    PendingSubmissionInvalidationPort,
     UnavailableAccountDeletionCleanupPort,
     UnavailableAccountRetirementGateway,
     UnavailableDepartmentWorkCheckPort,
@@ -208,6 +210,7 @@ class IdentityAccessService:
         deletion_cleanup_port: AccountDeletionCleanupPort | None = None,
         object_store: ObjectStorePort | None = None,
         account_retirement_gateway: AccountRetirementGateway | None = None,
+        submission_invalidation_port: PendingSubmissionInvalidationPort | None = None,
         archive_issuer: Any = None,
     ) -> None:
         self._engine = engine
@@ -223,11 +226,35 @@ class IdentityAccessService:
         self._account_retirement_gateway = (
             account_retirement_gateway or UnavailableAccountRetirementGateway()
         )
+        self._pending_submission_invalidation_port = submission_invalidation_port
         self._archive_issuer = archive_issuer
         self._object_store = object_store
 
     def _current_time(self) -> datetime:
         return _utc(self._now())
+
+    def _invalidate_pending_submissions(
+        self,
+        connection: Connection,
+        *,
+        user_id: str,
+        role: str,
+        department_id: str | None,
+        lifecycle_status: Literal["active", "pending_delete", "deleted"],
+        reason: str,
+    ) -> None:
+        if self._pending_submission_invalidation_port is None:
+            return
+        self._pending_submission_invalidation_port.invalidate_pending_submissions(
+            PendingSubmissionInvalidationCommand(
+                user_id=user_id,
+                role=role,
+                department_id=department_id,
+                lifecycle_status=lifecycle_status,
+                reason=reason,
+            ),
+            connection=connection,
+        )
 
     @staticmethod
     def _user_response(record: dict[str, object]) -> dict[str, object]:
@@ -733,6 +760,14 @@ class IdentityAccessService:
                 if admin["normalized_username"] in roster:
                     continue
                 user_id = str(admin["id"])
+                self._invalidate_pending_submissions(
+                    connection,
+                    user_id=user_id,
+                    role=str(admin["role"]),
+                    department_id=admin["department_id"],
+                    lifecycle_status="pending_delete",
+                    reason="account_pending_delete",
+                )
                 next_transition = int(admin["transition_version"]) + 1
                 connection.execute(
                     update(identity_user_table)
@@ -1039,6 +1074,14 @@ class IdentityAccessService:
                     "version_conflict", "User version is no longer current", {}, 409
                 )
             if authorization_changed:
+                self._invalidate_pending_submissions(
+                    connection,
+                    user_id=user_id,
+                    role=str(final_role),
+                    department_id=final_department_id,
+                    lifecycle_status="active",
+                    reason="identity_authorization_changed",
+                )
                 self._revoke_account_sessions_in_transaction(
                     connection,
                     user_id=user_id,
@@ -1288,6 +1331,14 @@ class IdentityAccessService:
                 )
             next_version = int(target["version"]) + 1
             next_transition = int(target["transition_version"]) + 1
+            self._invalidate_pending_submissions(
+                connection,
+                user_id=user_id,
+                role=str(target["role"]),
+                department_id=target["department_id"],
+                lifecycle_status="pending_delete",
+                reason="account_pending_delete",
+            )
             updated = connection.execute(
                 update(identity_user_table)
                 .where(

@@ -8,6 +8,7 @@ from logging.config import fileConfig
 from sqlalchemy import create_engine, pool
 
 from alembic import context
+from app.documents.schema import documents_metadata
 from app.identity.schema import identity_metadata
 from app.outbox.schema import outbox_metadata
 from app.platform.database import core_metadata
@@ -17,7 +18,13 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = [core_metadata, identity_metadata, outbox_metadata, usage_metadata]
+target_metadata = [
+    core_metadata,
+    identity_metadata,
+    outbox_metadata,
+    usage_metadata,
+    documents_metadata,
+]
 
 
 def _database_url() -> str:

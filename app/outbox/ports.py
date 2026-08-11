@@ -23,6 +23,7 @@ EventType = Literal[
     "quota_rejected",
     "calibration_window_suggested",
     "graph_build_completed",
+    "public_graph_source_changed",
 ]
 
 V1_CONSUMER = "in_app_notification"
@@ -42,6 +43,7 @@ NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
 ACKNOWLEDGEABLE_EVENT_TYPES: frozenset[str] = frozenset(
     {"ingestion_completed", "ocr_low_confidence"}
 )
+OUTBOX_ONLY_EVENT_TYPES: frozenset[str] = frozenset({"public_graph_source_changed"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,22 @@ class OutboxPublishPort(Protocol):
         *,
         connection: Connection,
     ) -> OutboxPublishReceipt: ...
+
+
+class PublicGraphSourceOutboxPort(Protocol):
+    """Writes the source-change event owned by the documents transaction."""
+
+    def publish_public_graph_source_change(
+        self,
+        *,
+        source_revision: int,
+        source_manifest_id: str,
+        source_manifest_hash: str,
+        document_id: str,
+        change_type: str,
+        occurred_at: datetime,
+        connection: Connection,
+    ) -> str: ...
 
 
 # ---------------------------------------------------------------------------

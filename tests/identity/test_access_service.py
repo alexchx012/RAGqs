@@ -530,6 +530,62 @@ def test_failed_revocation_rolls_back_the_managed_user_transition() -> None:
     assert service.user_response(user["id"])["role"] == "user"
 
 
+def test_identity_changes_and_pending_delete_invalidate_pending_submissions() -> None:
+    class RecordingInvalidationPort:
+        def __init__(self) -> None:
+            self.commands: list[object] = []
+
+        def invalidate_pending_submissions(self, command: object, *, connection: object) -> int:
+            del connection
+            self.commands.append(command)
+            return 0
+
+    port = RecordingInvalidationPort()
+    service = make_service(submission_invalidation_port=port)
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(service.login(username="admin", password="Password1").access_token)
+    first = service.create_department(actor=admin, name="First", idempotency_key="department-first")
+    second = service.create_department(actor=admin, name="Second", idempotency_key="department-second")
+    user = service.create_managed_user(
+        actor=admin,
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=first["id"],
+        idempotency_key="user-create",
+    )
+
+    updated = service.update_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=1,
+        role=None,
+        department_id=second["id"],
+        department_provided=True,
+        idempotency_key="user-move",
+    )
+    service.delete_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=updated["version"],
+        idempotency_key="user-delete",
+    )
+
+    assert [(command.lifecycle_status, command.department_id) for command in port.commands] == [
+        ("active", second["id"]),
+        ("pending_delete", second["id"]),
+    ]
+
+
 def test_space_authorization_distinguishes_unreadable_from_insufficient_access() -> None:
     service = make_service()
     alice = service.provision_user(
