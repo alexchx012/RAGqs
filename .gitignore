@@ -27,3 +27,8 @@ frontend/test-results/
 CLAUDE.md
 .kimi-code/
 AGENTS.md.bak
+# >>> Comet managed project state >>>
+!/.comet/
+/.comet/*
+!/.comet/config.yaml
+# <<< Comet managed project state <<<

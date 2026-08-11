@@ -5,8 +5,10 @@ from typing import Annotated
 from fastapi import Query
 from fastapi.testclient import TestClient
 
+from app.identity.schema import identity_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
+from app.platform.database import core_metadata
 from app.platform.errors import PlatformError, map_exception
 from app.platform.http_contract import (
     batch_item_error,
@@ -16,6 +18,7 @@ from app.platform.http_contract import (
     request_error_payload,
     sse_error_event,
 )
+from app.usage.schema import usage_metadata
 
 
 def settings():
@@ -73,6 +76,10 @@ def test_conditional_and_pagination_helpers_keep_v1_contract_shape() -> None:
 
 def test_fastapi_validation_http_and_internal_errors_use_contract() -> None:
     app = create_platform_app(settings())
+    engine = app.state.platform_runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
 
     @app.get("/v1/test-error")
     async def test_error() -> None:

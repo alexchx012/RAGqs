@@ -10,6 +10,7 @@ from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.runtime import build_runtime
+from app.usage.schema import usage_metadata
 
 
 def settings():
@@ -34,6 +35,7 @@ def test_spaces_route_returns_only_current_acl_permissions() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = IdentityAccessService(engine, configured.auth)
     user = service.provision_user(
         username="alice",

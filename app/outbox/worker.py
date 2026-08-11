@@ -61,40 +61,61 @@ class LeaseHeartbeat:
         self._owner = owner
         self.interval_seconds = interval_seconds
         self._stop_event = threading.Event()
+        self._beat_lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._error: BaseException | None = None
         self.lost = False
 
     def beat(self) -> DeliveryClaim | None:
         """Renew the lease now; return None when the fence is gone."""
-        renewed = self._dispatcher.renew_lease(self.claim, owner=self._owner)
-        if renewed is None:
-            self.lost = True
-            return None
-        self.claim = renewed
-        return renewed
+        with self._beat_lock:
+            renewed = self._dispatcher.renew_lease(self.claim, owner=self._owner)
+            if renewed is None:
+                with self._state_lock:
+                    self.lost = True
+                self._stop_event.set()
+                return None
+            self.claim = renewed
+            return renewed
+
+    def raise_if_inactive(self) -> None:
+        """Propagate a background renewal failure or fail closed on fence loss."""
+        with self._state_lock:
+            error = self._error
+            lost = self.lost
+        if error is not None:
+            raise error
+        if lost:
+            raise FenceViolation(f"stale fence for {self.claim.event_id}")
 
     def start(self) -> None:
         import threading
 
         self._stop_event.clear()
-        self.lost = False
+        with self._state_lock:
+            self._error = None
+            self.lost = False
         self._thread = threading.Thread(target=self._loop, name="outbox-heartbeat", daemon=True)
         self._thread.start()
 
     def _loop(self) -> None:
-        import time
-
-        while not self._stop_event.is_set():
-            time.sleep(self.interval_seconds)
-            if self._stop_event.is_set():
-                return
-            if self.beat() is None:
-                self._stop_event.set()
+        try:
+            while not self._stop_event.wait(self.interval_seconds):
+                if self.beat() is None:
+                    return
+        except BaseException as exc:
+            with self._state_lock:
+                if self._error is None:
+                    self._error = exc
+            self._stop_event.set()
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                raise RuntimeError("outbox heartbeat thread did not stop")
             self._thread = None
 
     def run_until(self, should_stop) -> bool:
@@ -137,19 +158,44 @@ class OutboxWorker:
             self._dispatcher, claim, owner, interval_seconds=heartbeat_interval_seconds
         )
         heartbeat.start()
+        heartbeat_stopped = False
         try:
             if work is not None:
-                while work(heartbeat.claim):
-                    # A long blocking chunk is fine: the heartbeat thread keeps
-                    # renewing while we are inside `work`.
-                    pass
-            # Final fence check: the lease must still be current at commit time.
-            current = self._dispatcher.renew_lease(heartbeat.claim, owner=owner)
+                while True:
+                    heartbeat.raise_if_inactive()
+                    should_continue = work(heartbeat.claim)
+                    # A long blocking chunk is fine: the heartbeat thread renews
+                    # inside `work`, but a failed renewal must stop the next chunk.
+                    heartbeat.raise_if_inactive()
+                    if not should_continue:
+                        break
+            # Final fence check shares the heartbeat's renewal lock so the main
+            # and heartbeat threads never renew the same lease concurrently.
+            heartbeat.raise_if_inactive()
+            current = heartbeat.beat()
             if current is None:
                 raise FenceViolation(f"stale fence for {claim.event_id}")
-            return self._dispatcher.run_consumer_and_finalize(current, owner=owner)
-        finally:
+            heartbeat.raise_if_inactive()
+            if self._dispatcher.heartbeat_requires_exclusive_connection:
+                # StaticPool shares one DBAPI connection across threads. Quiesce
+                # only that development/test path before its final transaction;
+                # PostgreSQL keeps the independent heartbeat running.
+                heartbeat.stop()
+                heartbeat_stopped = True
+                heartbeat.raise_if_inactive()
+            outcome = self._dispatcher.run_consumer_and_finalize(current, owner=owner)
+            heartbeat.raise_if_inactive()
+        except BaseException:
+            if not heartbeat_stopped:
+                try:
+                    heartbeat.stop()
+                except BaseException:
+                    _logger.exception("outbox heartbeat cleanup failed after delivery error")
+            raise
+        if not heartbeat_stopped:
             heartbeat.stop()
+            heartbeat.raise_if_inactive()
+        return outcome
 
     def run_once(self, *, owner: str, limit: int = 100) -> OutboxWorkerStats:
         normalized_owner = owner.strip()

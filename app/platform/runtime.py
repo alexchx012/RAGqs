@@ -21,8 +21,16 @@ from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
-from app.outbox.publisher import SqlAlchemyOutboxPublisher
+from app.outbox.publisher import (
+    SqlAlchemyOutboxPublisher,
+    SqlAlchemyQuotaOutboxEnqueueAdapter,
+)
 from app.outbox.service import NotificationService
+from app.usage.calendar import CalendarLock, get_calendar_service
+from app.usage.ledger import UsageLedger
+from app.usage.price import PriceCatalogService
+from app.usage.quota import QuotaService
+from app.usage.requests import QuotaRequestService
 
 from .config import PlatformSettings, validate_startup_settings
 from .database import (
@@ -221,6 +229,30 @@ def build_runtime(
         capability_secret=None,
     )
     configured.setdefault("outbox_publisher", outbox_publisher)
+    calendar = configured.get("business_calendar") or get_calendar_service(
+        engine,
+        clock,
+        settings.business_timezone or "UTC",
+    )
+    prices = configured.get("price_catalog") or PriceCatalogService(engine, clock)
+    ledger = configured.get("usage_ledger") or UsageLedger(engine, clock, calendar, prices)
+    quota_service = configured.get("quota_service") or QuotaService(engine, clock, calendar)
+    outbox_port = configured.get("outbox_enqueue_port") or (
+        SqlAlchemyQuotaOutboxEnqueueAdapter(outbox_publisher)
+    )
+    quota_request_service = configured.get("quota_request_service") or QuotaRequestService(
+        engine,
+        clock,
+        calendar,
+        quota_service,
+        outbox_port,
+    )
+    configured.setdefault("business_calendar", calendar)
+    configured.setdefault("price_catalog", prices)
+    configured.setdefault("usage_ledger", ledger)
+    configured.setdefault("quota_service", quota_service)
+    configured.setdefault("outbox_enqueue_port", outbox_port)
+    configured.setdefault("quota_request_service", quota_request_service)
     runtime = PlatformRuntime(settings=settings, adapters=configured)
     # Assemble the scoped workers around THIS runtime. Both workers use the
     # lifecycle's INTERNAL no-token entries; the worker object graphs contain
@@ -285,3 +317,18 @@ class _OutboxAccountRetirementGateway:
             state=receipt.state,
             receipt_count=receipt.receipt_count,
         )
+
+
+def ensure_business_calendar_locked(runtime: PlatformRuntime) -> CalendarLock:
+    """启动时锁定/校验业务日历；时区与已锁版本不一致 → 503 拒绝启动（H3）。
+
+    app lifespan 与 usage maintenance 共享同一 helper（M4），避免启动与 CLI 的
+    calendar lock 逻辑漂移。返回锁定的 CalendarLock；未完整组装 → RuntimeError
+    （fail-closed，由调用方以平台错误边界暴露）。
+    """
+    engine = runtime.resolve("database_engine")
+    calendar = runtime.resolve("business_calendar")
+    if engine is None or calendar is None:
+        raise RuntimeError("usage runtime is not fully assembled")
+    with engine.begin() as connection:
+        return calendar.lock_or_verify(connection)

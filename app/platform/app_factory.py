@@ -11,6 +11,7 @@ from sqlalchemy import text
 from app.api.v1 import router as v1_router
 from app.identity.service import IdentityAccessService
 
+from . import runtime as platform_runtime_module
 from .config import PlatformSettings, load_platform_settings
 from .context import new_request_context
 from .http_contract import register_exception_handlers
@@ -30,15 +31,18 @@ def create_platform_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         del app
-        engine = runtime.resolve("database_engine")
-        if engine is not None:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
-        if settings.auth.admin_roster:
-            identity_access = runtime.resolve("identity_access")
-            if isinstance(identity_access, IdentityAccessService):
-                identity_access.reconcile_admin_roster()
         try:
+            engine = runtime.resolve("database_engine")
+            if engine is not None:
+                with engine.connect() as connection:
+                    connection.execute(text("SELECT 1"))
+            # H3：数据库探活之后锁定/校验业务日历（时区冲突 → 503 拒启，不悄悄重写）。
+            # 与 usage maintenance 通过模块 lookup 调用同一 helper，便于行为级验证。
+            platform_runtime_module.ensure_business_calendar_locked(runtime)
+            if settings.auth.admin_roster:
+                identity_access = runtime.resolve("identity_access")
+                if isinstance(identity_access, IdentityAccessService):
+                    identity_access.reconcile_admin_roster()
             yield
         finally:
             if owns_runtime:

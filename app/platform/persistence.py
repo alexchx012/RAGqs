@@ -4,7 +4,11 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, Protocol, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, TypeVar
+
+if TYPE_CHECKING:
+    # 仅类型检查期引入，避免本模块（纯 Python 领域端口层）在运行时依赖 SQLAlchemy。
+    from sqlalchemy.engine import Connection
 
 _Result = TypeVar("_Result")
 
@@ -54,7 +58,7 @@ class AuditWriter(Protocol):
 
 
 class DatabaseClock(Protocol):
-    def now_utc(self) -> datetime: ...
+    def now_utc(self, connection: Connection | None = None) -> datetime: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +156,8 @@ class MemoryDatabaseClock:
     def __init__(self, now: datetime | None = None) -> None:
         self._now = now or datetime.now(UTC)
 
-    def now_utc(self) -> datetime:
+    def now_utc(self, connection: Connection | None = None) -> datetime:
+        # 内存时钟与具体数据库连接无关：可选 connection 仅用于满足 DatabaseClock 协议。
         return self._now.astimezone(UTC)
 
 

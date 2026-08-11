@@ -4,15 +4,28 @@ import os
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Profile = Literal["development", "production"]
 
 
+class PlatformConfigurationError(ValueError):
+    """Stable public error for invalid structured platform configuration."""
+
+
 class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 
 class DatabaseSettings(_StrictModel):
@@ -116,12 +129,13 @@ class AuthSettings(_StrictModel):
 class PlatformSettings(BaseSettings):
     """Validated, versioned configuration for API and worker processes."""
 
-    model_config = {
-        "extra": "forbid",
-        "env_prefix": "RAG_",
-        "case_sensitive": True,
-        "env_file": None,
-    }
+    model_config = SettingsConfigDict(
+        extra="forbid",
+        env_prefix="RAG_",
+        case_sensitive=True,
+        env_file=None,
+        hide_input_in_errors=True,
+    )
 
     profile: Profile = "development"
     database: DatabaseSettings
@@ -130,10 +144,24 @@ class PlatformSettings(BaseSettings):
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
+    business_timezone: str | None = None
+    # 受保护维护 CLI（ragqs-usage-maintenance）的显式密钥：只从环境读取，不进参数/
+    # 日志/输出；production 下缺失时维护入口拒绝执行（fail-closed）。
+    maintenance_key: SecretStr | None = None
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     outbox: OutboxSettings = Field(default_factory=OutboxSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     debug: bool = False
+
+    @field_validator("maintenance_key", mode="before")
+    @classmethod
+    def normalize_maintenance_key(cls, value: object) -> object:
+        if value is None:
+            return None
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if isinstance(raw, str) and not raw.strip():
+            return None
+        return value
 
 
 _ENV_KEYS = {
@@ -152,6 +180,8 @@ _ENV_KEYS = {
     "RAG_WORKER_LEASE_SECONDS",
     "RAG_LOG_LEVEL",
     "RAG_INDEX_NAMESPACE",
+    "RAG_BUSINESS_TIMEZONE",
+    "RAG_MAINTENANCE_KEY",
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
     "RAG_OBSERVABILITY_SUCCESS_SAMPLE_RATE",
     "RAG_OBSERVABILITY_MAX_ROUTE_TEMPLATES",
@@ -194,14 +224,29 @@ def _optional(env: Mapping[str, str], key: str) -> str | None:
     return value if value not in (None, "") else None
 
 
+def _optional_secret(env: Mapping[str, str], key: str) -> str | None:
+    value = _optional(env, key)
+    return value if value is not None and value.strip() else None
+
+
 def _int(env: Mapping[str, str], key: str) -> int | None:
     value = _optional(env, key)
-    return int(value) if value is not None else None
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid integer for {key}") from None
 
 
 def _float(env: Mapping[str, str], key: str) -> float | None:
     value = _optional(env, key)
-    return float(value) if value is not None else None
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid number for {key}") from None
 
 
 def _csv(env: Mapping[str, str], key: str) -> tuple[str, ...]:
@@ -261,6 +306,8 @@ def load_platform_settings(
         "index": {
             "namespace": _optional(env, "RAG_INDEX_NAMESPACE") or "default",
         },
+        "business_timezone": _optional(env, "RAG_BUSINESS_TIMEZONE"),
+        "maintenance_key": _optional_secret(env, "RAG_MAINTENANCE_KEY"),
         "observability": {
             key: value
             for key, value in {
@@ -300,12 +347,32 @@ def load_platform_settings(
         },
         "debug": _parse_bool(env["RAG_DEBUG"], "RAG_DEBUG") if "RAG_DEBUG" in env else False,
     }
-    settings = PlatformSettings.model_validate(data)
+    settings: PlatformSettings | None = None
+    try:
+        settings = PlatformSettings.model_validate(data)
+    except ValidationError:
+        # Do not retain or chain Pydantic's structured error: errors()/json() include inputs.
+        pass
+    if settings is None:
+        # Raised outside the except suite so __context__ cannot expose the ValidationError.
+        raise PlatformConfigurationError("platform configuration is invalid") from None
     validate_startup_settings(settings)
     return settings
 
 
 def validate_startup_settings(settings: PlatformSettings) -> None:
+    timezone = settings.business_timezone
+    if timezone is None:
+        if settings.profile == "production":
+            raise ValueError(
+                "production requires an explicit business timezone (RAG_BUSINESS_TIMEZONE)"
+            )
+        timezone = "UTC"
+    try:
+        ZoneInfo(timezone)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise ValueError("business timezone is not a valid IANA timezone") from None
+
     if settings.profile == "production":
         if not settings.database.url.startswith(("postgresql://", "postgresql+")):
             raise ValueError("production requires a PostgreSQL database")

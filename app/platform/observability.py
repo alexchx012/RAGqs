@@ -432,22 +432,20 @@ class SqlAlchemyObservabilityMetrics:
                     )
                 )
                 key = self._aggregate_key(normalized, self.retention_days)
-                inserted = connection.execute(
-                    _insert_do_nothing(
-                        connection,
-                        platform_observability_aggregate_table,
-                        {
-                            **key,
-                            "expires_at_utc": self._aggregate_expires_at(
-                                normalized, self.retention_days
-                            ),
-                            "sample_weight": normalized.sample_weight,
-                            "sample_count": 1,
-                        },
-                        list(key),
-                    )
-                ).rowcount
-                if inserted != 1:
+                inserted = _insert_do_nothing(
+                    connection,
+                    platform_observability_aggregate_table,
+                    {
+                        **key,
+                        "expires_at_utc": self._aggregate_expires_at(
+                            normalized, self.retention_days
+                        ),
+                        "sample_weight": normalized.sample_weight,
+                        "sample_count": 1,
+                    },
+                    list(key),
+                )
+                if not inserted:
                     predicates = [
                         platform_observability_aggregate_table.c[column] == value
                         for column, value in key.items()

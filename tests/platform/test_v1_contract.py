@@ -5,6 +5,10 @@ import sys
 
 from fastapi.testclient import TestClient
 
+from app.identity.schema import identity_metadata
+from app.platform.database import core_metadata
+from app.usage.schema import usage_metadata
+
 
 def platform_environment(monkeypatch) -> None:
     monkeypatch.setenv("RAG_PLATFORM_PROFILE", "development")
@@ -24,6 +28,12 @@ def test_uvicorn_entrypoint_exposes_only_versioned_routes(monkeypatch) -> None:
     assert all(path.startswith("/v1") for path in paths)
     assert "/api/chat" not in paths
     assert "/chat" not in paths
+
+    # lifespan 会锁定业务日历（Task 12）：先建 usage 表，否则启动即失败。
+    engine = main.app.state.platform_runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
 
     with TestClient(main.app) as client:
         response = client.get("/v1/health")

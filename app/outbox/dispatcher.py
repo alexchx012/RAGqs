@@ -18,6 +18,7 @@ from typing import Any, Protocol
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import StaticPool
 
 from app.platform.context import current_context
 from app.platform.database import platform_audit_table
@@ -118,6 +119,11 @@ class OutboxDispatcher:
         self._notification_retention_days = notification_retention_days
         self._metrics = metrics
         self._lease_seconds = lease_seconds
+
+    @property
+    def heartbeat_requires_exclusive_connection(self) -> bool:
+        """Whether heartbeat and finalization would share one DBAPI connection."""
+        return isinstance(self._engine.pool, StaticPool)
 
     def _current_time(self, connection: Connection) -> datetime:
         """Database time on the caller's transaction connection when available."""

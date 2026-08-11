@@ -12,6 +12,7 @@ from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.runtime import build_runtime
+from app.usage.schema import usage_metadata
 
 
 def settings():
@@ -36,6 +37,7 @@ def test_admin_routes_manage_non_admin_users_and_expose_read_only_matrix() -> No
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         configured.auth,

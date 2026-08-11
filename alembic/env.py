@@ -11,12 +11,13 @@ from alembic import context
 from app.identity.schema import identity_metadata
 from app.outbox.schema import outbox_metadata
 from app.platform.database import core_metadata
+from app.usage.schema import usage_metadata
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = [core_metadata, identity_metadata, outbox_metadata]
+target_metadata = [core_metadata, identity_metadata, outbox_metadata, usage_metadata]
 
 
 def _database_url() -> str:

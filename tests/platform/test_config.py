@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 
-from app.platform.config import load_platform_settings, validate_startup_settings
+from app.platform.config import (
+    PlatformConfigurationError,
+    load_platform_settings,
+    validate_startup_settings,
+)
 
 
 def development_environment(**overrides: str) -> dict[str, str]:
@@ -28,6 +31,7 @@ def production_environment(**overrides: str) -> dict[str, str]:
         "RAG_PROVIDER_NAME": "openai-compatible",
         "RAG_PROVIDER_API_KEY": "provider-secret",
         "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS": "90",
+        "RAG_BUSINESS_TIMEZONE": "UTC",
         "RAG_DEBUG": "false",
         "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
         "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
@@ -51,7 +55,7 @@ def test_production_profile_requires_database_and_object_storage() -> None:
     values.pop("RAG_DATABASE_URL")
     values.pop("RAG_OBJECT_STORAGE_BUCKET")
 
-    with pytest.raises((ValidationError, ValueError), match="database|object_storage"):
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
         load_platform_settings(values)
 
 
@@ -69,13 +73,13 @@ def test_production_profile_requires_identity_access_security_configuration(
     values = production_environment()
     values.pop(key)
 
-    with pytest.raises((ValidationError, ValueError), match=message):
+    with pytest.raises(ValueError, match=message):
         load_platform_settings(values)
 
 
 @pytest.mark.parametrize("retention", ["30", "367"])
 def test_observability_retention_has_bounded_range(retention: str) -> None:
-    with pytest.raises((ValidationError, ValueError), match="retention"):
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
         load_platform_settings(
             development_environment(
                 RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS=retention,
@@ -111,7 +115,7 @@ def test_configuration_includes_shared_logging_and_index_namespace() -> None:
 def test_legacy_or_tenant_aliases_are_rejected(key: str) -> None:
     values = development_environment(**{f"RAG_{key}": "unexpected"})
 
-    with pytest.raises((ValidationError, ValueError), match="unknown|tenant|legacy"):
+    with pytest.raises(ValueError, match="unknown|tenant|legacy"):
         load_platform_settings(values)
 
 
@@ -119,7 +123,7 @@ def test_unprefixed_legacy_alias_is_rejected() -> None:
     values = development_environment()
     values["DATABASE_URL"] = values.pop("RAG_DATABASE_URL")
 
-    with pytest.raises((ValidationError, ValueError), match="unknown|tenant|legacy"):
+    with pytest.raises(ValueError, match="unknown|tenant|legacy"):
         load_platform_settings(values)
 
 
@@ -128,7 +132,7 @@ def test_ambient_strict_runtime_prefix_rejects_unknown_test_variables(monkeypatc
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("RAG_TEST_POSTGRES_URL", "postgresql+psycopg://app:secret@db/rag")
 
-    with pytest.raises((ValidationError, ValueError), match="unknown|legacy"):
+    with pytest.raises(ValueError, match="unknown|legacy"):
         load_platform_settings()
 
 
@@ -150,12 +154,12 @@ def test_renamed_integration_namespace_does_not_affect_platform_settings(monkeyp
     ],
 )
 def test_object_storage_credentials_must_be_configured_as_a_pair(overrides: dict[str, str]) -> None:
-    with pytest.raises((ValidationError, ValueError), match="access_key|secret_key|together"):
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
         load_platform_settings(development_environment(**overrides))
 
 
 def test_production_rejects_unsafe_flags_and_fake_provider() -> None:
-    with pytest.raises((ValidationError, ValueError), match="production|debug|provider"):
+    with pytest.raises(ValueError, match="production|debug|provider"):
         settings = load_platform_settings(
             production_environment(
                 RAG_DEBUG="true",
@@ -166,7 +170,7 @@ def test_production_rejects_unsafe_flags_and_fake_provider() -> None:
 
 
 def test_bootstrap_admin_settings_must_be_configured_as_a_complete_group() -> None:
-    with pytest.raises((ValidationError, ValueError), match="bootstrap.*together"):
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
         load_platform_settings(
             development_environment(
                 RAG_AUTH_BOOTSTRAP_USERNAME="admin",
@@ -184,3 +188,156 @@ def test_bootstrap_admin_settings_must_be_configured_as_a_complete_group() -> No
 
     assert settings.auth.bootstrap_username == "admin"
     assert settings.auth.bootstrap_password is not None
+
+
+def test_business_timezone_defaults_to_utc_in_development() -> None:
+    settings = load_platform_settings(
+        {
+            "RAG_PLATFORM_PROFILE": "development",
+            "RAG_DATABASE_URL": "sqlite:///:memory:",
+            "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+            "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+            "RAG_PROVIDER_NAME": "fake",
+        }
+    )
+    assert settings.business_timezone is None  # 未配置
+    configured = load_platform_settings(
+        {
+            "RAG_PLATFORM_PROFILE": "development",
+            "RAG_DATABASE_URL": "sqlite:///:memory:",
+            "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+            "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+            "RAG_PROVIDER_NAME": "fake",
+            "RAG_BUSINESS_TIMEZONE": "Asia/Shanghai",
+        }
+    )
+    assert configured.business_timezone == "Asia/Shanghai"
+
+
+def test_production_requires_explicit_business_timezone() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="business timezone"):
+        load_platform_settings(
+            {
+                "RAG_PLATFORM_PROFILE": "production",
+                "RAG_DATABASE_URL": "postgresql+psycopg://u:p@localhost/db",
+                "RAG_OBJECT_STORAGE_ENDPOINT": "https://s3.example.com",
+                "RAG_OBJECT_STORAGE_BUCKET": "rag",
+                "RAG_PROVIDER_NAME": "dashscope",
+                "RAG_PROVIDER_API_KEY": "secret",
+                "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
+                "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
+                "RAG_AUTH_ADMIN_ROSTER": "root",
+            }
+        )
+
+
+def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected() -> None:
+    import pytest as _pytest
+
+    settings = load_platform_settings(
+        {
+            "RAG_PLATFORM_PROFILE": "production",
+            "RAG_DATABASE_URL": "postgresql+psycopg://u:p@localhost/db",
+            "RAG_OBJECT_STORAGE_ENDPOINT": "https://s3.example.com",
+            "RAG_OBJECT_STORAGE_BUCKET": "rag",
+            "RAG_PROVIDER_NAME": "dashscope",
+            "RAG_PROVIDER_API_KEY": "secret",
+            "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
+            "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
+            "RAG_AUTH_ADMIN_ROSTER": "root",
+            "RAG_BUSINESS_TIMEZONE": "UTC",
+        }
+    )
+    assert settings.business_timezone == "UTC"
+    with _pytest.raises(ValueError):
+        load_platform_settings(
+            {
+                "RAG_PLATFORM_PROFILE": "production",
+                "RAG_DATABASE_URL": "postgresql+psycopg://u:p@localhost/db",
+                "RAG_OBJECT_STORAGE_ENDPOINT": "https://s3.example.com",
+                "RAG_OBJECT_STORAGE_BUCKET": "rag",
+                "RAG_PROVIDER_NAME": "dashscope",
+                "RAG_PROVIDER_API_KEY": "secret",
+                "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
+                "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
+                "RAG_AUTH_ADMIN_ROSTER": "root",
+                "RAG_BUSINESS_TIMEZONE": "Not/AZone",
+            }
+        )
+
+
+@pytest.mark.parametrize("maintenance_key", [None, "", " \t "])
+def test_blank_maintenance_key_is_normalized_to_absent(maintenance_key: str | None) -> None:
+    values = development_environment()
+    if maintenance_key is not None:
+        values["RAG_MAINTENANCE_KEY"] = maintenance_key
+
+    settings = load_platform_settings(values)
+
+    assert settings.maintenance_key is None
+
+
+@pytest.mark.parametrize(
+    ("key", "expected_message"),
+    [
+        ("RAG_DATABASE_POOL_SIZE", "invalid integer for RAG_DATABASE_POOL_SIZE"),
+        (
+            "RAG_DATABASE_CONNECT_TIMEOUT_SECONDS",
+            "invalid number for RAG_DATABASE_CONNECT_TIMEOUT_SECONDS",
+        ),
+    ],
+)
+def test_numeric_configuration_errors_are_stable_and_hide_values(
+    key: str, expected_message: str
+) -> None:
+    sentinel = "sentinel-numeric-credential-do-not-leak"
+
+    with pytest.raises(ValueError) as exc_info:
+        load_platform_settings(development_environment(**{key: sentinel}))
+
+    assert str(exc_info.value) == expected_message
+    assert sentinel not in str(exc_info.value)
+
+
+def test_invalid_timezone_error_is_stable_and_hides_value() -> None:
+    sentinel = "Sentinel/Timezone-Credential-Do-Not-Leak"
+
+    with pytest.raises(ValueError) as exc_info:
+        load_platform_settings(
+            development_environment(
+                RAG_BUSINESS_TIMEZONE=sentinel,
+            )
+        )
+
+    assert str(exc_info.value) == "business timezone is not a valid IANA timezone"
+    assert sentinel not in str(exc_info.value)
+
+
+def test_load_platform_settings_replaces_pydantic_errors_with_safe_boundary() -> None:
+    sentinel = "sentinel-access-key-do-not-leak"
+
+    with pytest.raises(PlatformConfigurationError) as exc_info:
+        load_platform_settings(
+            development_environment(
+                RAG_OBJECT_STORAGE_ACCESS_KEY=sentinel,
+            )
+        )
+
+    error = exc_info.value
+    assert str(error) == "platform configuration is invalid"
+    assert error.args == ("platform configuration is invalid",)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert error.__suppress_context__ is True
+    assert vars(error) == {}
+    assert not hasattr(error, "errors")
+    assert not hasattr(error, "json")
+    visible_representations = (
+        str(error),
+        repr(error),
+        repr(error.args),
+        repr(vars(error)),
+    )
+    assert all(sentinel not in representation for representation in visible_representations)

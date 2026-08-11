@@ -14,6 +14,7 @@ from app.identity.service import IdentityAccessService
 from app.outbox.schema import outbox_metadata
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
+from app.usage.schema import usage_metadata
 
 # The explicit development signing secret. The production runtime derives the
 # capability secret from the configured auth secret key; tests sign tokens
@@ -61,6 +62,7 @@ def build_engine():
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     _LIVE_ENGINES.append(engine)
     return engine
 

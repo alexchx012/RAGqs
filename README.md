@@ -4,7 +4,7 @@
 
 ## 配置
 
-所有 API、worker、维护任务使用 `RAG_` 前缀的严格配置。最低配置见 `.env.example`。生产 profile 只接受 PostgreSQL、HTTPS 对象存储、非 fake provider、关闭 debug 的组合；旧环境变量和 tenant 参数会在启动前被拒绝。
+所有 API、worker、维护任务使用 `RAG_` 前缀的严格配置。最低配置见 `.env.example`。生产 profile 只接受 PostgreSQL、HTTPS 对象存储、非 fake provider、关闭 debug 的组合；旧环境变量和 tenant 参数会在启动前被拒绝。Outbox 通知与已投递事件的 retention 配置必须是正整数，默认分别为 90 天和 30 天；配置值在后续通知物化或投递完成时冻结，修改配置不会重算既有 retire/compact 时间。
 
 ## 本地运行
 
@@ -37,3 +37,5 @@ python -m mypy app
 ```
 
 配置 `RAGQS_TEST_POSTGRES_URL` 和 `RAGQS_TEST_S3_*` 后，集成测试会验证空 PostgreSQL 迁移、API、worker 与 S3 兼容对象存储。GitHub Actions 将这些服务作为合并门禁启动。
+
+usage-quota 的 PostgreSQL 破坏性验收（`tests/usage/test_concurrency_postgres.py`）要求**全部**门槛齐备，缺任一条件整组 skip 且报告记为 PostgreSQL mandatory acceptance `NOT RUN/BLOCKED`：`RAGQS_TEST_POSTGRES_URL`（backend 必须为 `postgresql`）、`RAGQS_ALLOW_DESTRUCTIVE_POSTGRES_TESTS=1`（显式 destructive opt-in）、数据库名须包含 `test`（无旁路开关）。

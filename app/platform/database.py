@@ -130,24 +130,32 @@ def _insert_do_nothing(
     table: Table,
     values: dict[str, Any],
     index_elements: list[str],
-):
+) -> bool:
+    """Execute ``INSERT ... ON CONFLICT DO NOTHING`` and return whether it inserted."""
     if connection.dialect.name == "postgresql":
+        from sqlalchemy import literal
         from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
-        return (
+        pg_statement = (
             postgresql_insert(table)
             .values(**values)
             .on_conflict_do_nothing(index_elements=index_elements)
         )
+        # psycopg3 reports rowcount=-1 for INSERTs without RETURNING.  A returned
+        # row is authoritative: the conflict path returns no row.
+        return (
+            connection.execute(pg_statement.returning(literal(1))).scalar_one_or_none() is not None
+        )
     if connection.dialect.name == "sqlite":
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-        return (
+        sqlite_statement = (
             sqlite_insert(table)
             .values(**values)
             .on_conflict_do_nothing(index_elements=index_elements)
         )
-    return table.insert().values(**values)
+        return connection.execute(sqlite_statement).rowcount == 1
+    return connection.execute(table.insert().values(**values)).rowcount == 1
 
 
 def create_engine_for_settings(settings: PlatformSettings) -> Engine:
@@ -248,7 +256,7 @@ class SqlAlchemyTransaction:
     ) -> IdempotencyReservation:
         connection = self._connection()
         now = self._clock.now_utc(connection)
-        statement = _insert_do_nothing(
+        inserted = _insert_do_nothing(
             connection,
             platform_idempotency_table,
             {
@@ -262,8 +270,7 @@ class SqlAlchemyTransaction:
             },
             ["scope", "idempotency_key"],
         )
-        inserted = connection.execute(statement).rowcount
-        if inserted == 1:
+        if inserted:
             return IdempotencyReservation(replayed=False)
 
         record = (
@@ -342,22 +349,20 @@ class SqlAlchemyLeaseStore:
         with self._engine.begin() as connection:
             now = self._clock.now_utc(connection)
             expires_at = now + ttl
-            inserted_token = connection.execute(
-                _insert_do_nothing(
-                    connection,
-                    platform_lease_table,
-                    {
-                        "resource": resource,
-                        "owner": owner,
-                        "fence_token": 1,
-                        "expires_at_utc": expires_at,
-                        "updated_at_utc": now,
-                    },
-                    ["resource"],
-                ).returning(platform_lease_table.c.fence_token)
-            ).scalar_one_or_none()
-            if inserted_token is not None:
-                return Lease(resource, owner, int(inserted_token), expires_at)
+            inserted = _insert_do_nothing(
+                connection,
+                platform_lease_table,
+                {
+                    "resource": resource,
+                    "owner": owner,
+                    "fence_token": 1,
+                    "expires_at_utc": expires_at,
+                    "updated_at_utc": now,
+                },
+                ["resource"],
+            )
+            if inserted:
+                return Lease(resource, owner, 1, expires_at)
 
             updated = connection.execute(
                 update(platform_lease_table)

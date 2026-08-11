@@ -8,8 +8,12 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     env:
-      RAG_DATABASE_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs
-      RAGQS_TEST_POSTGRES_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs
+      RAG_DATABASE_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs_test
+      RAGQS_TEST_POSTGRES_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs_test
+      # Destructive PG acceptance (random temp schema + real Alembic upgrade +
+      # DROP SCHEMA CASCADE) requires an explicit opt-in; database name contains
+      # "test" so the safety gate passes.
+      RAGQS_ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
       RAGQS_TEST_S3_ENDPOINT: http://localhost:9000
       RAGQS_TEST_S3_ACCESS_KEY: minioadmin
       RAGQS_TEST_S3_SECRET_KEY: minioadmin
@@ -18,13 +22,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: ragqs
+          POSTGRES_DB: ragqs_test
           POSTGRES_USER: ragqs
           POSTGRES_PASSWORD: ragqs
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ragqs -d ragqs"
+          --health-cmd "pg_isready -U ragqs -d ragqs_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5

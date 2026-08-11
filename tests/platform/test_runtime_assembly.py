@@ -9,7 +9,7 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, select, update
 from app.identity.revocation import DurableGenerationRevocationPort
 from app.identity.schema import identity_metadata, identity_revocation_command_table
 from app.platform.app_factory import create_platform_app
-from app.platform.config import load_platform_settings
+from app.platform.config import PlatformConfigurationError, load_platform_settings
 from app.platform.context import TaskContext
 from app.platform.database import (
     SqlAlchemyDatabaseClock,
@@ -23,6 +23,7 @@ from app.platform.persistence import FenceViolation
 from app.platform.runtime import PlatformRuntime, build_runtime
 from app.platform.storage import S3ObjectStore
 from app.platform.worker import create_worker_runtime
+from app.usage.schema import usage_metadata
 
 
 def settings():
@@ -39,6 +40,10 @@ def settings():
 
 def test_platform_app_registers_only_v1_health_and_request_header() -> None:
     app = create_platform_app(settings())
+    engine = app.state.platform_runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     paths = {route.path for route in app.routes}
 
     assert "/v1/health" in paths
@@ -57,7 +62,10 @@ def test_platform_app_registers_only_v1_health_and_request_header() -> None:
 def test_platform_app_records_only_bounded_http_telemetry() -> None:
     configured = settings()
     runtime = build_runtime(configured)
-    core_metadata.create_all(runtime.resolve("database_engine"))
+    engine = runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     app = create_platform_app(configured, runtime=runtime)
 
     with TestClient(app) as client:
@@ -187,7 +195,7 @@ def test_maintenance_runtime_uses_the_same_platform_runtime() -> None:
 
 
 def test_invalid_runtime_configuration_fails_before_app_creation() -> None:
-    with pytest.raises(ValueError, match="database"):
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
         invalid = load_platform_settings(
             {
                 "RAG_PLATFORM_PROFILE": "development",

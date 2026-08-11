@@ -12,6 +12,7 @@ from app.platform.config import AuthSettings, load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.runtime import build_runtime
 from app.platform.storage import MemoryObjectStore
+from app.usage.schema import usage_metadata
 
 
 def settings():
@@ -36,6 +37,7 @@ def test_auth_routes_issue_refresh_and_reject_a_logged_out_access_token() -> Non
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         configured.auth,
@@ -126,6 +128,7 @@ def test_current_session_deletion_is_idempotent() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         configured.auth,
@@ -171,6 +174,7 @@ def test_avatar_route_replaces_the_current_users_avatar() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = IdentityAccessService(engine, configured.auth, object_store=MemoryObjectStore())
     service.provision_user(
         username="alice",
@@ -217,6 +221,7 @@ def test_application_startup_reconciles_the_declared_admin_roster() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     initial = IdentityAccessService(
         engine,
         AuthSettings(

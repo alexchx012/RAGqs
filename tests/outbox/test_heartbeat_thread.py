@@ -7,8 +7,10 @@ the DB lease/fence before committing.
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from _helpers import (
@@ -25,6 +27,7 @@ from sqlalchemy import select
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
+from app.outbox.ports import DeliveryOutcome
 from app.outbox.schema import notification_table, outbox_delivery_table
 from app.outbox.worker import OutboxWorker
 from app.platform.persistence import FenceViolation
@@ -82,6 +85,175 @@ def publish(engine, *, user_ids, event_id="evt_1"):
     )
     with engine.begin() as connection:
         publisher.publish(command, connection=connection)
+
+
+class _BackgroundRenewalFailureDispatcher:
+    def __init__(self, outcome: BaseException | None) -> None:
+        self.heartbeat_requires_exclusive_connection = False
+        self._outcome = outcome
+        self.background_renewal_started = threading.Event()
+        self.finalized = False
+
+    def renew_lease(self, claim, *, owner):
+        del owner
+        if threading.current_thread().name == "outbox-heartbeat":
+            self.background_renewal_started.set()
+            if self._outcome is not None:
+                raise self._outcome
+            return None
+        return claim
+
+    def run_consumer_and_finalize(self, claim, *, owner):
+        del claim, owner
+        self.finalized = True
+        return DeliveryOutcome(status="delivered")
+
+
+def _wait_for_background_heartbeat_to_stop() -> None:
+    deadline = time.monotonic() + 1
+    while any(thread.name == "outbox-heartbeat" for thread in threading.enumerate()):
+        if time.monotonic() >= deadline:
+            raise AssertionError("background heartbeat did not stop")
+        time.sleep(0.001)
+
+
+class _OverlapDetectingDispatcher:
+    def __init__(self, *, exclusive_connection: bool = True) -> None:
+        self.heartbeat_requires_exclusive_connection = exclusive_connection
+        self._state_lock = threading.Lock()
+        self._active_renewals = 0
+        self._finalizing = False
+        self.first_renew_started = threading.Event()
+        self.renewed_during_finalization = threading.Event()
+        self.overlap_detected = False
+
+    def renew_lease(self, claim, *, owner):
+        del owner
+        with self._state_lock:
+            self._active_renewals += 1
+            if self._finalizing:
+                self.renewed_during_finalization.set()
+            self.overlap_detected = (
+                self.overlap_detected or self._active_renewals > 1 or self._finalizing
+            )
+            self.first_renew_started.set()
+        try:
+            time.sleep(0.05)
+            return claim
+        finally:
+            with self._state_lock:
+                self._active_renewals -= 1
+
+    def run_consumer_and_finalize(self, claim, *, owner):
+        del claim, owner
+        with self._state_lock:
+            self._finalizing = True
+            self.overlap_detected = self.overlap_detected or self._active_renewals > 0
+        try:
+            if self.heartbeat_requires_exclusive_connection:
+                time.sleep(0.05)
+            else:
+                assert self.renewed_during_finalization.wait(timeout=1)
+            return DeliveryOutcome(status="delivered")
+        finally:
+            with self._state_lock:
+                self._finalizing = False
+
+
+def test_background_renewal_exception_propagates_before_the_next_work_chunk() -> None:
+    injected = RuntimeError("heartbeat database unavailable")
+    dispatcher = _BackgroundRenewalFailureDispatcher(injected)
+    worker = object.__new__(OutboxWorker)
+    worker._dispatcher = dispatcher  # type: ignore[assignment]
+    claim = SimpleNamespace(event_id="evt_background_error")
+    chunks = 0
+
+    def work(_claim) -> bool:
+        nonlocal chunks
+        chunks += 1
+        assert dispatcher.background_renewal_started.wait(timeout=1)
+        _wait_for_background_heartbeat_to_stop()
+        return chunks == 1
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.run_delivery_with_heartbeat(
+            claim,  # type: ignore[arg-type]
+            "worker-1",
+            work=work,
+            heartbeat_interval_seconds=0.001,
+        )
+
+    assert caught.value is injected
+    assert chunks == 1
+    assert dispatcher.finalized is False
+
+
+def test_background_fence_loss_aborts_before_the_next_work_chunk() -> None:
+    dispatcher = _BackgroundRenewalFailureDispatcher(None)
+    worker = object.__new__(OutboxWorker)
+    worker._dispatcher = dispatcher  # type: ignore[assignment]
+    claim = SimpleNamespace(event_id="evt_background_fence_loss")
+    chunks = 0
+
+    def work(_claim) -> bool:
+        nonlocal chunks
+        chunks += 1
+        assert dispatcher.background_renewal_started.wait(timeout=1)
+        _wait_for_background_heartbeat_to_stop()
+        return chunks == 1
+
+    with pytest.raises(FenceViolation, match="evt_background_fence_loss"):
+        worker.run_delivery_with_heartbeat(
+            claim,  # type: ignore[arg-type]
+            "worker-1",
+            work=work,
+            heartbeat_interval_seconds=0.001,
+        )
+
+    assert chunks == 1
+    assert dispatcher.finalized is False
+
+
+def test_final_database_phase_does_not_overlap_the_heartbeat_thread() -> None:
+    dispatcher = _OverlapDetectingDispatcher()
+    worker = object.__new__(OutboxWorker)
+    worker._dispatcher = dispatcher  # type: ignore[assignment]
+    claim = object()
+
+    def work(_claim) -> bool:
+        assert dispatcher.first_renew_started.wait(timeout=1)
+        return False
+
+    outcome = worker.run_delivery_with_heartbeat(
+        claim,  # type: ignore[arg-type]
+        "worker-1",
+        work=work,
+        heartbeat_interval_seconds=0.001,
+    )
+
+    assert outcome.status == "delivered"
+    assert dispatcher.overlap_detected is False
+
+
+def test_nonexclusive_pool_keeps_heartbeat_running_during_finalization() -> None:
+    dispatcher = _OverlapDetectingDispatcher(exclusive_connection=False)
+    worker = object.__new__(OutboxWorker)
+    worker._dispatcher = dispatcher  # type: ignore[assignment]
+    claim = object()
+
+    def work(_claim) -> bool:
+        assert dispatcher.first_renew_started.wait(timeout=1)
+        return False
+
+    outcome = worker.run_delivery_with_heartbeat(
+        claim,  # type: ignore[arg-type]
+        "worker-1",
+        work=work,
+        heartbeat_interval_seconds=0.001,
+    )
+
+    assert outcome.status == "delivered"
+    assert dispatcher.renewed_during_finalization.is_set()
 
 
 def test_independent_heartbeat_keeps_lease_alive_during_a_long_blocking_work() -> None:

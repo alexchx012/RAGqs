@@ -16,7 +16,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.engine import Connection, Engine
@@ -311,11 +311,10 @@ class SqlAlchemyOutboxPublisher:
     # port. The producer capabilities come from the assembly-time registry; the
     # command's caller_principal is only a label, never an authority.
     #
-    # Producer wiring note: the ingestion/submission/quota/calibration/graph
-    # business domains are not part of this repository (they arrive in later
-    # business changes). Their terminal-state transactions must call
-    # `outbox_publisher.publish(command, connection=connection)` inside their
-    # own transaction; the typed `OutboxPublishPort` is that formal boundary.
+    # Producer wiring note: ingestion/submission/quota/calibration/graph producers
+    # cross `OutboxPublishPort`. Runtime-owned domain integrations use only narrow
+    # operation-scoped façades; the quota façade below cannot choose a caller,
+    # event family, aggregate family, recipient kind, token, or transaction.
     """
 
     def __init__(
@@ -371,6 +370,16 @@ class SqlAlchemyOutboxPublisher:
         # assembly time. The caller_principal string is an audit label; a
         # missing, forged or unverifiable token is fail-closed 403.
         caller = self._verify_capability(command)
+        return self._publish_authorized(command, connection=connection, caller=caller)
+
+    def _publish_authorized(
+        self,
+        command: OutboxPublishCommand,
+        *,
+        connection: Connection,
+        caller: str,
+    ) -> OutboxPublishReceipt:
+        """Persist one already assembly-scoped command in the caller transaction."""
         _validate_payload(command.event_type, command.schema_version, command.payload)
         if command.event_type not in NOTIFICATION_EVENT_TYPES:
             raise PlatformError(
@@ -837,3 +846,97 @@ class SqlAlchemyOutboxPublisher:
             "lifecycle_snapshot": account["lifecycle_status"],
             "selected_at_utc": now,
         }
+
+
+class SqlAlchemyQuotaOutboxEnqueueAdapter:
+    """Quota-request scoped, no-token façade over the outbox-owned publisher.
+
+    The usage service supplies its caller transaction, frozen applicant, transition
+    time and payload. This façade fixes the trusted principal, event/aggregate family,
+    recipient kind and schema version; callers cannot turn it into a generic producer.
+    """
+
+    _EVENT_TYPES = frozenset({"quota_approved", "quota_rejected"})
+
+    def __init__(self, publisher: SqlAlchemyOutboxPublisher) -> None:
+        self._publisher = publisher
+
+    @staticmethod
+    def _event_id(
+        *,
+        event_type: str,
+        aggregate_id: str,
+        transition_version: int,
+        payload_fingerprint: str,
+    ) -> str:
+        canonical = json.dumps(
+            {
+                "aggregate_id": aggregate_id,
+                "event_type": event_type,
+                "payload_fingerprint": payload_fingerprint,
+                "transition_version": transition_version,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        digest = hashlib.sha256(b"quota-outbox-event-v1\0" + canonical).hexdigest()
+        return f"evt_{digest[:60]}"
+
+    def enqueue(
+        self,
+        *,
+        connection: Connection,
+        event_type: Literal["quota_approved", "quota_rejected"],
+        aggregate_type: Literal["quota_request"],
+        aggregate_id: str,
+        transition_version: int,
+        recipient_user_id: str,
+        occurred_at: datetime,
+        payload_fingerprint: str,
+        payload: dict,
+    ) -> None:
+        if event_type not in self._EVENT_TYPES or aggregate_type != "quota_request":
+            raise PlatformError(
+                "invalid_quota_outbox_event",
+                "Quota outbox events must use the quota request event family",
+                {},
+                422,
+            )
+        if not isinstance(payload_fingerprint, str) or not payload_fingerprint:
+            raise PlatformError(
+                "invalid_quota_outbox_event",
+                "Quota outbox payload fingerprint is required",
+                {},
+                422,
+            )
+        context = current_context()
+        command = OutboxPublishCommand(
+            event_id=self._event_id(
+                event_type=event_type,
+                aggregate_id=aggregate_id,
+                transition_version=transition_version,
+                payload_fingerprint=payload_fingerprint,
+            ),
+            caller_principal="quota",
+            event_type=event_type,
+            schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
+            aggregate_type=aggregate_type,
+            aggregate_id=aggregate_id,
+            transition_version=transition_version,
+            occurred_at=occurred_at,
+            payload=dict(payload),
+            recipients=(
+                RecipientSelection(
+                    recipient_user_id=recipient_user_id,
+                    recipient_kind="identity",
+                    selection_reason="quota_request_applicant",
+                ),
+            ),
+            trace_id=context.trace_id if context is not None else None,
+        )
+        self._publisher._publish_authorized(
+            command,
+            connection=connection,
+            caller="quota",
+        )
