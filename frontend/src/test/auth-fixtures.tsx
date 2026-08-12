@@ -9,6 +9,8 @@ import { render, type RenderResult } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { MemoryRouter, type InitialEntry } from 'react-router';
 import { vi } from 'vitest';
+import type { AdminApi } from '../admin/api';
+import { AdminProvider } from '../admin/AdminProvider';
 import type { AuthApi } from '../auth/api';
 import { AuthProvider } from '../auth/AuthProvider';
 import { createMemoryAuthHub } from '../auth/channel';
@@ -116,12 +118,77 @@ export function fakeNotificationsApi(overrides: Partial<NotificationsApi> = {}):
   };
 }
 
-/** 共享壳层装配渲染：与 App.tsx 同序——AuthProvider → SettingsProvider → Esc 栈 → 抽屉注册表 → 通知轮询层。 */
+/** fake 管理面板 API：读方法默认空读模型，写方法抛出（壳层测试不触及）；可按用例覆盖。 */
+export function fakeAdminApi(overrides: Partial<AdminApi> = {}): AdminApi {
+  const unexpectedWrite = async (): Promise<never> => {
+    throw new Error('fakeAdminApi: unexpected write call');
+  };
+  return {
+    getDashboard: vi.fn(async () => ({ window: '7d' as const, packs: [] })),
+    getOperationsMetrics: vi.fn(async () => ({ window: '7d' as const, cards: [] })),
+    getApprovalSummary: vi.fn(async () => ({ quota_pending: 0, submission_pending: 0 })),
+    listQuotaRequests: vi.fn(async () => ({ items: [] })),
+    approveQuotaRequest: vi.fn(unexpectedWrite),
+    rejectQuotaRequest: vi.fn(unexpectedWrite),
+    listApprovalSubmissions: vi.fn(async () => ({ items: [] })),
+    approveSubmission: vi.fn(unexpectedWrite),
+    rejectSubmission: vi.fn(unexpectedWrite),
+    getCurrentGraphBuild: vi.fn(async () => ({
+      space_id: 'public' as const,
+      source_revision: 12,
+      graph_availability: 'stale' as const,
+      active_generation: null,
+      latest_run: null,
+    })),
+    createGraphBuild: vi.fn(unexpectedWrite),
+    cancelGraphBuild: vi.fn(unexpectedWrite),
+    listOpsJobs: vi.fn(async () => ({ items: [], stale_count: 0 })),
+    getLeaderboard: vi.fn(async () => ({
+      entries: [],
+      shadow_entries: [],
+      policy: {
+        policy_version: 'eval_2026_v1',
+        min_real_queries: 50,
+        shadow_max_examples: 200,
+        shadow_max_candidate_configs: 3,
+        calibration_open_score_gap: 0.03,
+        cold_start_sample_rate: 0.4,
+        sentinel_sample_rate: 0.03,
+      },
+    })),
+    getCalibrationWindow: vi.fn(async () => ({
+      window_id: null,
+      status: 'closed' as const,
+      opened_at: null,
+      closed_at: null,
+      pairs_collected: 0,
+      close_deadline_at: null,
+      window_kind: null,
+      policy_version: null,
+      sample_rate: 0,
+      opened_by: null,
+      closed_by: null,
+    })),
+    postCalibrationWindow: vi.fn(unexpectedWrite),
+    listUsers: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 20 })),
+    createUser: vi.fn(unexpectedWrite),
+    patchUser: vi.fn(unexpectedWrite),
+    deleteUser: vi.fn(unexpectedWrite),
+    listDepartments: vi.fn(async () => ({ items: [] })),
+    createDepartment: vi.fn(unexpectedWrite),
+    renameDepartment: vi.fn(unexpectedWrite),
+    deactivateDepartment: vi.fn(unexpectedWrite),
+    getPermissionMatrix: vi.fn(async () => ({ capabilities: [] })),
+    ...overrides,
+  };
+}
+
+/** 共享壳层装配渲染：与 App.tsx 同序——AuthProvider → SettingsProvider → AdminProvider → Esc 栈 → 抽屉注册表 → 通知轮询层。 */
 export function renderWithShell(
   ui: ReactElement,
   store: AuthSessionStore,
   initialEntries: InitialEntry[] = ['/'],
-  options: { notifications?: NotificationsStore; settingsApi?: SettingsApi } = {},
+  options: { notifications?: NotificationsStore; settingsApi?: SettingsApi; adminApi?: AdminApi } = {},
 ): RenderResult {
   const notifications = options.notifications ?? new NotificationsStore(fakeNotificationsApi());
   const settingsApi: SettingsApi = options.settingsApi ?? ({
@@ -160,11 +227,13 @@ export function renderWithShell(
           )}
           notifications={notifications}
         >
-          <EscStackProvider>
-            <DrawerRegistryProvider registry={createDrawerRegistry()}>
-              <NotificationsProvider store={notifications}>{ui}</NotificationsProvider>
-            </DrawerRegistryProvider>
-          </EscStackProvider>
+          <AdminProvider api={options.adminApi ?? fakeAdminApi()}>
+            <EscStackProvider>
+              <DrawerRegistryProvider registry={createDrawerRegistry()}>
+                <NotificationsProvider store={notifications}>{ui}</NotificationsProvider>
+              </DrawerRegistryProvider>
+            </EscStackProvider>
+          </AdminProvider>
         </SettingsProvider>
       </MemoryRouter>
     </AuthProvider>,

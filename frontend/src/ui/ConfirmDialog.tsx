@@ -7,7 +7,7 @@
  */
 
 import * as Dialog from '@radix-ui/react-dialog';
-import { useRef } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { copy } from '../copy';
 import { useEscShield } from '../lib/esc-stack-provider';
 import { Pill } from './Pill';
@@ -27,6 +27,8 @@ export interface ConfirmDialogProps {
    * 取消/遮罩/Esc 一并禁用，直到当前 operation 完成；旧操作 completion 不会关闭/覆盖新确认框。
    */
   confirming?: boolean;
+  /** 说明行与按钮行之间的附加内容（如校准开窗方式单选、错误行）；confirming 时由调用方自行禁用。 */
+  children?: ReactNode;
 }
 
 export function ConfirmDialog({
@@ -39,6 +41,7 @@ export function ConfirmDialog({
   danger = false,
   confirming = false,
   onConfirm,
+  children,
 }: ConfirmDialogProps) {
   useEscShield(open);
   // 受控用法无 Dialog.Trigger：渲染期（Radix 挂载并自动聚焦之前）记下触发焦点，
@@ -67,6 +70,7 @@ export function ConfirmDialog({
           <Dialog.Description className="mt-2 text-[15px] text-slate-gray">
             {description}
           </Dialog.Description>
+          {children !== undefined && <div className="mt-4 flex flex-col gap-3">{children}</div>}
           <div className="mt-6 flex justify-end gap-2">
             <Pill variant="ghost" size="sm" disabled={confirming} onClick={() => onOpenChange(false)}>
               {cancelLabel ?? copy.controls.cancel}

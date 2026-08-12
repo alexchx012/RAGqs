@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest';
 import { afterAll, beforeAll, beforeEach } from 'vitest';
 import {
   mockServer,
+  resetMockAdmin,
   resetMockAuth,
   resetMockChat,
   resetMockKnowledge,
@@ -20,6 +21,7 @@ beforeEach(() => {
   resetMockNotifications();
   resetMockChat();
   resetMockKnowledge();
+  resetMockAdmin();
   resetMockPreview();
 });
 

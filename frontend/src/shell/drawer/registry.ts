@@ -24,6 +24,9 @@ export interface DrawerLayer {
   readonly children?: readonly DrawerLayer[];
   /** 自定义内容渲染；缺省时：有 children 渲染下钻行列表，无 children 渲染通用占位。 */
   readonly render?: (context: DrawerLayerRenderContext) => ReactNode;
+  /** 项右侧摘要 slot（徽标 / 状态点；fe-admin-panels 管理段用，personal 段不用）。
+   *  渲染在左栏模块按钮与下钻行内、chevron 左侧；组件自行静默（加载中 / 出错渲染 null）。 */
+  readonly renderSummary?: () => ReactNode;
   /** 可见角色白名单；缺省全部角色可见。 */
   readonly roles?: readonly Role[];
 }

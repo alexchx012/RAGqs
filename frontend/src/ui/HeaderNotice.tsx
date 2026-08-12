@@ -13,9 +13,11 @@ const FADE_MS = 150;
 export interface HeaderNoticeProps {
   message: string;
   onDismiss?: () => void;
+  /** success：成功绿 15px 文字（写操作成功轻提示，运维端 §7.3）；默认 neutral slate。 */
+  intent?: 'neutral' | 'success';
 }
 
-export function HeaderNotice({ message, onDismiss }: HeaderNoticeProps) {
+export function HeaderNotice({ message, onDismiss, intent = 'neutral' }: HeaderNoticeProps) {
   const [fading, setFading] = useState(false);
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
@@ -33,7 +35,8 @@ export function HeaderNotice({ message, onDismiss }: HeaderNoticeProps) {
     <div
       role="status"
       className={
-        'rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-gray ' +
+        'rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] ' +
+        `${intent === 'success' ? 'text-success' : 'text-slate-gray'} ` +
         `transition-opacity duration-[var(--duration-fast)] ${fading ? 'opacity-0' : 'opacity-100'}`
       }
     >
