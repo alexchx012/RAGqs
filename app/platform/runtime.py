@@ -12,6 +12,17 @@ from app.documents.public_graph import PublicGraphSourceService
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
 from app.documents.submissions import DocumentsSubmissionInvalidationPort
+from app.graph import (
+    DeterministicPublicGraphExtractor,
+    GenerationGraphAvailability,
+    GraphBuildConfiguration,
+    GraphBuildService,
+    GraphBuildWorker,
+    RepositoryActivatedReceiptVerifier,
+    SqlAlchemyGraphBuildOutboxAdapter,
+    SqlAlchemyGraphRepository,
+    UsageLedgerSubmissionAdapter,
+)
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
 from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
 from app.identity.ports import (
@@ -247,17 +258,26 @@ def build_runtime(
         )
     )
     configured.setdefault("notification_retention_maintenance", retention_maintenance)
+    graph_build_repository = configured.get("graph_build_repository") or (
+        SqlAlchemyGraphRepository(engine, now=clock.now_utc)
+    )
+    configured.setdefault("graph_build_repository", graph_build_repository)
+    graph_activated_receipt_verifier = configured.get(
+        "graph_activated_receipt_verifier"
+    ) or RepositoryActivatedReceiptVerifier(graph_build_repository)
     outbox_publisher = configured.get("outbox_publisher") or SqlAlchemyOutboxPublisher(
         engine,
         clock=clock,
         capability_secret=None,
+        graph_activated_receipt_port=graph_activated_receipt_verifier,
     )
     configured.setdefault("outbox_publisher", outbox_publisher)
     public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (
         SqlAlchemyPublicGraphSourceOutboxAdapter(outbox_publisher)
     )
     graph_trusted_consumers = configured.get("public_graph_source_trusted_consumers") or {
-        "indexing": {"indexing"}
+        "indexing": {"indexing"},
+        "public_graph": {"public_graph"},
     }
     public_graph_source_service = configured.get("public_graph_source_service") or (
         PublicGraphSourceService(
@@ -441,6 +461,48 @@ def build_runtime(
         if documents_service._public_graph_source_service is None:
             documents_service._public_graph_source_service = public_graph_source_service
     configured.setdefault("documents_service", documents_service)
+    graph_build_outbox_port = configured.get("graph_build_outbox_port") or (
+        SqlAlchemyGraphBuildOutboxAdapter(outbox_publisher)
+    )
+    graph_availability_port = configured.get("graph_availability_port") or (
+        GenerationGraphAvailability(generation_repository)
+    )
+    graph_build_configuration = configured.get("graph_build_configuration")
+    if graph_build_configuration is None:
+        graph_build_configuration = GraphBuildConfiguration()
+    elif isinstance(graph_build_configuration, dict):
+        graph_build_configuration = GraphBuildConfiguration(**graph_build_configuration)
+    graph_build_extractor = configured.get("graph_build_extractor")
+    if graph_build_extractor is None:
+        if settings.profile == "production":
+            raise RuntimeError("production requires an explicit graph build extractor")
+        graph_build_extractor = DeterministicPublicGraphExtractor()
+    graph_usage_submission = configured.get("graph_usage_submission") or (
+        UsageLedgerSubmissionAdapter(ledger)
+    )
+    graph_build_service = configured.get("graph_build_service") or GraphBuildService(
+        engine,
+        repository=graph_build_repository,
+        source=public_graph_source_service,
+        coordinator=indexing_service.graph,
+        availability=graph_availability_port,
+        extractor=graph_build_extractor,
+        outbox=graph_build_outbox_port,
+        verifier=graph_activated_receipt_verifier,
+        configuration=graph_build_configuration,
+        now=clock.now_utc,
+    )
+    configured.setdefault("graph_build_service", graph_build_service)
+    configured.setdefault(
+        "graph_build_worker",
+        configured.get("graph_build_worker")
+        or GraphBuildWorker(
+            graph_build_service,
+            graph_build_extractor,
+            graph_usage_submission,
+            now=clock.now_utc,
+        ),
+    )
     submission_invalidation_port = configured.get("submission_invalidation_port")
     if submission_invalidation_port is None:
         with engine.connect() as connection:

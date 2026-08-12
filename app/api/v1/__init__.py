@@ -6,6 +6,7 @@ from .admin import router as admin_router
 from .approvals import router as approvals_router
 from .auth import router as auth_router
 from .documents import router as documents_router
+from .graph_builds import router as graph_builds_router
 from .health import router as health_router
 from .notifications import router as notifications_router
 from .ops import router as ops_router
@@ -22,5 +23,6 @@ router.include_router(ops_router)
 router.include_router(quota_router)
 router.include_router(approvals_router)
 router.include_router(documents_router)
+router.include_router(graph_builds_router)
 
 __all__ = ["router"]
