@@ -61,7 +61,7 @@ class DocumentUpload:
             raise PlatformError("validation_error", "filename is required", {}, 422)
         if len(self.filename.strip()) > 512:
             raise PlatformError("validation_error", "filename is too long", {}, 422)
-        if not self.media_kind or len(self.media_kind) > 64:
+        if not self.media_kind or len(self.media_kind) > 128:
             raise PlatformError("validation_error", "media_kind is invalid", {}, 422)
 
 
@@ -181,6 +181,16 @@ class DocumentsService:
     def _current_time(self) -> datetime:
         return _utc(self._now())
 
+    def _current_index_generation(self, connection: Connection) -> str:
+        handoff = self._indexing_handoff_port
+        generation = getattr(handoff, "generation", None)
+        repository = getattr(generation, "_repository", None)
+        if repository is not None:
+            return str(repository.active_generation_id(connection=connection))
+        if generation is not None:
+            return str(generation.active_generation_id)
+        return "generation_initial"
+
     def _check_quota(self, connection: Connection, principal: Any, *, pages: int = 1) -> None:
         if self._quota_service is None:
             return
@@ -296,6 +306,8 @@ class DocumentsService:
                 object_manifest_ref=str(value["object_manifest_ref"]),
                 processing_config_snapshot=dict(value["processing_config_snapshot"]),
                 authorization_fence=dict(value["authorization_fence"]),
+                input_manifest_hash=str(value["input_manifest_hash"]),
+                processing_profile_version=str(value["processing_profile_version"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise PlatformError(
@@ -364,9 +376,7 @@ class DocumentsService:
     ) -> None:
         self._authorize(principal, str(document["space_id"]), "manage")
         if document["lifecycle_status"] == DocumentLifecycle.PENDING_DELETE.value:
-            raise PlatformError(
-                "document_pending_delete", "Document is pending deletion", {}, 409
-            )
+            raise PlatformError("document_pending_delete", "Document is pending deletion", {}, 409)
         if document["lifecycle_status"] == DocumentLifecycle.DELETED.value:
             raise PlatformError("document_deleted", "Document has been deleted", {}, 410)
         if document["active_operation_job_id"] not in {None, job["id"]}:
@@ -1147,7 +1157,7 @@ class DocumentsService:
                         document_version_id=version_id,
                         job_id=job_id,
                         attempt_id="pending",
-                        generation_id="generation_initial",
+                        generation_id=self._current_index_generation(connection),
                         status=PublicationState.STAGED.value,
                         resource_manifest_json={},
                         created_at_utc=now,
@@ -1349,7 +1359,7 @@ class DocumentsService:
                     document_version_id=version_id,
                     job_id=job_id,
                     attempt_id="pending",
-                    generation_id="generation_pending",
+                    generation_id=self._current_index_generation(connection),
                     status=PublicationState.STAGED.value,
                     resource_manifest_json={},
                     created_at_utc=now,
@@ -1710,7 +1720,7 @@ class DocumentsService:
                     document_version_id=version_id,
                     job_id=job_id,
                     attempt_id="pending",
-                    generation_id="generation_pending",
+                    generation_id=self._current_index_generation(connection),
                     status=PublicationState.STAGED.value,
                     resource_manifest_json={},
                     created_at_utc=now,
@@ -1937,7 +1947,11 @@ class DocumentsService:
                     503,
                     True,
                 )
-            publish_result = self._indexing_handoff_port.publish(request, connection=connection)
+            publish_result = self._indexing_handoff_port.publish(
+                request,
+                connection=connection,
+                receipt=typed_receipt,
+            )
             publish_state = (
                 publish_result.get("state")
                 if isinstance(publish_result, Mapping)
@@ -1981,9 +1995,7 @@ class DocumentsService:
                     "The document active version has changed since this job was created",
                 )
             try:
-                self._worker_authorization_fence(
-                    connection, job=final_job, document=final_document
-                )
+                self._worker_authorization_fence(connection, job=final_job, document=final_document)
                 self._validate_direct_receipt_authorization(
                     principal=principal,
                     job=final_job,
@@ -2735,7 +2747,7 @@ class DocumentsService:
                     document_version_id=document["active_version_id"],
                     job_id=job_id,
                     attempt_id="pending",
-                    generation_id="generation_pending",
+                    generation_id=self._current_index_generation(connection),
                     status=PublicationState.STAGED.value,
                     resource_manifest_json={},
                     created_at_utc=now,
@@ -3109,7 +3121,7 @@ class DocumentsService:
                     document_version_id=job["document_version_id"],
                     job_id=job_id,
                     attempt_id="pending",
-                    generation_id="generation_pending",
+                    generation_id=self._current_index_generation(connection),
                     status=PublicationState.STAGED.value,
                     resource_manifest_json={},
                     created_at_utc=now,

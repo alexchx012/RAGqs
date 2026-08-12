@@ -318,9 +318,7 @@ def test_public_snapshot_contains_every_current_active_publication() -> None:
     _accept(service, principal, second)
 
     snapshot = source.get_current_head()
-    published = source.get_snapshot(
-        source_revision=snapshot.source_revision
-    )
+    published = source.get_snapshot(source_revision=snapshot.source_revision)
     assert {item["document_id"] for item in published.publications} == {
         first["document_id"],
         second["document_id"],

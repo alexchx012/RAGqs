@@ -11,6 +11,7 @@ from app.documents.schema import (
     documents_metadata,
     documents_table,
     index_revisions_table,
+    ingestion_attempts_table,
 )
 from app.documents.service import DocumentsService, DocumentUpload
 from app.identity.service import AuthPrincipal
@@ -66,6 +67,25 @@ def _accept(service, principal, item, *, stage_resources=None):
                 document_versions_table.c.id == item["document_version_id"]
             )
         ).scalar_one()
+        staging_request = connection.execute(
+            select(ingestion_attempts_table.c.staging_request_json).where(
+                ingestion_attempts_table.c.id == lease.attempt_id
+            )
+        ).scalar_one()
+    resources = stage_resources
+    if resources is None:
+        resources = [
+            {
+                "backend_kind": "index_chunk",
+                "resource_id": f"{lease.attempt_id}:{lease.publication_id}:chunk_1",
+                "attempt_id": lease.attempt_id,
+                "publication_id": lease.publication_id,
+                "fencing_token": lease.fencing_token,
+                "document_id": item["document_id"],
+                "document_version_id": item["document_version_id"],
+                "generation_id": lease.expected_generation_id,
+            }
+        ]
     return service.accept_processing_receipt(
         principal=principal,
         job_id=item["job_id"],
@@ -78,7 +98,7 @@ def _accept(service, principal, item, *, stage_resources=None):
             "document_id": item["document_id"],
             "document_version_id": item["document_version_id"],
             "input_content_hash": input_content_hash,
-            "stage_resources": stage_resources or [],
+            "stage_resources": resources,
             "processing_config_version": "test-v1",
             "model_version": "test-model-v1",
             "prompt_version": "test-prompt-v1",
@@ -100,6 +120,15 @@ def _accept(service, principal, item, *, stage_resources=None):
             "failure": None,
             "degradations": [],
             "authorization_fence": dict(lease.authorization_fence),
+            "input_manifest_hash": staging_request["input_manifest_hash"],
+            "processing_profile_version": staging_request["processing_profile_version"],
+            "stage_resource_ids": [resource["resource_id"] for resource in resources],
+            "space_id": staging_request["space_id"],
+            "operation": staging_request["operation"],
+            "base_active_version_id": staging_request["base_active_version_id"],
+            "index_revision_at_start": staging_request["index_revision_at_start"],
+            "object_manifest_ref": staging_request["object_manifest_ref"],
+            "processing_config_snapshot": staging_request["processing_config_snapshot"],
         },
     )
 

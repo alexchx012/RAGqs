@@ -1,0 +1,685 @@
+from __future__ import annotations
+
+import math
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from app.platform.errors import PlatformError
+
+from .generation import GenerationManager
+from .models import (
+    DocumentVisibilityFact,
+    GenerationReferenceLease,
+    IndexChunk,
+    NarrowingScope,
+    ProviderSearchPage,
+    RetrievalHit,
+    RetrievalProfile,
+    RetrievalResult,
+    RetrievalScope,
+)
+from .providers import SparseIndexProvider
+
+
+def intersect_scopes(
+    allowed: RetrievalScope | Mapping[str, Any],
+    narrowing: NarrowingScope | Mapping[str, Any] | None,
+) -> RetrievalScope:
+    """Return the server scope intersected with an optional client narrowing scope."""
+
+    server = RetrievalScope.from_value(allowed)
+    client = NarrowingScope.from_value(narrowing)
+    if client is None:
+        return server
+    spaces = server.space_ids if client.space_ids is None else server.space_ids & client.space_ids
+    documents = server.document_ids
+    if client.document_ids is not None:
+        documents = client.document_ids if documents is None else documents & client.document_ids
+    by_space: dict[str, frozenset[str]] = {}
+    for space_id in spaces:
+        server_documents = server.documents_by_space.get(space_id)
+        if server_documents is None:
+            if client.document_ids is not None:
+                by_space[space_id] = frozenset(client.document_ids)
+            continue
+        if documents is not None:
+            by_space[space_id] = frozenset(server_documents & documents)
+        else:
+            by_space[space_id] = server_documents
+    return RetrievalScope(spaces, documents, by_space)
+
+
+class AllowedRetrievalScopePort(Protocol):
+    def allowed_retrieval_scope(self, principal: Any) -> RetrievalScope | Mapping[str, Any]: ...
+
+
+class VisibilityFactsPort(Protocol):
+    def get_visibility_fact(self, candidate: IndexChunk, principal: Any) -> Any: ...
+
+    def get_visibility_facts(
+        self, candidates: Sequence[IndexChunk], principal: Any
+    ) -> Mapping[tuple[str, str], Any]: ...
+
+
+class Reranker(Protocol):
+    def rerank(
+        self,
+        query: str,
+        hits: Sequence[RetrievalHit],
+        profile: RetrievalProfile,
+    ) -> tuple[Sequence[RetrievalHit], Mapping[str, Any] | None]: ...
+
+
+class TreeRouter(Protocol):
+    def __call__(
+        self,
+        query: str,
+        candidates: Sequence[RetrievalHit],
+        *,
+        max_documents: int,
+        rag_call_limit: int,
+    ) -> Any: ...
+
+
+class GraphRouter(Protocol):
+    def __call__(
+        self,
+        query: str,
+        candidates: Sequence[RetrievalHit],
+        *,
+        rag_call_limit: int,
+        reader_lease: Any,
+    ) -> Any: ...
+
+
+class GraphReader(Protocol):
+    def acquire_current_reader_lease(self, *, generation_id: str) -> Any: ...
+
+    def release_reader_lease(self, lease: Any) -> None: ...
+
+
+_EFFORT_LIMITS = {
+    "quick": (1, 5),
+    "think": (4, 7),
+    "deep": (10, 9),
+}
+
+
+class TokenCounter(Protocol):
+    def __call__(self, text: str) -> int: ...
+
+
+def _conservative_token_count(text: str) -> int:
+    """A local fallback that cannot undercount whitespace-free text."""
+
+    return len(text)
+
+
+@dataclass(frozen=True, slots=True)
+class RerankResult:
+    hits: tuple[RetrievalHit, ...]
+    degradation: Mapping[str, Any] | None = None
+
+
+class RetrievalRequest:
+    """Keeps one generation reference lease for a request and its citations."""
+
+    def __init__(self, service: RetrievalService, lease: GenerationReferenceLease) -> None:
+        self._service = service
+        self._lease = lease
+
+    @property
+    def generation_id(self) -> str:
+        return self._lease.generation_id
+
+    @property
+    def lease_id(self) -> str:
+        return self._lease.lease_id
+
+    def __enter__(self) -> RetrievalRequest:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        del exc_type, exc, traceback
+        self._service._generation.release_reference_lease(self._lease.lease_id)
+
+    def search(
+        self,
+        query: str,
+        *,
+        principal: Any = None,
+        narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
+        profile: RetrievalProfile | None = None,
+    ) -> RetrievalResult:
+        return self._service._search_with_lease(
+            query,
+            lease=self._lease,
+            principal=principal,
+            narrowing_scope=narrowing_scope,
+            profile=profile,
+        )
+
+    def resolve_citation(self, hit: RetrievalHit, *, principal: Any = None) -> Mapping[str, Any]:
+        return CitationService(
+            self._service._visibility,
+            self._service._generation,
+            identity_access=self._service._identity,
+        ).resolve(hit, principal=principal, generation_lease=self._lease)
+
+
+class NoopReranker:
+    """Development/CI adapter; it preserves provider order and reports degradation."""
+
+    def __init__(self, *, environment: str = "test") -> None:
+        self._environment = environment
+
+    def rerank(
+        self,
+        query: str,
+        hits: Sequence[RetrievalHit],
+        profile: RetrievalProfile,
+    ) -> tuple[Sequence[RetrievalHit], Mapping[str, Any] | None]:
+        del query, profile
+        if self._environment not in {"development", "test", "ci"}:
+            raise PlatformError(
+                "reranker_unavailable",
+                "RERANKER_PROVIDER=none is not allowed in production",
+                {},
+                503,
+            )
+        return tuple(hits), {"code": "rerank_degraded", "provider": "none"}
+
+
+class ScoreReranker:
+    """Small deterministic reranker adapter for tests and local deployments."""
+
+    def rerank(
+        self,
+        query: str,
+        hits: Sequence[RetrievalHit],
+        profile: RetrievalProfile,
+    ) -> tuple[Sequence[RetrievalHit], Mapping[str, Any] | None]:
+        del query, profile
+        ordered = sorted(hits, key=lambda hit: (-hit.score, hit.chunk.chunk_id))
+        return (
+            tuple(RetrievalHit(hit.chunk, hit.score, hit.source, hit.score) for hit in ordered),
+            None,
+        )
+
+
+def _page(value: Any) -> ProviderSearchPage:
+    if isinstance(value, ProviderSearchPage):
+        return value
+    if isinstance(value, Mapping):
+        return ProviderSearchPage(
+            tuple(value.get("items", value.get("candidates", ()))),
+            value.get("cursor"),
+        )
+    if isinstance(value, tuple) and len(value) == 2:
+        return ProviderSearchPage(tuple(value[0]), value[1])
+    raise PlatformError("retrieval_degradation", "provider returned an invalid page", {}, 409)
+
+
+def _provider_candidate(value: IndexChunk | Mapping[str, Any]) -> tuple[IndexChunk, float]:
+    if isinstance(value, IndexChunk):
+        return value, 0.0
+    score = value.get("score", value.get("provider_score", 0.0))
+    try:
+        numeric_score = float(score)
+    except (TypeError, ValueError) as exc:
+        raise PlatformError("retrieval_degradation", "provider score is invalid", {}, 409) from exc
+    if not math.isfinite(numeric_score):
+        raise PlatformError("retrieval_degradation", "provider score is invalid", {}, 409)
+    return IndexChunk.from_mapping(value), numeric_score
+
+
+def _fact(value: Any, candidate: IndexChunk) -> DocumentVisibilityFact | None:
+    if value is None:
+        return None
+    if isinstance(value, DocumentVisibilityFact):
+        return value
+    if isinstance(value, Mapping):
+        required = (
+            "document_id",
+            "space_id",
+            "lifecycle_status",
+            "active_version_id",
+            "active_publication_id",
+            "publication_status",
+            "manifest_hash",
+            "readable",
+        )
+        if any(key not in value for key in required):
+            return None
+        return DocumentVisibilityFact(
+            document_id=str(value["document_id"]),
+            space_id=str(value["space_id"]),
+            lifecycle_status=str(value["lifecycle_status"]),
+            active_version_id=(
+                str(value["active_version_id"]) if value["active_version_id"] is not None else None
+            ),
+            active_publication_id=(
+                str(value["active_publication_id"])
+                if value["active_publication_id"] is not None
+                else None
+            ),
+            publication_status=(
+                str(value["publication_status"])
+                if value["publication_status"] is not None
+                else None
+            ),
+            manifest_hash=(
+                str(value["manifest_hash"]) if value["manifest_hash"] is not None else None
+            ),
+            readable=bool(value["readable"]),
+        )
+    return None
+
+
+class RetrievalService:
+    """Unified retrieval port with server-owned scope and cursor replenishment."""
+
+    def __init__(
+        self,
+        generation_manager: GenerationManager,
+        providers: Sequence[SparseIndexProvider],
+        *,
+        identity_access: AllowedRetrievalScopePort | Any | None = None,
+        visibility_facts: VisibilityFactsPort | Callable[[IndexChunk, Any], Any] | None = None,
+        reranker: Reranker | None = None,
+        environment: str = "test",
+        profile_resolver: Callable[[RetrievalProfile, str], RetrievalProfile] | None = None,
+        tree_router: TreeRouter | None = None,
+        graph_router: GraphRouter | None = None,
+        graph_reader: GraphReader | None = None,
+        token_counter: TokenCounter | None = None,
+    ) -> None:
+        if not providers:
+            raise ValueError("at least one retrieval provider is required")
+        self._generation = generation_manager
+        self._providers = tuple(providers)
+        self._identity = identity_access
+        self._visibility = visibility_facts
+        self._reranker = reranker or NoopReranker(environment=environment)
+        self._profile_resolver = profile_resolver
+        self._tree_router = tree_router
+        self._graph_router = graph_router
+        self._graph_reader = graph_reader
+        self._token_counter = token_counter or _conservative_token_count
+
+    def open_request(self) -> RetrievalRequest:
+        return RetrievalRequest(self, self._generation.acquire_reference_lease())
+
+    def _allowed_scope(self, principal: Any) -> RetrievalScope:
+        if self._identity is None:
+            return RetrievalScope(frozenset())
+        if callable(self._identity):
+            return RetrievalScope.from_value(self._identity(principal))
+        getter = getattr(self._identity, "allowed_retrieval_scope", None)
+        if getter is None:
+            getter = getattr(self._identity, "get_allowed_retrieval_scope", None)
+        if getter is None:
+            raise PlatformError(
+                "authorization_scope_unavailable", "Allowed retrieval scope is unavailable", {}, 503
+            )
+        return RetrievalScope.from_value(getter(principal))
+
+    def _visibility_fact(
+        self, candidate: IndexChunk, principal: Any
+    ) -> DocumentVisibilityFact | None:
+        if self._visibility is None:
+            return None
+        if callable(self._visibility):
+            return _fact(self._visibility(candidate, principal), candidate)
+        getter = getattr(self._visibility, "get_visibility_fact", None)
+        if getter is None:
+            getter = getattr(self._visibility, "visibility_fact", None)
+        if getter is None:
+            raise PlatformError(
+                "visibility_unavailable", "Document visibility facts are unavailable", {}, 503
+            )
+        return _fact(getter(candidate, principal), candidate)
+
+    def _visibility_facts(
+        self, candidates: Sequence[IndexChunk], principal: Any
+    ) -> Mapping[tuple[str, str], DocumentVisibilityFact | None]:
+        if not candidates:
+            return {}
+        if self._visibility is None:
+            return {}
+        if callable(self._visibility):
+            return {
+                (candidate.space_id, candidate.document_id): _fact(
+                    self._visibility(candidate, principal), candidate
+                )
+                for candidate in candidates
+            }
+        getter = getattr(self._visibility, "get_visibility_facts", None)
+        if callable(getter):
+            values = getter(candidates, principal)
+            return {
+                (candidate.space_id, candidate.document_id): _fact(
+                    values.get((candidate.space_id, candidate.document_id)), candidate
+                )
+                for candidate in candidates
+            }
+        return {
+            (candidate.space_id, candidate.document_id): self._visibility_fact(candidate, principal)
+            for candidate in candidates
+        }
+
+    @staticmethod
+    def _visible(
+        candidate: IndexChunk,
+        fact: DocumentVisibilityFact | None,
+        scope: RetrievalScope,
+        generation_id: str,
+    ) -> bool:
+        return bool(
+            candidate.indexable
+            and candidate.generation_id == generation_id
+            and scope.allows(space_id=candidate.space_id, document_id=candidate.document_id)
+            and fact is not None
+            and fact.document_id == candidate.document_id
+            and fact.space_id == candidate.space_id
+            and fact.lifecycle_status == "active"
+            and fact.active_version_id == candidate.document_version_id
+            and fact.active_publication_id == candidate.publication_id
+            and fact.publication_status == "active"
+            and fact.manifest_hash == candidate.manifest_hash
+            and fact.readable
+        )
+
+    @staticmethod
+    def _document_candidates(
+        hits: Sequence[RetrievalHit], max_documents: int
+    ) -> tuple[RetrievalHit, ...]:
+        candidates: list[RetrievalHit] = []
+        document_ids: set[tuple[str, str]] = set()
+        for hit in hits:
+            document_key = (hit.chunk.space_id, hit.chunk.document_id)
+            if document_key in document_ids:
+                continue
+            document_ids.add(document_key)
+            candidates.append(hit)
+            if len(candidates) == max_documents:
+                break
+        return tuple(candidates)
+
+    @staticmethod
+    def _routing_degradation(route: str, error: Exception) -> Mapping[str, Any]:
+        return {
+            "code": f"{route}_degraded",
+            "reason": error.code if isinstance(error, PlatformError) else "unavailable",
+        }
+
+    def search(
+        self,
+        query: str,
+        *,
+        principal: Any = None,
+        narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
+        profile: RetrievalProfile | None = None,
+    ) -> RetrievalResult:
+        with self.open_request() as request:
+            return request.search(
+                query,
+                principal=principal,
+                narrowing_scope=narrowing_scope,
+                profile=profile,
+            )
+
+    def _search_with_lease(
+        self,
+        query: str,
+        *,
+        lease: GenerationReferenceLease,
+        principal: Any = None,
+        narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
+        profile: RetrievalProfile | None = None,
+    ) -> RetrievalResult:
+        if not isinstance(query, str) or not query.strip():
+            raise PlatformError("validation_error", "query is required", {}, 422)
+        selected = profile or RetrievalProfile()
+        if self._profile_resolver is not None:
+            selected = self._profile_resolver(
+                RetrievalProfile(profile_id=selected.profile_id, version=selected.version),
+                lease.generation_id,
+            )
+        scope = intersect_scopes(self._allowed_scope(principal), narrowing_scope)
+        if scope.is_empty:
+            return RetrievalResult((), lease.generation_id, selected)
+        hits: list[RetrievalHit] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+        degradations: list[Mapping[str, Any]] = []
+        for provider in self._providers:
+            cursor: str | None = None
+            cursors_seen: set[str | None] = set()
+            provider_seen = 0
+            while provider_seen < selected.candidate_limit:
+                if cursor in cursors_seen:
+                    raise PlatformError(
+                        "retrieval_degradation",
+                        "provider cursor did not advance",
+                        {},
+                        409,
+                    )
+                cursors_seen.add(cursor)
+                page = _page(
+                    provider.search(
+                        query,
+                        tuple(sorted(scope.space_ids)),
+                        selected.candidate_limit,
+                        cursor,
+                        generation_id=lease.generation_id,
+                    )
+                )
+                if not page.items and page.cursor is None:
+                    break
+                candidates = tuple(_provider_candidate(raw) for raw in page.items)
+                facts = self._visibility_facts(
+                    tuple(candidate for candidate, _ in candidates), principal
+                )
+                for candidate, provider_score in candidates:
+                    fact = facts.get((candidate.space_id, candidate.document_id))
+                    if not self._visible(candidate, fact, scope, lease.generation_id):
+                        continue
+                    provider_seen += 1
+                    if candidate.dedupe_key in seen_keys:
+                        continue
+                    seen_keys.add(candidate.dedupe_key)
+                    hits.append(RetrievalHit(candidate, provider_score, provider.provider_name))
+                    if provider_seen >= selected.candidate_limit:
+                        break
+                if page.cursor is None:
+                    break
+                cursor = page.cursor
+        reranked, degradation = self._reranker.rerank(query, hits, selected)
+        if degradation is not None:
+            degradations.append(degradation)
+        rag_call_limit, tree_document_limit = _EFFORT_LIMITS[selected.effort]
+        tree_candidates = self._document_candidates(reranked, tree_document_limit)
+        if selected.route_tree and selected.effort != "quick" and self._tree_router is not None:
+            try:
+                self._tree_router(
+                    query,
+                    tree_candidates,
+                    max_documents=tree_document_limit,
+                    rag_call_limit=rag_call_limit,
+                )
+            except Exception as error:
+                degradations.append(self._routing_degradation("tree", error))
+        if selected.route_graph and self._graph_router is not None:
+            graph_lease = None
+            try:
+                if self._graph_reader is None:
+                    raise PlatformError(
+                        "reader_unavailable",
+                        "graph reader lease is unavailable",
+                        {},
+                        503,
+                    )
+                else:
+                    graph_lease = self._graph_reader.acquire_current_reader_lease(
+                        generation_id=lease.generation_id
+                    )
+                    self._graph_router(
+                        query,
+                        tree_candidates,
+                        rag_call_limit=rag_call_limit,
+                        reader_lease=graph_lease,
+                    )
+            except Exception as error:
+                degradations.append(self._routing_degradation("graph", error))
+            finally:
+                if graph_lease is not None:
+                    self._graph_reader.release_reader_lease(graph_lease)
+        filtered = [
+            hit
+            for hit in reranked
+            if selected.score_threshold is None or hit.score >= selected.score_threshold
+        ]
+        budgeted: list[RetrievalHit] = []
+        deferred: list[RetrievalHit] = []
+        used_by_space: dict[str, int] = {}
+        used_total = 0
+
+        def include(hit: RetrievalHit) -> bool:
+            nonlocal used_total
+            tokens = self._token_counter(hit.chunk.text)
+            if not isinstance(tokens, int) or tokens < 1:
+                raise PlatformError("retrieval_degradation", "token counter is invalid", {}, 409)
+            space_used = used_by_space.get(hit.chunk.space_id, 0)
+            if (
+                space_used + tokens > selected.retrieval_context_tokens_per_space
+                or used_total + tokens > selected.retrieval_context_tokens_cap
+            ):
+                degradations.append(
+                    {
+                        "code": "retrieval_context_budget_exceeded",
+                        "space_id": hit.chunk.space_id,
+                        "token_count": tokens,
+                    }
+                )
+                return False
+            used_by_space[hit.chunk.space_id] = space_used + tokens
+            used_total += tokens
+            budgeted.append(hit)
+            return True
+
+        selected_per_space: dict[str, int] = {}
+        for hit in filtered:
+            count = selected_per_space.get(hit.chunk.space_id, 0)
+            if count >= selected.retrieval_context_items_per_space:
+                deferred.append(hit)
+                continue
+            if include(hit):
+                selected_per_space[hit.chunk.space_id] = count + 1
+        if any(
+            selected_per_space.get(space_id, 0) < selected.retrieval_context_items_per_space
+            for space_id in scope.space_ids
+        ):
+            for hit in deferred:
+                if len(budgeted) >= selected.top_k:
+                    break
+                include(hit)
+        return RetrievalResult(
+            tuple(budgeted[: selected.top_k]),
+            lease.generation_id,
+            selected,
+            tuple(degradations),
+        )
+
+
+class CitationService:
+    """Re-checks document facts before returning immutable citation metadata."""
+
+    def __init__(
+        self,
+        visibility_facts: VisibilityFactsPort | Callable[[IndexChunk, Any], Any],
+        generation_manager: GenerationManager | None = None,
+        *,
+        identity_access: AllowedRetrievalScopePort | Any | None = None,
+    ) -> None:
+        self._visibility = visibility_facts
+        self._generation = generation_manager
+        self._identity = identity_access
+
+    def _allowed_scope(self, principal: Any) -> RetrievalScope:
+        if self._identity is None:
+            return RetrievalScope(frozenset())
+        if callable(self._identity):
+            return RetrievalScope.from_value(self._identity(principal))
+        getter = getattr(self._identity, "allowed_retrieval_scope", None)
+        if getter is None:
+            getter = getattr(self._identity, "get_allowed_retrieval_scope", None)
+        if getter is None:
+            raise PlatformError(
+                "authorization_scope_unavailable", "Allowed retrieval scope is unavailable", {}, 503
+            )
+        return RetrievalScope.from_value(getter(principal))
+
+    def resolve(
+        self,
+        hit: RetrievalHit,
+        *,
+        principal: Any = None,
+        generation_lease: GenerationReferenceLease | None = None,
+    ) -> Mapping[str, Any]:
+        candidate = hit.chunk
+        lease = (
+            generation_lease
+            if generation_lease is not None
+            else (
+                self._generation.acquire_reference_lease() if self._generation is not None else None
+            )
+        )
+        try:
+            generation_id = lease.generation_id if lease is not None else candidate.generation_id
+            if candidate.generation_id != generation_id:
+                return {"state": "unavailable"}
+            if callable(self._visibility):
+                fact = _fact(self._visibility(candidate, principal), candidate)
+            else:
+                getter = getattr(self._visibility, "get_visibility_fact", None)
+                if getter is None:
+                    getter = getattr(self._visibility, "visibility_fact", None)
+                fact = _fact(getter(candidate, principal), candidate) if getter else None
+            if fact is None or not RetrievalService._visible(
+                candidate,
+                fact,
+                self._allowed_scope(principal),
+                generation_id,
+            ):
+                return {"state": "unavailable"}
+            return {
+                "state": "available",
+                "document_id": candidate.document_id,
+                "document_version_id": candidate.document_version_id,
+                "publication_id": candidate.publication_id,
+                "generation_id": candidate.generation_id,
+                "chunk_id": candidate.chunk_id,
+                "locator": dict(candidate.locator),
+                "snippet": candidate.snippet,
+            }
+        finally:
+            if lease is not None and generation_lease is None:
+                self._generation.release_reference_lease(lease.lease_id)
+
+
+__all__ = [
+    "AllowedRetrievalScopePort",
+    "CitationService",
+    "NoopReranker",
+    "GraphRouter",
+    "GraphReader",
+    "RetrievalRequest",
+    "RetrievalService",
+    "RerankResult",
+    "ScoreReranker",
+    "TokenCounter",
+    "TreeRouter",
+    "VisibilityFactsPort",
+    "intersect_scopes",
+]

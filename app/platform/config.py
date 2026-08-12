@@ -80,6 +80,10 @@ class IndexSettings(_StrictModel):
     namespace: str = Field(
         default="default", min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_-]*$"
     )
+    sparse_provider: Literal["meilisearch", "opensearch", "opensearch+ik"] = "meilisearch"
+    reranker_provider: str = Field(default="configured", min_length=1, max_length=64)
+    image_vlm_provider: str = Field(default="configured", min_length=1, max_length=64)
+    generation_rollback_days: int = Field(default=7, ge=1, le=365)
 
 
 class ObservabilitySettings(_StrictModel):
@@ -180,6 +184,10 @@ _ENV_KEYS = {
     "RAG_WORKER_LEASE_SECONDS",
     "RAG_LOG_LEVEL",
     "RAG_INDEX_NAMESPACE",
+    "RAG_INDEX_SPARSE_PROVIDER",
+    "RAG_INDEX_RERANKER_PROVIDER",
+    "RAG_INDEX_IMAGE_VLM_PROVIDER",
+    "RAG_INDEX_GENERATION_ROLLBACK_DAYS",
     "RAG_BUSINESS_TIMEZONE",
     "RAG_MAINTENANCE_KEY",
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
@@ -200,6 +208,12 @@ _ENV_KEYS = {
     "RAG_AUTH_BOOTSTRAP_REAL_NAME",
     "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME",
     "RAG_DEBUG",
+}
+_INDEXING_ENV_KEYS = {
+    "SPARSE_INDEX_PROVIDER",
+    "RERANKER_PROVIDER",
+    "IMAGE_VLM_PROVIDER",
+    "INDEX_GENERATION_ROLLBACK_DAYS",
 }
 _LEGACY_OR_FORBIDDEN_KEYS = {
     "DATABASE_URL",
@@ -263,7 +277,7 @@ def load_platform_settings(
     relevant = {
         key: value
         for key, value in env.items()
-        if key.startswith("RAG_") or key in _LEGACY_OR_FORBIDDEN_KEYS
+        if key.startswith("RAG_") or key in _LEGACY_OR_FORBIDDEN_KEYS or key in _INDEXING_ENV_KEYS
     }
     unknown = sorted(key for key in relevant if key not in _ENV_KEYS)
     if unknown:
@@ -304,7 +318,23 @@ def load_platform_settings(
             "level": _optional(env, "RAG_LOG_LEVEL") or "INFO",
         },
         "index": {
-            "namespace": _optional(env, "RAG_INDEX_NAMESPACE") or "default",
+            key: value
+            for key, value in {
+                "namespace": _optional(env, "RAG_INDEX_NAMESPACE") or "default",
+                "sparse_provider": _optional(env, "RAG_INDEX_SPARSE_PROVIDER")
+                or _optional(env, "SPARSE_INDEX_PROVIDER")
+                or "meilisearch",
+                "reranker_provider": _optional(env, "RAG_INDEX_RERANKER_PROVIDER")
+                or _optional(env, "RERANKER_PROVIDER")
+                or "configured",
+                "image_vlm_provider": _optional(env, "RAG_INDEX_IMAGE_VLM_PROVIDER")
+                or _optional(env, "IMAGE_VLM_PROVIDER")
+                or "configured",
+                "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS")
+                or _int(env, "INDEX_GENERATION_ROLLBACK_DAYS")
+                or 7,
+            }.items()
+            if value is not None
         },
         "business_timezone": _optional(env, "RAG_BUSINESS_TIMEZONE"),
         "maintenance_key": _optional_secret(env, "RAG_MAINTENANCE_KEY"),
@@ -380,6 +410,10 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production requires an HTTPS object_storage endpoint")
         if settings.provider.name.lower() in {"fake", "memory", "mock"}:
             raise ValueError("production provider cannot be fake or memory")
+        if settings.index.reranker_provider.casefold() == "none":
+            raise ValueError("production reranker provider cannot be none")
+        if settings.index.image_vlm_provider.casefold() == "none":
+            raise ValueError("production image VLM provider cannot be none")
         if settings.provider.api_key is None or not settings.provider.api_key.get_secret_value():
             raise ValueError("production provider api key is required")
         if settings.debug:

@@ -100,20 +100,22 @@ class SubmissionService:
     ) -> tuple[Any | None, bytes | None, ObjectMetadata | None, str | None]:
         """Lock review facts and return either verified source content or an invalidation reason."""
         normalized_name = " ".join(str(submission["file_name"]).strip().split()).casefold()
-        existing_claim = connection.execute(
-            select(upload_dedup_claims_table)
-            .where(
-                (
-                    upload_dedup_claims_table.c.space_id == submission["space_id"]
+        existing_claim = (
+            connection.execute(
+                select(upload_dedup_claims_table)
+                .where(
+                    (upload_dedup_claims_table.c.space_id == submission["space_id"])
+                    & (upload_dedup_claims_table.c.normalized_filename == normalized_name)
+                    & (
+                        upload_dedup_claims_table.c.content_hash_sha256
+                        == submission["content_hash_sha256"]
+                    )
                 )
-                & (upload_dedup_claims_table.c.normalized_filename == normalized_name)
-                & (
-                    upload_dedup_claims_table.c.content_hash_sha256
-                    == submission["content_hash_sha256"]
-                )
+                .with_for_update()
             )
-            .with_for_update()
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         identity_access = self._service._identity_access
         if identity_access is not None and hasattr(identity_access, "user_response"):
             try:
@@ -140,11 +142,9 @@ class SubmissionService:
             )
         except (StorageKeyError, KeyError):
             return existing_claim, None, None, "private_object_unavailable"
-        if (
-            self._service._hash(content) != str(submission["content_hash_sha256"])
-            or len(content)
-            != int((submission["object_manifest_json"] or {}).get("size_bytes", len(content)))
-        ):
+        if self._service._hash(content) != str(submission["content_hash_sha256"]) or len(
+            content
+        ) != int((submission["object_manifest_json"] or {}).get("size_bytes", len(content))):
             return existing_claim, None, None, "private_object_manifest_invalid"
         return existing_claim, content, metadata, None
 
@@ -154,17 +154,21 @@ class SubmissionService:
         *,
         connection,
     ) -> int:
-        rows = connection.execute(
-            select(knowledge_submissions_table)
-            .where(
-                and_(
-                    knowledge_submissions_table.c.submitter_user_id == command.user_id,
-                    knowledge_submissions_table.c.status == "pending",
+        rows = (
+            connection.execute(
+                select(knowledge_submissions_table)
+                .where(
+                    and_(
+                        knowledge_submissions_table.c.submitter_user_id == command.user_id,
+                        knowledge_submissions_table.c.status == "pending",
+                    )
                 )
+                .order_by(knowledge_submissions_table.c.id)
+                .with_for_update()
             )
-            .order_by(knowledge_submissions_table.c.id)
-            .with_for_update()
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         now = self._service._current_time()
         invalidated = 0
         for submission in rows:
@@ -285,9 +289,7 @@ class SubmissionService:
         info = self._service._file_fingerprint(file)
         actor_id = str(principal.user_id)
         endpoint = "documents.submission_create"
-        fingerprint = self._service._idempotency_fingerprint(
-            {"space_id": space_id, "file": info}
-        )
+        fingerprint = self._service._idempotency_fingerprint({"space_id": space_id, "file": info})
         with self._service._engine.begin() as connection:
             replay = self._service._idempotency_replay(
                 connection,
@@ -322,7 +324,10 @@ class SubmissionService:
                     media_kind=file.media_kind,
                     content_hash_sha256=info["content_hash_sha256"],
                     private_object_key=object_key,
-                    object_manifest_json={"object_key": object_key, "size_bytes": len(file.content)},
+                    object_manifest_json={
+                        "object_key": object_key,
+                        "size_bytes": len(file.content),
+                    },
                     private_object_cleanup_requested_at_utc=None,
                     private_object_cleaned_at_utc=None,
                     reviewer_user_id=None,
@@ -363,14 +368,26 @@ class SubmissionService:
                 if status not in {"pending", "approved", "rejected", "withdrawn", "invalidated"}:
                     raise PlatformError("validation_error", "status is invalid", {}, 422)
                 query = query.where(knowledge_submissions_table.c.status == status)
-            rows = connection.execute(query.order_by(knowledge_submissions_table.c.created_at_utc.desc())).mappings().all()
+            rows = (
+                connection.execute(
+                    query.order_by(knowledge_submissions_table.c.created_at_utc.desc())
+                )
+                .mappings()
+                .all()
+            )
         return {"items": [self._public_row(row) for row in rows]}
 
     def list_approvals(self, *, principal: Any) -> dict[str, Any]:
         with self._service._engine.connect() as connection:
-            rows = connection.execute(
-                select(knowledge_submissions_table).where(knowledge_submissions_table.c.status == "pending")
-            ).mappings().all()
+            rows = (
+                connection.execute(
+                    select(knowledge_submissions_table).where(
+                        knowledge_submissions_table.c.status == "pending"
+                    )
+                )
+                .mappings()
+                .all()
+            )
         visible = []
         for row in rows:
             if self._review_allowed(principal, str(row["space_id"])):
@@ -379,9 +396,15 @@ class SubmissionService:
 
     def content(self, *, principal: Any, submission_id: str) -> tuple[bytes, ObjectMetadata]:
         with self._service._engine.connect() as connection:
-            row = connection.execute(
-                select(knowledge_submissions_table).where(knowledge_submissions_table.c.id == submission_id)
-            ).mappings().one_or_none()
+            row = (
+                connection.execute(
+                    select(knowledge_submissions_table).where(
+                        knowledge_submissions_table.c.id == submission_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
         if row is None:
             raise PlatformError("submission_not_found", "Submission was not found", {}, 404)
         is_submitter = str(row["submitter_user_id"]) == str(principal.user_id)
@@ -395,13 +418,19 @@ class SubmissionService:
             principal, str(row["space_id"])
         )
         if not owner_can_read and not reviewer_can_read:
-            raise PlatformError("submission_content_forbidden", "Submission content is not available", {}, 403)
+            raise PlatformError(
+                "submission_content_forbidden", "Submission content is not available", {}, 403
+            )
         if row["private_object_cleaned_at_utc"] is not None:
-            raise PlatformError("submission_content_unavailable", "Submission content is unavailable", {}, 410)
+            raise PlatformError(
+                "submission_content_unavailable", "Submission content is unavailable", {}, 410
+            )
         try:
             return self._service._object_store.get(str(row["private_object_key"]))
         except (StorageKeyError, KeyError) as exc:
-            raise PlatformError("submission_content_unavailable", "Submission content is unavailable", {}, 410) from exc
+            raise PlatformError(
+                "submission_content_unavailable", "Submission content is unavailable", {}, 410
+            ) from exc
 
     def approve(
         self,
@@ -456,15 +485,21 @@ class SubmissionService:
             {"submission_id": submission_id, "expected_version": expected_version, "reason": reason}
         )
         with self._service._engine.begin() as connection:
-            submission = connection.execute(
-                select(knowledge_submissions_table)
-                .where(knowledge_submissions_table.c.id == submission_id)
-                .with_for_update()
-            ).mappings().one_or_none()
+            submission = (
+                connection.execute(
+                    select(knowledge_submissions_table)
+                    .where(knowledge_submissions_table.c.id == submission_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
             if submission is None:
                 raise PlatformError("submission_not_found", "Submission was not found", {}, 404)
             if not self._review_allowed(principal, str(submission["space_id"])):
-                raise PlatformError("submission_review_forbidden", "Submission review is not allowed", {}, 403)
+                raise PlatformError(
+                    "submission_review_forbidden", "Submission review is not allowed", {}, 403
+                )
             replay = self._service._idempotency_replay(
                 connection,
                 actor_id=actor_id,
@@ -476,7 +511,9 @@ class SubmissionService:
             if replay is not None:
                 return replay
             if int(submission["version"]) != expected_version:
-                raise PlatformError("submission_version_conflict", "Submission version does not match", {}, 409)
+                raise PlatformError(
+                    "submission_version_conflict", "Submission version does not match", {}, 409
+                )
             if submission["status"] != "pending":
                 raise PlatformError("submission_not_pending", "Submission is not pending", {}, 409)
             now = self._service._current_time()
@@ -627,7 +664,7 @@ class SubmissionService:
                         document_version_id=version_id,
                         job_id=job_id,
                         attempt_id="pending",
-                        generation_id="generation_initial",
+                        generation_id=self._service._current_index_generation(connection),
                         status=PublicationState.STAGED.value,
                         resource_manifest_json={},
                         created_at_utc=now,
@@ -713,7 +750,14 @@ class SubmissionService:
             )
             return response
 
-    def withdraw(self, *, principal: Any, submission_id: str, expected_version: int, idempotency_key: str | None) -> dict[str, Any]:
+    def withdraw(
+        self,
+        *,
+        principal: Any,
+        submission_id: str,
+        expected_version: int,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
         return self._transition_owner(
             principal=principal,
             submission_id=submission_id,
@@ -722,7 +766,14 @@ class SubmissionService:
             target_status="withdrawn",
         )
 
-    def delete(self, *, principal: Any, submission_id: str, expected_version: int, idempotency_key: str | None) -> None:
+    def delete(
+        self,
+        *,
+        principal: Any,
+        submission_id: str,
+        expected_version: int,
+        idempotency_key: str | None,
+    ) -> None:
         key = self._service._required_key(idempotency_key)
         actor_id = str(principal.user_id)
         endpoint = "documents.submission_delete"
@@ -738,45 +789,86 @@ class SubmissionService:
             )
             if replay is not None:
                 return None
-            row = connection.execute(
-                select(knowledge_submissions_table)
-                .where(knowledge_submissions_table.c.id == submission_id)
-                .with_for_update()
-            ).mappings().one_or_none()
+            row = (
+                connection.execute(
+                    select(knowledge_submissions_table)
+                    .where(knowledge_submissions_table.c.id == submission_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
             if row is None:
                 raise PlatformError("submission_not_found", "Submission was not found", {}, 404)
             if row["submitter_user_id"] != actor_id:
-                raise PlatformError("submission_forbidden", "Submission ownership is required", {}, 403)
+                raise PlatformError(
+                    "submission_forbidden", "Submission ownership is required", {}, 403
+                )
             if int(row["version"]) != expected_version:
-                raise PlatformError("submission_version_conflict", "Submission version does not match", {}, 409)
+                raise PlatformError(
+                    "submission_version_conflict", "Submission version does not match", {}, 409
+                )
             if row["status"] not in {"rejected", "withdrawn", "invalidated"}:
-                raise PlatformError("submission_not_deletable", "Submission cannot be deleted", {}, 409)
-            connection.execute(delete(knowledge_submissions_table).where(knowledge_submissions_table.c.id == submission_id))
+                raise PlatformError(
+                    "submission_not_deletable", "Submission cannot be deleted", {}, 409
+                )
+            connection.execute(
+                delete(knowledge_submissions_table).where(
+                    knowledge_submissions_table.c.id == submission_id
+                )
+            )
             try:
                 self._service._object_store.delete(str(row["private_object_key"]))
             except (StorageKeyError, KeyError):
                 pass
             self._service._complete_idempotency(
-                connection, actor_id=actor_id, endpoint=endpoint, target_id=submission_id, key=key, fingerprint=fingerprint, response={}
+                connection,
+                actor_id=actor_id,
+                endpoint=endpoint,
+                target_id=submission_id,
+                key=key,
+                fingerprint=fingerprint,
+                response={},
             )
         return None
 
-    def _transition_owner(self, *, principal: Any, submission_id: str, expected_version: int, idempotency_key: str | None, target_status: str) -> dict[str, Any]:
+    def _transition_owner(
+        self,
+        *,
+        principal: Any,
+        submission_id: str,
+        expected_version: int,
+        idempotency_key: str | None,
+        target_status: str,
+    ) -> dict[str, Any]:
         key = self._service._required_key(idempotency_key)
         actor_id = str(principal.user_id)
         endpoint = "documents.submission_withdraw"
         fingerprint = self._service._idempotency_fingerprint({"expected_version": expected_version})
         with self._service._engine.begin() as connection:
-            row = connection.execute(
-                select(knowledge_submissions_table)
-                .where(knowledge_submissions_table.c.id == submission_id)
-                .with_for_update()
-            ).mappings().one_or_none()
+            row = (
+                connection.execute(
+                    select(knowledge_submissions_table)
+                    .where(knowledge_submissions_table.c.id == submission_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
             if row is None:
                 raise PlatformError("submission_not_found", "Submission was not found", {}, 404)
             if row["submitter_user_id"] != actor_id:
-                raise PlatformError("submission_forbidden", "Submission ownership is required", {}, 403)
-            replay = self._service._idempotency_replay(connection, actor_id=actor_id, endpoint=endpoint, target_id=submission_id, key=key, fingerprint=fingerprint)
+                raise PlatformError(
+                    "submission_forbidden", "Submission ownership is required", {}, 403
+                )
+            replay = self._service._idempotency_replay(
+                connection,
+                actor_id=actor_id,
+                endpoint=endpoint,
+                target_id=submission_id,
+                key=key,
+                fingerprint=fingerprint,
+            )
             if replay is not None:
                 return replay
             if int(row["version"]) != expected_version or row["status"] != "pending":
@@ -792,30 +884,48 @@ class SubmissionService:
                     updated_at_utc=now,
                 )
             )
-            response = {"submission_id": submission_id, "version": expected_version + 1, "status": target_status}
-            self._service._complete_idempotency(connection, actor_id=actor_id, endpoint=endpoint, target_id=submission_id, key=key, fingerprint=fingerprint, response=response)
+            response = {
+                "submission_id": submission_id,
+                "version": expected_version + 1,
+                "status": target_status,
+            }
+            self._service._complete_idempotency(
+                connection,
+                actor_id=actor_id,
+                endpoint=endpoint,
+                target_id=submission_id,
+                key=key,
+                fingerprint=fingerprint,
+                response=response,
+            )
             return response
 
     def cleanup_scheduled(self, *, limit: int = 100) -> list[str]:
         if limit < 1 or limit > 1000:
             raise PlatformError("validation_error", "cleanup limit is invalid", {}, 422)
         with self._service._engine.begin() as connection:
-            rows = connection.execute(
-                select(knowledge_submissions_table)
-                .where(
-                    and_(
-                        knowledge_submissions_table.c.status.in_(["withdrawn", "invalidated"]),
-                        knowledge_submissions_table.c.private_object_cleanup_requested_at_utc.is_not(None),
-                        knowledge_submissions_table.c.private_object_cleaned_at_utc.is_(None),
+            rows = (
+                connection.execute(
+                    select(knowledge_submissions_table)
+                    .where(
+                        and_(
+                            knowledge_submissions_table.c.status.in_(["withdrawn", "invalidated"]),
+                            knowledge_submissions_table.c.private_object_cleanup_requested_at_utc.is_not(
+                                None
+                            ),
+                            knowledge_submissions_table.c.private_object_cleaned_at_utc.is_(None),
+                        )
                     )
+                    .order_by(
+                        knowledge_submissions_table.c.private_object_cleanup_requested_at_utc,
+                        knowledge_submissions_table.c.id,
+                    )
+                    .limit(limit)
+                    .with_for_update()
                 )
-                .order_by(
-                    knowledge_submissions_table.c.private_object_cleanup_requested_at_utc,
-                    knowledge_submissions_table.c.id,
-                )
-                .limit(limit)
-                .with_for_update()
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             now = self._service._current_time()
             cleaned: list[str] = []
             for row in rows:
@@ -844,7 +954,10 @@ class SubmissionService:
             return True
         if space_id == "public":
             return role == "ops"
-        return space_id == f"department:{getattr(principal, 'department_id', None)}" and role == "minister"
+        return (
+            space_id == f"department:{getattr(principal, 'department_id', None)}"
+            and role == "minister"
+        )
 
     @staticmethod
     def _public_row(row: Any) -> dict[str, Any]:

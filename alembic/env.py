@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, pool
 from alembic import context
 from app.documents.schema import documents_metadata
 from app.identity.schema import identity_metadata
+from app.indexing.schema import indexing_metadata
 from app.outbox.schema import outbox_metadata
 from app.platform.database import core_metadata
 from app.usage.schema import usage_metadata
@@ -24,6 +25,7 @@ target_metadata = [
     outbox_metadata,
     usage_metadata,
     documents_metadata,
+    indexing_metadata,
 ]
 
 

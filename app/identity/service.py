@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -2064,6 +2064,19 @@ class IdentityAccessService:
                 item["department_status"] = department_status
             items.append(item)
         return items
+
+    def allowed_retrieval_scope(self, principal: AuthPrincipal) -> Mapping[str, object]:
+        """Return the server-owned space scope for retrieval.
+
+        Retrieval must use the same ACL projection as the identity service's
+        space listing.  Indexing only receives identifiers; it never evaluates
+        role, department, or personal-space rules itself.
+        """
+        return {
+            "space_ids": frozenset(
+                str(item["id"]) for item in self.list_spaces(principal=principal, usage="retrieval")
+            )
+        }
 
     def authorize_space(
         self,

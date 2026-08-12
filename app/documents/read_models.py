@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import Engine, and_, func, select
 
 from app.platform.errors import PlatformError
-from app.platform.storage import StorageKeyError
+from app.platform.storage import ObjectStorePort, StorageKeyError
 
 from .domain import DocumentLifecycle, DocumentVersionState, PublicationState
 from .schema import (
@@ -229,4 +230,90 @@ class DocumentReadModels:
             return row, row, {"id": row["publication_id"], "status": row["publication_status"]}
 
 
-__all__ = ["DocumentReadModels"]
+class DocumentsRetrievalVisibilityPort:
+    """Batch read adapter for indexing's document visibility gate.
+
+    Identity supplies the readable space scope.  This adapter supplies only
+    current Documents facts and publication manifest identity, so an index
+    candidate cannot establish its own lifecycle or version state.
+    """
+
+    def __init__(self, engine: Engine, object_store: ObjectStorePort | None = None) -> None:
+        self._engine = engine
+        self._object_store = object_store
+
+    def get_visibility_facts(
+        self, candidates: Sequence[Any], principal: Any = None
+    ) -> Mapping[tuple[str, str], Mapping[str, Any]]:
+        del principal
+        document_ids = {str(candidate.document_id) for candidate in candidates}
+        if not document_ids:
+            return {}
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(
+                        documents_table.c.id.label("document_id"),
+                        documents_table.c.space_id,
+                        documents_table.c.lifecycle_status,
+                        document_versions_table.c.id.label("active_version_id"),
+                        document_versions_table.c.original_object_key,
+                        publications_table.c.id.label("active_publication_id"),
+                        publications_table.c.status.label("publication_status"),
+                        publications_table.c.resource_manifest_json,
+                    )
+                    .select_from(
+                        documents_table.join(
+                            document_versions_table,
+                            document_versions_table.c.id == documents_table.c.active_version_id,
+                        ).join(
+                            publications_table,
+                            and_(
+                                publications_table.c.document_id == documents_table.c.id,
+                                publications_table.c.document_version_id
+                                == document_versions_table.c.id,
+                                publications_table.c.status == PublicationState.ACTIVE.value,
+                            ),
+                        )
+                    )
+                    .where(documents_table.c.id.in_(document_ids))
+                )
+                .mappings()
+                .all()
+            )
+        facts: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for row in rows:
+            object_key = row["original_object_key"]
+            if self._object_store is not None and (
+                not object_key or not self._object_store.exists(str(object_key))
+            ):
+                continue
+            manifest = row["resource_manifest_json"]
+            manifest = dict(manifest) if isinstance(manifest, Mapping) else {}
+            manifest_hash = str(
+                manifest.get("content_manifest_hash") or manifest.get("chunk_manifest_hash") or ""
+            ).strip()
+            if not manifest_hash:
+                continue
+            key = (str(row["space_id"]), str(row["document_id"]))
+            facts[key] = {
+                "document_id": str(row["document_id"]),
+                "space_id": str(row["space_id"]),
+                "lifecycle_status": str(row["lifecycle_status"]),
+                "active_version_id": str(row["active_version_id"]),
+                "active_publication_id": str(row["active_publication_id"]),
+                "publication_status": str(row["publication_status"]),
+                "manifest_hash": manifest_hash,
+                "readable": True,
+            }
+        return facts
+
+    def get_visibility_fact(
+        self, candidate: Any, principal: Any = None
+    ) -> Mapping[str, Any] | None:
+        return self.get_visibility_facts((candidate,), principal).get(
+            (str(candidate.space_id), str(candidate.document_id))
+        )
+
+
+__all__ = ["DocumentReadModels", "DocumentsRetrievalVisibilityPort"]

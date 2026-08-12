@@ -9,6 +9,7 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
 
 from app.documents.public_graph import PublicGraphSourceService
+from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
 from app.documents.submissions import DocumentsSubmissionInvalidationPort
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
@@ -20,6 +21,17 @@ from app.identity.ports import (
 )
 from app.identity.revocation import DurableGenerationRevocationPort
 from app.identity.service import IdentityAccessService
+from app.indexing import (
+    ContentProcessor,
+    IndexingService,
+    InMemoryIndexWriter,
+    InMemorySparseIndexProvider,
+    NoopReranker,
+    RetrievalReleaseService,
+    ScoreReranker,
+    SqlAlchemyGenerationManager,
+    SqlAlchemyIndexingRepository,
+)
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -123,9 +135,9 @@ def build_runtime(
     configured.setdefault("lease_store", lease_store)
     configured.setdefault("observability_metrics", observability_metrics)
     configured.setdefault("object_store", object_store)
-    department_work_check_port = configured.get("department_work_check_port") or DocumentsDepartmentWorkCheckPort(
-        engine
-    )
+    department_work_check_port = configured.get(
+        "department_work_check_port"
+    ) or DocumentsDepartmentWorkCheckPort(engine)
     configured.setdefault("department_work_check_port", department_work_check_port)
     generation_revocation_port = configured.get("generation_revocation_port") or (
         DurableGenerationRevocationPort()
@@ -244,15 +256,130 @@ def build_runtime(
     public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (
         SqlAlchemyPublicGraphSourceOutboxAdapter(outbox_publisher)
     )
+    graph_trusted_consumers = configured.get("public_graph_source_trusted_consumers") or {
+        "indexing": {"indexing"}
+    }
     public_graph_source_service = configured.get("public_graph_source_service") or (
         PublicGraphSourceService(
             engine,
             now=clock.now_utc,
-            trusted_consumers=configured.get("public_graph_source_trusted_consumers"),
+            trusted_consumers=graph_trusted_consumers,
             outbox_port=public_source_outbox_port,
         )
     )
     configured.setdefault("public_graph_source_service", public_graph_source_service)
+    generation_repository = configured.get("indexing_generation_repository") or (
+        SqlAlchemyIndexingRepository(
+            engine,
+            now=clock.now_utc,
+            rollback_days=settings.index.generation_rollback_days,
+            generation_configuration={
+                "provider": settings.index.sparse_provider,
+                "engine": (
+                    "opensearch"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "meilisearch"
+                ),
+                "analyzer": (
+                    "ik" if settings.index.sparse_provider == "opensearch+ik" else "jieba"
+                ),
+                "pretokenizer_version": "v1",
+                "schema_version": "index-chunks-v1",
+                "reranker_provider": settings.index.reranker_provider,
+                "image_vlm_provider": settings.index.image_vlm_provider,
+            },
+        )
+    )
+    configured.setdefault("indexing_generation_repository", generation_repository)
+    generation_manager = configured.get("indexing_generation_manager") or (
+        SqlAlchemyGenerationManager(generation_repository)
+    )
+    configured.setdefault("indexing_generation_manager", generation_manager)
+    retrieval_releases = configured.get("retrieval_release_service") or RetrievalReleaseService(
+        engine, now=clock.now_utc
+    )
+    configured.setdefault("retrieval_release_service", retrieval_releases)
+    generation_repository.set_retrieval_release_gate(retrieval_releases.is_released_for_generation)
+    reranker = configured.get("indexing_reranker")
+    if reranker is None:
+        if settings.profile == "production":
+            raise RuntimeError("production requires an explicit indexing reranker")
+        reranker = (
+            NoopReranker(environment=settings.profile)
+            if settings.index.reranker_provider.casefold() == "none"
+            else ScoreReranker()
+        )
+    configured.setdefault("indexing_reranker", reranker)
+    visibility_facts = configured.get("indexing_visibility_facts") or (
+        DocumentsRetrievalVisibilityPort(engine, object_store)
+    )
+    configured.setdefault("indexing_visibility_facts", visibility_facts)
+    processor = configured.get("indexing_processor") or ContentProcessor(
+        mineru=configured.get("indexing_mineru"),
+        image_describer=configured.get("indexing_image_describer"),
+        image_ocr=configured.get("indexing_image_ocr"),
+    )
+    configured.setdefault("indexing_processor", processor)
+    dense_writer = configured.get("indexing_dense_writer")
+    sparse_provider = configured.get("indexing_sparse_provider")
+    token_counter = configured.get("indexing_token_counter")
+    if settings.profile == "production":
+        if not callable(configured.get("indexing_image_ocr")) or not callable(
+            configured.get("indexing_image_describer")
+        ):
+            raise RuntimeError("production requires explicit indexing image OCR and VLM ports")
+        if dense_writer is None or sparse_provider is None:
+            raise RuntimeError("production requires explicit indexing dense and sparse backends")
+        if not callable(token_counter):
+            raise RuntimeError("production requires an explicit indexing token counter")
+        if (
+            isinstance(
+                dense_writer,
+                (InMemoryIndexWriter, InMemorySparseIndexProvider),
+            )
+            or isinstance(sparse_provider, (InMemoryIndexWriter, InMemorySparseIndexProvider))
+            or isinstance(reranker, (NoopReranker, ScoreReranker))
+        ):
+            raise RuntimeError("production does not accept memory or test indexing adapters")
+        required_writer_methods = (
+            "stage_chunks",
+            "publish_staged",
+            "discard_staged",
+            "delete_document_version",
+            "delete_document",
+        )
+        if any(not callable(getattr(dense_writer, name, None)) for name in required_writer_methods):
+            raise RuntimeError("production dense backend does not implement the indexing port")
+        if any(
+            not callable(getattr(sparse_provider, name, None)) for name in required_writer_methods
+        ):
+            raise RuntimeError("production sparse backend does not implement the indexing port")
+        if not callable(getattr(dense_writer, "search", None)):
+            raise RuntimeError("production dense backend must provide vector search")
+        if not callable(getattr(sparse_provider, "search", None)):
+            raise RuntimeError("production sparse backend must provide BM25 search")
+        if not callable(getattr(reranker, "rerank", None)):
+            raise RuntimeError("production reranker does not implement the rerank port")
+    indexing_service = configured.get("indexing_service") or IndexingService(
+        processor=processor,
+        dense_writer=dense_writer,
+        sparse_provider=sparse_provider,
+        sparse_provider_name=settings.index.sparse_provider,
+        generation_manager=generation_manager,
+        reranker=reranker,
+        environment=settings.profile,
+        profile_resolver=retrieval_releases.resolve,
+        identity_access=identity_access,
+        visibility_facts=visibility_facts,
+        source_service=public_graph_source_service,
+        tree_router=configured.get("indexing_tree_router"),
+        graph_router=configured.get("indexing_graph_router"),
+        token_counter=token_counter,
+        object_store=object_store,
+    )
+    configured.setdefault("indexing_service", indexing_service)
+    if inspect(engine).has_table("index_generations"):
+        indexing_service.ensure_configuration_staging()
     calendar = configured.get("business_calendar") or get_calendar_service(
         engine,
         clock,
@@ -295,7 +422,7 @@ def build_runtime(
             object_store=object_store,
             identity_access=identity_access,
             lifecycle_port=configured.get("document_lifecycle_port"),
-            indexing_handoff_port=configured.get("indexing_handoff_port"),
+            indexing_handoff_port=configured.get("indexing_handoff_port") or indexing_service,
             quota_service=quota_service,
             capability_token_provider=document_capability_token_provider,
             submission_notification_port=submission_outbox_port,

@@ -14,8 +14,8 @@ class _RecordingHandoff:
     def __init__(self) -> None:
         self.discarded: list[object] = []
 
-    def publish(self, request, *, connection) -> None:
-        del request, connection
+    def publish(self, request, *, connection, receipt=None) -> None:
+        del request, connection, receipt
 
     def discard(self, request, *, connection) -> None:
         del connection

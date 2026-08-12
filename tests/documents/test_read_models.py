@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-import pytest
+from datetime import UTC, datetime
 
+import pytest
+from sqlalchemy import insert
+
+from app.documents.read_models import DocumentsRetrievalVisibilityPort
+from app.documents.schema import document_versions_table, documents_table, publications_table
+from app.indexing import IndexChunk
 from app.outbox.ports import DocumentNotificationRedactionReceipt
 from app.platform.errors import PlatformError
 
@@ -88,3 +94,86 @@ def test_active_read_lease_blocks_physical_document_deletion(service, principal)
             document_id=item["document_id"], deletion_id=deletion["deletion_id"]
         )
     assert error.value.code == "deletion_cleanup_blocked"
+
+
+def test_visibility_port_withholds_missing_current_content(service) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    with service._engine.begin() as connection:
+        connection.execute(
+            insert(documents_table).values(
+                id="document_1",
+                space_id="space_1",
+                lifecycle_status="active",
+                active_version_id="version_1",
+                pending_version_id=None,
+                active_operation_job_id=None,
+                deletion_id=None,
+                version=1,
+                name="guide.txt",
+                normalized_name="guide.txt",
+                media_kind="text/plain",
+                uploaded_at_utc=now,
+                created_by_user_id="user_1",
+                created_at_utc=now,
+                updated_at_utc=now,
+            )
+        )
+        connection.execute(
+            insert(document_versions_table).values(
+                id="version_1",
+                document_id="document_1",
+                version_number=1,
+                status="active",
+                content_hash_sha256="content_1",
+                object_manifest_json={},
+                original_object_key="missing-object",
+                file_name="guide.txt",
+                media_kind="text/plain",
+                size_bytes=5,
+                created_by_user_id="user_1",
+                activated_at_utc=now,
+                terminal_at_utc=None,
+                superseded_at_utc=None,
+                purge_after_at_utc=None,
+                purged_at_utc=None,
+                restored_from_version_id=None,
+                created_at_utc=now,
+                updated_at_utc=now,
+            )
+        )
+        connection.execute(
+            insert(publications_table).values(
+                id="publication_1",
+                document_id="document_1",
+                document_version_id="version_1",
+                job_id="job_1",
+                attempt_id="attempt_1",
+                generation_id="generation_initial",
+                status="active",
+                resource_manifest_json={"content_manifest_hash": "manifest_1"},
+                created_at_utc=now,
+                activated_at_utc=now,
+                superseded_at_utc=None,
+                discarded_at_utc=None,
+            )
+        )
+    candidate = IndexChunk(
+        chunk_id="chunk_1",
+        generation_id="generation_initial",
+        publication_id="publication_1",
+        document_id="document_1",
+        document_version_id="version_1",
+        space_id="space_1",
+        text="text",
+        embedding_text="text",
+        locator={},
+        snippet="text",
+        media_kind="text/plain",
+        manifest_hash="manifest_1",
+    )
+
+    facts = DocumentsRetrievalVisibilityPort(
+        service._engine, service._object_store
+    ).get_visibility_facts((candidate,))
+
+    assert facts == {}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -252,12 +253,15 @@ class PublicGraphSourceService:
             raise RuntimeError("Could not allocate the next public source counter")
         return next_value
 
-    def get_snapshot(self, *, source_revision: int) -> PublicGraphSourceSnapshot:
+    def get_snapshot(
+        self, *, source_revision: int, connection: Connection | None = None
+    ) -> PublicGraphSourceSnapshot:
         if source_revision < 1:
             raise PlatformError("validation_error", "source_revision is invalid", {}, 422)
-        with self._engine.connect() as connection:
+        context = nullcontext(connection) if connection is not None else self._engine.connect()
+        with context as active_connection:
             row = (
-                connection.execute(
+                active_connection.execute(
                     select(public_graph_source_manifests_table).where(
                         public_graph_source_manifests_table.c.source_revision == source_revision
                     )
@@ -363,10 +367,11 @@ class PublicGraphSourceService:
             )
         return head
 
-    def get_current_head(self) -> PublicGraphSourceHead:
-        with self._engine.connect() as connection:
+    def get_current_head(self, *, connection: Connection | None = None) -> PublicGraphSourceHead:
+        context = nullcontext(connection) if connection is not None else self._engine.connect()
+        with context as active_connection:
             row = (
-                connection.execute(
+                active_connection.execute(
                     select(public_graph_source_heads_table).where(
                         public_graph_source_heads_table.c.id == "public"
                     )
@@ -384,12 +389,14 @@ class PublicGraphSourceService:
         source_revision: int,
         source_manifest_hash: str,
         source_head_fence: int,
+        connection: Connection | None = None,
     ) -> PublicGraphSourceHeadValidationReceipt:
         if source_revision < 1 or not source_manifest_hash or source_head_fence < 1:
             raise PlatformError("validation_error", "Public graph source head is invalid", {}, 422)
-        with self._engine.begin() as connection:
+        context = nullcontext(connection) if connection is not None else self._engine.begin()
+        with context as active_connection:
             head = self._validate_current_head_locked(
-                connection,
+                active_connection,
                 source_revision=source_revision,
                 source_manifest_hash=source_manifest_hash,
                 source_head_fence=source_head_fence,
@@ -406,6 +413,7 @@ class PublicGraphSourceService:
         purpose: Literal["stage", "release", "rollback", "discard"],
         operation_id: str,
         source_head_fence: int | None = None,
+        connection: Connection | None = None,
     ) -> PublicGraphSourceConsumptionReceipt:
         if consumer_kind not in {"indexing", "public_graph"} or purpose not in {
             "stage",
@@ -420,7 +428,7 @@ class PublicGraphSourceService:
             raise PlatformError(
                 "validation_error", "source_head_fence is required for release", {}, 422
             )
-        snapshot = self.get_snapshot(source_revision=source_revision)
+        snapshot = self.get_snapshot(source_revision=source_revision, connection=connection)
         if snapshot.source_manifest_hash != source_manifest_hash:
             raise PlatformError(
                 "public_graph_source_manifest_invalid",
@@ -428,9 +436,10 @@ class PublicGraphSourceService:
                 {},
                 409,
             )
-        with self._engine.begin() as connection:
+        context = nullcontext(connection) if connection is not None else self._engine.begin()
+        with context as active_connection:
             existing = (
-                connection.execute(
+                active_connection.execute(
                     select(public_graph_source_consumers_table).where(
                         public_graph_source_consumers_table.c.operation_id == operation_id
                     )
@@ -459,14 +468,14 @@ class PublicGraphSourceService:
                 return self._receipt(existing)
             if purpose == "release":
                 self._validate_current_head_locked(
-                    connection,
+                    active_connection,
                     source_revision=source_revision,
                     source_manifest_hash=source_manifest_hash,
                     source_head_fence=int(source_head_fence),
                 )
             if purpose == "discard":
                 existing_discard = (
-                    connection.execute(
+                    active_connection.execute(
                         select(public_graph_source_consumers_table).where(
                             and_(
                                 public_graph_source_consumers_table.c.consumer_kind
@@ -488,7 +497,7 @@ class PublicGraphSourceService:
                         {},
                         409,
                     )
-                released = connection.execute(
+                released = active_connection.execute(
                     update(public_graph_source_consumers_table)
                     .where(
                         and_(
@@ -508,7 +517,7 @@ class PublicGraphSourceService:
                         "consumer_ack_invalid", "No held consumer acknowledgement exists", {}, 409
                     )
                 now = self._now()
-                connection.execute(
+                active_connection.execute(
                     public_graph_source_consumers_table.insert().values(
                         id=_id("consumer_ack"),
                         consumer_kind=consumer_kind,
@@ -533,7 +542,7 @@ class PublicGraphSourceService:
                     acknowledged_at=now,
                 )
             existing_hold = (
-                connection.execute(
+                active_connection.execute(
                     select(public_graph_source_consumers_table).where(
                         and_(
                             public_graph_source_consumers_table.c.consumer_kind == consumer_kind,
@@ -552,7 +561,7 @@ class PublicGraphSourceService:
                     "idempotency_key_conflict", "The acknowledgement already exists", {}, 409
                 )
             if purpose in {"release", "rollback"}:
-                staged = connection.execute(
+                staged = active_connection.execute(
                     select(public_graph_source_consumers_table.c.id).where(
                         and_(
                             public_graph_source_consumers_table.c.consumer_kind == consumer_kind,
@@ -569,7 +578,7 @@ class PublicGraphSourceService:
                         "consumer_ack_invalid", "The consumer has not staged this revision", {}, 409
                     )
             now = self._now()
-            connection.execute(
+            active_connection.execute(
                 public_graph_source_consumers_table.insert().values(
                     id=_id("consumer_ack"),
                     consumer_kind=consumer_kind,

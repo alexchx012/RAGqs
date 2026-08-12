@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sqlalchemy.engine import Connection
@@ -25,9 +25,33 @@ class IndexStagingRequest:
     object_manifest_ref: str
     processing_config_snapshot: Mapping[str, Any]
     authorization_fence: Mapping[str, Any]
+    input_manifest_hash: str
+    processing_profile_version: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.authorization_fence, Mapping) or not self.authorization_fence:
+        required = (
+            self.job_id,
+            self.attempt_id,
+            self.publication_id,
+            self.document_id,
+            self.document_version_id,
+            self.space_id,
+            self.operation,
+            self.expected_generation_id,
+            self.object_manifest_ref,
+        )
+        if (
+            self.fencing_token < 1
+            or self.index_revision_at_start < 0
+            or any(not isinstance(value, str) or not value.strip() for value in required)
+            or not isinstance(self.processing_config_snapshot, Mapping)
+            or not isinstance(self.authorization_fence, Mapping)
+            or not self.authorization_fence
+            or not isinstance(self.input_manifest_hash, str)
+            or not self.input_manifest_hash.strip()
+            or not isinstance(self.processing_profile_version, str)
+            or not self.processing_profile_version.strip()
+        ):
             raise PlatformError("validation_error", "Index staging request is invalid", {}, 422)
 
     def to_mapping(self) -> dict[str, Any]:
@@ -46,6 +70,8 @@ class IndexStagingRequest:
             "object_manifest_ref": self.object_manifest_ref,
             "processing_config_snapshot": dict(self.processing_config_snapshot),
             "authorization_fence": dict(self.authorization_fence),
+            "input_manifest_hash": self.input_manifest_hash,
+            "processing_profile_version": self.processing_profile_version,
         }
 
 
@@ -71,8 +97,19 @@ class IndexProcessingReceipt:
     content_manifest_hash: str
     failure: Mapping[str, Any] | None
     degradations: tuple[Mapping[str, Any], ...]
+    input_manifest_hash: str
+    processing_profile_version: str
     ocr_low_confidence: bool = False
     ocr_low_confidence_fact: Mapping[str, Any] | None = None
+    stage_resource_ids: tuple[str, ...] = ()
+    model_versions: Mapping[str, str] = field(default_factory=dict)
+    prompt_versions: Mapping[str, str] = field(default_factory=dict)
+    space_id: str | None = None
+    operation: str | None = None
+    base_active_version_id: str | None = None
+    index_revision_at_start: int | None = None
+    object_manifest_ref: str | None = None
+    processing_config_snapshot: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         required_strings = (
@@ -96,10 +133,21 @@ class IndexProcessingReceipt:
             or any(not isinstance(value, str) or not value.strip() for value in required_strings)
             or any(
                 not isinstance(resource, Mapping)
-                or not isinstance(resource.get("backend_kind"), str)
-                or not resource["backend_kind"].strip()
-                or not isinstance(resource.get("resource_id"), str)
-                or not resource["resource_id"].strip()
+                or any(
+                    not isinstance(resource.get(key), expected)
+                    or (isinstance(resource.get(key), str) and not resource[key].strip())
+                    for key, expected in (
+                        ("backend_kind", str),
+                        ("resource_id", str),
+                        ("attempt_id", str),
+                        ("publication_id", str),
+                        ("document_id", str),
+                        ("document_version_id", str),
+                        ("generation_id", str),
+                    )
+                )
+                or not isinstance(resource.get("fencing_token"), int)
+                or resource["fencing_token"] < 1
                 for resource in self.stage_resources
             )
             or not isinstance(self.processing_summary, Mapping)
@@ -123,18 +171,78 @@ class IndexProcessingReceipt:
             or any(not isinstance(degradation, Mapping) for degradation in self.degradations)
             or not isinstance(self.ocr_low_confidence, bool)
             or (self.ocr_low_confidence and not isinstance(self.ocr_low_confidence_fact, Mapping))
+            or not isinstance(self.input_manifest_hash, str)
+            or not self.input_manifest_hash.strip()
+            or not isinstance(self.processing_profile_version, str)
+            or not self.processing_profile_version.strip()
+            or any(
+                not isinstance(resource_id, str) or not resource_id.strip()
+                for resource_id in self.stage_resource_ids
+            )
+            or not isinstance(self.model_versions, Mapping)
+            or any(
+                not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(version, str)
+                or not version.strip()
+                for name, version in self.model_versions.items()
+            )
+            or not isinstance(self.prompt_versions, Mapping)
+            or any(
+                not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(version, str)
+                or not version.strip()
+                for name, version in self.prompt_versions.items()
+            )
+            or not isinstance(self.processing_config_snapshot, Mapping)
+            or not isinstance(self.index_revision_at_start, int)
+            or self.index_revision_at_start < 0
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in (self.space_id, self.operation, self.object_manifest_ref)
+            )
+            or (
+                self.base_active_version_id is not None
+                and (
+                    not isinstance(self.base_active_version_id, str)
+                    or not self.base_active_version_id.strip()
+                )
+            )
+            or self.stage_resource_ids
+            != tuple(str(resource["resource_id"]) for resource in self.stage_resources)
+            or (int(self.processing_summary.get("chunk_count", 0)) > 0 and not self.stage_resources)
         ):
             raise PlatformError("validation_error", "Processing receipt is invalid", {}, 422)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> IndexProcessingReceipt:
+        if not isinstance(value, Mapping):
+            raise PlatformError("validation_error", "Processing receipt is invalid", {}, 422)
         try:
-            stage_resources = value["stage_resources"]
-            degradations = value["degradations"]
+            required_echoes = (
+                "space_id",
+                "operation",
+                "base_active_version_id",
+                "index_revision_at_start",
+                "object_manifest_ref",
+                "processing_config_snapshot",
+            )
+            if any(key not in value for key in required_echoes):
+                raise KeyError
+            stage_resources = value.get("stage_resources")
+            if stage_resources is None:
+                stage_resources = []
+            degradations = value.get("degradations", ())
             processing_summary = value["processing_summary"]
-            failure = value["failure"]
-            if not isinstance(stage_resources, (list, tuple)) or not isinstance(
-                degradations, (list, tuple)
+            failure = value.get("failure")
+            model_versions = value.get("model_versions", {})
+            prompt_versions = value.get("prompt_versions", {})
+            if (
+                not isinstance(stage_resources, (list, tuple))
+                or not isinstance(degradations, (list, tuple))
+                or not isinstance(model_versions, Mapping)
+                or not isinstance(prompt_versions, Mapping)
             ):
                 raise TypeError
             return cls(
@@ -144,9 +252,13 @@ class IndexProcessingReceipt:
                 publication_id=value["publication_id"],
                 document_id=value["document_id"],
                 document_version_id=value["document_version_id"],
-                input_content_hash=value["input_content_hash"],
+                input_content_hash=value.get(
+                    "input_content_hash", value.get("input_manifest_hash")
+                ),
                 stage_resources=tuple(dict(resource) for resource in stage_resources),
-                processing_config_version=value["processing_config_version"],
+                processing_config_version=value.get(
+                    "processing_config_version", value.get("processing_profile_version")
+                ),
                 generation_id=value["generation_id"],
                 authorization_fence=dict(value["authorization_fence"]),
                 model_version=value["model_version"],
@@ -155,7 +267,9 @@ class IndexProcessingReceipt:
                 locator_snippet_integrity=dict(value["locator_snippet_integrity"]),
                 index_component_results=dict(value["index_component_results"]),
                 content_manifest_id=value["content_manifest_id"],
-                content_manifest_hash=value["content_manifest_hash"],
+                content_manifest_hash=value.get(
+                    "content_manifest_hash", value.get("chunk_manifest_hash")
+                ),
                 failure=dict(failure) if isinstance(failure, Mapping) else failure,
                 degradations=tuple(dict(degradation) for degradation in degradations),
                 ocr_low_confidence=bool(value.get("ocr_low_confidence", False)),
@@ -164,6 +278,23 @@ class IndexProcessingReceipt:
                     if value.get("ocr_low_confidence_fact") is not None
                     else None
                 ),
+                input_manifest_hash=value["input_manifest_hash"],
+                processing_profile_version=value["processing_profile_version"],
+                stage_resource_ids=tuple(
+                    str(resource_id) for resource_id in value.get("stage_resource_ids", ())
+                ),
+                model_versions={
+                    str(name): str(version) for name, version in model_versions.items()
+                },
+                prompt_versions={
+                    str(name): str(version) for name, version in prompt_versions.items()
+                },
+                space_id=value["space_id"],
+                operation=value["operation"],
+                base_active_version_id=value["base_active_version_id"],
+                index_revision_at_start=value["index_revision_at_start"],
+                object_manifest_ref=value["object_manifest_ref"],
+                processing_config_snapshot=dict(value["processing_config_snapshot"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise PlatformError(
@@ -187,6 +318,60 @@ class IndexProcessingReceipt:
                 409,
             )
         if dict(self.authorization_fence) != dict(request.authorization_fence):
+            raise PlatformError(
+                "processing_receipt_conflict",
+                "Processing receipt does not match the staging request",
+                {},
+                409,
+            )
+        if self.generation_id != request.expected_generation_id:
+            raise PlatformError(
+                "generation_conflict",
+                "The processing receipt generation is no longer current",
+                {},
+                409,
+            )
+        echoed = (
+            ("space_id", request.space_id),
+            ("operation", request.operation),
+            ("base_active_version_id", request.base_active_version_id),
+            ("index_revision_at_start", request.index_revision_at_start),
+            ("object_manifest_ref", request.object_manifest_ref),
+        )
+        if any(getattr(self, field) != expected for field, expected in echoed) or (
+            dict(self.processing_config_snapshot) != dict(request.processing_config_snapshot)
+        ):
+            raise PlatformError(
+                "processing_receipt_conflict",
+                "Processing receipt does not match the staging request",
+                {},
+                409,
+            )
+        for resource in self.stage_resources:
+            identity = (
+                ("attempt_id", request.attempt_id),
+                ("publication_id", request.publication_id),
+                ("fencing_token", request.fencing_token),
+                ("document_id", request.document_id),
+                ("document_version_id", request.document_version_id),
+                ("generation_id", request.expected_generation_id),
+            )
+            if any(resource[key] != expected for key, expected in identity):
+                raise PlatformError(
+                    "processing_receipt_conflict",
+                    "Processing receipt does not match the staging request",
+                    {},
+                    409,
+                )
+        expected_resource_ids = tuple(
+            str(resource["resource_id"]) for resource in self.stage_resources
+        )
+        if (
+            self.stage_resource_ids != expected_resource_ids
+            or int(self.processing_summary.get("chunk_count", 0)) != len(self.stage_resources)
+            or self.input_manifest_hash != request.input_manifest_hash
+            or self.processing_profile_version != request.processing_profile_version
+        ):
             raise PlatformError(
                 "processing_receipt_conflict",
                 "Processing receipt does not match the staging request",
@@ -222,11 +407,28 @@ class IndexProcessingReceipt:
                 if self.ocr_low_confidence_fact is not None
                 else None
             ),
+            "input_manifest_hash": self.input_manifest_hash,
+            "processing_profile_version": self.processing_profile_version,
+            "stage_resource_ids": list(self.stage_resource_ids),
+            "model_versions": dict(self.model_versions),
+            "prompt_versions": dict(self.prompt_versions),
+            "space_id": self.space_id,
+            "operation": self.operation,
+            "base_active_version_id": self.base_active_version_id,
+            "index_revision_at_start": self.index_revision_at_start,
+            "object_manifest_ref": self.object_manifest_ref,
+            "processing_config_snapshot": dict(self.processing_config_snapshot),
         }
 
 
 class IndexingHandoffPort(Protocol):
-    def publish(self, request: IndexStagingRequest, *, connection: Connection) -> Any: ...
+    def publish(
+        self,
+        request: IndexStagingRequest,
+        *,
+        connection: Connection,
+        receipt: IndexProcessingReceipt | Mapping[str, Any] | None = None,
+    ) -> Any: ...
 
     def discard(self, request: IndexStagingRequest, *, connection: Connection) -> Any: ...
 
@@ -236,8 +438,14 @@ class IndexingHandoffPort(Protocol):
 class NoopIndexingHandoff:
     """Explicit development adapter: providers are external to documents."""
 
-    def publish(self, request: IndexStagingRequest, *, connection: Connection) -> Mapping[str, str]:
-        del request, connection
+    def publish(
+        self,
+        request: IndexStagingRequest,
+        *,
+        connection: Connection,
+        receipt: IndexProcessingReceipt | Mapping[str, Any] | None = None,
+    ) -> Mapping[str, str]:
+        del request, connection, receipt
         return {"state": "published"}
 
     def discard(self, request: IndexStagingRequest, *, connection: Connection) -> None:

@@ -4,7 +4,12 @@ import hashlib
 
 import pytest
 
-from app.documents.schema import document_versions_table, ingestion_jobs_table, publications_table
+from app.documents.schema import (
+    document_versions_table,
+    ingestion_attempts_table,
+    ingestion_jobs_table,
+    publications_table,
+)
 from app.platform.errors import PlatformError
 
 from .test_commands import _accept, _upload
@@ -16,8 +21,8 @@ class _IndexingHandoff:
         self.discarded = []
         self.publish_result = publish_result or {"state": "published"}
 
-    def publish(self, request, *, connection):
-        del connection
+    def publish(self, request, *, connection, receipt=None):
+        del connection, receipt
         self.published.append(request)
         return self.publish_result
 
@@ -110,6 +115,38 @@ def _receipt_contract_fields() -> dict[str, object]:
         "content_manifest_hash": "manifest-hash-test",
         "failure": None,
         "degradations": [],
+    }
+
+
+def _receipt_request_echoes(service, attempt_id: str) -> dict[str, object]:
+    with service._engine.connect() as connection:
+        request = connection.execute(
+            ingestion_attempts_table.select()
+            .with_only_columns(ingestion_attempts_table.c.staging_request_json)
+            .where(ingestion_attempts_table.c.id == attempt_id)
+        ).scalar_one()
+    return {
+        "input_manifest_hash": request["input_manifest_hash"],
+        "processing_profile_version": request["processing_profile_version"],
+        "stage_resources": [
+            {
+                "backend_kind": "index_chunk",
+                "resource_id": f"{attempt_id}:{request['publication_id']}:chunk_1",
+                "attempt_id": attempt_id,
+                "publication_id": request["publication_id"],
+                "fencing_token": request["fencing_token"],
+                "document_id": request["document_id"],
+                "document_version_id": request["document_version_id"],
+                "generation_id": request["expected_generation_id"],
+            }
+        ],
+        "stage_resource_ids": [f"{attempt_id}:{request['publication_id']}:chunk_1"],
+        "space_id": request["space_id"],
+        "operation": request["operation"],
+        "base_active_version_id": request["base_active_version_id"],
+        "index_revision_at_start": request["index_revision_at_start"],
+        "object_manifest_ref": request["object_manifest_ref"],
+        "processing_config_snapshot": request["processing_config_snapshot"],
     }
 
 
@@ -222,9 +259,9 @@ def test_replay_requires_intact_content_and_hides_unavailable_action(service, pr
     )
     with service._engine.connect() as connection:
         object_key = connection.execute(
-            document_versions_table.select().with_only_columns(
-                document_versions_table.c.original_object_key
-            ).where(document_versions_table.c.id == created["document_version_id"])
+            document_versions_table.select()
+            .with_only_columns(document_versions_table.c.original_object_key)
+            .where(document_versions_table.c.id == created["document_version_id"])
         ).scalar_one()
     service._object_store.delete(str(object_key))
     service._identity_access = None
@@ -247,7 +284,9 @@ def test_replay_requires_intact_content_and_hides_unavailable_action(service, pr
     assert error.value.code == "document_version_purged"
 
 
-def test_direct_replay_uses_ops_as_execution_quota_and_notification_subject(service, principal) -> None:
+def test_direct_replay_uses_ops_as_execution_quota_and_notification_subject(
+    service, principal
+) -> None:
     created = service.create_initial_upload(
         principal=principal,
         space_id="space_1",
@@ -293,7 +332,9 @@ def test_direct_replay_uses_ops_as_execution_quota_and_notification_subject(serv
     assert notifications.calls[-1]["recipient_user_id"] == "ops_1"
 
 
-def test_list_jobs_projects_replay_inputs_and_hides_nonterminal_failure_reason(service, principal) -> None:
+def test_list_jobs_projects_replay_inputs_and_hides_nonterminal_failure_reason(
+    service, principal
+) -> None:
     created = service.create_initial_upload(
         principal=principal,
         space_id="space_1",
@@ -358,6 +399,7 @@ def test_receipt_requires_current_lease_and_generation(service, principal) -> No
                 "stage_resources": [],
                 "processing_config_version": "v1",
                 "authorization_fence": dict(lease.authorization_fence),
+                **_receipt_request_echoes(service, lease.attempt_id),
                 **_receipt_contract_fields(),
             },
         )
@@ -407,6 +449,7 @@ def test_receipt_requires_complete_contract_before_publication(service, principa
                 "stage_resources": [],
                 "processing_config_version": "v1",
                 "authorization_fence": dict(lease.authorization_fence),
+                **_receipt_request_echoes(service, lease.attempt_id),
                 **_receipt_contract_fields(),
             },
         )
@@ -446,6 +489,7 @@ def test_receipt_discards_when_direct_acl_is_revoked(service, principal) -> None
                 "stage_resources": [],
                 "processing_config_version": "v1",
                 "authorization_fence": dict(lease.authorization_fence),
+                **_receipt_request_echoes(service, lease.attempt_id),
                 **_receipt_contract_fields(),
             },
         )
@@ -479,6 +523,7 @@ def test_publication_requires_a_successful_index_handoff(service, principal) -> 
                 "stage_resources": [],
                 "processing_config_version": "v1",
                 "authorization_fence": dict(lease.authorization_fence),
+                **_receipt_request_echoes(service, lease.attempt_id),
                 **_receipt_contract_fields(),
             },
         )
@@ -521,7 +566,8 @@ def test_receipt_revalidates_direct_acl_after_handoff_publish(service, principal
     )["items"][0]
 
     class _RevokingHandoff(_IndexingHandoff):
-        def publish(self, request, *, connection):
+        def publish(self, request, *, connection, receipt=None):
+            del receipt
             result = super().publish(request, connection=connection)
 
             class _RevokedIdentity:
@@ -551,6 +597,7 @@ def test_receipt_revalidates_direct_acl_after_handoff_publish(service, principal
                 "stage_resources": [],
                 "processing_config_version": "v1",
                 "authorization_fence": dict(lease.authorization_fence),
+                **_receipt_request_echoes(service, lease.attempt_id),
                 **_receipt_contract_fields(),
             },
         )

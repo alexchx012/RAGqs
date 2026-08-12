@@ -145,7 +145,7 @@ class DocumentsJobCoordinator:
                         document_version_id=job["document_version_id"],
                         job_id=job["id"],
                         attempt_id="pending",
-                        generation_id=_id("generation"),
+                        generation_id=self._service._current_index_generation(connection),
                         status="staged",
                         resource_manifest_json={},
                         created_at_utc=now,
@@ -166,6 +166,15 @@ class DocumentsJobCoordinator:
                     .mappings()
                     .one()
                 )
+            active_generation_id = self._service._current_index_generation(connection)
+            if publication["generation_id"] != active_generation_id:
+                connection.execute(
+                    update(publications_table)
+                    .where(publications_table.c.id == publication_id)
+                    .values(generation_id=active_generation_id)
+                )
+                publication = dict(publication)
+                publication["generation_id"] = active_generation_id
             version = None
             if job["document_version_id"]:
                 version = (
@@ -202,6 +211,10 @@ class DocumentsJobCoordinator:
                 ),
                 "processing_config_snapshot": {},
                 "authorization_fence": authorization_fence,
+                "input_manifest_hash": (
+                    str(version["content_hash_sha256"]) if version is not None else None
+                ),
+                "processing_profile_version": "default",
             }
             connection.execute(
                 ingestion_attempts_table.insert().values(
