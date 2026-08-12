@@ -143,6 +143,9 @@ const SPACE_DEFS: readonly MockSpaceDef[] = [
   { id: 'department:d_finance', kind: 'department', name: '财务部', documentCount: 40, departmentId: 'd_finance', departmentStatus: 'active' },
   { id: 'department:d_hr', kind: 'department', name: '人事部', documentCount: 18, departmentId: 'd_hr', departmentStatus: 'active' },
   { id: 'department:d_archived', kind: 'department', name: '已归档部门', documentCount: 7, departmentId: 'd_archived', departmentStatus: 'inactive' },
+  // 管理端部门库下钻（§7.3）：与 admin 部门种子一致（d_empty 空库、d_legacy 已停用）
+  { id: 'department:d_empty', kind: 'department', name: '空壳部', documentCount: 0, departmentId: 'd_empty', departmentStatus: 'active' },
+  { id: 'department:d_legacy', kind: 'department', name: '档案部', documentCount: 4, departmentId: 'd_legacy', departmentStatus: 'inactive' },
   { id: 'public', kind: 'public', name: '公共库', documentCount: 300, isPublic: true },
 ];
 

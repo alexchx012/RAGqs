@@ -444,6 +444,52 @@ describe('knowledge contract mock：投稿五态与 409', () => {
   });
 });
 
+describe('knowledge contract mock：查看内容审核范围（§8.4）', () => {
+  /** 经对应角色待审列表按名取种子投稿 id（范围即 listApprovals 口径；无范围角色会 403，故用 ops/admin 视角查）。 */
+  function pendingIdByName(token: string, name: string): string {
+    const item = mockKnowledge.listApprovals(token).items.find((entry) => entry.name === name);
+    if (item === undefined) {
+      throw new Error(`pending submission not found: ${name}`);
+    }
+    return item.submission_id;
+  }
+
+  it('ops 可读公共库投稿内容；读部门投稿 403 submission_forbidden', () => {
+    const opsToken = bearerOf('ops-wang');
+    const publicId = pendingIdByName(opsToken, '行业研报汇总.pdf');
+    expect(mockKnowledge.getSubmissionContent(opsToken, publicId).bytes.length).toBeGreaterThan(0);
+    // 部门投稿不在 ops 审核范围（经 admin 视角取同一投稿 id）
+    const departmentId = pendingIdByName(bearerOf('admin'), '招聘流程优化.docx');
+    expectHttpError(
+      () => mockKnowledge.getSubmissionContent(opsToken, departmentId),
+      403,
+      'submission_forbidden',
+    );
+  });
+
+  it('admin 可读公共库与全部 active 部门投稿内容（inactive 部门空间不在审核范围）', () => {
+    const adminToken = bearerOf('admin');
+    const publicId = pendingIdByName(adminToken, '行业研报汇总.pdf');
+    const departmentId = pendingIdByName(adminToken, '招聘流程优化.docx');
+    expect(mockKnowledge.getSubmissionContent(adminToken, publicId).bytes.length).toBeGreaterThan(0);
+    expect(mockKnowledge.getSubmissionContent(adminToken, departmentId).bytes.length).toBeGreaterThan(0);
+    // §8.4：超管审核范围 = 公共库 + 全部 active 部门；已停用部门空间（d_legacy）不在其列
+    expect(mockKnowledge.reviewScopeSpaceIds(mockAuth.me(adminToken))).not.toContain(
+      'department:d_legacy',
+    );
+  });
+
+  it('无审核范围用户读他人投稿仍 403 submission_forbidden', () => {
+    // 公共制度汇编.pdf 投稿人为 minister-li；zhangsan（user）非本人且无审核范围
+    const publicId = pendingIdByName(bearerOf('ops-wang'), '公共制度汇编.pdf');
+    expectHttpError(
+      () => mockKnowledge.getSubmissionContent(bearerOf('zhangsan'), publicId),
+      403,
+      'submission_forbidden',
+    );
+  });
+});
+
 describe('knowledge contract mock：部长部门库审核', () => {
   it('审批徽标按本部门 pending 计数；通过后投稿人侧转 approved 且铃铛送达', async () => {
     const ministerToken = bearerOf('minister-li');
@@ -465,7 +511,7 @@ describe('knowledge contract mock：部长部门库审核', () => {
       headers: { Authorization: ministerToken, 'Content-Type': 'application/json', 'Idempotency-Key': 'idem-approve-1' },
       body: JSON.stringify({ expected_version: target.version }),
     });
-    expect(approve.status).toBe(200);
+    expect(approve.status).toBe(202);
     expect(((await approve.json()) as { status: string; job_id?: string }).status).toBe('approved');
 
     // 投稿人侧联动
@@ -682,7 +728,7 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
       headers: { Authorization: ministerToken, 'Content-Type': 'application/json', 'Idempotency-Key': 'idem-approve-lifecycle' },
       body: JSON.stringify({ expected_version: target.version }),
     });
-    expect(approve.status).toBe(200);
+    expect(approve.status).toBe(202);
     const approved = (await approve.json()) as { job_id?: string; document_id?: string };
 
     // 通知发给投稿人（zhangsan）而非部长

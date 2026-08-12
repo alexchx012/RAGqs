@@ -419,11 +419,12 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
               type="button"
               data-drill-row={narrow ? module.id : undefined}
               onClick={() => selectModule(segment, module.id)}
-              className={`flex h-10 w-full items-center rounded-[var(--radius-images)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray ${
+              className={`flex h-10 w-full items-center justify-between gap-2 rounded-[var(--radius-images)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray ${
                 selected === module.id ? 'bg-mist-gray font-w480' : 'font-normal'
               }`}
             >
-              {module.title}
+              <span className="min-w-0 truncate">{module.title}</span>
+              {module.renderSummary !== undefined ? module.renderSummary() : null}
             </button>
           </li>
         ))}
@@ -525,7 +526,10 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
                     className="flex h-12 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray"
                   >
                     <span>{child.title}</span>
-                    <ChevronRight size={16} className="text-slate-gray" aria-hidden />
+                    <span className="flex items-center gap-2">
+                      {child.renderSummary !== undefined ? child.renderSummary() : null}
+                      <ChevronRight size={16} className="text-slate-gray" aria-hidden />
+                    </span>
                   </button>
                 </li>
               ))}

@@ -69,6 +69,61 @@
   }
 }
 
+/* 任务队列行移除：250ms 淡出 + 高度收起（--duration-base --ease-in-out；
+ * 轮询增删不打断滚动与操作；离开期间禁交互，动画结束后由组件卸载该行）。 */
+@keyframes ui-row-exit {
+  from {
+    opacity: 1;
+    max-height: 64px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+.ui-row-exit {
+  overflow: hidden;
+  pointer-events: none;
+  animation: ui-row-exit var(--duration-base) var(--ease-in-out) both;
+}
+
+/* 通用 250ms 淡入（校准窗口状态行交叉淡变等一次性进入场景；--duration-base）。 */
+.ui-fade-enter {
+  animation: ui-fade-in var(--duration-base) var(--ease-in-out) both;
+}
+
+/* 任务行进 / 删淡入（系统运维任务队列轮询增删；新挂载行播放一次，既有行 keyed 复用不重播）。 */
+.ui-row-enter {
+  animation: ui-fade-in var(--duration-base) var(--ease-in-out) both;
+}
+
+/* 新增行插入：opacity 0→1 + 下移 8px→0，--duration-base --ease-out
+ * （用户管理新增用户、部门管理新增部门，自列表顶部插入；运维端 §7.7 / 超管端 §7.6）。 */
+@keyframes ui-row-insert {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ui-row-insert {
+  animation: ui-row-insert var(--duration-base) var(--ease-out) both;
+}
+
+/* 150ms 淡入（--duration-fast）：部门改名成功名称就地交叉淡变等一次性进入场景。 */
+.ui-fade-enter-fast {
+  animation: ui-fade-in var(--duration-fast) var(--ease-in-out) both;
+}
+
 .ui-menu-content[data-state='open'] {
   animation: ui-overlay-enter var(--duration-base) var(--ease-out) both;
 }

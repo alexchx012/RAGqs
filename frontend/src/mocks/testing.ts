@@ -4,6 +4,8 @@
  */
 
 import { setupServer } from 'msw/node';
+import { MockAdminController } from './admin-contract';
+import { createAdminHandlers } from './admin-handlers';
 import { MockAuthController } from './auth-contract';
 import { clearAuthCookies } from './dev-cookies';
 import { createAuthHandlers, createNotificationHandlers } from './handlers';
@@ -42,11 +44,21 @@ export const mockKnowledge = new MockKnowledgeController(
 );
 // 原文预览域：鉴权经 mockAuth.me 装配（fe-doc-preview）
 export const mockPreview = new MockPreviewController((header) => ({ userId: mockAuth.me(header).id }));
+// 管理面板域：鉴权经 mockAuth.me 装配；配额审批联动 mockQuota，投稿计数/任务队列联动 mockKnowledge
+export const mockAdmin = new MockAdminController(
+  (header) => mockAuth.me(header),
+  mockKnowledge,
+  mockNotifications,
+  mockQuota,
+);
 
 export const mockServer = setupServer(
   ...createAuthHandlers(mockAuth),
   ...createSettingsHandlers(mockSettings),
   ...createNotificationHandlers(mockNotifications, mockAuth),
+  // 管理面板 handler 先于 knowledge handler 注册：GET /v1/approvals/summary 同名路由在 admin
+  // 域遮蔽（ops 的 quota_pending 由 admin 计数），MSW 按注册顺序首匹配命中。
+  ...createAdminHandlers(mockAdmin, mockKnowledge),
   // 知识库 handler 先于 chat handler 注册：两者都匹配 GET /v1/spaces/:id/documents，
   // MSW 按注册顺序首匹配命中；知识库实现带分页与 page_size，chat 的检索范围 chip 只消费 items。
   ...createKnowledgeHandlers(mockKnowledge),
@@ -72,6 +84,10 @@ export function resetMockChat(): void {
 
 export function resetMockKnowledge(): void {
   mockKnowledge.reset();
+}
+
+export function resetMockAdmin(): void {
+  mockAdmin.reset();
 }
 
 export function resetMockPreview(): void {

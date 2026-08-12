@@ -1,4 +1,6 @@
 import { BrowserRouter } from 'react-router';
+import { createAdminApi } from './admin/api';
+import { AdminProvider } from './admin/AdminProvider';
 import { AuthProvider } from './auth/AuthProvider';
 import { createAuth } from './auth/create-auth';
 import { EscStackProvider } from './lib/esc-stack-provider';
@@ -15,6 +17,8 @@ import { initTheme } from './theme/theme';
 const auth = createAuth();
 const notifications = new NotificationsStore(createNotificationsApi(auth.client));
 const settingsApi = createSettingsApi(auth.client);
+// 管理面板域 api 与 settingsApi 共用同一 ApiClient（Bearer 与逻辑会话守卫一致）。
+const adminApi = createAdminApi(auth.client);
 // SettingsProvider 与 Appearance 后续模块共享同一主题控制器，避免重复绑定系统主题监听。
 const theme = initTheme();
 // 共享壳层单例（fe-shared-shell）：抽屉注册表在首次装配时合成 profile/security 的真实 render。
@@ -30,13 +34,15 @@ export function App() {
           theme={theme}
           notifications={notifications}
         >
-          <EscStackProvider>
-            <DrawerRegistryProvider registry={drawerRegistry}>
-              <NotificationsProvider store={notifications}>
-                <AppRoutes />
-              </NotificationsProvider>
-            </DrawerRegistryProvider>
-          </EscStackProvider>
+          <AdminProvider api={adminApi}>
+            <EscStackProvider>
+              <DrawerRegistryProvider registry={drawerRegistry}>
+                <NotificationsProvider store={notifications}>
+                  <AppRoutes />
+                </NotificationsProvider>
+              </DrawerRegistryProvider>
+            </EscStackProvider>
+          </AdminProvider>
         </SettingsProvider>
       </AuthProvider>
     </BrowserRouter>

@@ -6,6 +6,8 @@
  */
 
 import { setupWorker } from 'msw/browser';
+import { MockAdminController } from './admin-contract';
+import { createAdminHandlers } from './admin-handlers';
 import { MockAuthController } from './auth-contract';
 import { createAuthHandlers, createNotificationHandlers } from './handlers';
 import { createChatHandlers } from './chat-handlers';
@@ -56,10 +58,20 @@ export async function startMockWorker(): Promise<void> {
   );
   // 原文预览域（fe-doc-preview）：内存态即可，页面刷新后预览经接口重新拉取
   const previewController = new MockPreviewController((header) => ({ userId: authController.me(header).id }));
+  // 管理面板域：内存态即可（admin 会话态不经 localStorage 持久化，刷新后读模型重新拉取）
+  const adminController = new MockAdminController(
+    (header) => authController.me(header),
+    knowledgeController,
+    notificationsController,
+    quota,
+  );
   const worker = setupWorker(
     ...createAuthHandlers(authController),
     ...createSettingsHandlers(settingsController),
     ...createNotificationHandlers(notificationsController, authController),
+    // 管理面板 handler 先于 knowledge handler 注册：GET /v1/approvals/summary 同名路由在
+    // admin 域遮蔽（ops 的 quota_pending 由 admin 计数），按注册顺序首匹配命中。
+    ...createAdminHandlers(adminController, knowledgeController),
     // 知识库 handler 先于 chat handler 注册：两者都匹配 GET /v1/spaces/:id/documents，
     // 按注册顺序首匹配命中；chat 检索范围 chip 只消费 items。
     ...createKnowledgeHandlers(knowledgeController),

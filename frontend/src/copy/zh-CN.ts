@@ -3,6 +3,8 @@
  * 全部「措辞后定」文案集中占位于此，不散落在组件里；组件内不允许硬编码中文文案。
  * 后续所有 change 的「措辞后定」文案一律先加入本文件，再在组件中经 copy 引用。
  */
+import type { Role } from '../auth/types';
+
 export const zhCN = {
   appName: 'RAGqs',
   shell: {
@@ -42,6 +44,12 @@ export const zhCN = {
         manage: '部门库管理', // 措辞后定（知识库下钻，仅部长）
         knowledgeApprovals: '投稿审核', // 措辞后定（知识库下钻，仅部长）
         publicSpace: '公共库', // 措辞后定
+        quotaRequests: '配额申请', // 措辞后定（审批中心下钻）
+        personalLibs: '用户个人库', // 措辞后定（知识空间下钻）
+        departmentLibs: '部门库', // 措辞后定（知识空间下钻）
+        opsJobs: '任务队列', // 措辞后定（系统运维下钻）
+        opsMetrics: '指标看板', // 措辞后定（系统运维下钻）
+        departments: '部门管理', // 措辞后定（人员与权限下钻）
       },
     },
   },
@@ -344,6 +352,309 @@ export const zhCN = {
         viewContent: '查看内容', // 措辞后定
         contentUnavailable: '内容已不可用', // 措辞后定：404
       },
+    },
+  },
+  admin: {
+    // 管理面板共用标记（ops/admin 双端）
+    common: {
+      readOnly: '只读', // 措辞后定：超管查看侧标记
+      deactivatedReadOnly: '已停用，只读', // 措辞后定
+      frozenTag: '已冻结，待清理', // 措辞后定：pending_delete 行标记
+      refresh: '刷新', // 措辞后定
+      // 角色中文标签（用户列表角色列；与 mock 聚合搜索匹配口径一致）
+      roleLabels: {
+        user: '普通用户', // 措辞后定
+        minister: '部长', // 措辞后定
+        ops: '运维', // 措辞后定
+        admin: '管理员', // 措辞后定
+      } as Record<Role, string>,
+    },
+    // 总览 dashboard（§9.1）
+    dashboard: {
+      title: '总览', // 措辞后定
+      windowAria: '时间窗口', // 措辞后定
+      today: '今天', // 措辞后定
+      d7: '近 7 天', // 措辞后定
+      d30: '近 30 天', // 措辞后定
+      noData: '暂无数据', // 措辞后定：value 为 null 的指标卡
+      empty: '暂无指标', // 措辞后定
+      loadError: '指标加载失败，请稍后重试', // 措辞后定
+      expandAll: '展开全部', // 措辞后定
+      collapse: '收起', // 措辞后定：user_rank 展开全部后的收起链
+      // 超管四包标题下 15px slate 说明行（契约外展示字段，由组包方随 pack.description 下发）
+      packs: {
+        usageOverview: '全平台使用趋势与部门分布', // 措辞后定
+        assetUsage: '各空间被检索与被引用的频次分布', // 措辞后定
+        costShare: 'LLM 成本总量与部门、用户分摊', // 措辞后定
+        qualityQuota: '回答质量反馈与配额消耗、追加发放', // 措辞后定
+      },
+    },
+    // 审批中心（§8：配额申请 ops 写 / 投稿审核复用 knowledge.manage 文案）
+    approvals: {
+      quota: '配额申请', // 措辞后定
+      submissions: '投稿审核', // 措辞后定
+      colApplicant: '申请人', // 措辞后定
+      colUsage: '当前用量', // 措辞后定
+      colRequested: '申请页数', // 措辞后定
+      colRequestedAt: '申请时间', // 措辞后定
+      colActions: '操作', // 措辞后定
+      usageOf: (used: number, limit: number) => `${used} / ${limit} 页`, // 措辞后定
+      pages: (count: number) => `${count} 页`, // 措辞后定
+      approve: '批准', // 措辞后定
+      reject: '驳回', // 措辞后定
+      approveDialogTitle: '批准配额申请？', // 措辞后定
+      approveDialogDescription: (name: string, pages: number) =>
+        `将为 ${name} 增加 ${pages} 页额度，当月生效。`, // 措辞后定
+      approvePagesLabel: '批准页数（可选）', // 措辞后定
+      approvePagesPlaceholder: (requested: number) => `留空按申请量 ${requested} 页批准`, // 措辞后定
+      approvePagesInvalid: (requested: number) => `请输入 1–${requested} 的整数`, // 措辞后定
+      rejectDialogTitle: '驳回配额申请？', // 措辞后定
+      rejectDialogDescription: '驳回后申请人当月可重新提交申请。', // 措辞后定
+      approvedNotice: '已批准，申请人将收到通知', // 措辞后定：页头下轻提示
+      rejectedNotice: '已驳回，申请人将收到通知', // 措辞后定
+      alreadyProcessed: '该申请已被处理，已刷新', // 措辞后定：409 already_processed
+      notApprovable: '该申请已不可审批，已刷新', // 措辞后定：409 quota_request_not_approvable
+      versionConflict: '内容已变化，已刷新，请确认后重试', // 措辞后定：409 version_conflict
+      actionError: '操作失败，请稍后重试', // 措辞后定
+      empty: '暂无待处理申请', // 措辞后定
+      loadError: '申请加载失败，请稍后重试', // 措辞后定
+      scopeAll: '全部', // 措辞后定：超管投稿审核范围分段
+      scopePublic: '公共库', // 措辞后定
+      scopeDepartment: '部门库', // 措辞后定
+    },
+    // 知识空间（§7：公共库 / 用户个人库 / 部门库；图谱维护区 ops 写 / admin 读）
+    spaces: {
+      personalLibs: '用户个人库', // 措辞后定
+      departmentLibs: '部门库', // 措辞后定
+      documents: (count: number) => `${count} 篇文档`, // 措辞后定
+      members: (count: number) => `${count} 名成员`, // 措辞后定
+      empty: '暂无空间', // 措辞后定
+      loadError: '空间加载失败，请稍后重试', // 措辞后定
+      // 个人库下钻
+      userSearchPlaceholder: '搜索姓名、用户名、部门或角色', // 措辞后定：聚合搜索框
+      userSearchAria: '搜索用户', // 措辞后定
+      backToUsers: '返回用户列表', // 措辞后定
+      backToDepartments: '返回部门列表', // 措辞后定
+      personalLibOf: (name: string) => `${name} 的个人库`, // 措辞后定：下钻页头
+      emptyUsers: '暂无用户', // 措辞后定
+      // 只读文档列表（§12.6：无上传、无行操作；打开即记审计由后端负责）
+      docStatusAvailable: '可用', // 措辞后定：状态列 15px
+      openPreviewAria: (name: string) => `打开「${name}」预览`, // 措辞后定：行点击新窗口
+      reindexStarted: '已发起重建索引', // 措辞后定：重建 202 轻提示
+      graph: {
+        title: '图谱维护', // 措辞后定
+        availabilityReady: '图谱可用', // 措辞后定
+        availabilityStale: '图谱需重建', // 措辞后定：公共库已变更，不得把旧 generation 展示为可用
+        availabilityDisabled: '图谱未构建', // 措辞后定
+        generationInfo: (id: string, builtAt: string) => `当前生成 ${id} · 构建于 ${builtAt}`, // 措辞后定
+        generationExpired: '上一版生成已过期，重建后方可使用', // 措辞后定：stale 时 active_generation 标注
+        statusQueued: '排队中', // 措辞后定
+        statusRunning: '构建中', // 措辞后定
+        statusSucceeded: '构建成功', // 措辞后定
+        statusFailed: '构建失败', // 措辞后定
+        statusCancelled: '已取消', // 措辞后定
+        sourceRevision: (revision: number) => `源版本 ${revision}`, // 措辞后定
+        latestRunTitle: '最近一次构建', // 措辞后定
+        estimatedCalls: (count: number) => `预估主模型调用 ${count} 次`, // 措辞后定
+        actualCalls: (primary: number, provider: number) =>
+          `实际用量：主模型 ${primary} 次 / provider ${provider} 次`, // 措辞后定
+        runCreatedAt: (value: string) => `创建于 ${value}`, // 措辞后定
+        runStartedAt: (value: string) => `开始于 ${value}`, // 措辞后定
+        runFinishedAt: (value: string) => `完成于 ${value}`, // 措辞后定
+        failureClass: (value: string) => `失败分类：${value}`, // 措辞后定
+        buildCreate: '构建图谱', // 措辞后定：disabled 态发起
+        buildRebuild: '重建图谱', // 措辞后定：ready / stale 态发起
+        cancel: '取消构建', // 措辞后定
+        confirmTitleCreate: '发起图谱构建？', // 措辞后定
+        confirmTitleRebuild: '重建公共库图谱？', // 措辞后定
+        confirmDescription: '构建耗时较长，期间可离开页面，完成后将经铃铛通知你。', // 措辞后定
+        confirmRevision: (revision: number) => `当前内容版本：${revision}`, // 措辞后定
+        confirmEstimate: (calls: number) =>
+          `上次构建预估主模型调用 ${calls} 次，本次预估以提交后服务端计算为准`, // 措辞后定
+        confirmEstimatePending: '预估主模型调用次数将在提交后由服务端计算并展示', // 措辞后定
+        confirmStart: '确认发起', // 措辞后定
+        empty: '暂无构建记录', // 措辞后定
+        loadError: '图谱状态加载失败，请稍后重试', // 措辞后定
+        actionError: '操作失败，请稍后重试', // 措辞后定
+        sourceChanged: '公共库内容已变化，已刷新状态，请重新确认', // 措辞后定：409 graph_source_changed
+        inProgress: '已有构建进行中，已刷新状态', // 措辞后定：409 graph_build_in_progress
+        notCancellable: '该构建已不可取消，已刷新状态', // 措辞后定：409 graph_build_not_cancellable
+        sourceEmpty: '公共库暂无文档，无法构建图谱', // 措辞后定：422 graph_source_empty
+        estimateUnavailable: '暂时无法计算构建预估，请稍后重新发起', // 措辞后定：503 + 重试文字链
+        runVersionConflict: '构建状态已变化，已刷新', // 措辞后定：取消时 409 version_conflict
+        startedNotice: '已发起构建', // 措辞后定：202 轻提示
+        cancelledNotice: '已取消构建', // 措辞后定
+      },
+    },
+    // 评测与校准（§11；开窗/关窗仅运维，超管只读）
+    evaluation: {
+      windowCardTitle: '校准窗口', // 措辞后定
+      leaderboardTitle: '评测榜单', // 措辞后定
+      shadowTitle: '影子评测排名', // 措辞后定
+      statusOpen: '开窗中', // 措辞后定
+      statusClosing: '收口中', // 措辞后定
+      statusClosed: '已关闭', // 措辞后定
+      opsOnlyNote: '开窗由运维操作', // 措辞后定：超管端固定说明
+      pairsCollected: (count: number) => `已收集对比 ${count} 对`, // 措辞后定
+      sampleRate: (percent: string) => `实际采样率 ${percent}`, // 措辞后定（0–1 经 formatPercent 格式化后传入）
+      policyVersion: (value: string) => `策略版本 ${value}`, // 措辞后定
+      windowOpenedAt: (value: string) => `开窗时间 ${value}`, // 措辞后定
+      windowRange: (opened: string, closed: string) => `窗口 ${opened} 至 ${closed}`, // 措辞后定
+      closingDeadline: (time: string) => `将于 ${time} 收口`, // 措辞后定：closing 收口倒计时
+      empty: '暂无评测数据', // 措辞后定
+      loadError: '评测数据加载失败，请稍后重试', // 措辞后定
+      windowLoadError: '校准窗口状态加载失败，请稍后重试', // 措辞后定
+      open: '开窗', // 措辞后定
+      close: '关窗', // 措辞后定
+      switchAria: '校准窗口开关', // 措辞后定
+      kindLabel: '开窗方式', // 措辞后定：开窗确认对话框内单选
+      kindColdStart: '冷启动', // 措辞后定
+      kindSentinel: '哨兵', // 措辞后定
+      kindManual: '手动', // 措辞后定
+      openDialogTitle: '开启校准窗口？', // 措辞后定
+      openDialogDescription: '开启后按所选方式采样真实提问，收集 A/B 对比。', // 措辞后定
+      closeDialogTitle: '关闭校准窗口？', // 措辞后定
+      closeDialogDescription: '关闭后窗口进入收口：不再创建新对比，已有对比在截止前仍可投票。', // 措辞后定
+      openedNotice: '已开窗', // 措辞后定
+      closingNotice: '已关窗，窗口收口中', // 措辞后定
+      actionError: '操作失败，请稍后重试', // 措辞后定
+      errorNotEligible: '当前不满足开窗条件，已刷新窗口状态', // 措辞后定：409 calibration_window_not_eligible
+      errorAlreadyOpen: '已有开窗中的校准窗口，已刷新窗口状态', // 措辞后定：409 calibration_window_already_open
+      errorClosing: '已有收口中的校准窗口，已刷新窗口状态', // 措辞后定：409 calibration_window_closing
+      errorNotOpen: '当前没有可关闭的窗口，已刷新窗口状态', // 措辞后定：409 calibration_window_not_open
+      colRank: '名次', // 措辞后定
+      colName: '配置', // 措辞后定
+      colScore: '得分', // 措辞后定
+      notEligibleTag: '未达门槛', // 措辞后定：eligible=false 名称后行内说明
+      policyGap: (value: number) => `开窗分差阈值 ${value}`, // 措辞后定
+      policyColdStartRate: (percent: string) => `冷启动采样 ${percent}`, // 措辞后定
+      policySentinelRate: (percent: string) => `哨兵采样 ${percent}`, // 措辞后定
+      policyMinRealQueries: (count: number) => `最小真实提问 ${count}`, // 措辞后定
+      policyShadowMaxExamples: (count: number) => `影子题目上限 ${count}`, // 措辞后定
+      policyShadowMaxConfigs: (count: number) => `候选配置上限 ${count}`, // 措辞后定
+    },
+    // 系统运维（§10 任务队列 + §9.2 指标看板）
+    operations: {
+      jobs: '任务队列', // 措辞后定
+      metrics: '指标看板', // 措辞后定
+      viewAll: '全部', // 措辞后定
+      viewActive: '处理中', // 措辞后定
+      viewReplayable: '待人工处理', // 措辞后定
+      viewStale: '超时', // 措辞后定
+      staleTag: '超时', // 措辞后定：行内 stale 标记
+      taskTypeIngestion: '文档入库', // 措辞后定：任务类型列（V1 仅 ingestion）
+      waitDuration: (totalSeconds: number) => {
+        // 停留时长（wait_seconds）：不足 1 分钟显秒，不足 1 小时显分秒，再长显小时分
+        const seconds = Math.max(0, Math.floor(totalSeconds));
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        if (hours > 0) {
+          return `${hours} 小时 ${minutes % 60} 分`;
+        }
+        if (minutes > 0) {
+          return `${minutes} 分 ${seconds % 60} 秒`;
+        }
+        return `${seconds} 秒`;
+      }, // 措辞后定
+      emptyJobs: '暂无任务', // 措辞后定
+      loadError: '加载失败，请稍后重试', // 措辞后定
+      actionError: '操作失败，请稍后重试', // 措辞后定：任务行操作兜底
+    },
+    // 用户管理（§12.1–12.4；ops 与 admin 共用列表，写能力按角色收窄）
+    users: {
+      searchPlaceholder: '搜索用户', // 措辞后定
+      departmentFilter: '部门', // 措辞后定
+      roleFilter: '角色', // 措辞后定
+      allDepartments: '全部部门', // 措辞后定
+      allRoles: '全部角色', // 措辞后定
+      addUser: '新增用户', // 措辞后定
+      edit: '编辑', // 措辞后定
+      disable: '永久禁用', // 措辞后定
+      colUsername: '用户名', // 措辞后定
+      colRealName: '姓名', // 措辞后定
+      colDepartment: '部门', // 措辞后定
+      colRole: '角色', // 措辞后定
+      colLastActive: '最近活跃', // 措辞后定
+      colActions: '操作', // 措辞后定
+      noDepartment: '—', // 措辞后定：无部门
+      purgeAfter: (date: string) => `将于 ${date} 清理`, // 措辞后定：pending_delete 行
+      clearFilters: '清除条件', // 措辞后定：空态附带的筛选重置文字链
+      departments: '部门管理', // 措辞后定：下钻入口
+      matrixTitle: '权限矩阵', // 措辞后定
+      matrixNote: '权限矩阵固定，修改走版本控制和部署配置变更', // 措辞后定
+      addDialogTitle: '新增用户', // 措辞后定
+      editDialogTitle: '编辑用户', // 措辞后定
+      save: '保存', // 措辞后定
+      displayNameLabel: '显示名', // 措辞后定
+      displayNamePlaceholder: '缺省同姓名', // 措辞后定
+      noDepartmentOption: '无部门', // 措辞后定：部门下拉项
+      // 原部门已不在 active 目录（已停用）：下拉以只读禁用项呈现原部门，不静默改写
+      departmentInactiveOption: (name: string) => `${name}（已停用）`, // 措辞后定
+      directoryLoadError: '部门目录加载失败', // 措辞后定：对话框内目录重试行
+      passwordLabel: '初始密码', // 措辞后定
+      passwordOfflineNote: '初始密码由管理员线下传达', // 措辞后定
+      passwordInvalid: '密码至少 8 位且需字母与数字混合', // 措辞后定
+      fieldRequired: '该字段必填', // 措辞后定
+      usernameExists: '用户名已存在', // 措辞后定：409 username_exists
+      ministerDepartmentRequired: '部长必须绑定一个在用部门', // 措辞后定：422
+      // 措辞后定：409 department_inactive / 404 department_not_found
+      departmentChanged: '可选部门已变化，已刷新部门目录，请重新确认',
+      sessionRevokedNote: '保存角色或部门后，该用户全部设备的会话将被撤销', // 措辞后定
+      userPendingDelete: '该账号已冻结，已刷新列表', // 措辞后定：409 user_pending_delete
+      forbiddenTarget: '无权对该账号执行此操作', // 措辞后定：403 forbidden_target
+      cannotModifySelf: '不可对自己的账号执行此操作', // 措辞后定：403 cannot_modify_self
+      disableDialogTitle: '永久禁用账号', // 措辞后定
+      disablePoint1: '账号立即永久冻结并退出全部会话，操作不可恢复', // 措辞后定：固定说明一
+      disablePoint2: '其个人库文档与聊天会话将归档，并在保留期届满后由系统清理', // 措辞后定：固定说明二
+      disablePoint3: '其共享到部门库与公共库的文档、文件和索引不受影响', // 措辞后定：固定说明三
+      disableConfirm: '确认永久禁用', // 措辞后定
+      empty: '暂无用户', // 措辞后定
+      loadError: '用户加载失败，请稍后重试', // 措辞后定
+      actionError: '操作失败，请稍后重试', // 措辞后定
+      versionConflict: '内容已变化，已刷新，请确认后重试', // 措辞后定
+    },
+    // 部门管理（§12.5，仅超管写；目录读接口 ops 亦可）
+    departments: {
+      filterActive: '在用', // 措辞后定
+      filterInactive: '已停用', // 措辞后定
+      filterAll: '全部', // 措辞后定
+      add: '新增部门', // 措辞后定
+      rename: '改名', // 措辞后定
+      deactivate: '停用', // 措辞后定
+      noActions: '—', // 措辞后定：行无可用操作
+      colName: '部门名', // 措辞后定
+      colStatus: '状态', // 措辞后定
+      colMembers: '成员', // 措辞后定
+      colDocuments: '文档', // 措辞后定
+      colTasks: '进行中任务', // 措辞后定
+      colSubmissions: '待审投稿', // 措辞后定
+      colDeactivatedAt: '停用时间', // 措辞后定
+      colActions: '操作', // 措辞后定
+      statusActive: '在用', // 措辞后定
+      statusInactive: '已停用', // 措辞后定
+      addDialogTitle: '新增部门', // 措辞后定
+      renameDialogTitle: '重命名部门', // 措辞后定
+      deactivateDialogTitle: '停用部门', // 措辞后定
+      deactivateConfirm: '确认停用', // 措辞后定
+      deactivatePoint1: '停用后部门与部门库转为只读，仅运维与超管可见，新成员归属、上传、任务与投稿均被拒绝', // 措辞后定
+      deactivatePoint2: '部门记录、文档、索引与历史不删除，名称保留且不可复用', // 措辞后定
+      deactivatePoint3: '仍有成员、进行中任务或待审投稿时无法停用', // 措辞后定
+      deactivateCounts: (members: number, jobs: number, submissions: number) =>
+        `成员 ${members} · 进行中任务 ${jobs} · 待审投稿 ${submissions}`, // 措辞后定：停用确认内计数行
+      nameLabel: '部门名称', // 措辞后定
+      nameNote: '名称规范化后唯一，在用与已停用部门均不可重名', // 措辞后定：新增框下说明行
+      nameRequired: '请输入部门名称', // 措辞后定
+      nameExists: '部门名称已存在', // 措辞后定：409 department_name_exists
+      validationError: '名称不符合要求，请检查后重试', // 措辞后定：422 validation_error
+      actionForbidden: '当前账号无权执行部门操作，已刷新目录', // 措辞后定：403 department_action_forbidden
+      blockedHasMembers: '部门内仍有成员，无法停用；请先在用户管理中调整归属', // 措辞后定：409 department_has_members
+      blockedHasWork: '部门仍有进行中任务或待审投稿，处理完成后再试', // 措辞后定：409 department_has_active_work
+      unverified: '系统暂时无法确认停用前置状态，请稍后重试', // 措辞后定：503 可重试
+      statusChanged: '部门状态已变化，已刷新目录', // 措辞后定：404 department_not_found / 409 department_inactive
+      versionConflict: '内容已变化，已刷新，请确认后重试', // 措辞后定
+      actionError: '操作失败，请稍后重试', // 措辞后定
+      empty: '暂无部门', // 措辞后定
+      loadError: '部门加载失败，请稍后重试', // 措辞后定
     },
   },
   login: {

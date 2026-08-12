@@ -1,5 +1,12 @@
 import { isValidElement } from 'react';
 import { describe, expect, it } from 'vitest';
+import {
+  ApprovalsSummaryBadge,
+  EvaluationWindowDot,
+  OperationsStaleBadge,
+  QuotaRequestsSummaryBadge,
+  SubmissionsSummaryBadge,
+} from '../../admin/summaries';
 import { copy } from '../../copy';
 import { AppearanceModule } from '../../settings/AppearanceModule';
 import { ProfileModule } from '../../settings/ProfileModule';
@@ -139,10 +146,56 @@ describe('内置占位模块：管理段（按角色渲染）', () => {
     }
   });
 
-  it('spaces 注册 public 下层（公共库）', () => {
+  it('spaces 注册公共库 / 用户个人库 / 部门库 / 投稿审核下层', () => {
     const spaces = createPlaceholderModules().find((module) => module.id === 'spaces');
-    expect(ids(spaces?.children ?? [])).toEqual(['public']);
+    expect(ids(spaces?.children ?? [])).toEqual(['public', 'personal-libs', 'department-libs', 'submissions']);
     expect(spaces?.children?.[0]?.title).toBe(modules.publicSpace);
+  });
+
+  it('approvals / operations / users(admin) 注册下钻子层', () => {
+    const modules2 = createPlaceholderModules();
+    const approvals = modules2.find((module) => module.id === 'approvals' && module.roles?.includes('ops'));
+    expect(ids(approvals?.children ?? [])).toEqual(['quota', 'submissions']);
+    const operations = modules2.find((module) => module.id === 'operations');
+    expect(ids(operations?.children ?? [])).toEqual(['jobs', 'metrics']);
+    const usersAdmin = modules2.find(
+      (module) => module.id === 'users' && module.roles?.includes('admin'),
+    );
+    expect(ids(usersAdmin?.children ?? [])).toEqual(['departments']);
+  });
+
+  it('左栏摘要接线：审批中心 / 评测 / 系统运维模块与审批、投稿下钻项带 renderSummary', () => {
+    const modules2 = createPlaceholderModules();
+    const summaryType = (layer: { renderSummary?: () => unknown } | undefined) => {
+      const node = layer?.renderSummary?.();
+      expect(isValidElement(node)).toBe(true);
+      return isValidElement(node) ? node.type : null;
+    };
+    const approvals = modules2.find((module) => module.id === 'approvals' && module.roles?.includes('ops'));
+    expect(summaryType(approvals)).toBe(ApprovalsSummaryBadge);
+    expect(summaryType(approvals?.children?.find((child) => child.id === 'quota'))).toBe(
+      QuotaRequestsSummaryBadge,
+    );
+    expect(summaryType(approvals?.children?.find((child) => child.id === 'submissions'))).toBe(
+      SubmissionsSummaryBadge,
+    );
+    expect(summaryType(modules2.find((module) => module.id === 'evaluation'))).toBe(
+      EvaluationWindowDot,
+    );
+    const operations = modules2.find((module) => module.id === 'operations');
+    expect(summaryType(operations)).toBe(OperationsStaleBadge);
+    // 系统运维「任务队列」子层同样带超时徽标
+    expect(summaryType(operations?.children?.find((child) => child.id === 'jobs'))).toBe(
+      OperationsStaleBadge,
+    );
+    // 超管知识空间「投稿审核」子层带投稿徽标
+    const spaces = modules2.find((module) => module.id === 'spaces');
+    expect(summaryType(spaces?.children?.find((child) => child.id === 'submissions'))).toBe(
+      SubmissionsSummaryBadge,
+    );
+    // personal 段不用摘要 slot
+    expect(modules2.find((module) => module.id === 'profile')?.renderSummary).toBeUndefined();
+    expect(modules2.find((module) => module.id === 'dashboard')?.renderSummary).toBeUndefined();
   });
 });
 

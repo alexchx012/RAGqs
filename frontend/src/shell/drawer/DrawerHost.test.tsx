@@ -9,10 +9,11 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useLocation } from 'react-router';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { AdminApi } from '../../admin/api';
 import { copy } from '../../copy';
 import { AppRoutes } from '../../router/AppRoutes';
-import { createAuthedStore, renderWithShell, testUser } from '../../test/auth-fixtures';
+import { createAuthedStore, fakeAdminApi, renderWithShell, testUser } from '../../test/auth-fixtures';
 
 const drawerCopy = copy.shell.drawer;
 const modules = drawerCopy.modules;
@@ -24,7 +25,7 @@ function LocationProbe() {
   return <output data-testid="location-path">{location.pathname}</output>;
 }
 
-async function renderApp(path: string, role: TestRole = 'user') {
+async function renderApp(path: string, role: TestRole = 'user', adminApi?: AdminApi) {
   const store = await createAuthedStore(testUser({ role }));
   renderWithShell(
     <>
@@ -33,6 +34,7 @@ async function renderApp(path: string, role: TestRole = 'user') {
     </>,
     store,
     [path],
+    { adminApi },
   );
   return screen.getByTestId('location-path');
 }
@@ -252,5 +254,65 @@ describe('prefers-reduced-motion 降级', () => {
     } finally {
       window.matchMedia = original;
     }
+  });
+});
+
+describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => {
+  const openWindow = {
+    window_id: 'cw_1',
+    status: 'open' as const,
+    opened_at: '2026-08-03T02:00:00Z',
+    closed_at: null,
+    pairs_collected: 12,
+    close_deadline_at: null,
+    window_kind: 'manual' as const,
+    policy_version: 'eval_2026_v1',
+    sample_rate: 0.1,
+    opened_by: 'u_ops',
+    closed_by: null,
+  };
+
+  it('管理段模块按钮：审批中心合计徽标 / 评测开窗状态点 / 系统运维超时琥珀徽标', async () => {
+    const adminApi = fakeAdminApi({
+      getApprovalSummary: vi.fn(async () => ({ quota_pending: 2, submission_pending: 1 })),
+      getCalibrationWindow: vi.fn(async () => openWindow),
+      listOpsJobs: vi.fn(async () => ({ items: [], stale_count: 3 })),
+    });
+    await renderApp('/admin', 'ops', adminApi);
+    const dialog = await screen.findByRole('dialog', { name: modules.dashboard });
+    // 审批中心：配额 2 + 投稿 1 合计徽标 3
+    const approvalsButton = within(dialog).getByRole('button', { name: /审批中心/ });
+    expect(await within(approvalsButton).findByText('3')).toBeInTheDocument();
+    // 评测与校准：开窗中成功绿状态点
+    const evaluationButton = within(dialog).getByRole('button', { name: new RegExp(modules.evaluation) });
+    await waitFor(() => expect(evaluationButton.querySelector('.bg-success')).not.toBeNull());
+    // 系统运维：stale_count 3 警告琥珀徽标
+    const operationsButton = within(dialog).getByRole('button', { name: new RegExp(modules.operations) });
+    expect(await within(operationsButton).findByText('3')).toBeInTheDocument();
+    // 无摘要模块（总览 / 知识空间 / 用户管理）不渲染徽标
+    const dashboardButton = within(dialog).getByRole('button', { name: modules.dashboard });
+    expect(dashboardButton.querySelector('.bg-mist-gray')).toBeNull();
+  });
+
+  it('审批中心下钻行：配额申请 / 投稿审核分项徽标与 › 同行右置', async () => {
+    const adminApi = fakeAdminApi({
+      getApprovalSummary: vi.fn(async () => ({ quota_pending: 2, submission_pending: 1 })),
+    });
+    await renderApp('/admin/approvals', 'ops', adminApi);
+    const dialog = await screen.findByRole('dialog', { name: modules.approvals });
+    const quotaRow = within(dialog).getByRole('button', { name: new RegExp(modules.quotaRequests) });
+    expect(await within(quotaRow).findByText('2')).toBeInTheDocument();
+    const submissionsRow = within(dialog).getByRole('button', {
+      name: new RegExp(modules.knowledgeApprovals),
+    });
+    expect(await within(submissionsRow).findByText('1')).toBeInTheDocument();
+  });
+
+  it('摘要为 0 不渲染：模块按钮保持原标题与布局', async () => {
+    await renderApp('/admin', 'ops');
+    const dialog = await screen.findByRole('dialog', { name: modules.dashboard });
+    const approvalsButton = within(dialog).getByRole('button', { name: modules.approvals });
+    // 默认 fake：合计 0 / closed / stale 0 —— 摘要静默，按钮可访问名即原标题
+    expect(approvalsButton.textContent).toBe(modules.approvals);
   });
 });

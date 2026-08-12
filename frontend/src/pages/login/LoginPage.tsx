@@ -243,8 +243,8 @@ export function LoginPage() {
   );
 }
 
-/** 16px 眼睛图标（密码明文/掩码切换；该控件规格供后续新增用户对话框复用）。 */
-function EyeIcon() {
+/** 16px 眼睛图标（密码明文/掩码切换；新增用户对话框初始密码框复用同一控件）。 */
+export function EyeIcon() {
   return (
     <svg
       viewBox="0 0 16 16"
@@ -262,7 +262,7 @@ function EyeIcon() {
   );
 }
 
-function EyeOffIcon() {
+export function EyeOffIcon() {
   return (
     <svg
       viewBox="0 0 16 16"

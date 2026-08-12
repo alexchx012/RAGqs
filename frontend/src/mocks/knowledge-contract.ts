@@ -15,6 +15,7 @@
  */
 
 import type { User } from '../auth/types';
+import type { OpsJobItem, OpsJobsView } from '../admin/types';
 import type {
   ApprovalDecisionResponse,
   ApprovalListItem,
@@ -47,6 +48,8 @@ interface SpaceDef {
   readonly ownerUserId?: string;
   readonly departmentId?: string;
   readonly isPublic?: boolean;
+  /** 部门空间已停用（§8.4 超管审核范围为「全部 active 部门」，inactive 部门空间不在其列）。 */
+  readonly inactive?: boolean;
 }
 
 const SPACE_DEFS: readonly SpaceDef[] = [
@@ -54,8 +57,16 @@ const SPACE_DEFS: readonly SpaceDef[] = [
   { id: 'personal:u_minister', kind: 'personal', name: '个人库', ownerUserId: 'u_minister' },
   { id: 'personal:u_ops', kind: 'personal', name: '个人库', ownerUserId: 'u_ops' },
   { id: 'personal:u_admin', kind: 'personal', name: '个人库', ownerUserId: 'u_admin' },
+  // 管理端用户列表下钻（§7.3）：admin 种子用户均持有个人库，无文档种子的空间返回空列表
+  { id: 'personal:u_chen', kind: 'personal', name: '个人库', ownerUserId: 'u_chen' },
+  { id: 'personal:u_zhao', kind: 'personal', name: '个人库', ownerUserId: 'u_zhao' },
+  { id: 'personal:u_sun', kind: 'personal', name: '个人库', ownerUserId: 'u_sun' },
+  { id: 'personal:u_ghost', kind: 'personal', name: '个人库', ownerUserId: 'u_ghost' },
   { id: 'department:d_finance', kind: 'department', name: '财务部', departmentId: 'd_finance' },
   { id: 'department:d_hr', kind: 'department', name: '人事部', departmentId: 'd_hr' },
+  // 管理端部门库下钻（§7.3）：d_empty 空列表、d_legacy 已停用（只读由 chat §6.1 权限推导）
+  { id: 'department:d_empty', kind: 'department', name: '空壳部', departmentId: 'd_empty' },
+  { id: 'department:d_legacy', kind: 'department', name: '档案部', departmentId: 'd_legacy', inactive: true },
   { id: 'public', kind: 'public', name: '公共库', isPublic: true },
 ];
 
@@ -122,6 +133,8 @@ interface StoredJob {
   ocrLowConfidence: boolean;
   notificationEventIds: string[];
   readonly createdAt: string;
+  /** §10.1 超时派生标记（mock 夹具控制：running 超租约未完成）。 */
+  stale: boolean;
 }
 
 interface StoredSubmission {
@@ -129,6 +142,8 @@ interface StoredSubmission {
   version: number;
   readonly submitterUserId: string;
   readonly submitterName: string;
+  /** §8.4 投稿人部门（审核列表五列之一）。 */
+  readonly submitterDepartment: { id: string; name: string } | null;
   readonly targetSpaceId: string;
   readonly targetSpaceName: string;
   readonly name: string;
@@ -141,6 +156,10 @@ interface StoredSubmission {
   invalidatedReason: string | null;
   documentId: string | null;
   jobId: string | null;
+  /** 夹具：审核时投稿人部门归属或贡献资格已变化（409 submission_scope_changed）。 */
+  readonly scopeChanged: boolean;
+  /** 夹具：审核时投稿人账号已冻结（409 submitter_pending_delete）。 */
+  readonly submitterFrozen: boolean;
   /** 查看内容用受控文件流。 */
   content: { bytes: Uint8Array; type: string } | null;
 }
@@ -200,6 +219,8 @@ function mediaKindOf(type: string, name: string): string {
 export class MockKnowledgeController {
   private readonly documents = new Map<string, StoredDocument[]>();
   private readonly jobs = new Map<string, StoredJob>();
+  /** §10.1 运维任务队列独立任务池：不进上传结果层（listJobs 只迭代 jobs），cancel/replay 双池查找。 */
+  private readonly opsJobs = new Map<string, StoredJob>();
   private readonly batches = new Map<string, BatchRecord>();
   private readonly submissions = new Map<string, StoredSubmission>();
   private readonly documentSeq = new Map<string, number>();
@@ -224,6 +245,7 @@ export class MockKnowledgeController {
   reset(): void {
     this.documents.clear();
     this.jobs.clear();
+    this.opsJobs.clear();
     this.batches.clear();
     this.submissions.clear();
     this.documentSeq.clear();
@@ -717,6 +739,49 @@ export class MockKnowledgeController {
     ) as { job_id: string; state: string; replay_generation: number };
   }
 
+  /* ---------- §10.1 运维任务队列（ops 操作 / admin 只读） ---------- */
+
+  /**
+   * 任务队列视图（§10.1–10.2）：独立任务池（seedOpsJob），四档 view 过滤。
+   * allowed_actions 与 §6.6 同一规则推导，但仅 ops 可见操作；admin 行固定空数组
+   * （服务端收窄，前端据此不渲染操作区，非角色分支）。stale 是派生标记，不替代 job 状态。
+   */
+  listOpsJobs(auth: string | null, view: OpsJobsView): { items: OpsJobItem[]; stale_count: number } {
+    const user = this.auth(auth);
+    if (user.role !== 'ops' && user.role !== 'admin') {
+      throw new MockHttpError(403, 'ops_jobs_forbidden');
+    }
+    if (view !== 'all' && view !== 'active' && view !== 'replayable' && view !== 'stale') {
+      throw new MockHttpError(422, 'validation_error', { field: 'view' });
+    }
+    const all = [...this.opsJobs.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const staleCount = all.filter((job) => job.stale).length;
+    const filtered = all.filter((job) => {
+      switch (view) {
+        case 'active':
+          return job.state === 'pending' || job.state === 'running' || job.state === 'retry_wait';
+        case 'replayable':
+          return job.state === 'failed' || job.state === 'cancelled' || job.state === 'dead_letter';
+        case 'stale':
+          return job.stale;
+        default:
+          return true;
+      }
+    });
+    const items = filtered.map((job) => ({
+      job_id: job.jobId,
+      task_type: 'ingestion' as const,
+      document_name: job.name,
+      state: job.state,
+      stale: job.stale,
+      // 仅 ops 行携带操作；admin（超管只读）固定空数组。
+      allowed_actions: user.role === 'ops' ? allowedActionsFor(job, { canReplay: true }) : [],
+      enqueued_at: job.createdAt,
+      wait_seconds: Math.max(0, Math.floor((Date.now() - Date.parse(job.createdAt)) / 1000)),
+    }));
+    return { items, stale_count: staleCount };
+  }
+
   getUploadBatch(auth: string | null, uploadBatchId: string): UploadBatch {
     const user = this.auth(auth);
     const batch = this.batches.get(uploadBatchId);
@@ -903,10 +968,12 @@ export class MockKnowledgeController {
   getSubmissionContent(auth: string | null, submissionId: string): { bytes: Uint8Array; type: string } {
     const user = this.auth(auth);
     const submission = this.submission(submissionId);
-    // 权限：投稿人本人可读；部长（目标空间 manage）可读（审核查看内容）。
+    // 权限：投稿人本人可读；审核者可读其 §8.4 审核范围内投稿内容（行内「查看内容」新窗口打开
+    // 待审原文件）——范围与 listApprovals 同一口径（reviewScopeSpaceIds：部长=本部门 manage 空间；
+    // 运维=公共库；超管=公共库+全部 active 部门）。
     const canRead =
       submission.submitterUserId === user.id ||
-      this.managedDepartmentSpaceIds(user).includes(submission.targetSpaceId);
+      this.reviewScopeSpaceIds(user).includes(submission.targetSpaceId);
     if (!canRead) {
       throw new MockHttpError(403, 'submission_forbidden');
     }
@@ -1003,20 +1070,71 @@ export class MockKnowledgeController {
     ).map((space) => space.id);
   }
 
+  /**
+   * §8.4 投稿审核范围（角色 × 目标空间，唯一权威）：
+   * 部长=本部门 manage 空间；运维=公共库；超管=公共库+全部 active 部门；普通用户无审核范围。
+   */
+  reviewScopeSpaceIds(user: User): string[] {
+    if (user.role === 'ops') {
+      return ['public'];
+    }
+    if (user.role === 'admin') {
+      // §8.4：超管 = 公共库 + 全部 active 部门；已停用部门空间不在审核范围
+      return [
+        'public',
+        ...SPACE_DEFS.filter(
+          (space) => space.kind === 'department' && space.inactive !== true,
+        ).map((space) => space.id),
+      ];
+    }
+    if (user.role === 'minister') {
+      return this.managedDepartmentSpaceIds(user);
+    }
+    return [];
+  }
+
+  /** §8.1 审批计数徽标：按当前角色范围计数（quota_pending 恒 0；运维配额计数由 admin 域覆盖）。 */
   getApprovalSummary(auth: string | null): ApprovalSummary {
     const user = this.auth(auth);
-    const managed = this.managedDepartmentSpaceIds(user);
+    const scope = this.reviewScopeSpaceIds(user);
     const submissionPending = [...this.submissions.values()].filter(
-      (submission) => submission.status === 'pending' && managed.includes(submission.targetSpaceId),
+      (submission) => submission.status === 'pending' && scope.includes(submission.targetSpaceId),
     ).length;
     return { quota_pending: 0, submission_pending: submissionPending };
   }
 
-  listApprovals(auth: string | null): { items: ApprovalListItem[] } {
+  /** admin 域计数联动：指定空间集合的 pending 投稿数（内部口径，不经鉴权）。 */
+  countPendingSubmissions(spaceIds: readonly string[]): number {
+    return [...this.submissions.values()].filter(
+      (submission) => submission.status === 'pending' && spaceIds.includes(submission.targetSpaceId),
+    ).length;
+  }
+
+  /** §8.4 待审列表：只返回当前审核者有权处理的 pending 投稿（正序，先投先审）。 */
+  listApprovals(
+    auth: string | null,
+    filter: { readonly targetKind?: 'public' | 'department'; readonly targetSpaceId?: string } = {},
+  ): { items: ApprovalListItem[] } {
     const user = this.auth(auth);
-    const managed = this.managedDepartmentSpaceIds(user);
+    const scope = this.reviewScopeSpaceIds(user);
+    if (scope.length === 0) {
+      throw new MockHttpError(403, 'approval_forbidden');
+    }
+    if (filter.targetKind !== undefined && filter.targetKind !== 'public' && filter.targetKind !== 'department') {
+      throw new MockHttpError(422, 'validation_error', { field: 'target_kind' });
+    }
     const items = [...this.submissions.values()]
-      .filter((submission) => submission.status === 'pending' && managed.includes(submission.targetSpaceId))
+      .filter((submission) => submission.status === 'pending' && scope.includes(submission.targetSpaceId))
+      .filter((submission) => {
+        if (filter.targetSpaceId !== undefined && submission.targetSpaceId !== filter.targetSpaceId) {
+          return false;
+        }
+        if (filter.targetKind !== undefined) {
+          const kind = submission.targetSpaceId === 'public' ? 'public' : 'department';
+          return kind === filter.targetKind;
+        }
+        return true;
+      })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((submission) => ({
         submission_id: submission.submissionId,
@@ -1024,7 +1142,7 @@ export class MockKnowledgeController {
         submitter: {
           id: submission.submitterUserId,
           display_name: submission.submitterName,
-          department: null,
+          department: submission.submitterDepartment,
         },
         name: submission.name,
         media_kind: submission.mediaKind,
@@ -1036,6 +1154,48 @@ export class MockKnowledgeController {
     return { items };
   }
 
+  /** 审核前置校验共用：范围 / 状态 / 版本 / 资格变化（§8.5 错误系列）。 */
+  private requireReviewableSubmission(
+    user: User,
+    submissionId: string,
+    expectedVersion: number,
+  ): StoredSubmission {
+    this.consumeApprovalError();
+    const submission = this.submission(submissionId);
+    if (!this.reviewScopeSpaceIds(user).includes(submission.targetSpaceId)) {
+      throw new MockHttpError(403, 'approval_forbidden');
+    }
+    if (submission.status !== 'pending') {
+      throw new MockHttpError(409, 'submission_already_reviewed');
+    }
+    if (submission.version !== expectedVersion) {
+      throw new MockHttpError(409, 'version_conflict');
+    }
+    // 投稿人部门归属或贡献资格已变化：后端已置 invalidated，details 带最新 version。
+    if (submission.scopeChanged) {
+      this.markSubmissionInvalidated(submission, 'scope_changed');
+      throw new MockHttpError(409, 'submission_scope_changed', { version: submission.version });
+    }
+    // 投稿人账号已冻结：投稿进入 invalidated，审核侧刷新列表。
+    if (submission.submitterFrozen) {
+      this.markSubmissionInvalidated(submission, 'submitter_pending_delete');
+      throw new MockHttpError(409, 'submitter_pending_delete');
+    }
+    return submission;
+  }
+
+  /** 审核竞态置失效：版本递增 + invalidated + 铃铛送达投稿人（§13 submission_invalidated）。 */
+  private markSubmissionInvalidated(submission: StoredSubmission, machineCode: string): void {
+    submission.version += 1;
+    submission.status = 'invalidated';
+    submission.invalidatedReason = machineCode;
+    this.notifications.addNotification(submission.submitterUserId, {
+      type: 'submission_invalidated',
+      title: `《${submission.name}》已失效`,
+      payload: { submission_id: submission.submissionId, reason: machineCode },
+    });
+  }
+
   approveSubmission(
     auth: string | null,
     submissionId: string,
@@ -1045,16 +1205,10 @@ export class MockKnowledgeController {
     const user = this.auth(auth);
     const payload = JSON.stringify({ submissionId, expectedVersion, action: 'approve' });
     const action = (): ApprovalDecisionResponse => {
-      this.consumeApprovalError();
-      const submission = this.submission(submissionId);
-      if (!this.managedDepartmentSpaceIds(user).includes(submission.targetSpaceId)) {
-        throw new MockHttpError(403, 'approval_forbidden');
-      }
-      if (submission.status !== 'pending') {
-        throw new MockHttpError(409, 'submission_already_reviewed');
-      }
-      if (submission.version !== expectedVersion) {
-        throw new MockHttpError(409, 'version_conflict');
+      const submission = this.requireReviewableSubmission(user, submissionId, expectedVersion);
+      // 目标空间已存在重复文档：投稿保持 pending，行不移除（§8.5 duplicate_document）。
+      if (this.findByName(submission.targetSpaceId, submission.name) !== undefined) {
+        throw new MockHttpError(409, 'duplicate_document');
       }
       submission.version += 1;
       submission.reviewedAt = new Date().toISOString();
@@ -1100,17 +1254,7 @@ export class MockKnowledgeController {
     const user = this.auth(auth);
     const payload = JSON.stringify({ submissionId, expectedVersion, action: 'reject', reason });
     const action = (): ApprovalDecisionResponse => {
-      this.consumeApprovalError();
-      const submission = this.submission(submissionId);
-      if (!this.managedDepartmentSpaceIds(user).includes(submission.targetSpaceId)) {
-        throw new MockHttpError(403, 'approval_forbidden');
-      }
-      if (submission.status !== 'pending') {
-        throw new MockHttpError(409, 'submission_already_reviewed');
-      }
-      if (submission.version !== expectedVersion) {
-        throw new MockHttpError(409, 'version_conflict');
-      }
+      const submission = this.requireReviewableSubmission(user, submissionId, expectedVersion);
       submission.version += 1;
       submission.reviewedAt = new Date().toISOString();
       submission.status = 'rejected';
@@ -1155,12 +1299,80 @@ export class MockKnowledgeController {
     this.seedDocument('personal:u_minister', '部门预算汇总.xlsx', 'excel', '2026-07-15T01:00:00Z', 8, 0);
     this.seedDocument('department:d_finance', '财务审批流程.pdf', 'pdf', '2026-07-01T00:00:00Z', 30, 5);
     this.seedDocument('department:d_finance', '差旅报销标准.docx', 'word', '2026-06-20T00:00:00Z', 15, 2);
+    // 管理端只读下钻种子（§7.3）：与 admin 用户/部门种子的 document_count 对齐
+    this.seedDocument('personal:u_chen', '入职培训笔记.md', 'md', '2026-07-12T02:00:00Z', 5, 0);
+    this.seedDocument('personal:u_chen', '人事政策摘编.pdf', 'pdf', '2026-07-18T06:00:00Z', 18, 2);
+    this.seedDocument('department:d_legacy', '2019 年档案汇编.pdf', 'pdf', '2026-03-01T00:00:00Z', 120, 8);
+    this.seedDocument('department:d_legacy', '2020 年档案汇编.pdf', 'pdf', '2026-03-02T00:00:00Z', 96, 6);
+    this.seedDocument('department:d_legacy', '2021 年档案汇编.pdf', 'pdf', '2026-03-03T00:00:00Z', 88, 4);
+    this.seedDocument('department:d_legacy', '档案借阅登记.xlsx', 'excel', '2026-03-04T00:00:00Z', 12, 0);
     // 公共库
     this.seedDocument('public', '公共制度汇编.pdf', 'pdf', '2026-06-01T00:00:00Z', 200, 10);
 
     // 部长部门库待审核投稿种子（审批徽标 + 列表数据源）
-    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '第三季度预算说明.pdf', 'pdf', 2048, '2026-07-25T02:00:00Z');
-    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '费用报销细则修订.docx', 'word', 1024, '2026-07-26T03:00:00Z');
+    const finance = { id: 'd_finance', name: '财务部' };
+    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '第三季度预算说明.pdf', 'pdf', 2048, '2026-07-25T02:00:00Z', { submitterDepartment: finance });
+    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '费用报销细则修订.docx', 'word', 1024, '2026-07-26T03:00:00Z', { submitterDepartment: finance });
+
+    // 运维 / 超管审核范围种子（§8.4：ops=公共库；admin=公共库+全部 active 部门）。
+    // 时间正序先投先审；各错误路径各一条种子（duplicate / scope_changed / 冻结投稿人）。
+    this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '行业研报汇总.pdf', 'pdf', 4096, '2026-07-27T01:00:00Z', { submitterDepartment: finance });
+    this.seedSubmission('u_minister', 'minister-li', 'public', '公共库', '公共制度汇编.pdf', 'pdf', 8192, '2026-07-27T02:00:00Z', { submitterDepartment: finance });
+    this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '跨部门协作指引.pdf', 'pdf', 3072, '2026-07-27T03:00:00Z', { submitterDepartment: finance, scopeChanged: true });
+    this.seedSubmission('u_ghost', 'ghost', 'public', '公共库', '历史遗留材料.pdf', 'pdf', 1024, '2026-07-27T04:00:00Z', { submitterFrozen: true });
+    this.seedSubmission('u_extra_wang', 'wangwu', 'department:d_hr', '人事部', '招聘流程优化.docx', 'word', 1536, '2026-07-27T05:00:00Z', { submitterDepartment: { id: 'd_hr', name: '人事部' } });
+
+    // §10.1 运维任务队列种子（独立任务池，不进上传结果层）：
+    // 超时 running ×2（stale 徽标数据源）、正常 running、pending、retry_wait、
+    // failed、dead_letter、cancelled、succeeded 各一，覆盖四档 view。
+    this.seedOpsJob({ name: '事故报告.pdf', state: 'running', stale: true, enqueuedSecondsAgo: 3400 });
+    this.seedOpsJob({ name: '库存盘点.pdf', state: 'running', stale: true, enqueuedSecondsAgo: 3900 });
+    this.seedOpsJob({ name: '月度归档.pdf', state: 'running', enqueuedSecondsAgo: 120 });
+    this.seedOpsJob({ name: '票据扫描.pdf', state: 'pending', enqueuedSecondsAgo: 300 });
+    this.seedOpsJob({ name: '人事表格.xlsx', state: 'retry_wait', enqueuedSecondsAgo: 720 });
+    this.seedOpsJob({ name: '损坏的文档.pdf', state: 'failed', enqueuedSecondsAgo: 1800 });
+    this.seedOpsJob({ name: '超大附件.pdf', state: 'dead_letter', enqueuedSecondsAgo: 7200 });
+    this.seedOpsJob({ name: '已取消任务.pdf', state: 'cancelled', enqueuedSecondsAgo: 5400 });
+    this.seedOpsJob({ name: '已完成入库.pdf', state: 'succeeded', enqueuedSecondsAgo: 86400 });
+  }
+
+  /** §10.1 任务队列种子夹具：独立任务池（opsJobs），listJobs / 上传结果层不可见。 */
+  seedOpsJob(input: {
+    readonly name: string;
+    readonly state: JobState;
+    readonly stale?: boolean;
+    readonly enqueuedSecondsAgo?: number;
+  }): StoredJob {
+    const createdAt = new Date(Date.now() - (input.enqueuedSecondsAgo ?? 0) * 1000).toISOString();
+    const job: StoredJob = {
+      jobId: this.nextId('opsjob'),
+      documentId: null,
+      name: input.name,
+      spaceId: 'public',
+      uploadBatchId: null,
+      kind: 'upload',
+      state: input.state,
+      replayGeneration: 0,
+      stage:
+        input.state === 'pending'
+          ? 'queued'
+          : input.state === 'running'
+            ? 'parsing'
+            : null,
+      nextAttemptAt:
+        input.state === 'retry_wait'
+          ? new Date(Date.now() + 60_000).toISOString()
+          : null,
+      usage: input.state === 'succeeded' ? { pages: 20, images: 0 } : null,
+      failureReason:
+        input.state === 'failed' || input.state === 'dead_letter' ? 'parse_error' : null,
+      ocrLowConfidence: false,
+      notificationEventIds: [],
+      createdAt,
+      stale: input.stale ?? false,
+    };
+    this.opsJobs.set(job.jobId, job);
+    return job;
   }
 
   private seedDocument(spaceId: string, name: string, mediaKind: string, createdAt: string, pages: number, images: number): StoredDocument {
@@ -1211,12 +1423,18 @@ export class MockKnowledgeController {
     mediaKind: string,
     sizeBytes: number,
     createdAt: string,
+    options: {
+      readonly submitterDepartment?: { id: string; name: string } | null;
+      readonly scopeChanged?: boolean;
+      readonly submitterFrozen?: boolean;
+    } = {},
   ): StoredSubmission {
     const submission: StoredSubmission = {
       submissionId: this.nextId('sub'),
       version: 1,
       submitterUserId,
       submitterName,
+      submitterDepartment: options.submitterDepartment ?? null,
       targetSpaceId,
       targetSpaceName,
       name,
@@ -1229,6 +1447,8 @@ export class MockKnowledgeController {
       invalidatedReason: null,
       documentId: null,
       jobId: null,
+      scopeChanged: options.scopeChanged ?? false,
+      submitterFrozen: options.submitterFrozen ?? false,
       content: { bytes: new TextEncoder().encode(`mock content for ${name}`), type: 'application/pdf' },
     };
     this.submissions.set(submission.submissionId, submission);
@@ -1395,6 +1615,7 @@ export class MockKnowledgeController {
       ocrLowConfidence: false,
       notificationEventIds: [],
       createdAt: new Date().toISOString(),
+      stale: false,
     };
     this.jobs.set(job.jobId, job);
     return job;
@@ -1406,6 +1627,7 @@ export class MockKnowledgeController {
       version: 1,
       submitterUserId: user.id,
       submitterName: user.display_name,
+      submitterDepartment: user.department,
       targetSpaceId: space.id,
       targetSpaceName: space.name,
       name: file.name,
@@ -1418,6 +1640,8 @@ export class MockKnowledgeController {
       invalidatedReason: null,
       documentId: null,
       jobId: null,
+      scopeChanged: false,
+      submitterFrozen: false,
       content: { bytes: new TextEncoder().encode(`mock content for ${file.name}`), type: file.type || 'application/octet-stream' },
     };
     this.submissions.set(submission.submissionId, submission);
@@ -1587,7 +1811,8 @@ export class MockKnowledgeController {
   }
 
   private job(jobId: string): StoredJob {
-    const job = this.jobs.get(jobId);
+    // cancel/replay 双池查找：上传结果层任务与运维任务队列任务共用 §6.7 端点。
+    const job = this.jobs.get(jobId) ?? this.opsJobs.get(jobId);
     if (job === undefined) {
       throw new MockHttpError(404, 'ingestion_job_not_found');
     }

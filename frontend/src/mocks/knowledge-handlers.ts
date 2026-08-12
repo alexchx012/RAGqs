@@ -319,7 +319,8 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
 
     http.post('/v1/ingestion-jobs/:id/cancel', async ({ request, params }) => {
       try {
-        const idempotencyKey = requireIdempotencyKey(request);
+        // §6.7：cancel 不带请求 body 或 Idempotency-Key；携带时按幂等回放处理（兼容旧调用方）。
+        const idempotencyKey = request.headers.get('Idempotency-Key') ?? '';
         controller.cancelJob(
           request.headers.get('Authorization'),
           String(params['id']),
@@ -496,7 +497,16 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
 
     http.get('/v1/approvals/submissions', ({ request }) => {
       try {
-        return HttpResponse.json(controller.listApprovals(request.headers.get('Authorization')));
+        // §8.4：target_kind / target_space_id 仅超管筛选用；其余角色由控制器按范围固定。
+        const url = new URL(request.url);
+        const targetKind = url.searchParams.get('target_kind') ?? undefined;
+        const targetSpaceId = url.searchParams.get('target_space_id') ?? undefined;
+        return HttpResponse.json(
+          controller.listApprovals(request.headers.get('Authorization'), {
+            targetKind: targetKind as 'public' | 'department' | undefined,
+            targetSpaceId,
+          }),
+        );
       } catch (error) {
         return errorResponse(error);
       }
@@ -514,6 +524,8 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
             expectedVersion,
             idempotencyKey,
           ),
+          // §8.5：通过返回 202（已创建入库任务，文档初始版本成功后才进入目标空间）。
+          { status: 202 },
         );
       } catch (error) {
         return errorResponse(error);
