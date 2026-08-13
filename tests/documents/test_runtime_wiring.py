@@ -73,6 +73,17 @@ class _ExplicitReranker:
         return tuple(candidates), None
 
 
+class _ExplicitGraphExtractor:
+    """Production 装配要求的显式 graph build extractor 测试替身。"""
+
+    def estimate_primary_model_calls(self, snapshot):
+        del snapshot
+        return 0
+
+    def extract(self, snapshot, session):
+        del snapshot, session
+
+
 def test_runtime_exposes_documents_service_and_department_work_adapter() -> None:
     settings = load_platform_settings(
         {
@@ -195,6 +206,7 @@ def test_production_runtime_requires_explicit_retrieval_backends() -> None:
             "indexing_token_counter": len,
             "indexing_image_ocr": lambda content, context: "ocr",
             "indexing_image_describer": lambda content, context: "description",
+            "graph_build_extractor": _ExplicitGraphExtractor(),
         },
     )
     runtime.close()

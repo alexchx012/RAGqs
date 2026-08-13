@@ -117,6 +117,28 @@ def _random_capability_secret() -> bytes:
     return secrets.token_bytes(32)
 
 
+def _index_configuration_staging_table_exists(engine: Any, table_name: str) -> bool:
+    """Return whether ``table_name`` exists, checked through a live connection.
+
+    ``sqlalchemy.inspect(engine)`` fails with ``NoInspectionAvailable`` for
+    engine wrappers that delegate via ``__getattr__`` (e.g. dispose-tracking
+    test doubles), while inspecting a real connection always works. A failure
+    to open or inspect a connection is treated as "table absent": the staging
+    warm-up is an optional startup pre-flight and must never break runtime
+    assembly.
+    """
+    try:
+        connection = engine.connect()
+    except Exception:
+        return False
+    try:
+        return inspect(connection).has_table(table_name)
+    except Exception:
+        return False
+    finally:
+        connection.close()
+
+
 def build_runtime(
     settings: PlatformSettings,
     adapters: Mapping[str, Any] | None = None,
@@ -408,7 +430,7 @@ def build_runtime(
         object_store=object_store,
     )
     configured.setdefault("indexing_service", indexing_service)
-    if inspect(engine).has_table("index_generations"):
+    if _index_configuration_staging_table_exists(engine, "index_generations"):
         indexing_service.ensure_configuration_staging()
     calendar = configured.get("business_calendar") or get_calendar_service(
         engine,

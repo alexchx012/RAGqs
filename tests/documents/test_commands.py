@@ -86,6 +86,22 @@ def _accept(service, principal, item, *, stage_resources=None):
                 "generation_id": lease.expected_generation_id,
             }
         ]
+    else:
+        # 调用方（如 retention 测试）只需给出 backend_kind/resource_id；
+        # 补齐 durable-search-indexing 收紧后的资源身份键，保证回执与
+        # staging request 的逐资源一致性校验通过。
+        resources = [
+            {
+                **resource,
+                "attempt_id": lease.attempt_id,
+                "publication_id": lease.publication_id,
+                "fencing_token": lease.fencing_token,
+                "document_id": item["document_id"],
+                "document_version_id": item["document_version_id"],
+                "generation_id": lease.expected_generation_id,
+            }
+            for resource in stage_resources
+        ]
     return service.accept_processing_receipt(
         principal=principal,
         job_id=item["job_id"],
@@ -105,7 +121,7 @@ def _accept(service, principal, item, *, stage_resources=None):
             "processing_summary": {
                 "pages": 1,
                 "images": 0,
-                "chunk_count": 1,
+                "chunk_count": len(resources),
                 "page_count": 1,
                 "image_count": 0,
                 "table_count": 0,

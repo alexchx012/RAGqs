@@ -18,7 +18,10 @@ from app.usage.schema import usage_metadata
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False：迁移不应把应用里已创建的 logger
+    # （如 app.outbox.dispatcher）置为 disabled，否则会破坏调用方对日志
+    # 的捕获（caplog 等）并让依赖日志输出的行为静默丢失。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = [
     core_metadata,
