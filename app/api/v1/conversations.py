@@ -1,0 +1,242 @@
+"""Conversation, group, message creation and conversation read-model routes."""
+
+from __future__ import annotations
+
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, Header, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.chat.conversations import ConversationService
+from app.chat.generation import GenerationService
+from app.chat.models import AskRequest, ConversationScope
+from app.chat.read_models import conversation_detail
+from app.chat.streaming import GenerationStreamService
+from app.identity.service import AuthPrincipal
+from app.platform.errors import PlatformError
+
+from .dependencies import current_principal
+
+router = APIRouter(tags=["conversations"])
+
+
+class ScopeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    space_ids: list[str] | None = None
+    document_ids: list[str] | None = None
+
+
+class AskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1)
+    effort_level: str
+    scope: ScopeBody | None = None
+    overrides: dict[str, Any] | None = None
+
+
+class GroupBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+
+
+class PatchConversationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = None
+    pinned: bool | None = None
+    group_id: str | None = None
+
+
+def _service(request: Request) -> GenerationService:
+    service = request.app.state.platform_runtime.resolve("chat_generation_service")
+    if not isinstance(service, GenerationService):
+        raise RuntimeError("chat generation service is not configured")
+    return service
+
+
+def _conversation_service(request: Request) -> ConversationService:
+    service = request.app.state.platform_runtime.resolve("chat_conversation_service")
+    if not isinstance(service, ConversationService):
+        raise RuntimeError("chat conversation service is not configured")
+    return service
+
+
+def _stream_service(request: Request) -> GenerationStreamService:
+    service = request.app.state.platform_runtime.resolve("chat_stream_service")
+    if not isinstance(service, GenerationStreamService):
+        raise RuntimeError("chat stream service is not configured")
+    return service
+
+
+def _require_streaming(accept: str | None) -> None:
+    if accept is None:
+        return
+    accepted = [part.strip() for part in accept.split(",")]
+    if not any(part == "*/*" or part.startswith("text/event-stream") for part in accepted):
+        raise PlatformError(
+            "streaming_response_required",
+            "This endpoint only returns text/event-stream",
+            {},
+            406,
+        )
+
+
+def _idempotency_key(request: Request) -> str:
+    key = request.headers.get("Idempotency-Key")
+    if not key or not key.strip():
+        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
+    return key.strip()
+
+
+def _last_event_id(request: Request) -> int:
+    value = request.headers.get("Last-Event-ID")
+    if value is None or value == "":
+        return 0
+    try:
+        return max(0, int(value))
+    except ValueError as error:
+        raise PlatformError(
+            "validation_error", "Last-Event-ID must be an integer", {}, 422
+        ) from error
+
+
+@router.get("/conversations")
+def list_conversations(
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    q: str | None = None,
+) -> dict[str, Any]:
+    return _conversation_service(request).list_conversations(
+        user_id=str(principal.user_id), query=q
+    )
+
+
+@router.post("/conversations", status_code=201)
+def create_conversation(
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> JSONResponse:
+    return JSONResponse(
+        _conversation_service(request).create_conversation(user_id=str(principal.user_id)),
+        status_code=201,
+    )
+
+
+@router.get("/conversations/{conversation_id}")
+def get_conversation(
+    conversation_id: str,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> dict[str, Any]:
+    engine = request.app.state.platform_runtime.resolve("database_engine")
+    with engine.connect() as connection:
+        return conversation_detail(
+            connection,
+            conversation_id=conversation_id,
+            user_id=str(principal.user_id),
+        )
+
+
+@router.patch("/conversations/{conversation_id}")
+def patch_conversation(
+    conversation_id: str,
+    body: PatchConversationBody,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> JSONResponse:
+    fields = body.model_dump(exclude_unset=True)
+    return JSONResponse(
+        _conversation_service(request).patch_conversation(
+            user_id=str(principal.user_id),
+            conversation_id=conversation_id,
+            **fields,
+        )
+    )
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(
+    conversation_id: str,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> None:
+    _conversation_service(request).delete_conversation(
+        user_id=str(principal.user_id), conversation_id=conversation_id
+    )
+
+
+@router.post("/conversations/{conversation_id}/messages")
+def create_message(
+    conversation_id: str,
+    body: AskBody,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    accept: Annotated[str | None, Header()] = None,
+) -> StreamingResponse:
+    _require_streaming(accept)
+    key = _idempotency_key(request)
+    if body.overrides is not None and body.overrides:
+        raise PlatformError(
+            "validation_error", "overrides must be null", {"field": "overrides"}, 422
+        )
+    if body.effort_level not in {"quick", "think", "deep"}:
+        raise PlatformError(
+            "validation_error",
+            "effort_level must be quick, think or deep",
+            {"field": "effort_level"},
+            422,
+        )
+    scope = None
+    if body.scope is not None:
+        scope = ConversationScope.from_value(body.scope.model_dump())
+    ask = AskRequest(content=body.content, effort_level=body.effort_level, scope=scope)
+    result = _service(request).ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=ask,
+        idempotency_key=key,
+    )
+    return StreamingResponse(
+        _stream_service(request).stream(
+            principal=principal,
+            generation_id=result.generation_id,
+            last_event_id=0,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/conversation-groups", status_code=201)
+def create_group(
+    body: GroupBody,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> JSONResponse:
+    return JSONResponse(
+        _conversation_service(request).create_group(user_id=str(principal.user_id), name=body.name),
+        status_code=201,
+    )
+
+
+@router.patch("/conversation-groups/{group_id}")
+def patch_group(
+    group_id: str,
+    body: GroupBody,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> JSONResponse:
+    return JSONResponse(
+        _conversation_service(request).patch_group(
+            user_id=str(principal.user_id), group_id=group_id, name=body.name
+        )
+    )
+
+
+@router.delete("/conversation-groups/{group_id}", status_code=204)
+def delete_group(
+    group_id: str,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> None:
+    _conversation_service(request).delete_group(user_id=str(principal.user_id), group_id=group_id)

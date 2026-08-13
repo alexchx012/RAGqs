@@ -8,6 +8,17 @@ from typing import Any
 from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
 
+from app.chat.conversations import ConversationService
+from app.chat.generation import GenerationService
+from app.chat.ports import (
+    ChatGenerationRevocationPort,
+    IdentityChatAuthorizationPort,
+    IndexingChatRetrievalPort,
+    NoCalibrationWindowPort,
+    UnavailableChatProviderPort,
+)
+from app.chat.streaming import GenerationStreamService
+from app.chat.worker import ChatGenerationWorker
 from app.documents.public_graph import PublicGraphSourceService
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
@@ -30,7 +41,6 @@ from app.identity.ports import (
     AccountRetirementRequest,
     UnavailableAccountRetirementGateway,
 )
-from app.identity.revocation import DurableGenerationRevocationPort
 from app.identity.service import IdentityAccessService
 from app.indexing import (
     ContentProcessor,
@@ -151,7 +161,7 @@ def build_runtime(
     ) or DocumentsDepartmentWorkCheckPort(engine)
     configured.setdefault("department_work_check_port", department_work_check_port)
     generation_revocation_port = configured.get("generation_revocation_port") or (
-        DurableGenerationRevocationPort()
+        ChatGenerationRevocationPort()
     )
     configured.setdefault("generation_revocation_port", generation_revocation_port)
     deletion_cleanup_port = configured.get("account_deletion_cleanup_port") or (
@@ -503,6 +513,52 @@ def build_runtime(
             now=clock.now_utc,
         ),
     )
+    chat_authorization = configured.get("chat_authorization_port") or (
+        IdentityChatAuthorizationPort(identity_access)
+    )
+    configured.setdefault("chat_authorization_port", chat_authorization)
+    chat_retrieval = configured.get("chat_retrieval_port") or (
+        IndexingChatRetrievalPort(indexing_service)
+    )
+    configured.setdefault("chat_retrieval_port", chat_retrieval)
+    chat_provider = configured.get("chat_provider_port") or UnavailableChatProviderPort()
+    configured.setdefault("chat_provider_port", chat_provider)
+    chat_calibration = configured.get("chat_calibration_port") or NoCalibrationWindowPort()
+    configured.setdefault("chat_calibration_port", chat_calibration)
+    chat_usage: Any = configured.get("chat_usage_submission") or (
+        UsageLedgerSubmissionAdapter(ledger)
+    )
+    configured.setdefault("chat_usage_submission", chat_usage)
+    chat_conversation_service = configured.get("chat_conversation_service") or (
+        ConversationService(engine, now=clock)
+    )
+    configured.setdefault("chat_conversation_service", chat_conversation_service)
+    chat_generation_service = configured.get("chat_generation_service") or (
+        GenerationService(
+            engine,
+            clock=clock,
+            authorization=chat_authorization,
+            calibration=chat_calibration,
+        )
+    )
+    configured.setdefault("chat_generation_service", chat_generation_service)
+    chat_stream_service = configured.get("chat_stream_service") or (
+        GenerationStreamService(
+            engine,
+            clock=clock,
+            authorization=chat_authorization,
+        )
+    )
+    configured.setdefault("chat_stream_service", chat_stream_service)
+    chat_worker = configured.get("chat_generation_worker") or ChatGenerationWorker(
+        engine,
+        clock=clock,
+        retrieval=chat_retrieval,
+        provider=chat_provider,
+        usage=chat_usage,
+        calibration=chat_calibration,
+    )
+    configured.setdefault("chat_generation_worker", chat_worker)
     submission_invalidation_port = configured.get("submission_invalidation_port")
     if submission_invalidation_port is None:
         with engine.connect() as connection:

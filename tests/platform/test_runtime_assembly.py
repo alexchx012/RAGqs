@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Column, Integer, MetaData, String, Table, select, update
 
-from app.identity.revocation import DurableGenerationRevocationPort
+from app.chat.ports import ChatGenerationRevocationPort
 from app.identity.schema import identity_metadata, identity_revocation_command_table
 from app.platform.app_factory import create_platform_app
 from app.platform.config import PlatformConfigurationError, load_platform_settings
@@ -161,9 +161,7 @@ def test_default_runtime_persists_generation_revocation_commands() -> None:
     )
     login = service.login(username="alice", password="Password1")
 
-    assert isinstance(
-        runtime.resolve("generation_revocation_port"), DurableGenerationRevocationPort
-    )
+    assert isinstance(runtime.resolve("generation_revocation_port"), ChatGenerationRevocationPort)
     assert service.revoke_session(
         user_id=user["id"],
         session_id=login.session_id,

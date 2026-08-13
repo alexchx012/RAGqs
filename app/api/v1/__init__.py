@@ -5,7 +5,9 @@ from fastapi import APIRouter
 from .admin import router as admin_router
 from .approvals import router as approvals_router
 from .auth import router as auth_router
+from .conversations import router as conversations_router
 from .documents import router as documents_router
+from .generations import router as generations_router
 from .graph_builds import router as graph_builds_router
 from .health import router as health_router
 from .notifications import router as notifications_router
@@ -23,6 +25,8 @@ router.include_router(ops_router)
 router.include_router(quota_router)
 router.include_router(approvals_router)
 router.include_router(documents_router)
+router.include_router(conversations_router)
+router.include_router(generations_router)
 router.include_router(graph_builds_router)
 
 __all__ = ["router"]
