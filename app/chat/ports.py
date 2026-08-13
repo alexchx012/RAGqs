@@ -32,6 +32,7 @@ from app.usage.ports import UsageSubmissionPort
 
 from .models import CalibrationWindowSnapshot, ChatProviderResponse, RetrievalOutcome
 from .schema import (
+    chat_ab_pair_table,
     chat_generation_table,
     chat_revocation_consumption_table,
     chat_subscription_lease_table,
@@ -151,6 +152,67 @@ class NoCalibrationWindowPort:
 
     def increment_pairs_collected(self, connection: Connection, window_id: str) -> None:
         del connection, window_id
+
+
+class ChatPairExpiryPort(Protocol):
+    """Chat-owned A/B pair expiry service consumed by the evaluation domain.
+
+    The evaluation close worker must never write ``chat_ab_pair`` directly
+    (A2): it requests pair expiry through this chat-owned port, and the write
+    stays inside the chat domain.
+    """
+
+    def window_has_votable_pairs(self, connection: Connection, *, window_id: str) -> bool: ...
+
+    def expire_window_pairs(
+        self, connection: Connection, *, window_id: str, now: datetime
+    ) -> int: ...
+
+
+class SqlAlchemyChatPairExpiry:
+    """Chat-domain pair expiry over ``chat_ab_pair``.
+
+    Missing chat schema (pre-migration) degrades to "no pairs": the evaluation
+    close worker may close immediately, matching the chat-maintenance reaper's
+    own table-absent guard.
+    """
+
+    def __init__(self, engine: Any) -> None:
+        self._engine = engine
+
+    @staticmethod
+    def _table_present(connection: Connection) -> bool:
+        return sqlalchemy_inspect(connection).has_table("chat_ab_pair")
+
+    def window_has_votable_pairs(self, connection: Connection, *, window_id: str) -> bool:
+        if not self._table_present(connection):
+            return False
+        return (
+            connection.execute(
+                select(chat_ab_pair_table.c.pair_id)
+                .where(
+                    chat_ab_pair_table.c.window_id == window_id,
+                    chat_ab_pair_table.c.status.in_(("open", "pending")),
+                )
+                .limit(1)
+            )
+            .mappings()
+            .one_or_none()
+            is not None
+        )
+
+    def expire_window_pairs(self, connection: Connection, *, window_id: str, now: datetime) -> int:
+        if not self._table_present(connection):
+            return 0
+        result = connection.execute(
+            update(chat_ab_pair_table)
+            .where(
+                chat_ab_pair_table.c.window_id == window_id,
+                chat_ab_pair_table.c.status.in_(("open", "pending")),
+            )
+            .values(status="expired", updated_at_utc=now)
+        )
+        return result.rowcount
 
 
 class IndexingChatRetrievalPort:
@@ -552,6 +614,7 @@ def consume_durable_revocation_commands(
 __all__ = [
     "ChatAuthorizationPort",
     "ChatGenerationRevocationPort",
+    "ChatPairExpiryPort",
     "ChatProviderPort",
     "ChatProviderRequest",
     "ChatRetrievalPort",
@@ -562,6 +625,7 @@ __all__ = [
     "IdentityChatAuthorizationPort",
     "NoCalibrationWindowPort",
     "RecordingChatRetrievalPort",
+    "SqlAlchemyChatPairExpiry",
     "UnavailableChatProviderPort",
     "apply_revocation_effects",
     "consume_durable_revocation_commands",

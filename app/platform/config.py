@@ -83,7 +83,18 @@ class IndexSettings(_StrictModel):
     sparse_provider: Literal["meilisearch", "opensearch", "opensearch+ik"] = "meilisearch"
     reranker_provider: str = Field(default="configured", min_length=1, max_length=64)
     image_vlm_provider: str = Field(default="configured", min_length=1, max_length=64)
+    image_vlm_credential_ref: str = Field(default="image-vlm")
     generation_rollback_days: int = Field(default=7, ge=1, le=365)
+
+
+class EvaluationSettings(_StrictModel):
+    judge_provider: str = Field(default="bailian", min_length=1, max_length=64)
+    judge_model: str = Field(default="qwen3.7-plus", min_length=1, max_length=128)
+    judge_mode: str = Field(default="non_thinking", min_length=1, max_length=64)
+    judge_credential_ref: str = Field(default="judge", min_length=1, max_length=64)
+    judge_base_url: str | None = None
+    judge_api_key: SecretStr | None = None
+    candidate_configs: tuple[str, ...] = ("default",)
 
 
 class ObservabilitySettings(_StrictModel):
@@ -148,6 +159,7 @@ class PlatformSettings(BaseSettings):
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     business_timezone: str | None = None
     # 受保护维护 CLI（ragqs-usage-maintenance）的显式密钥：只从环境读取，不进参数/
     # 日志/输出；production 下缺失时维护入口拒绝执行（fail-closed）。
@@ -187,7 +199,15 @@ _ENV_KEYS = {
     "RAG_INDEX_SPARSE_PROVIDER",
     "RAG_INDEX_RERANKER_PROVIDER",
     "RAG_INDEX_IMAGE_VLM_PROVIDER",
+    "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF",
     "RAG_INDEX_GENERATION_ROLLBACK_DAYS",
+    "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
+    "RAG_EVALUATION_JUDGE_BASE_URL",
+    "RAG_EVALUATION_JUDGE_API_KEY",
+    "RAG_EVALUATION_CANDIDATE_CONFIGS",
+    "RAG_EVALUATION_JUDGE_PROVIDER",
+    "RAG_EVALUATION_JUDGE_MODEL",
+    "RAG_EVALUATION_JUDGE_MODE",
     "RAG_BUSINESS_TIMEZONE",
     "RAG_MAINTENANCE_KEY",
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
@@ -330,11 +350,27 @@ def load_platform_settings(
                 "image_vlm_provider": _optional(env, "RAG_INDEX_IMAGE_VLM_PROVIDER")
                 or _optional(env, "IMAGE_VLM_PROVIDER")
                 or "configured",
+                "image_vlm_credential_ref": _optional(env, "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF")
+                or "image-vlm",
                 "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS")
                 or _int(env, "INDEX_GENERATION_ROLLBACK_DAYS")
                 or 7,
             }.items()
             if value is not None
+        },
+        "evaluation": {
+            key: value
+            for key, value in {
+                "judge_provider": _optional(env, "RAG_EVALUATION_JUDGE_PROVIDER") or "bailian",
+                "judge_model": _optional(env, "RAG_EVALUATION_JUDGE_MODEL") or "qwen3.7-plus",
+                "judge_mode": _optional(env, "RAG_EVALUATION_JUDGE_MODE") or "non_thinking",
+                "judge_credential_ref": _optional(env, "RAG_EVALUATION_JUDGE_CREDENTIAL_REF")
+                or "judge",
+                "judge_base_url": _optional(env, "RAG_EVALUATION_JUDGE_BASE_URL"),
+                "judge_api_key": _optional_secret(env, "RAG_EVALUATION_JUDGE_API_KEY"),
+                "candidate_configs": _csv(env, "RAG_EVALUATION_CANDIDATE_CONFIGS") or ("default",),
+            }.items()
+            if value not in (None, ())
         },
         "business_timezone": _optional(env, "RAG_BUSINESS_TIMEZONE"),
         "maintenance_key": _optional_secret(env, "RAG_MAINTENANCE_KEY"),
@@ -424,3 +460,15 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production auth allowed origins are required")
         if not settings.auth.admin_roster:
             raise ValueError("production auth admin roster is required")
+
+    evaluation = settings.evaluation
+    if evaluation.judge_provider != "bailian":
+        raise ValueError("evaluation judge provider must be bailian")
+    if evaluation.judge_model != "qwen3.7-plus":
+        raise ValueError("evaluation judge model must be qwen3.7-plus")
+    if evaluation.judge_mode != "non_thinking":
+        raise ValueError("evaluation judge mode must be non_thinking")
+    if evaluation.judge_credential_ref == settings.index.image_vlm_credential_ref:
+        raise ValueError(
+            "evaluation judge credential ref must differ from image VLM credential ref"
+        )

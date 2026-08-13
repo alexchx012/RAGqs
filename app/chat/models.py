@@ -204,6 +204,13 @@ class CalibrationWindowSnapshot:
     window_kind: str
     expires_at_utc: datetime | None = None
     close_deadline_at_utc: datetime | None = None
+    pair_vote_ttl_seconds: int | None = None
+
+
+# Fallback single-pair vote TTL used only when the calibration port snapshot
+# does not carry the policy pair_vote_ttl_seconds (e.g. pre-evaluation-migration
+# boots or fakes without the field).
+AB_PAIR_OPEN_SECONDS = 3600
 
 
 @dataclass(slots=True)

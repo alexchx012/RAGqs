@@ -84,6 +84,17 @@ class _ExplicitGraphExtractor:
         del snapshot, session
 
 
+class _ExplicitJudgeProvider:
+    """Production 装配要求的显式 evaluation judge provider 测试替身。"""
+
+    def preflight_probe(self) -> None:
+        return None
+
+    def judge(self, request):
+        del request
+        raise AssertionError("test judge must not be invoked during assembly")
+
+
 def test_runtime_exposes_documents_service_and_department_work_adapter() -> None:
     settings = load_platform_settings(
         {
@@ -207,6 +218,7 @@ def test_production_runtime_requires_explicit_retrieval_backends() -> None:
             "indexing_image_ocr": lambda content, context: "ocr",
             "indexing_image_describer": lambda content, context: "description",
             "graph_build_extractor": _ExplicitGraphExtractor(),
+            "judge_provider": _ExplicitJudgeProvider(),
         },
     )
     runtime.close()

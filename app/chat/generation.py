@@ -16,6 +16,7 @@ from app.platform.errors import PlatformError
 from .budget import RAG_BUDGET_POLICY_VERSION
 from .events import append_event
 from .models import (
+    AB_PAIR_OPEN_SECONDS,
     AbVoteRequest,
     AskRequest,
     CalibrationWindowSnapshot,
@@ -385,6 +386,14 @@ class GenerationService:
         now: datetime,
     ) -> None:
         pair_id = _new_id("pair")
+        ttl_seconds = window.pair_vote_ttl_seconds
+        if not ttl_seconds or ttl_seconds <= 0:
+            ttl_seconds = AB_PAIR_OPEN_SECONDS
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        # The pair expiry is the earlier of the policy TTL and the existing
+        # window close deadline (A31).
+        if window.close_deadline_at_utc is not None and window.close_deadline_at_utc < expires_at:
+            expires_at = window.close_deadline_at_utc
         connection.execute(
             chat_ab_pair_table.insert().values(
                 pair_id=pair_id,
@@ -396,7 +405,7 @@ class GenerationService:
                 voted=False,
                 choice=None,
                 voted_at_utc=None,
-                expires_at_utc=None,
+                expires_at_utc=expires_at,
                 close_deadline_at_utc=window.close_deadline_at_utc,
                 version=1,
                 created_at_utc=now,

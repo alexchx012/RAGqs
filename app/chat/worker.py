@@ -37,7 +37,6 @@ from .schema import (
 EXECUTION_LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 MAX_PHYSICAL_EXECUTIONS = 3
-AB_PAIR_OPEN_SECONDS = 3600
 
 
 def _utc(value: Any) -> datetime:
@@ -750,12 +749,14 @@ class ChatGenerationWorker:
             }
             if pair is not None:
                 if ab_open:
+                    # The pair's expires_at_utc was frozen at creation as the
+                    # earlier of the policy TTL and the window deadline (A31);
+                    # opening for voting must not overwrite it.
                     connection.execute(
                         update(chat_ab_pair_table)
                         .where(chat_ab_pair_table.c.pair_id == pair["pair_id"])
                         .values(
                             status="open",
-                            expires_at_utc=now + timedelta(seconds=AB_PAIR_OPEN_SECONDS),
                             updated_at_utc=now,
                         )
                     )
@@ -1182,7 +1183,6 @@ def _lcs_length(left: list[str], right: list[str]) -> int:
 
 
 __all__ = [
-    "AB_PAIR_OPEN_SECONDS",
     "EXECUTION_LEASE_SECONDS",
     "ChatGenerationWorker",
     "WorkerOutcome",

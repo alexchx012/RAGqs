@@ -433,3 +433,31 @@ def test_idempotent_reuse_returns_the_existing_event_id() -> None:
     assert second.event_id == "evt_1"
     with engine.connect() as connection:
         assert len(connection.execute(select(outbox_event_table)).all()) == 1
+
+
+def test_calibration_with_no_active_ops_keeps_the_event() -> None:
+    engine = build_engine()
+    publisher = make_publisher(
+        engine,
+        now=lambda: fixed_now(),
+        graph_activated_receipt_port=_AcceptingGraphReceipt(),
+    )
+
+    with engine.begin() as connection:
+        receipt = publisher.publish(
+            make_command(
+                caller_principal="calibration",
+                event_type="calibration_window_suggested",
+                aggregate_type="calibration_window_suggestion",
+                payload={"calibration_window_suggestion_id": "cws_empty"},
+            ),
+            connection=connection,
+        )
+    assert receipt.reused is False
+    with engine.connect() as connection:
+        events = connection.execute(select(outbox_event_table)).all()
+        recipients = connection.execute(select(outbox_recipient_table)).all()
+        deliveries = connection.execute(select(outbox_delivery_table)).all()
+    assert len(events) == 1
+    assert len(recipients) == 0
+    assert len(deliveries) == 0

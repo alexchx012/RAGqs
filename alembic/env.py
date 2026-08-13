@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, pool
 from alembic import context
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata
+from app.evaluation.schema import evaluation_metadata
 from app.identity.schema import identity_metadata
 from app.indexing.schema import indexing_metadata
 from app.outbox.schema import outbox_metadata
@@ -31,6 +32,7 @@ target_metadata = [
     documents_metadata,
     indexing_metadata,
     chat_metadata,
+    evaluation_metadata,
 ]
 
 

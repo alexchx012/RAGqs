@@ -526,7 +526,7 @@ class SqlAlchemyOutboxPublisher:
             raise
         if recipients:
             connection.execute(outbox_recipient_table.insert().values(recipients))
-        if command.event_type not in OUTBOX_ONLY_EVENT_TYPES:
+        if recipients and command.event_type not in OUTBOX_ONLY_EVENT_TYPES:
             connection.execute(
                 outbox_delivery_table.insert().values(
                     event_id=command.event_id,
@@ -673,13 +673,6 @@ class SqlAlchemyOutboxPublisher:
             .scalars()
             .all()
         )
-        if not ops:
-            raise PlatformError(
-                "no_active_ops",
-                "calibration_window_suggested requires at least one active ops",
-                {},
-                422,
-            )
         recipients = tuple(
             RecipientSelection(
                 recipient_user_id=str(user_id),
@@ -787,7 +780,7 @@ class SqlAlchemyOutboxPublisher:
                     422,
                 )
             return
-        if not command.recipients:
+        if not command.recipients and command.event_type not in ROLE_SNAPSHOT_EVENT_TYPES:
             raise PlatformError(
                 "invalid_recipients",
                 "At least one recipient is required",
@@ -985,9 +978,7 @@ class SqlAlchemySubmissionOutboxAdapter:
     def publish_submission_event(
         self,
         *,
-        event_type: Literal[
-            "submission_approved", "submission_rejected", "submission_invalidated"
-        ],
+        event_type: Literal["submission_approved", "submission_rejected", "submission_invalidated"],
         submission_id: str,
         transition_version: int,
         recipient_user_id: str,

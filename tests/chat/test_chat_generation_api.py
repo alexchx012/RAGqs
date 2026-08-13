@@ -6,10 +6,15 @@ import asyncio
 import json
 import threading
 import time
+from datetime import timedelta
 
-from app.chat.models import RetrievalHitOutcome, RetrievalOutcome
+from sqlalchemy import select
+
+from app.chat.models import CalibrationWindowSnapshot, RetrievalHitOutcome, RetrievalOutcome
+from app.chat.schema import chat_ab_pair_table
 
 from .conftest import (
+    NOW,
     FakeCalibration,
     build_runtime_authorization,
     build_test_env,
@@ -477,3 +482,51 @@ def test_ab_pair_open_vote_and_expiry() -> None:
         headers={**headers, "Idempotency-Key": "fb-after-vote"},
     )
     assert feedback_after_vote.status_code == 204
+
+
+def test_ab_pair_expires_at_uses_policy_ttl_and_is_not_overwritten_on_open() -> None:
+    """A31: pair expiry = earlier of policy TTL and window deadline, frozen at
+    creation and preserved when the pair opens for voting."""
+    ttl = 900
+    snapshot = CalibrationWindowSnapshot(
+        window_id="window_1",
+        status="open",
+        policy_version="cal-v1",
+        sample_rate=1.0,
+        window_kind="manual",
+        expires_at_utc=NOW + timedelta(hours=1),
+        close_deadline_at_utc=NOW + timedelta(hours=1),
+        pair_vote_ttl_seconds=ttl,
+    )
+    env = build_test_env(
+        calibration=FakeCalibration(window=snapshot),
+        outcomes={"hello": RetrievalOutcome(hits=(_hit(),))},
+    )
+    env["provider"].candidate_bias = True
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    service = env["runtime"].resolve("chat_generation_service")
+    principal = env["identity"].authenticate_access_token(token)
+    from app.chat.models import AskRequest
+
+    service.ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=AskRequest(content="hello", effort_level="quick", scope=None),
+        idempotency_key="ask-policy-ttl",
+    )
+    with env["engine"].begin() as connection:
+        created = connection.execute(select(chat_ab_pair_table)).mappings().one()
+    # The earlier of the policy TTL (900s) and the window deadline (1h).
+    from datetime import UTC
+
+    assert created["expires_at_utc"].replace(tzinfo=UTC) == NOW + timedelta(seconds=ttl)
+    env["runtime"].resolve("chat_generation_worker").run_once()
+    with env["engine"].begin() as connection:
+        opened = connection.execute(select(chat_ab_pair_table)).mappings().one()
+    assert opened["status"] == "open"
+    # Opening for voting must not overwrite the frozen expiry (A31).
+    from datetime import UTC
+
+    assert opened["expires_at_utc"].replace(tzinfo=UTC) == NOW + timedelta(seconds=ttl)

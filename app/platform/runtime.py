@@ -14,7 +14,7 @@ from app.chat.ports import (
     ChatGenerationRevocationPort,
     IdentityChatAuthorizationPort,
     IndexingChatRetrievalPort,
-    NoCalibrationWindowPort,
+    SqlAlchemyChatPairExpiry,
     UnavailableChatProviderPort,
 )
 from app.chat.streaming import GenerationStreamService
@@ -23,6 +23,20 @@ from app.documents.public_graph import PublicGraphSourceService
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
 from app.documents.submissions import DocumentsSubmissionInvalidationPort
+from app.evaluation import (
+    CalibrationCloseWorker,
+    EvaluationCalibrationWindowPort,
+    EvaluationService,
+    IdentitySpaceVisibilityPort,
+    IndexingGenerationSourceAdapter,
+    IndexingReplayAdapter,
+    ShadowEvaluationWorker,
+    SqlAlchemyCalibrationOutboxAdapter,
+    SqlAlchemyChatFactsPort,
+    SqlAlchemyEvaluationRepository,
+    UnavailableJudgeProvider,
+    default_policy_snapshot,
+)
 from app.graph import (
     DeterministicPublicGraphExtractor,
     GenerationGraphAvailability,
@@ -545,7 +559,11 @@ def build_runtime(
     configured.setdefault("chat_retrieval_port", chat_retrieval)
     chat_provider = configured.get("chat_provider_port") or UnavailableChatProviderPort()
     configured.setdefault("chat_provider_port", chat_provider)
-    chat_calibration = configured.get("chat_calibration_port") or NoCalibrationWindowPort()
+    evaluation_calibration_port = configured.get("evaluation_calibration_port") or (
+        EvaluationCalibrationWindowPort(engine)
+    )
+    configured.setdefault("evaluation_calibration_port", evaluation_calibration_port)
+    chat_calibration = configured.get("chat_calibration_port") or evaluation_calibration_port
     configured.setdefault("chat_calibration_port", chat_calibration)
     chat_usage: Any = configured.get("chat_usage_submission") or (
         UsageLedgerSubmissionAdapter(ledger)
@@ -581,6 +599,96 @@ def build_runtime(
         calibration=chat_calibration,
     )
     configured.setdefault("chat_generation_worker", chat_worker)
+    evaluation_repository = configured.get("evaluation_repository") or (
+        SqlAlchemyEvaluationRepository(engine)
+    )
+    configured.setdefault("evaluation_repository", evaluation_repository)
+    if _index_configuration_staging_table_exists(engine, "evaluation_policy"):
+        with engine.begin() as connection:
+            if evaluation_repository.latest_policy(connection) is None:
+                evaluation_repository.ensure_policy(
+                    connection,
+                    policy=default_policy_snapshot(now=clock.now_utc(connection)),
+                )
+    judge_provider = configured.get("judge_provider")
+    if judge_provider is None:
+        if settings.profile == "production":
+            raise RuntimeError("production requires an explicit evaluation judge provider")
+        judge_provider = UnavailableJudgeProvider(environment=settings.profile)
+    configured.setdefault("judge_provider", judge_provider)
+    if settings.profile == "production":
+        from app.evaluation import JudgePreflight
+
+        JudgePreflight(judge_provider).verify_startup()
+    calibration_outbox_port = configured.get("calibration_outbox_port") or (
+        SqlAlchemyCalibrationOutboxAdapter(outbox_publisher)
+    )
+    configured.setdefault("calibration_outbox_port", calibration_outbox_port)
+    sample_snapshot_source = configured.get("sample_snapshot_source") or SqlAlchemyChatFactsPort(
+        engine
+    )
+    configured.setdefault("sample_snapshot_source", sample_snapshot_source)
+
+    class _EvaluationCandidateConfigSource:
+        def __init__(self, settings: Any) -> None:
+            self._settings = settings
+
+        def candidate_config_versions(self, *, space_id: str) -> tuple[str, ...]:
+            del space_id
+            return tuple(self._settings.evaluation.candidate_configs)
+
+    candidate_config_source = configured.get("candidate_config_source") or (
+        _EvaluationCandidateConfigSource(settings)
+    )
+    configured.setdefault("candidate_config_source", candidate_config_source)
+    index_generation_source = configured.get("index_generation_source") or (
+        IndexingGenerationSourceAdapter(generation_repository, generation_manager)
+    )
+    configured.setdefault("index_generation_source", index_generation_source)
+    retrieval_replay_port = configured.get("retrieval_replay_port") or IndexingReplayAdapter(
+        indexing_service
+    )
+    configured.setdefault("retrieval_replay_port", retrieval_replay_port)
+    evaluation_usage_submission = configured.get("evaluation_usage_submission") or (
+        UsageLedgerSubmissionAdapter(ledger)
+    )
+    configured.setdefault("evaluation_usage_submission", evaluation_usage_submission)
+    evaluation_space_visibility = configured.get("evaluation_space_visibility") or (
+        IdentitySpaceVisibilityPort(identity_access)
+    )
+    configured.setdefault("evaluation_space_visibility", evaluation_space_visibility)
+    evaluation_service = configured.get("evaluation_service") or EvaluationService(
+        engine,
+        evaluation_repository,
+        judge=judge_provider,
+        chat_facts=sample_snapshot_source,
+        candidate_configs=candidate_config_source,
+        index_generation=index_generation_source,
+        retrieval=retrieval_replay_port,
+        space_visibility=evaluation_space_visibility,
+        now=clock.now_utc,
+    )
+    evaluation_service.attach_outbox(calibration_outbox_port)
+    configured.setdefault("evaluation_service", evaluation_service)
+    evaluation_worker = configured.get("evaluation_worker") or ShadowEvaluationWorker(
+        engine,
+        evaluation_repository,
+        judge_provider,
+        retrieval_replay_port,
+        now=clock.now_utc,
+        suggestion_callback=evaluation_service.compute_suggestion,
+    )
+    configured.setdefault("evaluation_worker", evaluation_worker)
+    configured.setdefault(
+        "calibration_close_worker",
+        configured.get("calibration_close_worker")
+        or CalibrationCloseWorker(
+            engine,
+            evaluation_repository,
+            pair_expiry=SqlAlchemyChatPairExpiry(engine),
+            now=clock.now_utc,
+        ),
+    )
     submission_invalidation_port = configured.get("submission_invalidation_port")
     if submission_invalidation_port is None:
         with engine.connect() as connection:
