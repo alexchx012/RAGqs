@@ -1,6 +1,6 @@
 /*
- * DrawerRegistry 的 React 绑定：单例随应用创建并内置占位模块；
- * 后续业务 change 经 useDrawerRegistry() 取得同一实例注册真实模块（替换占位）。
+ * DrawerRegistry 的 React 绑定：单例随应用创建并注册内置模块；
+ * 各业务 change 已在构建期内完成真实模块接入。
  */
 
 import { createContext, useContext, type ReactNode } from 'react';

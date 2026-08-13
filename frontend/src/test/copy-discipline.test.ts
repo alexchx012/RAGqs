@@ -69,7 +69,7 @@ describe('单一文案常量文件机制', () => {
 
   it('单一文案常量文件可用且占位文案齐备', () => {
     expect(copy.appName.length).toBeGreaterThan(0);
-    expect(copy.shell.placeholderTitle.length).toBeGreaterThan(0);
+    expect(copy.shell.drawer.topPlaceholderBody.length).toBeGreaterThan(0);
     expect(copy.shell.skipToContent.length).toBeGreaterThan(0);
   });
 });

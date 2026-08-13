@@ -1,7 +1,7 @@
 /*
  * 抽屉模块注册机制（shared-shell 规格 §1）。
- * - 各业务模块（后续 change 实现）向抽屉注册左栏项、首层内容与下钻路由；
- *   本 change 只内置占位模块（个人四模块 + 知识库下钻两层 + 管理段模块）。
+ * - 各业务模块（个人设置、管理面板等）向抽屉注册左栏项、首层内容与下钻路由，
+ *   已由 fe-settings-personal 与 fe-admin-panels 在构建期内完成真实模块接入。
  * - 「无权限模块不渲染」：注册项带 roles 白名单，按角色渲染不同左栏清单；鉴权以后端为准。
  * - 下钻层数不限：层以 children 递归嵌套，不硬编码层数上限（规格 §2）。
  */
@@ -22,7 +22,7 @@ export interface DrawerLayer {
   readonly title: string;
   /** 下级菜单（递归，不限层数）；存在时本层右栏默认渲染下钻行列表。 */
   readonly children?: readonly DrawerLayer[];
-  /** 自定义内容渲染；缺省时：有 children 渲染下钻行列表，无 children 渲染通用占位。 */
+  /** 自定义内容渲染；缺省时本层经 children 渲染下钻行列表（已注册层均有 render 或 children）。 */
   readonly render?: (context: DrawerLayerRenderContext) => ReactNode;
   /** 项右侧摘要 slot（徽标 / 状态点；fe-admin-panels 管理段用，personal 段不用）。
    *  渲染在左栏模块按钮与下钻行内、chevron 左侧；组件自行静默（加载中 / 出错渲染 null）。 */

@@ -42,7 +42,7 @@ describe('Radix 无头原语集成（可访问性底层）', () => {
         <Dialog.Portal>
           <Dialog.Overlay />
           <Dialog.Content aria-describedby={undefined}>
-            <Dialog.Title>{copy.shell.placeholderTitle}</Dialog.Title>
+            <Dialog.Title>{copy.appName}</Dialog.Title>
             <Dialog.Close>{copy.a11y.dialogClose}</Dialog.Close>
           </Dialog.Content>
         </Dialog.Portal>

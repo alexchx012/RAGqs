@@ -9,8 +9,6 @@ export const zhCN = {
   appName: 'RAGqs',
   shell: {
     skipToContent: '跳到主要内容', // 措辞后定
-    placeholderTitle: '知识问答', // 措辞后定
-    placeholderBody: '前端工程基座已就绪，业务页面将在后续版本逐步到来。', // 措辞后定
     notFoundTitle: '页面不存在', // 措辞后定
     notFoundBack: '返回首页', // 措辞后定
     loading: '加载中', // 措辞后定
@@ -24,7 +22,6 @@ export const zhCN = {
       adminSegmentLabel: '管理', // 措辞后定
       backAria: (layerName: string) => `返回${layerName}`, // 措辞后定
       closeAria: '关闭', // 措辞后定
-      placeholderBody: '该模块内容将在后续版本逐步到来。', // 措辞后定
       topPlaceholderBody: '从左侧选择要查看的模块。', // 措辞后定
       modules: {
         profile: '个人资料', // 措辞后定

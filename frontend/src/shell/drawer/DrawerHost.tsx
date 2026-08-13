@@ -537,11 +537,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         </div>
       );
     }
-    return (
-      <div data-content-variant="placeholder" className={phaseClass}>
-        <p className="text-caption text-smoke-gray">{drawerCopy.placeholderBody}</p>
-      </div>
-    );
+    return null;
   };
 
   // 动画期间的 from/to 渲染：from 为 transition.from 解析结果，to 为当前 URL 解析结果
