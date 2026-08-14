@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from time import perf_counter
 
 from fastapi import FastAPI, Request
@@ -39,6 +40,22 @@ def create_platform_app(
             # H3：数据库探活之后锁定/校验业务日历（时区冲突 → 503 拒启，不悄悄重写）。
             # 与 usage maintenance 通过模块 lookup 调用同一 helper，便于行为级验证。
             platform_runtime_module.ensure_business_calendar_locked(runtime)
+            if settings.profile == "production":
+                missing_variable_names: list[str] = []
+                if not settings.evaluation.judge_base_url:
+                    missing_variable_names.append("RAG_EVALUATION_JUDGE_BASE_URL")
+                judge_api_key = settings.evaluation.judge_api_key
+                if judge_api_key is None or not judge_api_key.get_secret_value():
+                    missing_variable_names.append("RAG_EVALUATION_JUDGE_API_KEY")
+                if missing_variable_names:
+                    startup_alert_port = runtime.resolve("startup_configuration_alert_port")
+                    if startup_alert_port is not None:
+                        with engine.begin() as connection:
+                            startup_alert_port.publish_missing_evaluation_judge_configuration(
+                                missing_variable_names=tuple(missing_variable_names),
+                                occurred_at=datetime.now(UTC),
+                                connection=connection,
+                            )
             if settings.auth.admin_roster:
                 identity_access = runtime.resolve("identity_access")
                 if isinstance(identity_access, IdentityAccessService):

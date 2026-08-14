@@ -77,6 +77,7 @@ from app.outbox.publisher import (
     SqlAlchemyOutboxPublisher,
     SqlAlchemyPublicGraphSourceOutboxAdapter,
     SqlAlchemyQuotaOutboxEnqueueAdapter,
+    SqlAlchemyStartupConfigurationAlertAdapter,
     SqlAlchemySubmissionOutboxAdapter,
 )
 from app.outbox.service import NotificationService
@@ -318,6 +319,10 @@ def build_runtime(
         graph_activated_receipt_port=graph_activated_receipt_verifier,
     )
     configured.setdefault("outbox_publisher", outbox_publisher)
+    startup_configuration_alert_port = configured.get("startup_configuration_alert_port") or (
+        SqlAlchemyStartupConfigurationAlertAdapter(outbox_publisher)
+    )
+    configured.setdefault("startup_configuration_alert_port", startup_configuration_alert_port)
     public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (
         SqlAlchemyPublicGraphSourceOutboxAdapter(outbox_publisher)
     )
