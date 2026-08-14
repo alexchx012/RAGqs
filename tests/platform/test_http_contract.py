@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import Query
@@ -106,6 +107,35 @@ def test_fastapi_validation_http_and_internal_errors_use_contract() -> None:
     assert internal.status_code == 500
     assert "secret" not in internal.text
     assert internal.json()["error"]["code"] == "internal_error"
+
+
+def test_unexpected_error_keeps_request_id_and_logs_it_while_context_is_active(caplog) -> None:
+    app = create_platform_app(settings())
+    engine = app.state.platform_runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+
+    @app.get("/v1/correlated-internal")
+    async def correlated_internal() -> None:
+        raise RuntimeError("password=secret")
+
+    with caplog.at_level(logging.ERROR, logger="app.platform.app_factory"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/v1/correlated-internal")
+
+    request_id = response.headers["x-request-id"]
+    assert request_id.startswith("req_")
+    assert response.status_code == 500
+    assert response.json()["error"]["request_id"] == request_id
+    assert "password=secret" not in response.text
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "app.platform.app_factory"
+        and record.getMessage() == "Unhandled request exception"
+    ]
+    assert records[-1].request_id == request_id
 
 
 def test_shared_platform_conflicts_have_stable_error_codes() -> None:

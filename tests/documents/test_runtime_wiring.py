@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 
+import app.evaluation as evaluation_module
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.schema import documents_metadata
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
+from app.evaluation import HttpJudgeProvider, UnavailableJudgeProvider
 from app.identity.schema import identity_metadata
 from app.indexing import (
     IndexingService,
 )
+from app.outbox.ports import DocumentNotificationRedactionCommand
+from app.outbox.schema import outbox_metadata, outbox_redaction_receipt_table
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.runtime import build_runtime
@@ -93,6 +97,39 @@ class _ExplicitJudgeProvider:
     def judge(self, request):
         del request
         raise AssertionError("test judge must not be invoked during assembly")
+
+
+def _production_adapters(engine):
+    return {
+        "database_engine": engine,
+        "indexing_dense_writer": _ExplicitDenseWriter(),
+        "indexing_sparse_provider": _ExplicitSparseProvider(),
+        "indexing_reranker": _ExplicitReranker(),
+        "indexing_token_counter": len,
+        "indexing_image_ocr": lambda content, context: "ocr",
+        "indexing_image_describer": lambda content, context: "description",
+        "graph_build_extractor": _ExplicitGraphExtractor(),
+    }
+
+
+def _production_settings(*, judge_base_url: str | None, judge_api_key: str | None):
+    values = {
+        "RAG_PLATFORM_PROFILE": "production",
+        "RAG_DATABASE_URL": "postgresql+psycopg://app:secret@db/rag",
+        "RAG_OBJECT_STORAGE_ENDPOINT": "https://objects.example.test",
+        "RAG_OBJECT_STORAGE_BUCKET": "rag-prod",
+        "RAG_PROVIDER_NAME": "openai-compatible",
+        "RAG_PROVIDER_API_KEY": "provider-secret",
+        "RAG_BUSINESS_TIMEZONE": "UTC",
+        "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
+        "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
+        "RAG_AUTH_ADMIN_ROSTER": "admin",
+    }
+    if judge_base_url is not None:
+        values["RAG_EVALUATION_JUDGE_BASE_URL"] = judge_base_url
+    if judge_api_key is not None:
+        values["RAG_EVALUATION_JUDGE_API_KEY"] = judge_api_key
+    return load_platform_settings(values)
 
 
 def test_runtime_exposes_documents_service_and_department_work_adapter() -> None:
@@ -224,6 +261,77 @@ def test_production_runtime_requires_explicit_retrieval_backends() -> None:
     runtime.close()
 
 
+def test_production_runtime_auto_assembles_configured_http_judge(monkeypatch) -> None:
+    settings = _production_settings(
+        judge_base_url="https://judge.example.test/v1",
+        judge_api_key="judge-api-secret",
+    )
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    preflight_providers = []
+
+    def verify_startup(self) -> None:
+        preflight_providers.append(self._provider)
+
+    monkeypatch.setattr(evaluation_module.JudgePreflight, "verify_startup", verify_startup)
+    runtime = build_runtime(settings, adapters=_production_adapters(engine))
+    try:
+        judge_provider = runtime.resolve("judge_provider")
+
+        assert isinstance(judge_provider, HttpJudgeProvider)
+        assert judge_provider._usage_submission is runtime.resolve("evaluation_usage_submission")
+        assert judge_provider._configuration.provider == settings.evaluation.judge_provider
+        assert judge_provider._configuration.model == settings.evaluation.judge_model
+        assert judge_provider._configuration.mode == settings.evaluation.judge_mode
+        assert (
+            judge_provider._configuration.credential_ref == settings.evaluation.judge_credential_ref
+        )
+        assert preflight_providers == [judge_provider]
+    finally:
+        runtime.close()
+
+
+def test_production_runtime_closes_auto_assembled_judge_when_preflight_fails(monkeypatch) -> None:
+    settings = _production_settings(
+        judge_base_url="https://judge.example.test/v1",
+        judge_api_key="judge-api-secret",
+    )
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    preflight_providers = []
+
+    def fail_preflight(self) -> None:
+        preflight_providers.append(self._provider)
+        raise RuntimeError("preflight failed")
+
+    monkeypatch.setattr(evaluation_module.JudgePreflight, "verify_startup", fail_preflight)
+
+    try:
+        build_runtime(settings, adapters=_production_adapters(engine))
+    except RuntimeError as error:
+        assert str(error) == "preflight failed"
+    else:
+        raise AssertionError("configured judge preflight unexpectedly succeeded")
+
+    assert len(preflight_providers) == 1
+    assert isinstance(preflight_providers[0], HttpJudgeProvider)
+    assert preflight_providers[0]._client.is_closed
+
+
+def test_production_runtime_degrades_when_judge_configuration_is_missing(monkeypatch) -> None:
+    settings = _production_settings(judge_base_url=None, judge_api_key=None)
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+
+    def fail_preflight(self) -> None:
+        del self
+        raise AssertionError("degraded judge must not preflight during startup")
+
+    monkeypatch.setattr(evaluation_module.JudgePreflight, "verify_startup", fail_preflight)
+    runtime = build_runtime(settings, adapters=_production_adapters(engine))
+    try:
+        assert isinstance(runtime.resolve("judge_provider"), UnavailableJudgeProvider)
+    finally:
+        runtime.close()
+
+
 def test_runtime_injects_scoped_document_redaction_capability_only_into_service() -> None:
     settings = load_platform_settings(
         {
@@ -251,5 +359,50 @@ def test_runtime_injects_scoped_document_redaction_capability_only_into_service(
         assert service._lifecycle_port is lifecycle
         assert service._capability_token_provider is issue_token
         assert runtime.resolve("document_lifecycle_capability_provider") is None
+    finally:
+        runtime.close()
+
+
+def test_runtime_wires_default_document_lifecycle_gateway_without_a_capability_token() -> None:
+    settings = load_platform_settings(
+        {
+            "RAG_PLATFORM_PROFILE": "development",
+            "RAG_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+            "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+            "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+            "RAG_PROVIDER_NAME": "fake",
+        }
+    )
+    runtime = build_runtime(settings)
+    try:
+        engine = runtime.resolve("database_engine")
+        outbox_metadata.create_all(engine)
+        service = runtime.resolve("documents_service")
+
+        assert service._lifecycle_port is not None
+        assert service._capability_token_provider is None
+        with engine.begin() as connection:
+            receipt = service._lifecycle_port.redact_document_notifications(
+                DocumentNotificationRedactionCommand(
+                    operation_id="op_runtime_document_redaction",
+                    caller_principal="user_1",
+                    deletion_id="deletion_1",
+                    document_id="document_1",
+                    document_version_ids=("version_1",),
+                    reason="document_pending_delete",
+                    transaction_id="tx_1",
+                    mode="inline",
+                    canonical_input_fingerprint="not-authoritative",
+                    capability_token="",
+                ),
+                connection=connection,
+            )
+
+        assert receipt.state == "completed"
+        with engine.connect() as connection:
+            receipt_row = connection.execute(
+                select(outbox_redaction_receipt_table.c.operation_id)
+            ).scalar_one()
+        assert receipt_row == "op_runtime_document_redaction"
     finally:
         runtime.close()

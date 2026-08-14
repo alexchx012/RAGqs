@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import secrets
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -61,6 +62,10 @@ PRODUCER_MATRIX: dict[str, tuple[frozenset[str], str]] = {
         "calibration_window_suggestion",
     ),
     "graph_build_completed": (frozenset({"knowledge_graph"}), "graph_build_run"),
+    "evaluation_judge_configuration_missing": (
+        frozenset({"startup_configuration"}),
+        "startup_invocation",
+    ),
     "public_graph_source_changed": (frozenset({"documents"}), "public_graph_source"),
 }
 
@@ -93,6 +98,7 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
         "index_generation_id": (str, None),
         "failure_class": (str, None),
     },
+    "evaluation_judge_configuration_missing": {"missing_variable_names": list},
     "public_graph_source_changed": {
         "source_revision": int,
         "source_manifest_id": str,
@@ -102,9 +108,11 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
     },
 }
 
-# Recipient rules: calibration events take all active ops as role snapshots;
+# Recipient rules: active-ops alert events take all active ops as role snapshots;
 # graph events notify exactly one identity (the run initiator).
-ROLE_SNAPSHOT_EVENT_TYPES: frozenset[str] = frozenset({"calibration_window_suggested"})
+ROLE_SNAPSHOT_EVENT_TYPES: frozenset[str] = frozenset(
+    {"calibration_window_suggested", "evaluation_judge_configuration_missing"}
+)
 SINGLE_RECIPIENT_EVENT_TYPES: frozenset[str] = frozenset({"graph_build_completed"})
 
 
@@ -267,6 +275,24 @@ def _validate_payload(event_type: str, schema_version: int, payload: Mapping[str
                 {"event_type": event_type},
                 422,
             )
+    if event_type == "evaluation_judge_configuration_missing":
+        missing = payload.get("missing_variable_names")
+        allowed = {
+            "RAG_EVALUATION_JUDGE_BASE_URL",
+            "RAG_EVALUATION_JUDGE_API_KEY",
+        }
+        if (
+            not isinstance(missing, list)
+            or not missing
+            or any(not isinstance(name, str) or name not in allowed for name in missing)
+            or len(set(missing)) != len(missing)
+        ):
+            raise PlatformError(
+                "invalid_event_payload",
+                "Evaluation judge alerts may contain only unique missing variable names",
+                {"event_type": event_type},
+                422,
+            )
 
 
 _SENSITIVE_KEYS = frozenset(
@@ -425,7 +451,7 @@ class SqlAlchemyOutboxPublisher:
             and command.payload.get("status") == "succeeded"
         ):
             self._assert_graph_activated_receipt(connection, command)
-        command = self._freeze_calibration_recipients(connection, command)
+        command = self._freeze_active_ops_recipients(connection, command)
         self._validate_recipients(command)
 
         fingerprint = fingerprint_event(command.event_type, command.schema_version, command.payload)
@@ -655,13 +681,13 @@ class SqlAlchemyOutboxPublisher:
                 409,
             )
 
-    def _freeze_calibration_recipients(
+    def _freeze_active_ops_recipients(
         self,
         connection: Connection,
         command: OutboxPublishCommand,
     ) -> OutboxPublishCommand:
-        """Calibration events freeze ALL active ops inside this transaction."""
-        if command.event_type != "calibration_window_suggested":
+        """Alert events freeze ALL active ops inside this transaction."""
+        if command.event_type not in ROLE_SNAPSHOT_EVENT_TYPES:
             return command
         ops = (
             connection.execute(
@@ -694,6 +720,7 @@ class SqlAlchemyOutboxPublisher:
             payload=command.payload,
             recipients=recipients,
             trace_id=command.trace_id,
+            capability=command.capability,
         )
 
     def _insert_event_row(
@@ -799,7 +826,7 @@ class SqlAlchemyOutboxPublisher:
                 if selection.recipient_kind != "role_snapshot" or selection.required_role != "ops":
                     raise PlatformError(
                         "invalid_recipients",
-                        "calibration events require active ops role snapshots",
+                        "This event requires active ops role snapshots",
                         {},
                         422,
                     )
@@ -1020,6 +1047,57 @@ class SqlAlchemySubmissionOutboxAdapter:
             command,
             connection=connection,
             caller="submissions",
+        )
+        return command.event_id
+
+
+class SqlAlchemyStartupConfigurationAlertAdapter:
+    """Startup-scoped, no-token facade for missing evaluation judge settings."""
+
+    _ALLOWED_VARIABLE_NAMES = frozenset(
+        {"RAG_EVALUATION_JUDGE_BASE_URL", "RAG_EVALUATION_JUDGE_API_KEY"}
+    )
+
+    def __init__(self, publisher: SqlAlchemyOutboxPublisher) -> None:
+        self._publisher = publisher
+
+    def publish_missing_evaluation_judge_configuration(
+        self,
+        *,
+        missing_variable_names: tuple[str, ...],
+        occurred_at: datetime,
+        connection: Connection,
+    ) -> str:
+        if (
+            not missing_variable_names
+            or len(set(missing_variable_names)) != len(missing_variable_names)
+            or not set(missing_variable_names).issubset(self._ALLOWED_VARIABLE_NAMES)
+        ):
+            raise PlatformError(
+                "invalid_startup_configuration_alert",
+                "Only missing evaluation judge variable names may be published",
+                {},
+                422,
+            )
+        invocation_id = secrets.token_urlsafe(18)
+        context = current_context()
+        command = OutboxPublishCommand(
+            event_id=f"evt_eval_judge_config_missing_{invocation_id}",
+            caller_principal="startup_configuration",
+            event_type="evaluation_judge_configuration_missing",
+            schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
+            aggregate_type="startup_invocation",
+            aggregate_id=f"startup_{invocation_id}",
+            transition_version=1,
+            occurred_at=occurred_at,
+            payload={"missing_variable_names": list(missing_variable_names)},
+            recipients=(),
+            trace_id=context.trace_id if context is not None else None,
+        )
+        self._publisher._publish_authorized(
+            command,
+            connection=connection,
+            caller="startup_configuration",
         )
         return command.event_id
 

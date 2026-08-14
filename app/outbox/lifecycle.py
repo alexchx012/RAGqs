@@ -296,8 +296,8 @@ class SqlAlchemyOutboxLifecycle:
         The command's caller_principal is a label for audit only and is NEVER
         an authority. The token authorizer fails closed (403) when no secret
         is configured, when the token is forged, or when the token scope does
-        not bind the command's deletion/transaction. There is no other
-        authorization path.
+        not bind the command's deletion/transaction. Runtime-only internal
+        methods instead construct their own fixed-scope commands.
         """
         self._token_authorizer.authorize(command)
 
@@ -315,6 +315,39 @@ class SqlAlchemyOutboxLifecycle:
         # principal string is an audit label. The token authorizer rejects
         # documents tokens presented by other principals and vice versa.
         self._check_caller_capability(command)
+        return self._redact_document_notifications(command, connection=connection)
+
+    def redact_document_notifications_for_documents(
+        self,
+        *,
+        operation_id: str,
+        deletion_id: str,
+        document_id: str,
+        document_version_ids: tuple[str, ...],
+        transaction_id: str,
+        connection: Connection,
+    ) -> DocumentNotificationRedactionReceipt:
+        """Internal Documents-only redaction entry assembled behind a gateway."""
+        command = DocumentNotificationRedactionCommand(
+            operation_id=operation_id,
+            caller_principal="documents",
+            deletion_id=deletion_id,
+            document_id=document_id,
+            document_version_ids=document_version_ids,
+            reason="document_pending_delete",
+            transaction_id=transaction_id,
+            mode="inline",
+            canonical_input_fingerprint=operation_id,
+            capability_token="",
+        )
+        return self._redact_document_notifications(command, connection=connection)
+
+    def _redact_document_notifications(
+        self,
+        command: DocumentNotificationRedactionCommand,
+        *,
+        connection: Connection,
+    ) -> DocumentNotificationRedactionReceipt:
         if command.mode != "inline" or command.reason != "document_pending_delete":
             raise PlatformError(
                 "validation_error",

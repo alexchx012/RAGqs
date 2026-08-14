@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from time import perf_counter
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.v1 import router as v1_router
@@ -14,9 +17,12 @@ from app.identity.service import IdentityAccessService
 from . import runtime as platform_runtime_module
 from .config import PlatformSettings, load_platform_settings
 from .context import new_request_context
-from .http_contract import register_exception_handlers
+from .errors import map_exception
+from .http_contract import register_exception_handlers, request_error_payload
 from .observability import ObservabilityMetricsError, ObservabilitySample, sample_success
 from .runtime import PlatformRuntime, build_runtime
+
+logger = logging.getLogger(__name__)
 
 
 def create_platform_app(
@@ -39,6 +45,19 @@ def create_platform_app(
             # H3：数据库探活之后锁定/校验业务日历（时区冲突 → 503 拒启，不悄悄重写）。
             # 与 usage maintenance 通过模块 lookup 调用同一 helper，便于行为级验证。
             platform_runtime_module.ensure_business_calendar_locked(runtime)
+            if settings.profile == "production":
+                missing_variable_names = (
+                    platform_runtime_module.missing_evaluation_judge_configuration(settings)
+                )
+                if missing_variable_names:
+                    startup_alert_port = runtime.resolve("startup_configuration_alert_port")
+                    if startup_alert_port is not None:
+                        with engine.begin() as connection:
+                            startup_alert_port.publish_missing_evaluation_judge_configuration(
+                                missing_variable_names=missing_variable_names,
+                                occurred_at=datetime.now(UTC),
+                                connection=connection,
+                            )
             if settings.auth.admin_roster:
                 identity_access = runtime.resolve("identity_access")
                 if isinstance(identity_access, IdentityAccessService):
@@ -60,6 +79,15 @@ def create_platform_app(
     app.state.platform_runtime = runtime
     register_exception_handlers(app)
     app.include_router(v1_router, prefix="/v1")
+    metrics = runtime.resolve("observability_metrics")
+    configure_route_templates = getattr(metrics, "configure_route_templates", None)
+    if callable(configure_route_templates):
+        route_templates: list[str] = []
+        for route in app.routes:
+            route_path = getattr(route, "path", None)
+            if isinstance(route_path, str):
+                route_templates.append(route_path)
+        configure_route_templates(route_templates)
 
     @app.middleware("http")
     async def install_request_context(request: Request, call_next):
@@ -69,6 +97,15 @@ def create_platform_app(
         with context:
             try:
                 response = await call_next(request)
+            except Exception as exc:
+                error = map_exception(exc)
+                logger.exception(
+                    "Unhandled request exception", extra={"request_id": context.request_id}
+                )
+                response = JSONResponse(
+                    request_error_payload(error, context.request_id),
+                    status_code=error.status_code,
+                )
             finally:
                 metrics = runtime.resolve("observability_metrics")
                 if metrics is not None:

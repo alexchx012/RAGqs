@@ -27,9 +27,11 @@ from app.evaluation import (
     CalibrationCloseWorker,
     EvaluationCalibrationWindowPort,
     EvaluationService,
+    HttpJudgeProvider,
     IdentitySpaceVisibilityPort,
     IndexingGenerationSourceAdapter,
     IndexingReplayAdapter,
+    JudgeConfiguration,
     ShadowEvaluationWorker,
     SqlAlchemyCalibrationOutboxAdapter,
     SqlAlchemyChatFactsPort,
@@ -78,11 +80,16 @@ from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
+from app.outbox.ports import (
+    DocumentNotificationRedactionCommand,
+    DocumentNotificationRedactionReceipt,
+)
 from app.outbox.publisher import (
     SqlAlchemyIngestionOutboxAdapter,
     SqlAlchemyOutboxPublisher,
     SqlAlchemyPublicGraphSourceOutboxAdapter,
     SqlAlchemyQuotaOutboxEnqueueAdapter,
+    SqlAlchemyStartupConfigurationAlertAdapter,
     SqlAlchemySubmissionOutboxAdapter,
 )
 from app.outbox.service import NotificationService
@@ -157,6 +164,17 @@ def _index_configuration_staging_table_exists(engine: Any, table_name: str) -> b
         return False
     finally:
         connection.close()
+
+
+def missing_evaluation_judge_configuration(settings: PlatformSettings) -> tuple[str, ...]:
+    """Return only the missing judge setting names safe to expose in an alert."""
+    missing: list[str] = []
+    if not settings.evaluation.judge_base_url or not settings.evaluation.judge_base_url.strip():
+        missing.append("RAG_EVALUATION_JUDGE_BASE_URL")
+    judge_api_key = settings.evaluation.judge_api_key
+    if judge_api_key is None or not judge_api_key.get_secret_value().strip():
+        missing.append("RAG_EVALUATION_JUDGE_API_KEY")
+    return tuple(missing)
 
 
 def build_runtime(
@@ -299,6 +317,10 @@ def build_runtime(
         _OutboxAccountRetirementGateway(outbox_lifecycle)
     )
     configured.setdefault("account_retirement_gateway", account_retirement_gateway)
+    document_lifecycle_port = configured.get("document_lifecycle_port") or (
+        _OutboxDocumentLifecycleGateway(outbox_lifecycle)
+    )
+    configured.setdefault("document_lifecycle_port", document_lifecycle_port)
     if identity_access._account_retirement_gateway is None or isinstance(
         identity_access._account_retirement_gateway, UnavailableAccountRetirementGateway
     ):
@@ -324,6 +346,10 @@ def build_runtime(
         graph_activated_receipt_port=graph_activated_receipt_verifier,
     )
     configured.setdefault("outbox_publisher", outbox_publisher)
+    startup_configuration_alert_port = configured.get("startup_configuration_alert_port") or (
+        SqlAlchemyStartupConfigurationAlertAdapter(outbox_publisher)
+    )
+    configured.setdefault("startup_configuration_alert_port", startup_configuration_alert_port)
     public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (
         SqlAlchemyPublicGraphSourceOutboxAdapter(outbox_publisher)
     )
@@ -514,7 +540,7 @@ def build_runtime(
             now=clock.now_utc,
             object_store=object_store,
             identity_access=identity_access,
-            lifecycle_port=configured.get("document_lifecycle_port"),
+            lifecycle_port=document_lifecycle_port,
             indexing_handoff_port=configured.get("indexing_handoff_port") or indexing_service,
             quota_service=quota_service,
             capability_token_provider=document_capability_token_provider,
@@ -523,6 +549,8 @@ def build_runtime(
             public_graph_source_service=public_graph_source_service,
         )
     elif isinstance(documents_service, DocumentsService):
+        if documents_service._lifecycle_port is None:
+            documents_service._lifecycle_port = document_lifecycle_port
         if documents_service._quota_service is None:
             documents_service._quota_service = quota_service
         if documents_service._capability_token_provider is None:
@@ -637,16 +665,46 @@ def build_runtime(
                     connection,
                     policy=default_policy_snapshot(now=clock.now_utc(connection)),
                 )
+    evaluation_usage_submission = configured.get("evaluation_usage_submission") or (
+        UsageLedgerSubmissionAdapter(ledger)
+    )
+    configured.setdefault("evaluation_usage_submission", evaluation_usage_submission)
     judge_provider = configured.get("judge_provider")
+    auto_assembled_http_judge: HttpJudgeProvider | None = None
+    judge_requires_preflight = settings.profile == "production"
     if judge_provider is None:
         if settings.profile == "production":
-            raise RuntimeError("production requires an explicit evaluation judge provider")
-        judge_provider = UnavailableJudgeProvider(environment=settings.profile)
+            missing_judge_configuration = missing_evaluation_judge_configuration(settings)
+            if missing_judge_configuration:
+                judge_provider = UnavailableJudgeProvider(environment=settings.profile)
+                judge_requires_preflight = False
+            else:
+                judge_api_key = settings.evaluation.judge_api_key
+                assert judge_api_key is not None
+                auto_assembled_http_judge = HttpJudgeProvider(
+                    base_url=settings.evaluation.judge_base_url or "",
+                    api_key=judge_api_key.get_secret_value(),
+                    usage_submission=evaluation_usage_submission,
+                    configuration=JudgeConfiguration(
+                        provider=settings.evaluation.judge_provider,
+                        model=settings.evaluation.judge_model,
+                        mode=settings.evaluation.judge_mode,
+                        credential_ref=settings.evaluation.judge_credential_ref,
+                    ),
+                )
+                judge_provider = auto_assembled_http_judge
+        else:
+            judge_provider = UnavailableJudgeProvider(environment=settings.profile)
     configured.setdefault("judge_provider", judge_provider)
-    if settings.profile == "production":
+    if judge_requires_preflight:
         from app.evaluation import JudgePreflight
 
-        JudgePreflight(judge_provider).verify_startup()
+        try:
+            JudgePreflight(judge_provider).verify_startup()
+        except Exception:
+            if auto_assembled_http_judge is not None:
+                auto_assembled_http_judge.close()
+            raise
     calibration_outbox_port = configured.get("calibration_outbox_port") or (
         SqlAlchemyCalibrationOutboxAdapter(outbox_publisher)
     )
@@ -676,10 +734,6 @@ def build_runtime(
         indexing_service
     )
     configured.setdefault("retrieval_replay_port", retrieval_replay_port)
-    evaluation_usage_submission = configured.get("evaluation_usage_submission") or (
-        UsageLedgerSubmissionAdapter(ledger)
-    )
-    configured.setdefault("evaluation_usage_submission", evaluation_usage_submission)
     evaluation_space_visibility = configured.get("evaluation_space_visibility") or (
         IdentitySpaceVisibilityPort(identity_access)
     )
@@ -877,6 +931,28 @@ class _OutboxAccountRetirementGateway:
         return AccountRetirementConfirmation(
             state=receipt.state,
             receipt_count=receipt.receipt_count,
+        )
+
+
+class _OutboxDocumentLifecycleGateway:
+    """Documents-deletion scoped redaction facade with no bearer capability."""
+
+    def __init__(self, lifecycle: SqlAlchemyOutboxLifecycle) -> None:
+        self._lifecycle = lifecycle
+
+    def redact_document_notifications(
+        self,
+        command: DocumentNotificationRedactionCommand,
+        *,
+        connection: Connection,
+    ) -> DocumentNotificationRedactionReceipt:
+        return self._lifecycle.redact_document_notifications_for_documents(
+            operation_id=command.operation_id,
+            deletion_id=command.deletion_id,
+            document_id=command.document_id,
+            document_version_ids=command.document_version_ids,
+            transaction_id=command.transaction_id,
+            connection=connection,
         )
 
 
