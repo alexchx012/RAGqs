@@ -108,6 +108,34 @@ def test_configuration_includes_shared_logging_and_index_namespace() -> None:
     assert settings.index.namespace == "enterprise-main"
 
 
+def test_index_backend_keys_load_from_environment() -> None:
+    settings = load_platform_settings(
+        development_environment(
+            RAG_INDEX_EMBEDDING_PROVIDER="openai-compatible",
+            RAG_INDEX_EMBEDDING_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            RAG_INDEX_EMBEDDING_API_KEY="emb-secret",
+            RAG_INDEX_EMBEDDING_MODEL="text-embedding-v4",
+            RAG_INDEX_EMBEDDING_REVISION="text-embedding-v4",
+            RAG_INDEX_EMBEDDING_DIMENSION="1024",
+            RAG_INDEX_EMBEDDING_METRIC="cosine",
+            RAG_INDEX_VECTOR_PROVIDER="milvus",
+            RAG_INDEX_VECTOR_URI="http://127.0.0.1:9091",
+            RAG_INDEX_VECTOR_COLLECTION_PREFIX="ragqs",
+            RAG_INDEX_SPARSE_URL="http://127.0.0.1:7700",
+            RAG_INDEX_SPARSE_API_KEY="ragqs-dev-meili-key",
+            RAG_INDEX_SPARSE_INDEX="ragqs_chunks",
+            RAG_INDEX_SPARSE_DATA_PATH="./volumes/meilisearch",
+        )
+    )
+
+    assert settings.index.embedding_provider == "openai-compatible"
+    assert settings.index.embedding_dimension == 1024
+    assert settings.index.vector_provider == "milvus"
+    assert settings.index.vector_uri == "http://127.0.0.1:9091"
+    assert settings.index.sparse_url == "http://127.0.0.1:7700"
+    assert settings.index.sparse_data_path == "./volumes/meilisearch"
+
+
 @pytest.mark.parametrize(
     "key",
     ["TENANT_ID", "ENTERPRISE_ID", "OBSERVABILITY_RETENTION_DAYS", "TEST_POSTGRES_URL"],

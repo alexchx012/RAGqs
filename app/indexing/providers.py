@@ -99,6 +99,94 @@ class SparseIndexProvider(IndexWriter, Protocol):
     ) -> ProviderSearchPage: ...
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedStage:
+    chunks: tuple[IndexChunk, ...]
+    generation_id: str
+    resource_ids: tuple[str, ...]
+    content_hash: str
+
+
+def validate_stage_chunks(
+    attempt_id: str,
+    publication_id: str,
+    document_id: str,
+    document_version_id: str,
+    chunks: Sequence[IndexChunk | Mapping[str, Any]],
+    *,
+    fencing_token: int = 1,
+    expected_generation_id: str | None = None,
+    stage_resource_manifest: Sequence[Mapping[str, Any]] | None = None,
+    content_hash: str | None = None,
+) -> PreparedStage:
+    if not attempt_id.strip() or not publication_id.strip():
+        raise PlatformError("validation_error", "attempt and publication are required", {}, 422)
+    if fencing_token < 1:
+        raise PlatformError("fence_conflict", "fencing token is invalid", {}, 409)
+    normalized = normalize_chunks(chunks)
+    generation_ids = {item.generation_id for item in normalized}
+    if len(generation_ids) > 1:
+        raise PlatformError("generation_conflict", "chunks use multiple generations", {}, 409)
+    generation_id = next(iter(generation_ids), expected_generation_id)
+    if generation_id is None:
+        raise PlatformError("validation_error", "generation identity is required", {}, 422)
+    if expected_generation_id is not None and generation_id != expected_generation_id:
+        raise PlatformError("generation_conflict", "chunk generation is not current", {}, 409)
+    if any(
+        item.document_id != document_id
+        or item.document_version_id != document_version_id
+        or item.publication_id != publication_id
+        for item in normalized
+    ):
+        raise PlatformError("processing_receipt_conflict", "chunk identity is invalid", {}, 409)
+    if any(not item.indexable for item in normalized):
+        raise PlatformError("index_stage_failed", "a chunk is not indexable", {}, 409)
+    manifest = tuple(dict(item) for item in (stage_resource_manifest or ()))
+    resource_ids = tuple(
+        str(item.get("resource_id", "")) for item in manifest if item.get("resource_id")
+    )
+    if manifest and len(resource_ids) != len(manifest):
+        raise PlatformError("validation_error", "stage resource identity is invalid", {}, 422)
+    payload = [item.to_mapping() for item in normalized]
+    fingerprint = content_hash or _fingerprint(payload)
+    return PreparedStage(
+        normalized,
+        generation_id,
+        resource_ids
+        or tuple(f"{attempt_id}:{publication_id}:{item.chunk_id}" for item in normalized),
+        fingerprint,
+    )
+
+
+def validate_stage_identity(
+    result: StageResult,
+    *,
+    fencing_token: int | None,
+    expected_generation_id: str | None,
+    stage_resource_manifest: Sequence[Mapping[str, Any]] | None,
+    content_hash: str | None,
+) -> None:
+    if fencing_token is not None and result.fencing_token != fencing_token:
+        raise PlatformError("fence_conflict", "staged index fence is no longer current", {}, 409)
+    if expected_generation_id is not None and result.generation_id != expected_generation_id:
+        raise PlatformError(
+            "generation_conflict", "staged index generation is no longer current", {}, 409
+        )
+    if content_hash is not None and result.content_hash != content_hash:
+        raise PlatformError(
+            "processing_receipt_conflict", "staged index content does not match", {}, 409
+        )
+    if stage_resource_manifest is not None:
+        resource_ids = tuple(str(item.get("resource_id", "")) for item in stage_resource_manifest)
+        if resource_ids != result.resource_ids:
+            raise PlatformError(
+                "processing_receipt_conflict",
+                "staged index resources do not match",
+                {},
+                409,
+            )
+
+
 @dataclass(slots=True)
 class _Stage:
     result: StageResult
@@ -115,6 +203,7 @@ class InMemoryIndexWriter:
     """
 
     provider_name = "memory"
+    backend_kind = "dense"
 
     def __init__(self, *, provider_name: str = "memory") -> None:
         self.provider_name = provider_name
@@ -142,39 +231,22 @@ class InMemoryIndexWriter:
         stage_resource_manifest: Sequence[Mapping[str, Any]] | None = None,
         content_hash: str | None = None,
     ) -> StageResult:
-        if fencing_token < 1:
-            raise PlatformError("fence_conflict", "fencing token is invalid", {}, 409)
-        normalized = normalize_chunks(chunks)
-        generation_ids = {item.generation_id for item in normalized}
-        if len(generation_ids) > 1:
-            raise PlatformError("generation_conflict", "chunks use multiple generations", {}, 409)
-        generation_id = next(iter(generation_ids), expected_generation_id)
-        if generation_id is None:
-            raise PlatformError("validation_error", "generation identity is required", {}, 422)
-        if expected_generation_id is not None and generation_id != expected_generation_id:
-            raise PlatformError("generation_conflict", "chunk generation is not current", {}, 409)
-        if any(
-            item.document_id != document_id
-            or item.document_version_id != document_version_id
-            or item.publication_id != publication_id
-            for item in normalized
-        ):
-            raise PlatformError("processing_receipt_conflict", "chunk identity is invalid", {}, 409)
-        if any(not item.indexable for item in normalized):
-            raise PlatformError("index_stage_failed", "a chunk is not indexable", {}, 409)
-        manifest = tuple(dict(item) for item in (stage_resource_manifest or ()))
-        resource_ids = tuple(
-            str(item.get("resource_id", "")) for item in manifest if item.get("resource_id")
+        prepared = validate_stage_chunks(
+            attempt_id,
+            publication_id,
+            document_id,
+            document_version_id,
+            chunks,
+            fencing_token=fencing_token,
+            expected_generation_id=expected_generation_id,
+            stage_resource_manifest=stage_resource_manifest,
+            content_hash=content_hash,
         )
-        if manifest and len(resource_ids) != len(manifest):
-            raise PlatformError("validation_error", "stage resource identity is invalid", {}, 422)
-        payload = [item.to_mapping() for item in normalized]
-        fingerprint = content_hash or _fingerprint(payload)
         key = self._key(attempt_id, publication_id)
         with self._lock:
             existing = self._staged.get(key)
             if existing is not None:
-                if existing.fingerprint != fingerprint:
+                if existing.fingerprint != prepared.content_hash:
                     raise PlatformError(
                         "idempotency_key_conflict",
                         "staged content conflicts with an existing attempt",
@@ -189,13 +261,14 @@ class InMemoryIndexWriter:
                 state="staged",
                 attempt_id=attempt_id,
                 publication_id=publication_id,
-                generation_id=generation_id,
-                resource_ids=resource_ids
-                or tuple(f"{attempt_id}:{publication_id}:{item.chunk_id}" for item in normalized),
-                content_hash=fingerprint,
+                generation_id=prepared.generation_id,
+                resource_ids=prepared.resource_ids,
+                content_hash=prepared.content_hash,
                 fencing_token=fencing_token,
             )
-            self._staged[key] = _Stage(result, normalized, fingerprint, fencing_token)
+            self._staged[key] = _Stage(
+                result, prepared.chunks, prepared.content_hash, fencing_token
+            )
             return result
 
     @staticmethod
@@ -207,29 +280,13 @@ class InMemoryIndexWriter:
         stage_resource_manifest: Sequence[Mapping[str, Any]] | None,
         content_hash: str | None,
     ) -> None:
-        if fencing_token is not None and result.fencing_token != fencing_token:
-            raise PlatformError(
-                "fence_conflict", "staged index fence is no longer current", {}, 409
-            )
-        if expected_generation_id is not None and result.generation_id != expected_generation_id:
-            raise PlatformError(
-                "generation_conflict", "staged index generation is no longer current", {}, 409
-            )
-        if content_hash is not None and result.content_hash != content_hash:
-            raise PlatformError(
-                "processing_receipt_conflict", "staged index content does not match", {}, 409
-            )
-        if stage_resource_manifest is not None:
-            resource_ids = tuple(
-                str(item.get("resource_id", "")) for item in stage_resource_manifest
-            )
-            if resource_ids != result.resource_ids:
-                raise PlatformError(
-                    "processing_receipt_conflict",
-                    "staged index resources do not match",
-                    {},
-                    409,
-                )
+        validate_stage_identity(
+            result,
+            fencing_token=fencing_token,
+            expected_generation_id=expected_generation_id,
+            stage_resource_manifest=stage_resource_manifest,
+            content_hash=content_hash,
+        )
 
     def publish_staged(
         self,
@@ -453,20 +510,18 @@ class InMemoryIndexWriter:
 
 class InMemorySparseIndexProvider(InMemoryIndexWriter):
     provider_name = "memory"
-
-
-class MeilisearchSparseIndexProvider(InMemorySparseIndexProvider):
-    provider_name = "meilisearch"
+    backend_kind = "sparse"
 
 
 class OpenSearchSparseIndexProvider(InMemorySparseIndexProvider):
     provider_name = "opensearch"
+    backend_kind = "sparse"
 
 
 def build_sparse_provider(provider_name: str | None = None) -> SparseIndexProvider:
     configured = (provider_name or "meilisearch").strip().casefold()
     if configured == "meilisearch":
-        return MeilisearchSparseIndexProvider(provider_name="meilisearch")
+        return InMemorySparseIndexProvider(provider_name="meilisearch")
     if configured in {"opensearch", "opensearch+ik"}:
         return OpenSearchSparseIndexProvider(provider_name="opensearch")
     raise PlatformError("provider_not_supported", "Sparse index provider is not supported", {}, 422)
@@ -476,9 +531,11 @@ __all__ = [
     "IndexWriter",
     "InMemoryIndexWriter",
     "InMemorySparseIndexProvider",
-    "MeilisearchSparseIndexProvider",
     "OpenSearchSparseIndexProvider",
+    "PreparedStage",
     "SparseIndexProvider",
     "StageResult",
     "build_sparse_provider",
+    "validate_stage_chunks",
+    "validate_stage_identity",
 ]

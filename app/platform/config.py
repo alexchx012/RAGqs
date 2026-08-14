@@ -84,6 +84,25 @@ class IndexSettings(_StrictModel):
     reranker_provider: str = Field(default="configured", min_length=1, max_length=64)
     image_vlm_provider: str = Field(default="configured", min_length=1, max_length=64)
     generation_rollback_days: int = Field(default=7, ge=1, le=365)
+    embedding_provider: Literal["openai-compatible", "memory"] = "memory"
+    embedding_base_url: str | None = None
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str | None = None
+    embedding_revision: str | None = None
+    embedding_dimension: int | None = Field(default=None, ge=1, le=8192)
+    embedding_metric: Literal["cosine", "l2", "ip"] = "cosine"
+    vector_provider: Literal["milvus", "memory"] = "memory"
+    vector_uri: str | None = None
+    vector_token: SecretStr | None = None
+    vector_collection_prefix: str = Field(
+        default="ragqs", min_length=1, max_length=64, pattern=r"^[a-zA-Z][a-zA-Z0-9_]*$"
+    )
+    sparse_url: str | None = None
+    sparse_api_key: SecretStr | None = None
+    sparse_index: str = Field(
+        default="ragqs_chunks", min_length=1, max_length=128, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$"
+    )
+    sparse_data_path: str | None = None
 
 
 class ObservabilitySettings(_StrictModel):
@@ -188,6 +207,21 @@ _ENV_KEYS = {
     "RAG_INDEX_RERANKER_PROVIDER",
     "RAG_INDEX_IMAGE_VLM_PROVIDER",
     "RAG_INDEX_GENERATION_ROLLBACK_DAYS",
+    "RAG_INDEX_EMBEDDING_PROVIDER",
+    "RAG_INDEX_EMBEDDING_BASE_URL",
+    "RAG_INDEX_EMBEDDING_API_KEY",
+    "RAG_INDEX_EMBEDDING_MODEL",
+    "RAG_INDEX_EMBEDDING_REVISION",
+    "RAG_INDEX_EMBEDDING_DIMENSION",
+    "RAG_INDEX_EMBEDDING_METRIC",
+    "RAG_INDEX_VECTOR_PROVIDER",
+    "RAG_INDEX_VECTOR_URI",
+    "RAG_INDEX_VECTOR_TOKEN",
+    "RAG_INDEX_VECTOR_COLLECTION_PREFIX",
+    "RAG_INDEX_SPARSE_URL",
+    "RAG_INDEX_SPARSE_API_KEY",
+    "RAG_INDEX_SPARSE_INDEX",
+    "RAG_INDEX_SPARSE_DATA_PATH",
     "RAG_BUSINESS_TIMEZONE",
     "RAG_MAINTENANCE_KEY",
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
@@ -333,6 +367,22 @@ def load_platform_settings(
                 "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS")
                 or _int(env, "INDEX_GENERATION_ROLLBACK_DAYS")
                 or 7,
+                "embedding_provider": _optional(env, "RAG_INDEX_EMBEDDING_PROVIDER") or "memory",
+                "embedding_base_url": _optional(env, "RAG_INDEX_EMBEDDING_BASE_URL"),
+                "embedding_api_key": _optional_secret(env, "RAG_INDEX_EMBEDDING_API_KEY"),
+                "embedding_model": _optional(env, "RAG_INDEX_EMBEDDING_MODEL"),
+                "embedding_revision": _optional(env, "RAG_INDEX_EMBEDDING_REVISION"),
+                "embedding_dimension": _int(env, "RAG_INDEX_EMBEDDING_DIMENSION"),
+                "embedding_metric": _optional(env, "RAG_INDEX_EMBEDDING_METRIC") or "cosine",
+                "vector_provider": _optional(env, "RAG_INDEX_VECTOR_PROVIDER") or "memory",
+                "vector_uri": _optional(env, "RAG_INDEX_VECTOR_URI"),
+                "vector_token": _optional_secret(env, "RAG_INDEX_VECTOR_TOKEN"),
+                "vector_collection_prefix": _optional(env, "RAG_INDEX_VECTOR_COLLECTION_PREFIX")
+                or "ragqs",
+                "sparse_url": _optional(env, "RAG_INDEX_SPARSE_URL"),
+                "sparse_api_key": _optional_secret(env, "RAG_INDEX_SPARSE_API_KEY"),
+                "sparse_index": _optional(env, "RAG_INDEX_SPARSE_INDEX") or "ragqs_chunks",
+                "sparse_data_path": _optional(env, "RAG_INDEX_SPARSE_DATA_PATH"),
             }.items()
             if value is not None
         },

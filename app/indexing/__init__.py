@@ -1,5 +1,11 @@
 """Greenfield, rebuildable content processing and retrieval domain."""
 
+from .embedding import (
+    EmbeddingConfig,
+    EmbeddingProvider,
+    InMemoryEmbeddingProvider,
+    OpenAICompatibleEmbedding,
+)
 from .generation import GenerationManager, IndexGenerationService
 from .graph import (
     GraphComponentCoordinator,
@@ -8,6 +14,8 @@ from .graph import (
     GraphComponentStageReceipt,
     IndexGenerationComponentInput,
 )
+from .meilisearch import MeilisearchSparseIndexProvider
+from .milvus import MilvusIndexWriter
 from .models import (
     AllowedRetrievalScope,
     DocumentVisibilityFact,
@@ -29,7 +37,6 @@ from .providers import (
     IndexWriter,
     InMemoryIndexWriter,
     InMemorySparseIndexProvider,
-    MeilisearchSparseIndexProvider,
     OpenSearchSparseIndexProvider,
     SparseIndexProvider,
     StageResult,
@@ -51,6 +58,8 @@ __all__ = [
     "CitationService",
     "ContentProcessor",
     "DocumentVisibilityFact",
+    "EmbeddingConfig",
+    "EmbeddingProvider",
     "Generation",
     "GenerationComponentReaderLease",
     "GenerationManager",
@@ -61,6 +70,7 @@ __all__ = [
     "GraphComponentStageReceipt",
     "IdentityCompression",
     "INDEXING_TABLE_NAMES",
+    "InMemoryEmbeddingProvider",
     "IndexChunk",
     "IndexGenerationComponentInput",
     "IndexGenerationGcReceipt",
@@ -70,9 +80,11 @@ __all__ = [
     "InMemoryIndexWriter",
     "InMemorySparseIndexProvider",
     "MeilisearchSparseIndexProvider",
+    "MilvusIndexWriter",
     "NarrowingScope",
     "NoopReranker",
     "OCRSamplePlan",
+    "OpenAICompatibleEmbedding",
     "OpenSearchSparseIndexProvider",
     "ProcessingOutput",
     "RetrievalHit",

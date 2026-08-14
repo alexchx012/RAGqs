@@ -106,6 +106,9 @@ class SqlAlchemyIndexingRepository:
             "reranker_provider": str(source.get("reranker_provider", "configured")),
             "image_vlm_provider": str(source.get("image_vlm_provider", "configured")),
             "embedding_model": str(source.get("embedding_model", "configured")),
+            "embedding_revision": str(
+                source.get("embedding_revision") or source.get("embedding_model") or "configured"
+            ),
             "embedding_dimension": source.get("embedding_dimension"),
             "embedding_metric": str(source.get("embedding_metric", "cosine")),
         }
@@ -247,6 +250,7 @@ class SqlAlchemyIndexingRepository:
                             "state": "ready",
                             "provider": "configured",
                             "embedding_model": configuration.get("embedding_model"),
+                            "embedding_revision": configuration.get("embedding_revision"),
                             "embedding_dimension": configuration.get("embedding_dimension"),
                             "embedding_metric": configuration.get("embedding_metric"),
                         },
@@ -592,6 +596,7 @@ class SqlAlchemyIndexingRepository:
                     "state": "ready",
                     "provider": "configured",
                     "embedding_model": configuration.get("embedding_model"),
+                    "embedding_revision": configuration.get("embedding_revision"),
                     "embedding_dimension": configuration.get("embedding_dimension"),
                     "embedding_metric": configuration.get("embedding_metric"),
                 },
@@ -1090,7 +1095,12 @@ class SqlAlchemyIndexingRepository:
         dense = dict(components.get("dense", {}))
         if any(
             dense.get(name) != configuration.get(name)
-            for name in ("embedding_model", "embedding_dimension", "embedding_metric")
+            for name in (
+                "embedding_model",
+                "embedding_revision",
+                "embedding_dimension",
+                "embedding_metric",
+            )
         ):
             raise PlatformError(
                 "release_gate_failed", "dense component does not match generation manifest", {}, 409

@@ -45,14 +45,20 @@ from app.identity.service import IdentityAccessService
 from app.indexing import (
     ContentProcessor,
     IndexingService,
-    InMemoryIndexWriter,
-    InMemorySparseIndexProvider,
     NoopReranker,
     RetrievalReleaseService,
     ScoreReranker,
     SqlAlchemyGenerationManager,
     SqlAlchemyIndexingRepository,
 )
+from app.indexing.backends import (
+    build_configured_sparse_provider,
+    build_dense_writer,
+    build_embedding_provider,
+    is_memory_indexing_adapter,
+    probe_configured_backends,
+)
+from app.indexing.embedding import InMemoryEmbeddingProvider
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -339,6 +345,14 @@ def build_runtime(
                 "schema_version": "index-chunks-v1",
                 "reranker_provider": settings.index.reranker_provider,
                 "image_vlm_provider": settings.index.image_vlm_provider,
+                "embedding_model": settings.index.embedding_model or "configured",
+                "embedding_revision": (
+                    settings.index.embedding_revision
+                    or settings.index.embedding_model
+                    or "configured"
+                ),
+                "embedding_dimension": settings.index.embedding_dimension,
+                "embedding_metric": settings.index.embedding_metric,
             },
         )
     )
@@ -372,8 +386,21 @@ def build_runtime(
         image_ocr=configured.get("indexing_image_ocr"),
     )
     configured.setdefault("indexing_processor", processor)
+    embedding = configured.get("indexing_embedding")
+    allow_create = settings.profile != "production"
+    if embedding is None and (
+        settings.index.embedding_provider != "memory" or settings.index.vector_provider != "memory"
+    ):
+        embedding = build_embedding_provider(settings)
+        configured.setdefault("indexing_embedding", embedding)
     dense_writer = configured.get("indexing_dense_writer")
     sparse_provider = configured.get("indexing_sparse_provider")
+    if dense_writer is None and settings.index.vector_provider != "memory":
+        dense_writer = build_dense_writer(settings, embedding, allow_create=allow_create)
+        configured.setdefault("indexing_dense_writer", dense_writer)
+    if sparse_provider is None and settings.index.sparse_url:
+        sparse_provider = build_configured_sparse_provider(settings, allow_create=allow_create)
+        configured.setdefault("indexing_sparse_provider", sparse_provider)
     token_counter = configured.get("indexing_token_counter")
     if settings.profile == "production":
         if not callable(configured.get("indexing_image_ocr")) or not callable(
@@ -385,11 +412,9 @@ def build_runtime(
         if not callable(token_counter):
             raise RuntimeError("production requires an explicit indexing token counter")
         if (
-            isinstance(
-                dense_writer,
-                (InMemoryIndexWriter, InMemorySparseIndexProvider),
-            )
-            or isinstance(sparse_provider, (InMemoryIndexWriter, InMemorySparseIndexProvider))
+            is_memory_indexing_adapter(dense_writer)
+            or is_memory_indexing_adapter(sparse_provider)
+            or isinstance(embedding, InMemoryEmbeddingProvider)
             or isinstance(reranker, (NoopReranker, ScoreReranker))
         ):
             raise RuntimeError("production does not accept memory or test indexing adapters")
@@ -412,6 +437,7 @@ def build_runtime(
             raise RuntimeError("production sparse backend must provide BM25 search")
         if not callable(getattr(reranker, "rerank", None)):
             raise RuntimeError("production reranker does not implement the rerank port")
+    probe_configured_backends(dense_writer, sparse_provider)
     indexing_service = configured.get("indexing_service") or IndexingService(
         processor=processor,
         dense_writer=dense_writer,
@@ -428,6 +454,7 @@ def build_runtime(
         graph_router=configured.get("indexing_graph_router"),
         token_counter=token_counter,
         object_store=object_store,
+        embedding=embedding,
     )
     configured.setdefault("indexing_service", indexing_service)
     if _index_configuration_staging_table_exists(engine, "index_generations"):
