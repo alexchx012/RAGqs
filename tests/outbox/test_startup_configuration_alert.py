@@ -85,4 +85,6 @@ def test_missing_evaluation_judge_configuration_alerts_active_ops_without_values
     assert {notification["title"] for notification in notifications} == {
         "Evaluation judge configuration missing"
     }
-    assert all("https://" not in str(notification["payload_json"]) for notification in notifications)
+    assert all(
+        "https://" not in str(notification["payload_json"]) for notification in notifications
+    )

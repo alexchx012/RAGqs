@@ -282,7 +282,9 @@ def test_production_runtime_auto_assembles_configured_http_judge(monkeypatch) ->
         assert judge_provider._configuration.provider == settings.evaluation.judge_provider
         assert judge_provider._configuration.model == settings.evaluation.judge_model
         assert judge_provider._configuration.mode == settings.evaluation.judge_mode
-        assert judge_provider._configuration.credential_ref == settings.evaluation.judge_credential_ref
+        assert (
+            judge_provider._configuration.credential_ref == settings.evaluation.judge_credential_ref
+        )
         assert preflight_providers == [judge_provider]
     finally:
         runtime.close()
