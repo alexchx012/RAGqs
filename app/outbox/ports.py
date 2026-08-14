@@ -23,6 +23,7 @@ EventType = Literal[
     "quota_rejected",
     "calibration_window_suggested",
     "graph_build_completed",
+    "evaluation_judge_configuration_missing",
     "public_graph_source_changed",
 ]
 
@@ -38,6 +39,7 @@ NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
         "quota_rejected",
         "calibration_window_suggested",
         "graph_build_completed",
+        "evaluation_judge_configuration_missing",
     }
 )
 ACKNOWLEDGEABLE_EVENT_TYPES: frozenset[str] = frozenset(
@@ -99,6 +101,18 @@ class PublicGraphSourceOutboxPort(Protocol):
         source_manifest_hash: str,
         document_id: str,
         change_type: str,
+        occurred_at: datetime,
+        connection: Connection,
+    ) -> str: ...
+
+
+class StartupConfigurationAlertPort(Protocol):
+    """Publishes the bounded startup alert for missing evaluation judge configuration."""
+
+    def publish_missing_evaluation_judge_configuration(
+        self,
+        *,
+        missing_variable_names: tuple[str, ...],
         occurred_at: datetime,
         connection: Connection,
     ) -> str: ...
