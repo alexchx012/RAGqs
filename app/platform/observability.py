@@ -104,6 +104,8 @@ class ObservabilityMetricsRead:
 
 
 class ObservabilityMetricsPort(Protocol):
+    def configure_route_templates(self, route_templates: Iterable[str]) -> None: ...
+
     def record(self, sample: ObservabilitySample) -> None: ...
 
     def read(self, request: ObservabilityReadRequest) -> ObservabilityMetricsRead: ...
@@ -154,6 +156,9 @@ class InMemoryObservabilityMetrics:
     @property
     def samples(self) -> tuple[ObservabilitySample, ...]:
         return tuple(self._samples)
+
+    def configure_route_templates(self, route_templates: Iterable[str]) -> None:
+        self.allowed_route_templates = frozenset(route_templates)
 
     def _utc_now(self) -> datetime:
         value = self._now()
@@ -338,6 +343,9 @@ class SqlAlchemyObservabilityMetrics:
         )
         self.max_route_templates = max_route_templates
         self.minimum_sample_weight = minimum_sample_weight
+
+    def configure_route_templates(self, route_templates: Iterable[str]) -> None:
+        self.allowed_route_templates = frozenset(route_templates)
 
     def _utc_now(self) -> datetime:
         return _as_utc(self._now())

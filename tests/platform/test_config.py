@@ -77,6 +77,17 @@ def test_production_profile_requires_identity_access_security_configuration(
         load_platform_settings(values)
 
 
+def test_judge_and_image_vlm_credential_reference_labels_may_match() -> None:
+    settings = load_platform_settings(
+        development_environment(
+            RAG_EVALUATION_JUDGE_CREDENTIAL_REF="shared-provider-label",
+            RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF="shared-provider-label",
+        )
+    )
+
+    validate_startup_settings(settings)
+
+
 @pytest.mark.parametrize("retention", ["30", "367"])
 def test_observability_retention_has_bounded_range(retention: str) -> None:
     with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):

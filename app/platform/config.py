@@ -468,7 +468,3 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
         raise ValueError("evaluation judge model must be qwen3.7-plus")
     if evaluation.judge_mode != "non_thinking":
         raise ValueError("evaluation judge mode must be non_thinking")
-    if evaluation.judge_credential_ref == settings.index.image_vlm_credential_ref:
-        raise ValueError(
-            "evaluation judge credential ref must differ from image VLM credential ref"
-        )

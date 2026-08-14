@@ -18,7 +18,11 @@ from app.platform.database import (
     core_metadata,
 )
 from app.platform.maintenance import create_maintenance_runtime
-from app.platform.observability import ObservabilityReadRequest, SqlAlchemyObservabilityMetrics
+from app.platform.observability import (
+    InMemoryObservabilityMetrics,
+    ObservabilityReadRequest,
+    SqlAlchemyObservabilityMetrics,
+)
 from app.platform.persistence import FenceViolation
 from app.platform.runtime import PlatformRuntime, build_runtime
 from app.platform.storage import S3ObjectStore
@@ -76,6 +80,33 @@ def test_platform_app_records_only_bounded_http_telemetry() -> None:
     assert isinstance(metrics, SqlAlchemyObservabilityMetrics)
     read = metrics.read(ObservabilityReadRequest("retention-ops", "ops", "today"))
     assert read.api.sampled_request_weight >= 0
+    runtime.close()
+
+
+def test_platform_app_keeps_registered_metric_routes_and_groups_unknown_paths() -> None:
+    configured = settings()
+    metrics = InMemoryObservabilityMetrics(
+        now=lambda: datetime(2026, 8, 5, tzinfo=UTC),
+        success_sample_rate=1,
+    )
+    runtime = build_runtime(configured, adapters={"observability_metrics": metrics})
+    engine = runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    app = create_platform_app(configured, runtime=runtime)
+
+    with TestClient(app) as client:
+        health = client.get("/v1/health")
+        validation = client.post("/v1/auth/login", json={})
+        unknown = client.get("/v1/not-registered")
+
+    assert health.status_code == 200
+    assert validation.status_code == 422
+    assert unknown.status_code == 404
+    recorded_routes = {sample.route_template for sample in metrics.samples}
+    assert "/v1/auth/login" in recorded_routes
+    assert "other" in recorded_routes
     runtime.close()
 
 
