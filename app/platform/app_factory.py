@@ -82,9 +82,12 @@ def create_platform_app(
     metrics = runtime.resolve("observability_metrics")
     configure_route_templates = getattr(metrics, "configure_route_templates", None)
     if callable(configure_route_templates):
-        configure_route_templates(
-            route.path for route in app.routes if isinstance(getattr(route, "path", None), str)
-        )
+        route_templates: list[str] = []
+        for route in app.routes:
+            route_path = getattr(route, "path", None)
+            if isinstance(route_path, str):
+                route_templates.append(route_path)
+        configure_route_templates(route_templates)
 
     @app.middleware("http")
     async def install_request_context(request: Request, call_next):
