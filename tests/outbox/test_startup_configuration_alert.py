@@ -88,3 +88,19 @@ def test_missing_evaluation_judge_configuration_alerts_active_ops_without_values
     assert all(
         "https://" not in str(notification["payload_json"]) for notification in notifications
     )
+
+
+def test_missing_evaluation_judge_configuration_event_id_fits_outbox_schema() -> None:
+    engine = build_engine()
+    adapter = SqlAlchemyStartupConfigurationAlertAdapter(
+        make_publisher(engine, now=lambda: fixed_now())
+    )
+
+    with engine.begin() as connection:
+        event_id = adapter.publish_missing_evaluation_judge_configuration(
+            missing_variable_names=("RAG_EVALUATION_JUDGE_API_KEY",),
+            occurred_at=fixed_now(),
+            connection=connection,
+        )
+
+    assert len(event_id) <= outbox_event_table.c.event_id.type.length

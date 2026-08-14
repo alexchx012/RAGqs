@@ -1082,7 +1082,7 @@ class SqlAlchemyStartupConfigurationAlertAdapter:
         invocation_id = secrets.token_urlsafe(18)
         context = current_context()
         command = OutboxPublishCommand(
-            event_id=f"evt_evaluation_judge_configuration_missing_{invocation_id}",
+            event_id=f"evt_eval_judge_config_missing_{invocation_id}",
             caller_principal="startup_configuration",
             event_type="evaluation_judge_configuration_missing",
             schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
