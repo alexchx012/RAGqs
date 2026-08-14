@@ -28,6 +28,10 @@ class MaintenanceRuntime:
         compact = getattr(dispatcher, "compact_due_events", None)
         if callable(compact):
             compact()
+        retention_worker = self.runtime.resolve("retention_worker")
+        run_retention = getattr(retention_worker, "run_once", None) if retention_worker else None
+        if callable(run_retention):
+            run_retention(owner="maintenance-retention")
 
     def close(self) -> None:
         if self.owns_runtime:

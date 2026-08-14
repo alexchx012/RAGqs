@@ -15,6 +15,7 @@ from app.identity.schema import identity_metadata
 from app.indexing.schema import indexing_metadata
 from app.outbox.schema import outbox_metadata
 from app.platform.database import core_metadata
+from app.retention.schema import retention_metadata
 from app.usage.schema import usage_metadata
 
 config = context.config
@@ -33,6 +34,7 @@ target_metadata = [
     indexing_metadata,
     chat_metadata,
     evaluation_metadata,
+    retention_metadata,
 ]
 
 

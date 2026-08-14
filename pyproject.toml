@@ -39,6 +39,7 @@ ragqs-outbox-retirement-worker = "app.outbox.retirement_worker:main"
 ragqs-outbox-compaction-worker = "app.outbox.compaction_worker:main"
 ragqs-usage-maintenance = "app.usage.maintenance:main"
 ragqs-evaluation-maintenance = "app.evaluation.maintenance:main"
+ragqs-retention-maintenance = "app.retention.worker:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

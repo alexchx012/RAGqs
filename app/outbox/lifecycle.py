@@ -1265,6 +1265,67 @@ class SqlAlchemyOutboxLifecycle:
         if command.caller_principal != RETENTION_CALLER:
             raise UnauthorizedLifecycleCaller(command.caller_principal)
         self._check_caller_capability(command)
+        return self._request_compaction(command, connection=connection)
+
+    def request_compaction_for_identity_deletion(
+        self,
+        *,
+        operation_id: str,
+        user_id: str,
+        deletion_id: str,
+        retirement_receipt_id: str,
+        connection: Connection,
+    ) -> EligibleAccountEventCompactionReceipt:
+        """Internal identity-deletion scoped entry: request eligible event
+        compaction for exactly the completed retirement named by the identity
+        deletion workflow.
+
+        This entry requires NO capability token: it can only be reached through
+        the runtime-assembled gateway façade, the retirement row is re-read
+        server-side, and the retirement receipt fingerprint is taken from that
+        row instead of any caller input. A caller cannot submit a token or
+        choose another retirement.
+        """
+        retirement = (
+            connection.execute(
+                select(outbox_retirement_command_table).where(
+                    outbox_retirement_command_table.c.operation_id == retirement_receipt_id
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            retirement is None
+            or str(retirement["user_id"]) != user_id
+            or str(retirement["deletion_id"]) != deletion_id
+            or str(retirement["state"]) != "completed"
+        ):
+            raise PlatformError(
+                "compaction_prerequisite_missing",
+                "A completed retirement receipt for this user and deletion is required",
+                {},
+                409,
+            )
+        command = EligibleAccountEventCompactionCommand(
+            operation_id=operation_id,
+            caller_principal="retention-ops",
+            user_id=user_id,
+            deletion_id=deletion_id,
+            retirement_receipt_id=retirement_receipt_id,
+            retirement_receipt_fingerprint=str(retirement["input_fingerprint"] or ""),
+            transaction_id=f"retention:{operation_id}",
+            canonical_input_fingerprint="",
+            capability_token="",
+        )
+        return self._request_compaction(command, connection=connection)
+
+    def _request_compaction(
+        self,
+        command: EligibleAccountEventCompactionCommand,
+        *,
+        connection: Connection,
+    ) -> EligibleAccountEventCompactionReceipt:
         now = self._current_time(connection)
         input_fingerprint = _command_input_fingerprint(command)
 

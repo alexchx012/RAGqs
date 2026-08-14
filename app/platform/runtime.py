@@ -726,6 +726,94 @@ def build_runtime(
         "compaction_worker",
         CompactionWorker(worker_runtime, lifecycle=outbox_lifecycle),
     )
+    # Retention & operations orchestration assembly. Destructive effects stay
+    # inside the owner domains; retention only drives owner entries and owns
+    # its reconciliation/findings/receipts and the server-driven read models.
+    from app.retention.adapters import (
+        RuntimeAccountCompactionPort,
+        RuntimeDocumentsCleanupPort,
+        RuntimeGraphGcPort,
+        RuntimeIndexingGcPort,
+    )
+    from app.retention.compaction import AccountCompactionRequester
+    from app.retention.gc_handoff import GenerationGcCoordinator
+    from app.retention.readers import DashboardReadModels, OpsJobsReadModel
+    from app.retention.reconcile import ReconciliationService
+    from app.retention.repository import SqlAlchemyRetentionRepository
+    from app.retention.service import RetentionOpsService
+    from app.retention.worker import RetentionMaintenanceWorker
+
+    retention_repository = configured.get("retention_repository") or (
+        SqlAlchemyRetentionRepository(engine, now=clock.now_utc)
+    )
+    configured.setdefault("retention_repository", retention_repository)
+    documents_cleanup_port = configured.get("retention_documents_cleanup_port") or (
+        RuntimeDocumentsCleanupPort(documents_service)
+    )
+    configured.setdefault("retention_documents_cleanup_port", documents_cleanup_port)
+    indexing_gc_port = configured.get("retention_indexing_gc_port") or (
+        RuntimeIndexingGcPort(indexing_service.graph)
+    )
+    configured.setdefault("retention_indexing_gc_port", indexing_gc_port)
+    graph_gc_port = configured.get("retention_graph_gc_port") or (
+        RuntimeGraphGcPort(graph_build_service)
+    )
+    configured.setdefault("retention_graph_gc_port", graph_gc_port)
+    account_compaction_gateway = configured.get("account_compaction_gateway") or (
+        _OutboxAccountCompactionGateway(outbox_lifecycle)
+    )
+    configured.setdefault("account_compaction_gateway", account_compaction_gateway)
+    compaction_port = configured.get("retention_compaction_port") or (
+        RuntimeAccountCompactionPort(engine, account_compaction_gateway)
+    )
+    configured.setdefault("retention_compaction_port", compaction_port)
+    gc_coordinator = configured.get("retention_gc_coordinator") or GenerationGcCoordinator(
+        repository=retention_repository,
+        indexing_gc_port=indexing_gc_port,
+        graph_gc_port=graph_gc_port,
+    )
+    configured.setdefault("retention_gc_coordinator", gc_coordinator)
+    retention_reconciliation = configured.get("retention_reconciliation") or (
+        ReconciliationService(
+            repository=retention_repository,
+            documents_port=documents_cleanup_port,
+            gc_coordinator=gc_coordinator,
+            engine=engine,
+            now=clock.now_utc,
+        )
+    )
+    configured.setdefault("retention_reconciliation", retention_reconciliation)
+    dashboard_read = configured.get("retention_dashboard") or DashboardReadModels(
+        engine=engine,
+        now=clock.now_utc,
+        observability_metrics=observability_metrics,
+    )
+    configured.setdefault("retention_dashboard", dashboard_read)
+    ops_jobs_read = configured.get("retention_ops_jobs") or OpsJobsReadModel(
+        engine=engine,
+        now=clock.now_utc,
+        documents_service=documents_service,
+    )
+    configured.setdefault("retention_ops_jobs", ops_jobs_read)
+    compaction_requester = configured.get("retention_compaction_requester") or (
+        AccountCompactionRequester(repository=retention_repository, port=compaction_port)
+    )
+    configured.setdefault("retention_compaction_requester", compaction_requester)
+    retention_ops = configured.get("retention_ops") or RetentionOpsService(
+        repository=retention_repository,
+        dashboard=dashboard_read,
+        ops_jobs=ops_jobs_read,
+        reconciliation=retention_reconciliation,
+        gc_coordinator=gc_coordinator,
+        compaction=compaction_requester,
+        engine=engine,
+        documents_cleanup_port=documents_cleanup_port,
+    )
+    configured.setdefault("retention_ops", retention_ops)
+    configured.setdefault(
+        "retention_worker",
+        configured.get("retention_worker") or RetentionMaintenanceWorker(worker_runtime),
+    )
     return runtime
 
 
@@ -762,6 +850,37 @@ class _OutboxAccountRetirementGateway:
         return AccountRetirementConfirmation(
             state=receipt.state,
             receipt_count=receipt.receipt_count,
+        )
+
+
+class _OutboxAccountCompactionGateway:
+    """Identity-deletion scoped eligible-compaction facade.
+
+    The gateway ONLY requests event compaction for exactly the completed
+    retirement named by an identity deletion workflow, through the lifecycle's
+    internal no-token entry request_compaction_for_identity_deletion. It
+    carries no bearer token and no signing secret; the retirement row is
+    re-read server-side and its canonical fingerprint is never caller input.
+    """
+
+    def __init__(self, lifecycle: SqlAlchemyOutboxLifecycle) -> None:
+        self._lifecycle = lifecycle
+
+    def request_compaction(
+        self,
+        *,
+        operation_id: str,
+        user_id: str,
+        deletion_id: str,
+        retirement_receipt_id: str,
+        connection: Connection,
+    ) -> Any:
+        return self._lifecycle.request_compaction_for_identity_deletion(
+            operation_id=operation_id,
+            user_id=user_id,
+            deletion_id=deletion_id,
+            retirement_receipt_id=retirement_receipt_id,
+            connection=connection,
         )
 
 

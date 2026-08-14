@@ -11,6 +11,7 @@ from .evaluation import router as evaluation_router
 from .generations import router as generations_router
 from .graph_builds import router as graph_builds_router
 from .health import router as health_router
+from .metrics import router as metrics_router
 from .notifications import router as notifications_router
 from .ops import router as ops_router
 from .quota import router as quota_router
@@ -19,6 +20,7 @@ from .spaces import router as spaces_router
 router = APIRouter()
 router.include_router(health_router)
 router.include_router(auth_router)
+router.include_router(metrics_router)
 router.include_router(spaces_router)
 router.include_router(admin_router)
 router.include_router(notifications_router)
