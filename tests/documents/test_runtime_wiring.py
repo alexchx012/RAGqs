@@ -290,6 +290,32 @@ def test_production_runtime_auto_assembles_configured_http_judge(monkeypatch) ->
         runtime.close()
 
 
+def test_production_runtime_closes_auto_assembled_judge_when_preflight_fails(monkeypatch) -> None:
+    settings = _production_settings(
+        judge_base_url="https://judge.example.test/v1",
+        judge_api_key="judge-api-secret",
+    )
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    preflight_providers = []
+
+    def fail_preflight(self) -> None:
+        preflight_providers.append(self._provider)
+        raise RuntimeError("preflight failed")
+
+    monkeypatch.setattr(evaluation_module.JudgePreflight, "verify_startup", fail_preflight)
+
+    try:
+        build_runtime(settings, adapters=_production_adapters(engine))
+    except RuntimeError as error:
+        assert str(error) == "preflight failed"
+    else:
+        raise AssertionError("configured judge preflight unexpectedly succeeded")
+
+    assert len(preflight_providers) == 1
+    assert isinstance(preflight_providers[0], HttpJudgeProvider)
+    assert preflight_providers[0]._client.is_closed
+
+
 def test_production_runtime_degrades_when_judge_configuration_is_missing(monkeypatch) -> None:
     settings = _production_settings(judge_base_url=None, judge_api_key=None)
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)

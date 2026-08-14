@@ -643,6 +643,7 @@ def build_runtime(
     )
     configured.setdefault("evaluation_usage_submission", evaluation_usage_submission)
     judge_provider = configured.get("judge_provider")
+    auto_assembled_http_judge: HttpJudgeProvider | None = None
     judge_requires_preflight = settings.profile == "production"
     if judge_provider is None:
         if settings.profile == "production":
@@ -653,7 +654,7 @@ def build_runtime(
             else:
                 judge_api_key = settings.evaluation.judge_api_key
                 assert judge_api_key is not None
-                judge_provider = HttpJudgeProvider(
+                auto_assembled_http_judge = HttpJudgeProvider(
                     base_url=settings.evaluation.judge_base_url or "",
                     api_key=judge_api_key.get_secret_value(),
                     usage_submission=evaluation_usage_submission,
@@ -664,13 +665,19 @@ def build_runtime(
                         credential_ref=settings.evaluation.judge_credential_ref,
                     ),
                 )
+                judge_provider = auto_assembled_http_judge
         else:
             judge_provider = UnavailableJudgeProvider(environment=settings.profile)
     configured.setdefault("judge_provider", judge_provider)
     if judge_requires_preflight:
         from app.evaluation import JudgePreflight
 
-        JudgePreflight(judge_provider).verify_startup()
+        try:
+            JudgePreflight(judge_provider).verify_startup()
+        except Exception:
+            if auto_assembled_http_judge is not None:
+                auto_assembled_http_judge.close()
+            raise
     calibration_outbox_port = configured.get("calibration_outbox_port") or (
         SqlAlchemyCalibrationOutboxAdapter(outbox_publisher)
     )
