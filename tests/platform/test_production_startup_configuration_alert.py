@@ -54,7 +54,9 @@ def _production_settings(**overrides: str | None):
     ("overrides", "expected_missing"),
     [
         ({"RAG_EVALUATION_JUDGE_BASE_URL": ""}, ("RAG_EVALUATION_JUDGE_BASE_URL",)),
+        ({"RAG_EVALUATION_JUDGE_BASE_URL": "   "}, ("RAG_EVALUATION_JUDGE_BASE_URL",)),
         ({"RAG_EVALUATION_JUDGE_API_KEY": None}, ("RAG_EVALUATION_JUDGE_API_KEY",)),
+        ({"RAG_EVALUATION_JUDGE_API_KEY": "   "}, ("RAG_EVALUATION_JUDGE_API_KEY",)),
         (
             {
                 "RAG_EVALUATION_JUDGE_BASE_URL": "",

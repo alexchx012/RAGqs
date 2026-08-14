@@ -27,9 +27,11 @@ from app.evaluation import (
     CalibrationCloseWorker,
     EvaluationCalibrationWindowPort,
     EvaluationService,
+    HttpJudgeProvider,
     IdentitySpaceVisibilityPort,
     IndexingGenerationSourceAdapter,
     IndexingReplayAdapter,
+    JudgeConfiguration,
     ShadowEvaluationWorker,
     SqlAlchemyCalibrationOutboxAdapter,
     SqlAlchemyChatFactsPort,
@@ -152,6 +154,17 @@ def _index_configuration_staging_table_exists(engine: Any, table_name: str) -> b
         return False
     finally:
         connection.close()
+
+
+def missing_evaluation_judge_configuration(settings: PlatformSettings) -> tuple[str, ...]:
+    """Return only the missing judge setting names safe to expose in an alert."""
+    missing: list[str] = []
+    if not settings.evaluation.judge_base_url or not settings.evaluation.judge_base_url.strip():
+        missing.append("RAG_EVALUATION_JUDGE_BASE_URL")
+    judge_api_key = settings.evaluation.judge_api_key
+    if judge_api_key is None or not judge_api_key.get_secret_value().strip():
+        missing.append("RAG_EVALUATION_JUDGE_API_KEY")
+    return tuple(missing)
 
 
 def build_runtime(
@@ -615,13 +628,36 @@ def build_runtime(
                     connection,
                     policy=default_policy_snapshot(now=clock.now_utc(connection)),
                 )
+    evaluation_usage_submission = configured.get("evaluation_usage_submission") or (
+        UsageLedgerSubmissionAdapter(ledger)
+    )
+    configured.setdefault("evaluation_usage_submission", evaluation_usage_submission)
     judge_provider = configured.get("judge_provider")
+    judge_requires_preflight = settings.profile == "production"
     if judge_provider is None:
         if settings.profile == "production":
-            raise RuntimeError("production requires an explicit evaluation judge provider")
-        judge_provider = UnavailableJudgeProvider(environment=settings.profile)
+            missing_judge_configuration = missing_evaluation_judge_configuration(settings)
+            if missing_judge_configuration:
+                judge_provider = UnavailableJudgeProvider(environment=settings.profile)
+                judge_requires_preflight = False
+            else:
+                judge_api_key = settings.evaluation.judge_api_key
+                assert judge_api_key is not None
+                judge_provider = HttpJudgeProvider(
+                    base_url=settings.evaluation.judge_base_url or "",
+                    api_key=judge_api_key.get_secret_value(),
+                    usage_submission=evaluation_usage_submission,
+                    configuration=JudgeConfiguration(
+                        provider=settings.evaluation.judge_provider,
+                        model=settings.evaluation.judge_model,
+                        mode=settings.evaluation.judge_mode,
+                        credential_ref=settings.evaluation.judge_credential_ref,
+                    ),
+                )
+        else:
+            judge_provider = UnavailableJudgeProvider(environment=settings.profile)
     configured.setdefault("judge_provider", judge_provider)
-    if settings.profile == "production":
+    if judge_requires_preflight:
         from app.evaluation import JudgePreflight
 
         JudgePreflight(judge_provider).verify_startup()
@@ -654,10 +690,6 @@ def build_runtime(
         indexing_service
     )
     configured.setdefault("retrieval_replay_port", retrieval_replay_port)
-    evaluation_usage_submission = configured.get("evaluation_usage_submission") or (
-        UsageLedgerSubmissionAdapter(ledger)
-    )
-    configured.setdefault("evaluation_usage_submission", evaluation_usage_submission)
     evaluation_space_visibility = configured.get("evaluation_space_visibility") or (
         IdentitySpaceVisibilityPort(identity_access)
     )
