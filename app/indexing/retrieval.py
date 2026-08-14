@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -104,6 +105,39 @@ _EFFORT_LIMITS = {
     "think": (4, 7),
     "deep": (10, 9),
 }
+_VECTOR_CANDIDATE_RATIO = 0.7
+
+
+def allocate_candidate_quotas(limit: int, kinds: Sequence[str]) -> tuple[int, ...]:
+    """Library baseline: vector 0.7 / BM25 0.3. A single provider keeps the full limit."""
+
+    if limit < 1:
+        raise PlatformError("validation_error", "candidate limit is invalid", {}, 422)
+    if len(kinds) <= 1:
+        return (limit,)
+    vector = max(1, int(round(limit * _VECTOR_CANDIDATE_RATIO)))
+    sparse = max(1, limit - vector)
+    quotas: list[int] = []
+    for kind in kinds:
+        if kind == "dense":
+            quotas.append(vector)
+        elif kind == "sparse":
+            quotas.append(sparse)
+        else:
+            quotas.append(max(1, limit // len(kinds)))
+    return tuple(quotas)
+
+
+def _backend_kind(provider: Any, *, fallback: str) -> str:
+    kind = getattr(provider, "backend_kind", None)
+    if kind in {"dense", "sparse"}:
+        return str(kind)
+    name = str(getattr(provider, "provider_name", "")).casefold()
+    if name in {"milvus", "dense", "dense-memory"}:
+        return "dense"
+    if name in {"meilisearch", "opensearch", "sparse", "sparse-memory"}:
+        return "sparse"
+    return fallback
 
 
 class TokenCounter(Protocol):
@@ -414,6 +448,125 @@ class RetrievalService:
             "reason": error.code if isinstance(error, PlatformError) else "unavailable",
         }
 
+    def _collect_provider_hits(
+        self,
+        provider: Any,
+        query: str,
+        *,
+        generation_id: str,
+        scope: RetrievalScope,
+        quota: int,
+        principal: Any,
+    ) -> list[RetrievalHit]:
+        hits: list[RetrievalHit] = []
+        cursor: str | None = None
+        cursors_seen: set[str | None] = set()
+        provider_seen = 0
+        while provider_seen < quota:
+            if cursor in cursors_seen:
+                raise PlatformError(
+                    "retrieval_degradation",
+                    "provider cursor did not advance",
+                    {},
+                    409,
+                )
+            cursors_seen.add(cursor)
+            page = _page(
+                provider.search(
+                    query,
+                    tuple(sorted(scope.space_ids)),
+                    quota,
+                    cursor,
+                    generation_id=generation_id,
+                )
+            )
+            if not page.items and page.cursor is None:
+                break
+            candidates = tuple(_provider_candidate(raw) for raw in page.items)
+            facts = self._visibility_facts(
+                tuple(candidate for candidate, _ in candidates), principal
+            )
+            for candidate, provider_score in candidates:
+                fact = facts.get((candidate.space_id, candidate.document_id))
+                if not self._visible(candidate, fact, scope, generation_id):
+                    continue
+                provider_seen += 1
+                hits.append(
+                    RetrievalHit(candidate, provider_score, getattr(provider, "provider_name", ""))
+                )
+                if provider_seen >= quota:
+                    break
+            if page.cursor is None:
+                break
+            cursor = page.cursor
+        return hits
+
+    def _collect_hybrid_hits(
+        self,
+        query: str,
+        generation_id: str,
+        scope: RetrievalScope,
+        profile: RetrievalProfile,
+        principal: Any,
+    ) -> tuple[list[RetrievalHit], list[Mapping[str, Any]]]:
+        kinds = tuple(
+            _backend_kind(provider, fallback="dense" if index == 0 else "sparse")
+            for index, provider in enumerate(self._providers)
+        )
+        quotas = allocate_candidate_quotas(profile.candidate_limit, kinds)
+        degradations: list[Mapping[str, Any]] = []
+        collected: list[tuple[str, list[RetrievalHit]]] = []
+        failures: list[str] = []
+
+        def run(index: int) -> tuple[int, str, list[RetrievalHit] | Exception]:
+            provider = self._providers[index]
+            kind = kinds[index]
+            try:
+                return (
+                    index,
+                    kind,
+                    self._collect_provider_hits(
+                        provider,
+                        query,
+                        generation_id=generation_id,
+                        scope=scope,
+                        quota=quotas[index],
+                        principal=principal,
+                    ),
+                )
+            except Exception as error:
+                return index, kind, error
+
+        if len(self._providers) == 1:
+            outcomes = [run(0)]
+        else:
+            with ThreadPoolExecutor(max_workers=len(self._providers)) as pool:
+                outcomes = list(pool.map(run, range(len(self._providers))))
+        outcomes.sort(key=lambda item: item[0])
+        for _index, kind, payload in outcomes:
+            if isinstance(payload, Exception):
+                failures.append(kind)
+                continue
+            collected.append((kind, payload))
+        if not collected:
+            raise PlatformError(
+                "retrieval_failed",
+                "dense and sparse retrieval failed",
+                {"failed": failures},
+                503,
+            )
+        if failures:
+            degradations.append({"code": "retrieval_degraded", "failed": tuple(failures)})
+        hits: list[RetrievalHit] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+        for _kind, provider_hits in collected:
+            for hit in provider_hits:
+                if hit.chunk.dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(hit.chunk.dedupe_key)
+                hits.append(hit)
+        return hits, degradations
+
     def search(
         self,
         query: str,
@@ -450,52 +603,18 @@ class RetrievalService:
         scope = intersect_scopes(self._allowed_scope(principal), narrowing_scope)
         if scope.is_empty:
             return RetrievalResult((), lease.generation_id, selected)
-        hits: list[RetrievalHit] = []
-        seen_keys: set[tuple[str, str, str]] = set()
-        degradations: list[Mapping[str, Any]] = []
-        for provider in self._providers:
-            cursor: str | None = None
-            cursors_seen: set[str | None] = set()
-            provider_seen = 0
-            while provider_seen < selected.candidate_limit:
-                if cursor in cursors_seen:
-                    raise PlatformError(
-                        "retrieval_degradation",
-                        "provider cursor did not advance",
-                        {},
-                        409,
-                    )
-                cursors_seen.add(cursor)
-                page = _page(
-                    provider.search(
-                        query,
-                        tuple(sorted(scope.space_ids)),
-                        selected.candidate_limit,
-                        cursor,
-                        generation_id=lease.generation_id,
-                    )
-                )
-                if not page.items and page.cursor is None:
-                    break
-                candidates = tuple(_provider_candidate(raw) for raw in page.items)
-                facts = self._visibility_facts(
-                    tuple(candidate for candidate, _ in candidates), principal
-                )
-                for candidate, provider_score in candidates:
-                    fact = facts.get((candidate.space_id, candidate.document_id))
-                    if not self._visible(candidate, fact, scope, lease.generation_id):
-                        continue
-                    provider_seen += 1
-                    if candidate.dedupe_key in seen_keys:
-                        continue
-                    seen_keys.add(candidate.dedupe_key)
-                    hits.append(RetrievalHit(candidate, provider_score, provider.provider_name))
-                    if provider_seen >= selected.candidate_limit:
-                        break
-                if page.cursor is None:
-                    break
-                cursor = page.cursor
-        reranked, degradation = self._reranker.rerank(query, hits, selected)
+        hits, degradations = self._collect_hybrid_hits(
+            query,
+            lease.generation_id,
+            scope,
+            selected,
+            principal,
+        )
+        try:
+            reranked, degradation = self._reranker.rerank(query, hits, selected)
+        except Exception:
+            reranked = tuple(hits)
+            degradation = {"code": "rerank_degraded"}
         if degradation is not None:
             degradations.append(degradation)
         rag_call_limit, tree_document_limit = _EFFORT_LIMITS[selected.effort]
@@ -672,6 +791,7 @@ __all__ = [
     "AllowedRetrievalScopePort",
     "CitationService",
     "NoopReranker",
+    "allocate_candidate_quotas",
     "GraphRouter",
     "GraphReader",
     "RetrievalRequest",

@@ -8,11 +8,13 @@ from app.indexing import (
     GenerationManager,
     IndexChunk,
     IndexingService,
+    InMemoryEmbeddingProvider,
     InMemorySparseIndexProvider,
     RetrievalProfile,
     RetrievalScope,
     RetrievalService,
 )
+from app.indexing.embedding import EmbeddingConfig
 from app.indexing.models import RetrievalHit
 from app.platform.config import load_platform_settings
 from app.platform.errors import PlatformError
@@ -315,6 +317,35 @@ def test_production_runtime_requires_image_ports_and_rejects_memory_adapters() -
                 "indexing_dense_writer": InMemorySparseIndexProvider(provider_name="dense"),
                 "indexing_sparse_provider": InMemorySparseIndexProvider(provider_name="sparse"),
                 "indexing_reranker": production_adapter,
+                "indexing_image_ocr": lambda content, context: "ocr",
+                "indexing_image_describer": lambda content, context: "description",
+                "indexing_token_counter": len,
+            },
+        )
+
+
+def test_production_runtime_rejects_memory_embedding() -> None:
+    settings = _production_settings()
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    production_adapter = object()
+    with pytest.raises(RuntimeError, match="memory|test"):
+        build_runtime(
+            settings,
+            adapters={
+                "database_engine": engine,
+                "indexing_dense_writer": production_adapter,
+                "indexing_sparse_provider": production_adapter,
+                "indexing_reranker": production_adapter,
+                "indexing_embedding": InMemoryEmbeddingProvider(
+                    EmbeddingConfig(
+                        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        api_key="test",
+                        model="text-embedding-v4",
+                        revision="text-embedding-v4",
+                        dimension=8,
+                        metric="cosine",
+                    )
+                ),
                 "indexing_image_ocr": lambda content, context: "ocr",
                 "indexing_image_describer": lambda content, context: "description",
                 "indexing_token_counter": len,

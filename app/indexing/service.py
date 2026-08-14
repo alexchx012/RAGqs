@@ -8,6 +8,7 @@ from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
 from app.platform.errors import PlatformError
 from app.platform.storage import ObjectStorePort
 
+from .embedding import EmbeddingProvider, InMemoryEmbeddingProvider
 from .generation import GenerationManager
 from .graph import GraphComponentCoordinator
 from .models import NarrowingScope, RetrievalProfile, RetrievalResult
@@ -43,6 +44,7 @@ class IndexingService:
         graph_router: Any | None = None,
         token_counter: Any | None = None,
         object_store: ObjectStorePort | None = None,
+        embedding: EmbeddingProvider | None = None,
     ) -> None:
         if environment == "production":
             if (
@@ -57,9 +59,11 @@ class IndexingService:
             if (
                 isinstance(dense_writer, (InMemoryIndexWriter, InMemorySparseIndexProvider))
                 or isinstance(sparse_provider, (InMemoryIndexWriter, InMemorySparseIndexProvider))
+                or isinstance(embedding, InMemoryEmbeddingProvider)
                 or isinstance(reranker, (NoopReranker, ScoreReranker))
             ):
                 raise RuntimeError("production does not accept memory or test indexing adapters")
+        self.embedding = embedding
         self.processor = processor or ContentProcessor()
         self.dense_writer = dense_writer or InMemoryIndexWriter(provider_name="dense-memory")
         self.sparse_provider = sparse_provider or build_sparse_provider(sparse_provider_name)
