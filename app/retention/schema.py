@@ -71,7 +71,6 @@ retention_hook_receipts_table = Table(
     Column("target_id", String(128), nullable=False),
     Column("receipt_json", JSON, nullable=False),
     Column("state", String(32), nullable=False),
-    Column("attempt_count", Integer, nullable=False),
     Column("last_error", String(256), nullable=True),
     Column("created_at_utc", DateTime(timezone=True), nullable=False),
     Column("updated_at_utc", DateTime(timezone=True), nullable=False),
@@ -80,12 +79,7 @@ retention_hook_receipts_table = Table(
         name="ck_retention_hook_receipts_kind",
     ),
     CheckConstraint(
-        "state IN ('requested','accepted','blocked','completed','terminal','purged')",
+        "state IN ('accepted','blocked','completed','terminal','purged')",
         name="ck_retention_hook_receipts_state",
     ),
-    CheckConstraint(
-        "attempt_count >= 0",
-        name="ck_retention_hook_receipts_attempts",
-    ),
-    Index("ix_retention_receipts_kind_state", "kind", "state"),
 )

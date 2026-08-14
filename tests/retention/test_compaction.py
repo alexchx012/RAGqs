@@ -70,6 +70,7 @@ def test_completed_receipt_is_stored_and_replayed_idempotently() -> None:
     assert receipt is not None
     assert receipt["state"] == "completed"
     assert receipt["receipt_json"]["compacted_count"] == 3
+    assert "attempt_count" not in receipt
 
 
 def test_accepted_receipt_is_redriven_with_same_operation_id() -> None:
@@ -122,6 +123,7 @@ def test_accepted_receipt_is_redriven_with_same_operation_id() -> None:
     receipt = repository.get_receipt("compact:cleanup_1")
     assert receipt is not None
     assert receipt["state"] == "completed"
+    assert "attempt_count" not in receipt
 
 
 def test_forbidden_error_is_terminal_but_conflict_is_retryable() -> None:

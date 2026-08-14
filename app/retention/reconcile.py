@@ -9,6 +9,7 @@ owner contracts.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -44,6 +45,10 @@ class ReconciliationService:
     def run(self, *, scope: str, limit: int = 100) -> Mapping[str, Any]:
         if scope not in (_DOCUMENT_DELETIONS_SCOPE, _INDEX_GENERATIONS_SCOPE):
             raise PlatformError("validation_error", "unknown reconciliation scope", {}, 422)
+        with self._engine.connect() as connection:
+            self._repository.prune_terminal_history(
+                before=self._now(connection) - timedelta(days=30)
+            )
         if scope == _DOCUMENT_DELETIONS_SCOPE:
             return self._run_document_deletions(limit=limit)
         return self._run_index_generations(limit=limit)
@@ -61,39 +66,32 @@ class ReconciliationService:
             scope=_DOCUMENT_DELETIONS_SCOPE, source_snapshot=snapshot
         )
         counts = {"info": 0, "repairable": 0, "blocking": 0}
-        with self._engine.begin() as connection:
-            for deletion in pending:
-                document_id = str(deletion["document_id"])
-                deletion_id = str(deletion["id"])
-                if not document_id or not deletion_id:
-                    self._repository.add_finding(
-                        run_id=run_id,
-                        category="blocking",
-                        resource_type="document_deletion",
-                        resource_id=document_id or "unknown",
-                        detail="deletion record has an incomplete source identity",
-                        repairable=False,
-                        connection=connection,
-                    )
-                    counts["blocking"] += 1
-                    continue
-                self._repository.add_finding(
-                    run_id=run_id,
-                    category="repairable",
-                    resource_type="document_deletion",
-                    resource_id=document_id,
-                    detail=f"pending document deletion {deletion_id} ready for finalize",
-                    repairable=True,
-                    connection=connection,
-                )
-                counts["repairable"] += 1
         self._repository.complete_run(run_id, counts=counts)
         return {"run_id": run_id, "scope": _DOCUMENT_DELETIONS_SCOPE, "counts": counts}
 
     def _run_index_generations(self, *, limit: int) -> Mapping[str, Any]:
+        open_findings = self._repository.open_findings_for_resource_type(
+            scope=_INDEX_GENERATIONS_SCOPE,
+            resource_type="index_generation",
+        )
+        open_blocking_ids = {
+            str(finding["resource_id"])
+            for finding in open_findings
+            if finding["category"] == "blocking"
+        }
+        open_repairable_ids = {
+            str(finding["resource_id"])
+            for finding in open_findings
+            if finding["category"] == "repairable"
+        }
         with self._engine.connect() as connection:
             now = self._now(connection)
-            candidates = facts.gc_candidate_generations(connection, now=now, limit=limit)
+            candidates = facts.gc_candidate_generations(
+                connection,
+                now=now,
+                limit=limit,
+                excluded_generation_ids=open_repairable_ids,
+            )
             blocked = facts.gc_blocked_rollback_candidate(connection)
             snapshot = {
                 "scope": _INDEX_GENERATIONS_SCOPE,
@@ -105,7 +103,7 @@ class ReconciliationService:
         )
         counts = {"info": 0, "repairable": 0, "blocking": 0}
         with self._engine.begin() as connection:
-            if blocked is not None:
+            if blocked is not None and blocked["rollback_candidate_id"] not in open_blocking_ids:
                 self._repository.add_finding(
                     run_id=run_id,
                     category="blocking",
@@ -117,11 +115,26 @@ class ReconciliationService:
                 )
                 counts["blocking"] += 1
             for candidate in candidates:
+                candidate_id = str(candidate["id"])
+                if candidate_id in open_blocking_ids:
+                    for finding in open_findings:
+                        if (
+                            finding["category"] == "blocking"
+                            and str(finding["resource_id"]) == candidate_id
+                        ):
+                            self._repository.mark_finding(
+                                str(finding["id"]),
+                                status="ignored",
+                                detail="generation is no longer the rollback candidate",
+                                connection=connection,
+                            )
+                if candidate_id in open_repairable_ids:
+                    continue
                 self._repository.add_finding(
                     run_id=run_id,
                     category="repairable",
                     resource_type="index_generation",
-                    resource_id=str(candidate["id"]),
+                    resource_id=candidate_id,
                     detail=f"generation {candidate['id']} ({candidate['status']}) eligible for GC handoff",
                     repairable=True,
                     connection=connection,
@@ -162,9 +175,17 @@ class ReconciliationService:
     ) -> Mapping[str, Any]:
         run_id = self._repository_run_id_for_finding(finding_id)
         with self._engine.connect() as connection:
+            status = facts.generation_status(connection, generation_id=candidate_generation_id)
             component_ids = facts.graph_component_ids(
                 connection, generation_id=candidate_generation_id
             )
+        if status != "retired":
+            self._repository.mark_finding(
+                finding_id,
+                status="ignored",
+                detail=f"GC handoff ignored: generation status is {status or 'missing'}",
+            )
+            return {"finding_id": finding_id, "state": "ignored"}
         try:
             result = self._gc.handoff(
                 candidate_generation_id=candidate_generation_id,
