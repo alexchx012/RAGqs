@@ -74,6 +74,10 @@ from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
+from app.outbox.ports import (
+    DocumentNotificationRedactionCommand,
+    DocumentNotificationRedactionReceipt,
+)
 from app.outbox.publisher import (
     SqlAlchemyIngestionOutboxAdapter,
     SqlAlchemyOutboxPublisher,
@@ -307,6 +311,10 @@ def build_runtime(
         _OutboxAccountRetirementGateway(outbox_lifecycle)
     )
     configured.setdefault("account_retirement_gateway", account_retirement_gateway)
+    document_lifecycle_port = configured.get("document_lifecycle_port") or (
+        _OutboxDocumentLifecycleGateway(outbox_lifecycle)
+    )
+    configured.setdefault("document_lifecycle_port", document_lifecycle_port)
     if identity_access._account_retirement_gateway is None or isinstance(
         identity_access._account_retirement_gateway, UnavailableAccountRetirementGateway
     ):
@@ -505,7 +513,7 @@ def build_runtime(
             now=clock.now_utc,
             object_store=object_store,
             identity_access=identity_access,
-            lifecycle_port=configured.get("document_lifecycle_port"),
+            lifecycle_port=document_lifecycle_port,
             indexing_handoff_port=configured.get("indexing_handoff_port") or indexing_service,
             quota_service=quota_service,
             capability_token_provider=document_capability_token_provider,
@@ -514,6 +522,8 @@ def build_runtime(
             public_graph_source_service=public_graph_source_service,
         )
     elif isinstance(documents_service, DocumentsService):
+        if documents_service._lifecycle_port is None:
+            documents_service._lifecycle_port = document_lifecycle_port
         if documents_service._quota_service is None:
             documents_service._quota_service = quota_service
         if documents_service._capability_token_provider is None:
@@ -887,6 +897,28 @@ class _OutboxAccountRetirementGateway:
         return AccountRetirementConfirmation(
             state=receipt.state,
             receipt_count=receipt.receipt_count,
+        )
+
+
+class _OutboxDocumentLifecycleGateway:
+    """Documents-deletion scoped redaction facade with no bearer capability."""
+
+    def __init__(self, lifecycle: SqlAlchemyOutboxLifecycle) -> None:
+        self._lifecycle = lifecycle
+
+    def redact_document_notifications(
+        self,
+        command: DocumentNotificationRedactionCommand,
+        *,
+        connection: Connection,
+    ) -> DocumentNotificationRedactionReceipt:
+        return self._lifecycle.redact_document_notifications_for_documents(
+            operation_id=command.operation_id,
+            deletion_id=command.deletion_id,
+            document_id=command.document_id,
+            document_version_ids=command.document_version_ids,
+            transaction_id=command.transaction_id,
+            connection=connection,
         )
 
 
