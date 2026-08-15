@@ -81,12 +81,23 @@ def create_platform_app(
     app.include_router(v1_router, prefix="/v1")
     metrics = runtime.resolve("observability_metrics")
     configure_route_templates = getattr(metrics, "configure_route_templates", None)
+    route_template_by_route_id: dict[int, str] = {}
     if callable(configure_route_templates):
         route_templates: list[str] = []
         for route in app.routes:
             route_path = getattr(route, "path", None)
             if isinstance(route_path, str):
                 route_templates.append(route_path)
+                route_template_by_route_id[id(route)] = route_path
+            effective_route_contexts = getattr(route, "effective_route_contexts", None)
+            if callable(effective_route_contexts):
+                for context in effective_route_contexts():
+                    context_path = getattr(context, "path", None)
+                    if isinstance(context_path, str):
+                        route_templates.append(context_path)
+                        original_route = getattr(context, "original_route", None)
+                        if original_route is not None:
+                            route_template_by_route_id[id(original_route)] = context_path
         configure_route_templates(route_templates)
 
     @app.middleware("http")
@@ -110,7 +121,10 @@ def create_platform_app(
                 metrics = runtime.resolve("observability_metrics")
                 if metrics is not None:
                     status_code = response.status_code if response is not None else 500
-                    route = getattr(request.scope.get("route"), "path", "other")
+                    matched_route = request.scope.get("route")
+                    route = route_template_by_route_id.get(
+                        id(matched_route), getattr(matched_route, "path", "other")
+                    )
                     outcome_class = _outcome_class(status_code)
                     selected, sample_weight = (
                         sample_success(context.request_id, metrics.success_sample_rate)
