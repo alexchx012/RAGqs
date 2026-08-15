@@ -22,7 +22,7 @@ def test_uvicorn_entrypoint_exposes_only_versioned_routes(monkeypatch) -> None:
     platform_environment(monkeypatch)
     sys.modules.pop("app.main", None)
     main = importlib.import_module("app.main")
-    paths = {route.path for route in main.app.routes}
+    paths = set(main.app.openapi()["paths"])
 
     assert "/v1/health" in paths
     assert all(path.startswith("/v1") for path in paths)

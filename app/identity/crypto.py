@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -8,7 +9,13 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 _PASSWORD_ITERATIONS = 310_000
+_REPLAY_AAD = b"ragqs:refresh-replay:v1"
+_REPLAY_NONCE_BYTES = 12
+_REPLAY_PAYLOAD_FIELDS = frozenset({"access_token", "refresh_token", "csrf_token"})
 
 
 def _b64encode(value: bytes) -> str:
@@ -17,6 +24,10 @@ def _b64encode(value: bytes) -> str:
 
 def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _strict_b64decode(value: str) -> bytes:
+    return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
 
 
 def _utc(value: datetime) -> datetime:
@@ -29,8 +40,14 @@ def hash_password(password: str) -> str:
     return f"pbkdf2_sha256${_PASSWORD_ITERATIONS}${_b64encode(salt)}${_b64encode(digest)}"
 
 
-def verify_password(password: str, encoded: str) -> bool:
+_DUMMY_PASSWORD_HASH = (
+    f"pbkdf2_sha256${_PASSWORD_ITERATIONS}${_b64encode(bytes(16))}${_b64encode(bytes(32))}"
+)
+
+
+def verify_password(password: str, encoded: str | None) -> bool:
     try:
+        encoded = encoded or _DUMMY_PASSWORD_HASH
         algorithm, iterations, salt, expected = encoded.split("$", 3)
         if algorithm != "pbkdf2_sha256":
             return False
@@ -122,7 +139,17 @@ def verify_csrf_token(secret: bytes, auth_session_id: str, token: str | None) ->
         return False
 
 
-def _keystream(secret: bytes, nonce: bytes, length: int) -> bytes:
+def _replay_key(secret: bytes) -> bytes:
+    return hashlib.sha256(b"ragqs:refresh-replay:v1\0" + secret).digest()
+
+
+def _validated_replay_payload(decoded: object) -> dict[str, str] | None:
+    if not isinstance(decoded, dict) or set(decoded) != _REPLAY_PAYLOAD_FIELDS:
+        return None
+    return decoded if all(isinstance(item, str) for item in decoded.values()) else None
+
+
+def _legacy_replay_keystream(secret: bytes, nonce: bytes, length: int) -> bytes:
     chunks: list[bytes] = []
     counter = 0
     while sum(len(chunk) for chunk in chunks) < length:
@@ -131,32 +158,65 @@ def _keystream(secret: bytes, nonce: bytes, length: int) -> bytes:
     return b"".join(chunks)[:length]
 
 
-def encrypt_replay_payload(secret: bytes, payload: dict[str, str]) -> str:
-    nonce = secrets.token_bytes(16)
-    plaintext = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    stream = _keystream(secret, nonce, len(plaintext))
-    ciphertext = bytes(left ^ right for left, right in zip(plaintext, stream, strict=True))
-    tag = hmac.new(secret, nonce + ciphertext, hashlib.sha256).digest()
-    return ".".join((_b64encode(nonce), _b64encode(ciphertext), _b64encode(tag)))
-
-
-def decrypt_replay_payload(secret: bytes, value: str) -> dict[str, str] | None:
+def _decrypt_legacy_replay_payload(secret: bytes, values: list[str]) -> dict[str, str] | None:
     try:
-        nonce_value, ciphertext_value, tag_value = value.split(".")
-        nonce = _b64decode(nonce_value)
-        ciphertext = _b64decode(ciphertext_value)
-        tag = _b64decode(tag_value)
+        nonce_value, ciphertext_value, tag_value = values
+        nonce = _strict_b64decode(nonce_value)
+        ciphertext = _strict_b64decode(ciphertext_value)
+        tag = _strict_b64decode(tag_value)
+        if len(nonce) != 16 or len(tag) != hashlib.sha256().digest_size:
+            return None
         expected = hmac.new(secret, nonce + ciphertext, hashlib.sha256).digest()
         if not hmac.compare_digest(tag, expected):
             return None
-        stream = _keystream(secret, nonce, len(ciphertext))
+        stream = _legacy_replay_keystream(secret, nonce, len(ciphertext))
         decoded = json.loads(
             bytes(left ^ right for left, right in zip(ciphertext, stream, strict=True)).decode(
                 "utf-8"
             )
         )
-        return decoded if all(isinstance(item, str) for item in decoded.values()) else None
-    except (TypeError, ValueError, json.JSONDecodeError):
+        return _validated_replay_payload(decoded)
+    except (
+        binascii.Error,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        return None
+
+
+def encrypt_replay_payload(secret: bytes, payload: dict[str, str]) -> str:
+    nonce = secrets.token_bytes(_REPLAY_NONCE_BYTES)
+    plaintext = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ciphertext = AESGCM(_replay_key(secret)).encrypt(nonce, plaintext, _REPLAY_AAD)
+    return ".".join((_b64encode(nonce), _b64encode(ciphertext)))
+
+
+def decrypt_replay_payload(secret: bytes, value: str) -> dict[str, str] | None:
+    try:
+        values = value.split(".")
+        if len(values) == 3:
+            # Old replicas can leave a valid payload only for the replay grace interval.
+            return _decrypt_legacy_replay_payload(secret, values)
+        nonce_value, ciphertext_value = values
+        nonce = _strict_b64decode(nonce_value)
+        ciphertext = _strict_b64decode(ciphertext_value)
+        if len(nonce) != _REPLAY_NONCE_BYTES:
+            return None
+        decoded = json.loads(
+            AESGCM(_replay_key(secret)).decrypt(nonce, ciphertext, _REPLAY_AAD).decode("utf-8")
+        )
+        return _validated_replay_payload(decoded)
+    except (
+        AttributeError,
+        binascii.Error,
+        InvalidTag,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
         return None
 
 

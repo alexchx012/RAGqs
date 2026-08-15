@@ -31,6 +31,7 @@ class RetentionOpsService:
         compaction: AccountCompactionRequester,
         engine: Any,
         documents_cleanup_port: Any,
+        identity_history_cleanup_port: Any,
     ) -> None:
         self._repository = repository
         self._dashboard = dashboard
@@ -40,6 +41,7 @@ class RetentionOpsService:
         self._compaction = compaction
         self._engine = engine
         self._documents_cleanup = documents_cleanup_port
+        self._identity_history_cleanup = identity_history_cleanup_port
 
     # ---- HTTP read models ----
 
@@ -56,6 +58,9 @@ class RetentionOpsService:
 
     def purge_due_versions(self, *, limit: int = 100) -> list[str]:
         return list(self._documents_cleanup.purge_retained_versions(limit=limit))
+
+    def prune_identity_history(self, *, limit: int = 100) -> Mapping[str, int]:
+        return dict(self._identity_history_cleanup.prune_completed_history(limit=limit))
 
     def finalize_due_deletions(self, *, limit: int = 100) -> Mapping[str, Any]:
         with self._engine.connect() as connection:

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.pool import StaticPool
 
@@ -12,7 +16,10 @@ from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationR
 from app.identity.schema import (
     auth_refresh_token_table,
     identity_idempotency_table,
+    identity_login_throttle_table,
     identity_metadata,
+    identity_object_cleanup_table,
+    identity_revocation_command_table,
     identity_user_table,
 )
 from app.identity.service import IdentityAccessService
@@ -36,6 +43,29 @@ def make_service() -> IdentityAccessService:
         revocation_port=NoopGenerationRevocationPort(),
         department_work_check=NoopDepartmentWorkCheckPort(),
     )
+
+
+def _legacy_b64(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _legacy_replay_payload(secret: bytes, payload: dict[str, str]) -> str:
+    nonce = b"legacy-replay-v1"
+    plaintext = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    stream = b""
+    counter = 0
+    while len(stream) < len(plaintext):
+        stream += hmac.new(
+            secret,
+            nonce + counter.to_bytes(4, "big"),
+            hashlib.sha256,
+        ).digest()
+        counter += 1
+    ciphertext = bytes(
+        left ^ right for left, right in zip(plaintext, stream[: len(plaintext)], strict=True)
+    )
+    tag = hmac.new(secret, nonce + ciphertext, hashlib.sha256).digest()
+    return ".".join((_legacy_b64(nonce), _legacy_b64(ciphertext), _legacy_b64(tag)))
 
 
 def test_login_issues_session_bound_access_and_refresh_tokens() -> None:
@@ -112,21 +142,772 @@ def test_refresh_rotates_once_and_replays_the_same_successor_within_grace() -> N
             origin=None,
         )
 
-    assert exc_info.value.code == "refresh_reuse_detected"
-    with pytest.raises(PlatformError, match="revoked"):
-        service.authenticate_access_token(rotated.access_token)
-    with engine.connect() as connection:
-        replay_payload = (
-            connection.execute(
-                auth_refresh_token_table.select().where(
-                    auth_refresh_token_table.c.auth_session_id == login.session_id,
-                    auth_refresh_token_table.c.sequence == 1,
+    assert exc_info.value.code == "invalid_refresh"
+    assert (
+        service.authenticate_access_token(rotated.access_token).auth_session_id == login.session_id
+    )
+    assert (
+        service.refresh(
+            refresh_token=rotated.refresh_token,
+            csrf_cookie=rotated.csrf_token,
+            csrf_header=rotated.csrf_token,
+            origin=None,
+        ).session_id
+        == login.session_id
+    )
+
+
+def test_refresh_replays_a_legacy_predecessor_payload_during_rolling_upgrade() -> None:
+    current = datetime(2026, 8, 6, tzinfo=UTC)
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key="test-secret-that-is-long-enough"),
+        now=lambda: current,
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    login = service.login(username="alice", password="Password1", device="Browser")
+    rotated = service.refresh(
+        refresh_token=login.refresh_token,
+        csrf_cookie=login.csrf_token,
+        csrf_header=login.csrf_token,
+        origin=None,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            auth_refresh_token_table.update()
+            .where(
+                auth_refresh_token_table.c.auth_session_id == login.session_id,
+                auth_refresh_token_table.c.sequence == 1,
+            )
+            .values(
+                replay_payload=_legacy_replay_payload(
+                    b"test-secret-that-is-long-enough",
+                    {
+                        "access_token": rotated.access_token,
+                        "refresh_token": rotated.refresh_token,
+                        "csrf_token": rotated.csrf_token,
+                    },
                 )
             )
-            .mappings()
-            .one()["replay_payload"]
         )
-    assert replay_payload is None
+
+    replayed = service.refresh(
+        refresh_token=login.refresh_token,
+        csrf_cookie=login.csrf_token,
+        csrf_header=login.csrf_token,
+        origin=None,
+    )
+
+    assert replayed == rotated
+
+
+def test_tampered_predecessor_replay_payload_is_invalid_without_revocation() -> None:
+    current = datetime(2026, 8, 6, tzinfo=UTC)
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key="test-secret-that-is-long-enough"),
+        now=lambda: current,
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    login = service.login(username="alice", password="Password1", device="Browser")
+    rotated = service.refresh(
+        refresh_token=login.refresh_token,
+        csrf_cookie=login.csrf_token,
+        csrf_header=login.csrf_token,
+        origin=None,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            auth_refresh_token_table.update()
+            .where(
+                auth_refresh_token_table.c.auth_session_id == login.session_id,
+                auth_refresh_token_table.c.sequence == 1,
+            )
+            .values(replay_payload="invalid-payload")
+        )
+
+    with pytest.raises(PlatformError) as exc_info:
+        service.refresh(
+            refresh_token=login.refresh_token,
+            csrf_cookie=login.csrf_token,
+            csrf_header=login.csrf_token,
+            origin=None,
+        )
+
+    assert exc_info.value.code == "invalid_refresh"
+    assert (
+        service.authenticate_access_token(rotated.access_token).auth_session_id == login.session_id
+    )
+
+
+def test_unconfigured_development_services_do_not_share_auth_secrets() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    first = IdentityAccessService(
+        engine,
+        AuthSettings(),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    second = IdentityAccessService(
+        engine,
+        AuthSettings(),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    user = first.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    token = first.login(username="alice", password="Password1").access_token
+
+    assert first.authenticate_access_token(token).user_id == user["id"]
+    with pytest.raises(PlatformError) as exc_info:
+        second.authenticate_access_token(token)
+    assert exc_info.value.code == "authentication_required"
+
+
+def test_unconfigured_development_restart_replays_identity_idempotency() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    first = IdentityAccessService(
+        engine,
+        AuthSettings(),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    first.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    first_admin = first.authenticate_access_token(
+        first.login(username="admin", password="Password1").access_token
+    )
+    created = first.create_managed_user(
+        actor=first_admin,
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+        idempotency_key="restart-user-create",
+    )
+    restarted = IdentityAccessService(
+        engine,
+        AuthSettings(),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    restarted_admin = restarted.authenticate_access_token(
+        restarted.login(username="admin", password="Password1").access_token
+    )
+
+    replayed = restarted.create_managed_user(
+        actor=restarted_admin,
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+        idempotency_key="restart-user-create",
+    )
+
+    assert replayed == created
+
+
+def test_unconfigured_development_replays_legacy_idempotency_hash() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        AuthSettings(),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    admin = service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    principal = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    initial_password_fingerprint = hmac.new(
+        b"ragqs-development-auth-secret",
+        b"initial-password\x00Password1",
+        hashlib.sha256,
+    ).hexdigest()
+    payload = {
+        "username": "alice",
+        "real_name": "Alice",
+        "display_name": "Alice",
+        "role": "user",
+        "department_id": None,
+        "initial_password_fingerprint": initial_password_fingerprint,
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    request_hash = hmac.new(
+        b"ragqs-development-auth-secret",
+        b"identity-idempotency-v1\x00" + encoded.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    expected = {"id": "user_legacy", "username": "alice"}
+    with engine.begin() as connection:
+        connection.execute(
+            identity_idempotency_table.insert().values(
+                actor_id=admin["id"],
+                endpoint="POST:/admin/users",
+                target_id="",
+                idempotency_key="legacy-user-create",
+                request_hash=request_hash,
+                completed=True,
+                response_json=expected,
+                created_at_utc=datetime.now(UTC),
+            )
+        )
+
+    replayed = service.create_managed_user(
+        actor=principal,
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+        idempotency_key="legacy-user-create",
+    )
+
+    assert replayed == expected
+
+
+def test_locked_login_does_not_verify_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = make_service()
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    now = datetime.now(UTC)
+    with service._engine.begin() as connection:
+        connection.execute(
+            identity_login_throttle_table.insert().values(
+                normalized_username="alice",
+                failed_attempts=5,
+                locked_until_utc=now + timedelta(minutes=1),
+                updated_at_utc=now,
+            )
+        )
+    monkeypatch.setattr(
+        "app.identity.service.verify_password",
+        lambda *_args: pytest.fail("locked login must not verify a password"),
+    )
+
+    with pytest.raises(PlatformError) as exc_info:
+        service.login(username="alice", password="Password1")
+
+    assert exc_info.value.code == "too_many_attempts"
+
+
+def test_invalid_login_verifies_password_for_missing_and_inactive_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service()
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    with service._engine.begin() as connection:
+        connection.execute(
+            update(identity_user_table)
+            .where(identity_user_table.c.id == user["id"])
+            .values(lifecycle_status="pending_delete")
+        )
+    verified_hashes: list[str] = []
+
+    def record_verification(_password: str, encoded: str) -> bool:
+        verified_hashes.append(encoded)
+        return False
+
+    monkeypatch.setattr("app.identity.service.verify_password", record_verification)
+
+    for username in ("missing", "alice"):
+        with pytest.raises(PlatformError) as exc_info:
+            service.login(username=username, password="WrongPassword1")
+        assert exc_info.value.code == "invalid_credentials"
+
+    assert len(verified_hashes) == 2
+
+
+def test_login_samples_time_after_throttle_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = make_service()
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    initial = datetime(2026, 8, 6, tzinfo=UTC)
+    clock = {"now": initial}
+    with service._engine.begin() as connection:
+        connection.execute(
+            identity_login_throttle_table.insert().values(
+                normalized_username="alice",
+                failed_attempts=5,
+                locked_until_utc=initial + timedelta(seconds=1),
+                updated_at_utc=initial,
+            )
+        )
+    original_throttle_record = service._login_throttle_record
+
+    def advance_clock_after_lock(connection, normalized_username):
+        throttle = original_throttle_record(connection, normalized_username)
+        clock["now"] = initial + timedelta(seconds=2)
+        return throttle
+
+    monkeypatch.setattr(service, "_login_throttle_record", advance_clock_after_lock)
+    monkeypatch.setattr(service, "_current_time", lambda: clock["now"])
+
+    result = service.login(username="alice", password="Password1")
+
+    assert result.user["id"] == user["id"]
+
+
+def test_managed_users_database_query_applies_pagination() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key="test-secret-that-is-long-enough"),
+        revocation_port=NoopGenerationRevocationPort(),
+        department_work_check=NoopDepartmentWorkCheckPort(),
+    )
+    admin = service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    service.provision_user(
+        username="bob",
+        password="Password1",
+        real_name="Bob",
+        display_name="Bob",
+        role="user",
+        department_id=None,
+    )
+    principal = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    assert principal.user_id == admin["id"]
+    statements: list[str] = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "identity_user" in statement.casefold():
+            statements.append(statement.casefold())
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        result = service.list_managed_users(actor=principal, page=2, page_size=1)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert result["total"] == 3
+    assert [item["username"] for item in result["items"]] == ["alice"]
+    assert any("limit" in statement and "offset" in statement for statement in statements)
+
+
+def test_managed_user_search_preserves_literal_and_cross_field_matching() -> None:
+    service = make_service()
+    admin = service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    principal = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    assert principal.user_id == admin["id"]
+    department = service.create_department(
+        actor=principal,
+        name="Finance",
+        idempotency_key="department-finance",
+    )
+    service.provision_user(
+        username="percent%user",
+        password="Password1",
+        real_name="Percent",
+        display_name="Percent",
+        role="user",
+        department_id=None,
+    )
+    service.provision_user(
+        username="under_score",
+        password="Password1",
+        real_name="Underscore",
+        display_name="Underscore",
+        role="user",
+        department_id=None,
+    )
+    target = service.provision_user(
+        username="directory-target",
+        password="Password1",
+        real_name="Directory",
+        display_name="Target",
+        role="user",
+        department_id=department["id"],
+    )
+
+    percent_matches = service.list_managed_users(actor=principal, q="%")
+    underscore_matches = service.list_managed_users(actor=principal, q="_")
+    cross_field_matches = service.list_managed_users(actor=principal, q="user finance")
+
+    assert [item["username"] for item in percent_matches["items"]] == ["percent%user"]
+    assert [item["username"] for item in underscore_matches["items"]] == ["under_score"]
+    assert [item["id"] for item in cross_field_matches["items"]] == [target["id"]]
+
+
+def test_managed_user_search_preserves_unicode_casefold_semantics() -> None:
+    service = make_service()
+    admin = service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    principal = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    target = service.provision_user(
+        username="maria",
+        password="Password1",
+        real_name="Straße",
+        display_name="Maria",
+        role="user",
+        department_id=None,
+    )
+
+    matches = service.list_managed_users(actor=principal, q="STRASSE")
+
+    assert admin["id"] not in [item["id"] for item in matches["items"]]
+    assert [item["id"] for item in matches["items"]] == [target["id"]]
+
+
+def test_directory_search_backfills_mixed_version_user_rows() -> None:
+    service = make_service()
+    admin = service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    principal = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    now = datetime.now(UTC)
+    with service._engine.begin() as connection:
+        connection.execute(
+            identity_user_table.insert().values(
+                id="user_legacy",
+                username="maria",
+                normalized_username="maria",
+                password_hash="hash",
+                real_name="Straße",
+                display_name="Maria",
+                department_id=None,
+                role="user",
+                lifecycle_status="active",
+                version=1,
+                avatar_url=None,
+                preferences_json={},
+                transition_version=1,
+                created_at_utc=now,
+                updated_at_utc=now,
+                deletion_requested_at_utc=None,
+                purge_after_at_utc=None,
+            )
+        )
+
+    matches = service.list_managed_users(actor=principal, q="STRASSE")
+
+    assert admin["id"] not in [item["id"] for item in matches["items"]]
+    assert [item["id"] for item in matches["items"]] == ["user_legacy"]
+    assert matches["total"] == 1
+    with service._engine.connect() as connection:
+        assert (
+            connection.execute(
+                select(identity_user_table.c.directory_search_text).where(
+                    identity_user_table.c.id == "user_legacy"
+                )
+            ).scalar_one()
+            == "maria strasse maria user"
+        )
+
+
+def test_departments_database_query_aggregates_member_counts() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key="test-secret-that-is-long-enough"),
+        revocation_port=NoopGenerationRevocationPort(),
+        department_work_check=NoopDepartmentWorkCheckPort(),
+    )
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    principal = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    finance = service.create_department(
+        actor=principal,
+        name="Finance",
+        idempotency_key="finance-create",
+    )
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=finance["id"],
+    )
+    statements: list[str] = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "identity_department" in statement.casefold():
+            statements.append(statement.casefold())
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        result = service.list_departments(actor=principal, status="active")
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert [(item["name"], item["member_count"]) for item in result] == [("Finance", 1)]
+    assert any("group by" in statement for statement in statements)
+
+
+def test_prune_completed_history_keeps_recent_and_incomplete_records() -> None:
+    current = datetime(2026, 8, 15, tzinfo=UTC)
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key="test-secret-that-is-long-enough"),
+        now=lambda: current,
+        revocation_port=NoopGenerationRevocationPort(),
+        department_work_check=NoopDepartmentWorkCheckPort(),
+    )
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    old = current - timedelta(days=91)
+    recent = current - timedelta(days=89)
+    with engine.begin() as connection:
+        connection.execute(
+            identity_idempotency_table.insert(),
+            [
+                {
+                    "actor_id": user["id"],
+                    "endpoint": "users",
+                    "target_id": user["id"],
+                    "idempotency_key": "old-completed",
+                    "request_hash": "hash-old-completed",
+                    "completed": True,
+                    "response_json": {"status": "ok"},
+                    "created_at_utc": old,
+                },
+                {
+                    "actor_id": user["id"],
+                    "endpoint": "users",
+                    "target_id": user["id"],
+                    "idempotency_key": "recent-completed",
+                    "request_hash": "hash-recent-completed",
+                    "completed": True,
+                    "response_json": {"status": "ok"},
+                    "created_at_utc": recent,
+                },
+                {
+                    "actor_id": user["id"],
+                    "endpoint": "users",
+                    "target_id": user["id"],
+                    "idempotency_key": "old-pending",
+                    "request_hash": "hash-old-pending",
+                    "completed": False,
+                    "response_json": None,
+                    "created_at_utc": old,
+                },
+            ],
+        )
+        connection.execute(
+            identity_revocation_command_table.insert(),
+            [
+                {
+                    "operation_id": "old-completed",
+                    "user_id": user["id"],
+                    "auth_session_id": None,
+                    "reason": "test",
+                    "identity_transition_version": 1,
+                    "receipt_reference": "receipt-old-completed",
+                    "receipt_state": "completed",
+                    "created_at_utc": old,
+                },
+                {
+                    "operation_id": "old-accepted",
+                    "user_id": user["id"],
+                    "auth_session_id": None,
+                    "reason": "test",
+                    "identity_transition_version": 1,
+                    "receipt_reference": "receipt-old-accepted",
+                    "receipt_state": "accepted",
+                    "created_at_utc": old,
+                },
+            ],
+        )
+        connection.execute(
+            identity_object_cleanup_table.insert(),
+            [
+                {
+                    "operation_id": "old-completed-cleanup",
+                    "user_id": user["id"],
+                    "object_key": "avatars/old-completed",
+                    "created_at_utc": old,
+                    "completed_at_utc": old,
+                },
+                {
+                    "operation_id": "old-pending-cleanup",
+                    "user_id": user["id"],
+                    "object_key": "avatars/old-pending",
+                    "created_at_utc": old,
+                    "completed_at_utc": None,
+                },
+            ],
+        )
+
+    assert hasattr(service, "prune_completed_history")
+    assert service.prune_completed_history(limit=100) == {
+        "idempotency": 1,
+        "revocations": 1,
+        "object_cleanup": 1,
+    }
+    with engine.connect() as connection:
+        idempotency_keys = set(
+            connection.execute(select(identity_idempotency_table.c.idempotency_key)).scalars()
+        )
+        revocation_ids = set(
+            connection.execute(select(identity_revocation_command_table.c.operation_id)).scalars()
+        )
+        cleanup_ids = set(
+            connection.execute(select(identity_object_cleanup_table.c.operation_id)).scalars()
+        )
+
+    assert idempotency_keys == {"recent-completed", "old-pending"}
+    assert revocation_ids == {"old-accepted"}
+    assert cleanup_ids == {"old-pending-cleanup"}
 
 
 def test_session_revocation_calls_chat_port_once_and_invalidates_access_token() -> None:

@@ -836,6 +836,10 @@ def build_runtime(
         RuntimeDocumentsCleanupPort(documents_service)
     )
     configured.setdefault("retention_documents_cleanup_port", documents_cleanup_port)
+    identity_history_cleanup_port = configured.get("retention_identity_history_cleanup_port") or (
+        identity_access
+    )
+    configured.setdefault("retention_identity_history_cleanup_port", identity_history_cleanup_port)
     indexing_gc_port = configured.get("retention_indexing_gc_port") or (
         RuntimeIndexingGcPort(indexing_service.graph)
     )
@@ -893,6 +897,7 @@ def build_runtime(
         compaction=compaction_requester,
         engine=engine,
         documents_cleanup_port=documents_cleanup_port,
+        identity_history_cleanup_port=identity_history_cleanup_port,
     )
     configured.setdefault("retention_ops", retention_ops)
     configured.setdefault(

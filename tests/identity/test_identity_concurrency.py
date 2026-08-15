@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from app.identity.schema import (
     identity_department_table,
     identity_login_throttle_table,
     identity_metadata,
+    identity_space_table,
     identity_user_table,
 )
 from app.identity.service import IdentityAccessService
@@ -50,6 +52,49 @@ def create_admin(service: IdentityAccessService):
     return service.authenticate_access_token(
         service.login(username="admin", password="Password1").access_token
     )
+
+
+def test_list_spaces_ignores_a_concurrent_public_space_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service()
+    principal = create_admin(service)
+    original_execute = Connection.execute
+    raced = False
+
+    def execute_after_racing_request(
+        connection: Connection,
+        statement: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        nonlocal raced
+        if not raced and getattr(statement, "table", None) is identity_space_table:
+            raced = True
+            original_execute(
+                connection,
+                identity_space_table.insert().values(
+                    id="public",
+                    kind="public",
+                    name="Public knowledge space",
+                    owner_user_id=None,
+                    department_id=None,
+                    created_at_utc=datetime.now(UTC),
+                ),
+            )
+        return original_execute(connection, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Connection, "execute", execute_after_racing_request)
+
+    spaces = service.list_spaces(principal=principal)
+
+    assert {
+        "id": "public",
+        "kind": "public",
+        "name": "Public knowledge space",
+        "permission": "manage",
+        "document_count": 0,
+    } in spaces
 
 
 def test_session_transition_fence_rejects_stale_access_and_refresh_tokens() -> None:

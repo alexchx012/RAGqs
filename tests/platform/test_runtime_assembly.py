@@ -48,7 +48,7 @@ def test_platform_app_registers_only_v1_health_and_request_header() -> None:
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
     usage_metadata.create_all(engine)
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()["paths"])
 
     assert "/v1/health" in paths
     assert not any(path.startswith("/api") or path == "/chat" for path in paths)
