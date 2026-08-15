@@ -92,6 +92,10 @@ class RetentionMaintenanceWorker:
                 "retention:account-compaction",
                 partial(self._compaction, limit=100),
             ),
+            (
+                "retention:identity-history-prune",
+                partial(self._prune_identity_history, limit=100),
+            ),
         ]
 
     def _purge_versions(
@@ -129,6 +133,12 @@ class RetentionMaintenanceWorker:
     ) -> dict[str, object]:
         del _context, _connection
         return dict(self._retention.run_compaction_requests(limit=limit))
+
+    def _prune_identity_history(
+        self, _context: object, _connection: object, *, limit: int
+    ) -> dict[str, object]:
+        del _context, _connection
+        return dict(self._retention.prune_identity_history(limit=limit))
 
     def run_forever(
         self,

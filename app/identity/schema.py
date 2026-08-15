@@ -28,6 +28,7 @@ identity_user_table = Table(
     Column("password_hash", String(512), nullable=False),
     Column("real_name", String(256), nullable=False),
     Column("display_name", String(256), nullable=False),
+    Column("directory_search_text", String(4096), nullable=False, server_default=""),
     Column("department_id", String(64), ForeignKey("identity_department.id"), nullable=True),
     Column("role", String(32), nullable=False),
     Column("lifecycle_status", String(32), nullable=False),

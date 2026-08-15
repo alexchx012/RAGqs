@@ -75,6 +75,15 @@ class FakeCompaction:
         return {"state": "completed"}
 
 
+class FakeIdentityHistoryPort:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def prune_completed_history(self, *, limit: int = 100) -> dict[str, int]:
+        self.calls.append(limit)
+        return {"idempotency": 0, "revocations": 0, "object_cleanup": 0}
+
+
 def _service_and_runtime(engine, service):
     runtime = PlatformRuntime(
         settings=make_settings(),
@@ -102,6 +111,7 @@ def _service(engine):
         compaction=FakeCompaction(),
         engine=engine,
         documents_cleanup_port=FakeDocumentsPort(),
+        identity_history_cleanup_port=FakeIdentityHistoryPort(),
     )
 
 
@@ -118,19 +128,41 @@ def _create_tables(engine):
         metadata.create_all(engine)
 
 
-def test_worker_runs_all_six_steps_under_leases() -> None:
+def test_worker_runs_all_seven_steps_under_leases() -> None:
     engine = build_engine()
     _create_tables(engine)
     service = _service(engine)
     runtime, worker_runtime = _service_and_runtime(engine, service)
     worker = RetentionMaintenanceWorker(worker_runtime)
     stats = worker.run_once(owner="worker-1")
-    assert stats.completed == 6
+    assert stats.completed == 7
     assert stats.deferred == 0
     with engine.connect() as connection:
         rows = connection.execute(platform_lease_table.select()).mappings()
         leases = [dict(row) for row in rows]
-    assert len(leases) == 6
+    assert len(leases) == 7
+    worker_runtime.close()
+    runtime.close()
+
+
+def test_worker_runs_identity_history_prune_under_a_lease() -> None:
+    engine = build_engine()
+    _create_tables(engine)
+    service = _service(engine)
+    history = FakeIdentityHistoryPort()
+    service._identity_history_cleanup = history
+    assert hasattr(service, "prune_identity_history")
+    runtime, worker_runtime = _service_and_runtime(engine, service)
+    worker = RetentionMaintenanceWorker(worker_runtime)
+
+    stats = worker.run_once(owner="worker-1")
+
+    assert stats.completed == 7
+    assert stats.deferred == 0
+    assert history.calls == [100]
+    with engine.connect() as connection:
+        leases = list(connection.execute(platform_lease_table.select()).mappings())
+    assert {lease["resource"] for lease in leases} >= {"retention:identity-history-prune"}
     worker_runtime.close()
     runtime.close()
 
@@ -152,6 +184,7 @@ def _failing_service(engine):
         compaction=FakeCompaction(),
         engine=engine,
         documents_cleanup_port=FakeDocumentsPort(),
+        identity_history_cleanup_port=FakeIdentityHistoryPort(),
     )
 
 
@@ -162,7 +195,7 @@ def test_failing_step_defers_without_aborting_other_steps() -> None:
     runtime, worker_runtime = _service_and_runtime(engine, service)
     worker = RetentionMaintenanceWorker(worker_runtime)
     stats = worker.run_once(owner="worker-1")
-    assert stats.completed == 5
+    assert stats.completed == 6
     assert stats.deferred == 1
     worker_runtime.close()
     runtime.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from alembic import command
 from alembic.config import Config
-from app.identity.schema import IDENTITY_TABLE_NAMES
+from app.identity.schema import IDENTITY_TABLE_NAMES, identity_user_table
 from app.indexing.schema import INDEXING_TABLE_NAMES, index_chunks_table
 from app.platform.config import load_platform_settings
 from app.platform.database import CORE_TABLE_NAMES, core_metadata, create_engine_for_settings
@@ -48,6 +49,53 @@ def test_head_upgrade_creates_identity_owned_tables(tmp_path: Path) -> None:
 
     assert IDENTITY_TABLE_NAMES <= tables
     assert INDEXING_TABLE_NAMES <= tables
+
+
+def test_directory_search_migration_backfills_existing_users(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'directory-search.sqlite3'}"
+    config = alembic_config(database_url)
+    command.upgrade(config, "0018_retention_ops")
+    engine = create_engine(database_url)
+    now = datetime(2026, 8, 15, tzinfo=UTC)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                identity_user_table.insert().values(
+                    id="user_1",
+                    username="Alice",
+                    normalized_username="alice",
+                    password_hash="hash",
+                    real_name="Straße",
+                    display_name="Ally",
+                    department_id=None,
+                    role="user",
+                    lifecycle_status="active",
+                    version=1,
+                    avatar_url=None,
+                    preferences_json={},
+                    transition_version=1,
+                    created_at_utc=now,
+                    updated_at_utc=now,
+                    deletion_requested_at_utc=None,
+                    purge_after_at_utc=None,
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            search_text = connection.execute(
+                identity_user_table.select()
+                .with_only_columns(identity_user_table.c.directory_search_text)
+                .where(identity_user_table.c.id == "user_1")
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert search_text == "alice strasse ally user"
 
 
 def test_media_kind_migration_accepts_standard_office_mime_values(tmp_path: Path) -> None:

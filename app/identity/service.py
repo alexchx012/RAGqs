@@ -11,13 +11,13 @@ from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Any, Literal
 
-from sqlalchemy import Engine, and_, delete, exists, select, text, update
+from sqlalchemy import Engine, and_, delete, exists, func, literal, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
 from app.platform.config import AuthSettings
 from app.platform.context import current_context
-from app.platform.database import platform_audit_table
+from app.platform.database import _insert_do_nothing, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.storage import ObjectMetadata, ObjectStorePort, StorageKeyError
 
@@ -69,6 +69,8 @@ from .schema import (
 
 Role = Literal["user", "minister", "ops", "admin"]
 _ROLES = frozenset({"user", "minister", "ops", "admin"})
+_COMPLETED_HISTORY_RETENTION = timedelta(days=90)
+_DEVELOPMENT_IDEMPOTENCY_FINGERPRINT_KEY = b"ragqs-development-auth-secret"
 
 
 def _utc(value: datetime) -> datetime:
@@ -99,6 +101,16 @@ def _normalize_name(value: str, *, subject: str) -> str:
     if not normalized or len(normalized) > 256:
         raise PlatformError("validation_error", f"{subject} is invalid", {}, 422)
     return normalized
+
+
+def _directory_search_text(
+    *,
+    username: str,
+    real_name: str,
+    display_name: str,
+    role: str,
+) -> str:
+    return " ".join((username, real_name, display_name, role)).casefold()
 
 
 def _validate_password_rule(password: str) -> None:
@@ -216,7 +228,11 @@ class IdentityAccessService:
         self._engine = engine
         self._settings = settings
         configured_secret = settings.secret_key.get_secret_value() if settings.secret_key else None
-        self._secret = (configured_secret or "ragqs-development-auth-secret").encode("utf-8")
+        configured_secret_bytes = configured_secret.encode("utf-8") if configured_secret else None
+        self._secret = configured_secret_bytes or secrets.token_bytes(32)
+        self._idempotency_secret = (
+            configured_secret_bytes or _DEVELOPMENT_IDEMPOTENCY_FINGERPRINT_KEY
+        )
         self._now = now or (lambda: datetime.now(UTC))
         self._revocation_port = revocation_port or UnavailableGenerationRevocationPort()
         self._department_work_check = department_work_check or UnavailableDepartmentWorkCheckPort()
@@ -232,6 +248,86 @@ class IdentityAccessService:
 
     def _current_time(self) -> datetime:
         return _utc(self._now())
+
+    def prune_completed_history(self, *, limit: int = 100) -> dict[str, int]:
+        if limit < 1:
+            raise PlatformError("validation_error", "History cleanup limit is invalid", {}, 422)
+        cutoff = self._current_time() - _COMPLETED_HISTORY_RETENTION
+        with self._engine.begin() as connection:
+            idempotency_rows = (
+                connection.execute(
+                    select(
+                        identity_idempotency_table.c.actor_id,
+                        identity_idempotency_table.c.endpoint,
+                        identity_idempotency_table.c.target_id,
+                        identity_idempotency_table.c.idempotency_key,
+                    )
+                    .where(
+                        identity_idempotency_table.c.completed.is_(True),
+                        identity_idempotency_table.c.created_at_utc < cutoff,
+                    )
+                    .order_by(identity_idempotency_table.c.created_at_utc)
+                    .limit(limit)
+                )
+                .mappings()
+                .all()
+            )
+            for row in idempotency_rows:
+                connection.execute(
+                    delete(identity_idempotency_table).where(
+                        and_(
+                            identity_idempotency_table.c.actor_id == row["actor_id"],
+                            identity_idempotency_table.c.endpoint == row["endpoint"],
+                            identity_idempotency_table.c.target_id == row["target_id"],
+                            identity_idempotency_table.c.idempotency_key == row["idempotency_key"],
+                        )
+                    )
+                )
+
+            revocation_ids = (
+                connection.execute(
+                    select(identity_revocation_command_table.c.operation_id)
+                    .where(
+                        identity_revocation_command_table.c.receipt_state == "completed",
+                        identity_revocation_command_table.c.created_at_utc < cutoff,
+                    )
+                    .order_by(identity_revocation_command_table.c.created_at_utc)
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            for operation_id in revocation_ids:
+                connection.execute(
+                    delete(identity_revocation_command_table).where(
+                        identity_revocation_command_table.c.operation_id == operation_id
+                    )
+                )
+
+            cleanup_ids = (
+                connection.execute(
+                    select(identity_object_cleanup_table.c.operation_id)
+                    .where(
+                        identity_object_cleanup_table.c.completed_at_utc.is_not(None),
+                        identity_object_cleanup_table.c.completed_at_utc < cutoff,
+                    )
+                    .order_by(identity_object_cleanup_table.c.completed_at_utc)
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            for operation_id in cleanup_ids:
+                connection.execute(
+                    delete(identity_object_cleanup_table).where(
+                        identity_object_cleanup_table.c.operation_id == operation_id
+                    )
+                )
+        return {
+            "idempotency": len(idempotency_rows),
+            "revocations": len(revocation_ids),
+            "object_cleanup": len(cleanup_ids),
+        }
 
     def _invalidate_pending_submissions(
         self,
@@ -316,13 +412,22 @@ class IdentityAccessService:
                 {},
                 422,
             )
+        normalized_display_name = _normalize_name(display_name, subject="Display name")
+        normalized_real_name = _normalize_name(real_name, subject="Real name")
+        normalized_user_name = _normalize_name(username, subject="Username")
         return {
             "id": _new_id("user"),
-            "username": _normalize_name(username, subject="Username"),
+            "username": normalized_user_name,
             "normalized_username": normalized_username,
             "password_hash": hash_password(password),
-            "real_name": _normalize_name(real_name, subject="Real name"),
-            "display_name": _normalize_name(display_name, subject="Display name"),
+            "real_name": normalized_real_name,
+            "display_name": normalized_display_name,
+            "directory_search_text": _directory_search_text(
+                username=normalized_user_name,
+                real_name=normalized_real_name,
+                display_name=normalized_display_name,
+                role=role,
+            ),
             "department_id": department_id,
             "role": role,
             "lifecycle_status": "active",
@@ -414,14 +519,14 @@ class IdentityAccessService:
     def _idempotency_hash(self, payload: dict[str, object]) -> str:
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         return hmac.new(
-            self._secret,
+            self._idempotency_secret,
             b"identity-idempotency-v1\x00" + encoded.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
 
     def _secret_fingerprint(self, purpose: str, value: str) -> str:
         return hmac.new(
-            self._secret,
+            self._idempotency_secret,
             purpose.encode("utf-8") + b"\x00" + value.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
@@ -1063,6 +1168,12 @@ class IdentityAccessService:
                 .where(and_(*update_conditions))
                 .values(
                     role=final_role,
+                    directory_search_text=_directory_search_text(
+                        username=str(target["username"]),
+                        real_name=str(target["real_name"]),
+                        display_name=str(target["display_name"]),
+                        role=str(final_role),
+                    ),
                     department_id=final_department_id,
                     version=next_version,
                     transition_version=next_transition,
@@ -1640,6 +1751,40 @@ class IdentityAccessService:
         if actor.role not in {"admin", "ops"}:
             raise PlatformError("forbidden_target", "Directory access is not allowed", {}, 403)
 
+    @staticmethod
+    def _backfill_legacy_directory_search_text(connection: Connection) -> None:
+        records = (
+            connection.execute(
+                select(
+                    identity_user_table.c.id,
+                    identity_user_table.c.username,
+                    identity_user_table.c.real_name,
+                    identity_user_table.c.display_name,
+                    identity_user_table.c.role,
+                ).where(identity_user_table.c.directory_search_text == "")
+            )
+            .mappings()
+            .all()
+        )
+        for record in records:
+            connection.execute(
+                update(identity_user_table)
+                .where(
+                    and_(
+                        identity_user_table.c.id == record["id"],
+                        identity_user_table.c.directory_search_text == "",
+                    )
+                )
+                .values(
+                    directory_search_text=_directory_search_text(
+                        username=str(record["username"]),
+                        real_name=str(record["real_name"]),
+                        display_name=str(record["display_name"]),
+                        role=str(record["role"]),
+                    )
+                )
+            )
+
     def list_managed_users(
         self,
         *,
@@ -1655,70 +1800,66 @@ class IdentityAccessService:
             raise PlatformError("validation_error", "Pagination is invalid", {}, 422)
         if role is not None and role not in _ROLES:
             raise PlatformError("validation_error", "Role is invalid", {}, 422)
-        with self._engine.connect() as connection:
+        query = q.strip().casefold() if q and q.strip() else None
+        conditions = [identity_user_table.c.lifecycle_status.in_(("active", "pending_delete"))]
+        if actor.role == "ops":
+            conditions.append(identity_user_table.c.role.in_(("user", "minister")))
+        if department_id is not None:
+            conditions.append(identity_user_table.c.department_id == department_id)
+        if role is not None:
+            conditions.append(identity_user_table.c.role == role)
+        if query is not None:
+            escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            searchable = (
+                func.coalesce(identity_user_table.c.directory_search_text, "")
+                + literal(" ")
+                + func.coalesce(identity_department_table.c.normalized_name, "")
+            )
+            conditions.append(searchable.like(f"%{escaped_query}%", escape="\\"))
+        session_activity = (
+            select(
+                auth_session_table.c.user_id.label("user_id"),
+                func.max(auth_session_table.c.last_active_at_utc).label("last_active_at_utc"),
+            )
+            .group_by(auth_session_table.c.user_id)
+            .subquery()
+        )
+        user_with_department = identity_user_table.outerjoin(
+            identity_department_table,
+            identity_user_table.c.department_id == identity_department_table.c.id,
+        )
+        user_with_activity = user_with_department.outerjoin(
+            session_activity,
+            identity_user_table.c.id == session_activity.c.user_id,
+        )
+        start = (page - 1) * page_size
+        with self._engine.begin() as connection:
+            if query is not None:
+                # Old replicas omit this column until a rolling upgrade completes.
+                self._backfill_legacy_directory_search_text(connection)
+            total = connection.execute(
+                select(func.count()).select_from(user_with_department).where(*conditions)
+            ).scalar_one()
             records = (
                 connection.execute(
                     select(
                         identity_user_table,
                         identity_department_table.c.name.label("department_name"),
+                        session_activity.c.last_active_at_utc,
                     )
-                    .outerjoin(
-                        identity_department_table,
-                        identity_user_table.c.department_id == identity_department_table.c.id,
-                    )
-                    .where(identity_user_table.c.lifecycle_status.in_(("active", "pending_delete")))
+                    .select_from(user_with_activity)
+                    .where(*conditions)
                     .order_by(identity_user_table.c.created_at_utc)
+                    .offset(start)
+                    .limit(page_size)
                 )
                 .mappings()
                 .all()
             )
-            session_activity = (
-                connection.execute(
-                    select(auth_session_table.c.user_id, auth_session_table.c.last_active_at_utc)
-                )
-                .mappings()
-                .all()
-            )
-        last_active_by_user: dict[str, datetime] = {}
-        for session in session_activity:
-            user_id = str(session["user_id"])
-            observed_at = _utc(session["last_active_at_utc"])
-            previous = last_active_by_user.get(user_id)
-            if previous is None or observed_at > previous:
-                last_active_by_user[user_id] = observed_at
-        query = q.strip().casefold() if q and q.strip() else None
-        matched = []
+        items: list[dict[str, object]] = []
         for record in records:
-            if actor.role == "ops" and record[identity_user_table.c.role] not in {
-                "user",
-                "minister",
-            }:
-                continue
-            if (
-                department_id is not None
-                and record[identity_user_table.c.department_id] != department_id
-            ):
-                continue
-            if role is not None and record[identity_user_table.c.role] != role:
-                continue
-            if query is not None:
-                searchable = " ".join(
-                    str(record.get(key) or "")
-                    for key in (
-                        identity_user_table.c.username,
-                        identity_user_table.c.real_name,
-                        identity_user_table.c.display_name,
-                        identity_user_table.c.role,
-                        "department_name",
-                    )
-                ).casefold()
-                if query not in searchable:
-                    continue
-            matched.append(record)
-        start = (page - 1) * page_size
-        items = []
-        for record in matched[start : start + page_size]:
             user_id = record[identity_user_table.c.id]
+            last_active_at = record["last_active_at_utc"]
             items.append(
                 {
                     "id": user_id,
@@ -1735,8 +1876,8 @@ class IdentityAccessService:
                     ),
                     "role": record[identity_user_table.c.role],
                     "last_active_at": (
-                        last_active_by_user[str(user_id)].isoformat()
-                        if str(user_id) in last_active_by_user
+                        _utc(last_active_at).isoformat()
+                        if isinstance(last_active_at, datetime)
                         else None
                     ),
                     "document_count": 0,
@@ -1754,7 +1895,7 @@ class IdentityAccessService:
                     ),
                 }
             )
-        return {"items": items, "total": len(matched), "page": page, "page_size": page_size}
+        return {"items": items, "total": int(total), "page": page, "page_size": page_size}
 
     def list_departments(
         self,
@@ -1765,25 +1906,23 @@ class IdentityAccessService:
         self._require_directory_reader(actor)
         if status not in {"active", "inactive", "all"}:
             raise PlatformError("validation_error", "Department status is invalid", {}, 422)
+        member_count = func.count(identity_user_table.c.id).label("member_count")
+        member_join = and_(
+            identity_user_table.c.department_id == identity_department_table.c.id,
+            identity_user_table.c.lifecycle_status.in_(("active", "pending_delete")),
+        )
+        statement = (
+            select(identity_department_table, member_count)
+            .outerjoin(identity_user_table, member_join)
+            .group_by(*identity_department_table.c)
+            .order_by(identity_department_table.c.name)
+        )
+        if status != "all":
+            statement = statement.where(identity_department_table.c.status == status)
         with self._engine.connect() as connection:
-            departments = (
-                connection.execute(
-                    select(identity_department_table).order_by(identity_department_table.c.name)
-                )
-                .mappings()
-                .all()
-            )
-            users = connection.execute(select(identity_user_table)).mappings().all()
-        items = []
+            departments = connection.execute(statement).mappings().all()
+        items: list[dict[str, object]] = []
         for department in departments:
-            if status != "all" and department["status"] != status:
-                continue
-            member_count = sum(
-                1
-                for user in users
-                if user["department_id"] == department["id"]
-                and user["lifecycle_status"] in {"active", "pending_delete"}
-            )
             active = department["status"] == "active"
             items.append(
                 {
@@ -1792,7 +1931,7 @@ class IdentityAccessService:
                     "status": department["status"],
                     "version": department["version"],
                     "document_count": 0,
-                    "member_count": member_count,
+                    "member_count": int(department["member_count"]),
                     "nonterminal_job_count": 0,
                     "pending_submission_count": 0,
                     "deactivated_at": (
@@ -1946,20 +2085,19 @@ class IdentityAccessService:
         }
 
     def _ensure_public_space(self, connection: Connection, now: datetime) -> None:
-        existing = connection.execute(
-            select(identity_space_table.c.id).where(identity_space_table.c.id == "public")
-        ).scalar_one_or_none()
-        if existing is None:
-            connection.execute(
-                identity_space_table.insert().values(
-                    id="public",
-                    kind="public",
-                    name="Public knowledge space",
-                    owner_user_id=None,
-                    department_id=None,
-                    created_at_utc=now,
-                )
-            )
+        _insert_do_nothing(
+            connection,
+            identity_space_table,
+            {
+                "id": "public",
+                "kind": "public",
+                "name": "Public knowledge space",
+                "owner_user_id": None,
+                "department_id": None,
+                "created_at_utc": now,
+            },
+            ["id"],
+        )
 
     @staticmethod
     def _current_acl_principal(connection: Connection, principal: AuthPrincipal) -> AuthPrincipal:
@@ -2196,6 +2334,22 @@ class IdentityAccessService:
             raise PlatformError("validation_error", "Display name is invalid", {}, 422)
         now = self._current_time()
         with self._engine.begin() as connection:
+            user = (
+                connection.execute(
+                    select(identity_user_table)
+                    .where(
+                        and_(
+                            identity_user_table.c.id == str(user_id),
+                            identity_user_table.c.lifecycle_status == "active",
+                        )
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if user is None:
+                raise PlatformError("authentication_required", "The account is not active", {}, 401)
             updated = connection.execute(
                 update(identity_user_table)
                 .where(
@@ -2204,7 +2358,16 @@ class IdentityAccessService:
                         identity_user_table.c.lifecycle_status == "active",
                     )
                 )
-                .values(display_name=normalized, updated_at_utc=now)
+                .values(
+                    display_name=normalized,
+                    directory_search_text=_directory_search_text(
+                        username=str(user["username"]),
+                        real_name=str(user["real_name"]),
+                        display_name=normalized,
+                        role=str(user["role"]),
+                    ),
+                    updated_at_utc=now,
+                )
             ).rowcount
         if updated != 1:
             raise PlatformError("authentication_required", "The account is not active", {}, 401)
@@ -2585,11 +2748,11 @@ class IdentityAccessService:
 
     def login(self, *, username: str, password: str, device: str | None = None) -> AuthResult:
         normalized_username = _normalize_username(username)
-        now = self._current_time()
         login_error: PlatformError | None = None
         user: dict[str, object] | None = None
         with self._engine.begin() as connection:
             throttle = self._login_throttle_record(connection, normalized_username)
+            now = self._current_time()
             locked_until = (
                 _optional_utc(throttle["locked_until_utc"]) if throttle is not None else None
             )
@@ -2602,39 +2765,45 @@ class IdentityAccessService:
                     429,
                     True,
                 )
-            user_record = (
-                connection.execute(
-                    select(identity_user_table)
-                    .where(identity_user_table.c.normalized_username == normalized_username)
-                    .with_for_update()
-                )
-                .mappings()
-                .one_or_none()
-            )
-            valid = (
-                user_record is not None
-                and user_record["lifecycle_status"] == "active"
-                and verify_password(password, user_record["password_hash"])
-            )
-            if login_error is None and not valid:
-                _, locked_until = self._record_failed_login(
-                    connection,
-                    normalized_username=normalized_username,
-                    now=now,
-                )
-                login_error = (
-                    PlatformError(
-                        "too_many_attempts",
-                        "Too many failed login attempts",
-                        {"retry_after_seconds": self._settings.login_lock_seconds},
-                        429,
-                        True,
+            user_record: Mapping[str, object] | None = None
+            if login_error is None:
+                user_record = (
+                    connection.execute(
+                        select(identity_user_table)
+                        .where(identity_user_table.c.normalized_username == normalized_username)
+                        .with_for_update()
                     )
-                    if locked_until is not None
-                    else PlatformError(
-                        "invalid_credentials", "Username or password is invalid", {}, 401
-                    )
+                    .mappings()
+                    .one_or_none()
                 )
+                password_matches = verify_password(
+                    password,
+                    str(user_record["password_hash"]) if user_record is not None else None,
+                )
+                valid = (
+                    user_record is not None
+                    and user_record["lifecycle_status"] == "active"
+                    and password_matches
+                )
+                if not valid:
+                    _, locked_until = self._record_failed_login(
+                        connection,
+                        normalized_username=normalized_username,
+                        now=now,
+                    )
+                    login_error = (
+                        PlatformError(
+                            "too_many_attempts",
+                            "Too many failed login attempts",
+                            {"retry_after_seconds": self._settings.login_lock_seconds},
+                            429,
+                            True,
+                        )
+                        if locked_until is not None
+                        else PlatformError(
+                            "invalid_credentials", "Username or password is invalid", {}, 401
+                        )
+                    )
             if login_error is None:
                 assert user_record is not None
                 user = dict(user_record)
@@ -3025,24 +3194,25 @@ class IdentityAccessService:
             if consumed_at is not None:
                 replay_expires_at = record[auth_refresh_token_table.c.replay_expires_at_utc]
                 replay_payload = record[auth_refresh_token_table.c.replay_payload]
-                if (
-                    token_sequence == current_sequence - 1
-                    and replay_expires_at is not None
-                    and _utc(replay_expires_at) > now
-                    and isinstance(replay_payload, str)
-                ):
-                    payload = decrypt_replay_payload(self._secret, replay_payload)
-                    if payload is not None:
-                        return AuthResult(
-                            access_token=payload["access_token"],
-                            refresh_token=payload["refresh_token"],
-                            csrf_token=payload["csrf_token"],
-                            session_id=session_id,
-                            user=self._user_response_for_id(
-                                connection,
-                                str(record[identity_user_table.c.id]),
-                            ),
-                        )
+                if token_sequence == current_sequence - 1:
+                    if (
+                        replay_expires_at is not None
+                        and _utc(replay_expires_at) > now
+                        and isinstance(replay_payload, str)
+                    ):
+                        payload = decrypt_replay_payload(self._secret, replay_payload)
+                        if payload is not None:
+                            return AuthResult(
+                                access_token=payload["access_token"],
+                                refresh_token=payload["refresh_token"],
+                                csrf_token=payload["csrf_token"],
+                                session_id=session_id,
+                                user=self._user_response_for_id(
+                                    connection,
+                                    str(record[identity_user_table.c.id]),
+                                ),
+                            )
+                    raise PlatformError("invalid_refresh", "Refresh token is invalid", {}, 401)
                 connection.execute(
                     update(auth_refresh_token_table)
                     .where(
