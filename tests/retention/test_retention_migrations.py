@@ -97,7 +97,7 @@ def test_receipt_migration_removes_dead_retry_ledger_and_preserves_receipts(tmp_
 
     config = _config(database_url)
     command.stamp(config, "0018_retention_ops")
-    command.upgrade(config, "head")
+    command.upgrade(config, "0019_simplify_retention_receipts")
 
     engine = create_engine(database_url)
     try:

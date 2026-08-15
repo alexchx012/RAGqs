@@ -1,7 +1,7 @@
 """Persist normalized user-directory search text.
 
-Revision ID: 0019_identity_directory_search
-Revises: 0018_retention_ops
+Revision ID: 0021_identity_directory_search
+Revises: 0020_merge_usage_retention
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0019_identity_directory_search"
-down_revision: str | None = "0018_retention_ops"
+revision: str = "0021_identity_directory_search"
+down_revision: str | None = "0020_merge_usage_retention"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
