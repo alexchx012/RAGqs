@@ -131,12 +131,8 @@ def _credit_rows(engine) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def test_serial_debits_sum_in_projection(env) -> None:
-    """L58 串行契约：同一事务内两次 debit（SQLite 内存引擎串行执行）→ 投影 used 为两者之和。
-
-    真实双连接并发（lost update / 行锁竞争）由 PG 文件
-    ``test_pg_concurrent_debits_do_not_lose_updates`` 承担；本测试不声称证明并发。
-    """
+def test_serial_debits_reject_over_limit_at_final_debit(env) -> None:
+    """最终 debit 必须重验余额，不能仅依赖受理时的只读 gate。"""
     engine, quota, _requests, _times = env
     with engine.begin() as connection:
         lock = quota.calendar.lock_or_verify(connection)
@@ -151,28 +147,24 @@ def test_serial_debits_sum_in_projection(env) -> None:
             role="user",
             effective_at_utc=NOW,
         )
-        quota.append_debit(
-            connection,
-            quota_operation_id="job_2",
-            publication_id="pub_2",
-            quota_subject_user_id="u1",
-            pages=300,
-            ownership=ownership(),
-            calendar_lock=lock,
-            role="user",
-            effective_at_utc=NOW,
-        )
-        snapshot = quota.read_snapshot(connection, quota_subject_user_id="u1", role="user")
-        assert snapshot.used == 600  # 越限允许
-        with pytest.raises(PlatformError) as gate:
-            quota.check_direct_ingest_balance(
+        with pytest.raises(PlatformError) as debit:
+            quota.append_debit(
                 connection,
+                quota_operation_id="job_2",
+                publication_id="pub_2",
                 quota_subject_user_id="u1",
-                pages=1,
+                pages=300,
+                ownership=ownership(),
+                calendar_lock=lock,
                 role="user",
+                effective_at_utc=NOW,
             )
-        assert gate.value.code == "quota_exceeded"
-        assert gate.value.status_code == 409
+        assert debit.value.code == "quota_exceeded"
+        assert debit.value.status_code == 409
+        snapshot = quota.read_snapshot(connection, quota_subject_user_id="u1", role="user")
+        assert snapshot.used == 300
+        rows = connection.execute(select(quota_debit_table)).mappings().all()
+        assert [row["quota_operation_id"] for row in rows] == ["job_1"]
 
 
 def test_credit_uniqueness_enforced_by_constraint(env) -> None:

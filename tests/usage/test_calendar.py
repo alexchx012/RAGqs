@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy import Engine, create_engine, event, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
 
@@ -67,6 +67,28 @@ def test_lock_is_single_row_with_fixed_id() -> None:
         rows = connection.execute(select(business_calendar_version_table)).mappings().all()
     assert len(rows) == 1
     assert rows[0]["id"] == "instance"
+
+
+def test_existing_calendar_lock_uses_read_only_fast_path() -> None:
+    service, engine = make_service()
+    with engine.begin() as connection:
+        first = service.lock_or_verify(connection)
+
+    statements: list[str] = []
+
+    def record_statement(*args) -> None:
+        statements.append(str(args[2]))
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        with engine.begin() as connection:
+            second = service.lock_or_verify(connection)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert second == first
+    assert len(statements) == 1
+    assert statements[0].lstrip().upper().startswith("SELECT")
 
 
 def test_period_and_reset_at_use_business_timezone_dst() -> None:

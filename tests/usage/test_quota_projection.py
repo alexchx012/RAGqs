@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine, delete, event, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.engine import Connection
 from sqlalchemy.pool import NullPool, StaticPool
 
@@ -348,6 +348,45 @@ def test_incremental_projection_matches_rebuild() -> None:
     assert snapshot_before.effective_limit == snapshot_after.effective_limit == 580
 
 
+def test_incremental_write_refreshes_projection_baseline() -> None:
+    engine, quota = make_quota()
+    with engine.begin() as connection:
+        lock = quota.calendar.lock_or_verify(connection)
+        first_debit_id = quota.append_debit(
+            connection,
+            quota_operation_id="job_1",
+            publication_id="pub_1",
+            quota_subject_user_id="u1",
+            pages=100,
+            ownership=ownership(),
+            calendar_lock=lock,
+            role="user",
+            effective_at_utc=NOW,
+        )
+        assert first_debit_id is not None
+
+    updated_quota = QuotaService(engine, FixedClock(NOW), quota.calendar, base_limit=700)
+    with engine.begin() as connection:
+        lock = updated_quota.calendar.lock_or_verify(connection)
+        second_debit_id = updated_quota.append_debit(
+            connection,
+            quota_operation_id="job_2",
+            publication_id="pub_2",
+            quota_subject_user_id="u1",
+            pages=600,
+            ownership=ownership(),
+            calendar_lock=lock,
+            role="user",
+            effective_at_utc=NOW,
+        )
+        row = projection_row(connection)
+
+    assert second_debit_id is not None
+    assert row is not None
+    assert row["base_limit"] == 700
+    assert row["used"] == 700
+
+
 def test_snapshot_new_period_baseline_with_old_projection() -> None:
     clock = MutableClock(NOW)
     engine, quota = make_quota(clock)
@@ -390,20 +429,15 @@ def test_rebuild_rejects_bad_period() -> None:
         assert connection.execute(select(quota_projection_table)).mappings().all() == []
 
 
-def test_rebuild_locks_projection_before_reading_ledger(tmp_path) -> None:
+def test_rebuild_locks_projection_before_reading_ledger(tmp_path, monkeypatch) -> None:
     """rebuild 先锁投影再读 ledger：竞争 append 最终不丢增量（review #3，确定性编排）。
 
-    SQLite 为单写者模型：一旦 append 事务执行过任何写语句（即使 calendar 的
-    conflict no-op INSERT）即持有 RESERVED 锁，重建方会直接得到 "database is locked"，
-    无法模拟 PG 的"append 已写 ledger 后在投影 FOR UPDATE 上等待"行锁序。本测试采用
-    SQLite 下最接近的确定性调度：append 事务在**其首个写（INSERT INTO quota_debit）**
-    执行前被 before_cursor_execute 阻塞且不持任何锁（calendar_lock 由主线程预先取得，
-    append_debit 对其只做纯函数计算，不写 calendar 表）→ 重建方完成"锁投影 → 读
-    ledger（未见 append 行）→ 覆盖旧总量并提交" → 释放 append → append 插入 ledger
-    并原子增量叠加。最终投影 = 重建旧总量 + append 增量，无 lost update；事件顺序
-    显式断言：重建投影写入发生在 append 账本插入之前（append 的 ledger 行对 rebuild
-    的读取不可见，其增量仍在重建结果上叠加）。PG 行锁等待语义（append 在投影
-    FOR UPDATE 上等待、rebuild 读不到未提交 append）留 Task 13 真实 PG 验证。
+    SQLite 为单写者模型，append 在首次投影锁前即会写入/锁定 projection；因此无法模拟
+    PG 的"append 已写 ledger 后在投影 FOR UPDATE 上等待"行锁序。本测试采用 SQLite
+    下可控的调度：append 在首次投影锁前暂停且不持任何锁 → rebuild 完成"锁投影 → 读
+    旧 ledger → 覆盖总量"并提交 → 释放 append → append 取得投影锁并原子叠加增量。
+    最终投影 = 重建旧总量(120) + append 增量(30)，无 lost update。PG 行锁等待语义由
+    真实 PostgreSQL 验收覆盖。
     """
     engine = create_engine(
         f"sqlite+pysqlite:///{tmp_path / 'rebuild_race.sqlite3'}",
@@ -439,24 +473,25 @@ def test_rebuild_locks_projection_before_reading_ledger(tmp_path) -> None:
         with order_lock:
             order.append(marker)
 
-    def on_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-        del cursor, parameters, context, executemany
-        if conn is not append_conn:
-            return
-        if "INSERT INTO quota_debit" in statement:
-            record("append_ledger_insert_blocked")
-            append_ready.set()
-            append_released.wait(timeout=30)
-            record("append_ledger_insert_released")
-
-    event.listen(engine, "before_cursor_execute", on_before_cursor_execute)
-
     append_conn = engine.connect()
     append_tx = append_conn.begin()
+    original_lock_projection = quota._lock_projection
+    initial_projection_lock_seen = threading.Event()
+
+    def block_initial_projection_lock(connection, **kwargs):
+        if connection is append_conn and not initial_projection_lock_seen.is_set():
+            initial_projection_lock_seen.set()
+            record("append_projection_lock_blocked")
+            append_ready.set()
+            assert append_released.wait(timeout=30), "rebuild did not release append"
+            record("append_projection_lock_released")
+        return original_lock_projection(connection, **kwargs)
+
+    monkeypatch.setattr(quota, "_lock_projection", block_initial_projection_lock)
 
     def append_worker():
         try:
-            # 复用主线程取得的 calendar_lock（纯 dataclass），首个写即 ledger INSERT
+            # 复用主线程取得的 calendar_lock；wrapper 在 append 的首个投影锁前暂停。
             quota.append_debit(
                 append_conn,
                 quota_operation_id="job_2",
@@ -480,8 +515,8 @@ def test_rebuild_locks_projection_before_reading_ledger(tmp_path) -> None:
 
     worker = threading.Thread(target=append_worker)
     worker.start()
-    assert append_ready.wait(timeout=30), "append 未到达账本插入"
-    # append 阻塞在首写前且不持锁；此时执行 rebuild（锁投影 → 读 ledger → 覆盖）
+    assert append_ready.wait(timeout=30), "append 未到达首次投影锁"
+    # append 阻塞在首写前且不持锁；此时执行 rebuild（锁投影 → 读 ledger → 覆盖）。
     with engine.begin() as rebuild_conn:
         quota.rebuild_projection(rebuild_conn, quota_subject_user_id="u1", quota_period="2026-08")
     record("rebuild_projection_update_done")
@@ -491,9 +526,9 @@ def test_rebuild_locks_projection_before_reading_ledger(tmp_path) -> None:
     append_conn.close()
     assert not append_errors, append_errors
     assert append_results == [True]
-    # 事件顺序：重建投影写入先于 append 账本插入（append 增量随后叠加）
+    # 事件顺序：重建投影写入先于 append 取得投影锁（append 增量随后叠加）。
     assert order.index("rebuild_projection_update_done") < order.index(
-        "append_ledger_insert_released"
+        "append_projection_lock_released"
     )
     # 最终投影 = 重建读到的旧总量(120) + append 增量(30)，无 lost update
     with engine.connect() as connection:
