@@ -4,7 +4,7 @@
  * - 行 = 文件名 + 目标空间 + 投稿时间 + 状态 tag 五态着色；驳回原因填了才显示在 tag 下方；
  *   invalidated 显示固定机器原因提示，不展示原始机器码、不提供审核重试。
  * - 行操作按状态渲染：pending=查看内容+撤回；approved=查看内容；rejected/withdrawn/invalidated=查看内容+删除。
- * - 查看内容：新窗口 GET /submissions/{id}/content；404 submission_content_unavailable 行尾就地提示。
+ * - 查看内容：触发原件下载 GET /submissions/{id}/content；404 submission_content_unavailable 行尾就地提示。
  * - 撤回：二次确认固定两点说明；200 后行原地保留转「已撤回」。
  * - 删除：204 后行 opacity→0 收拢移除；无回收站与恢复入口。
  * - 失败处理：行尾危险红错误行 + 重试文字链；409 version_conflict 刷新后基于最新 version 重新确认；
@@ -18,8 +18,8 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { TextLink } from '../ui/TextLink';
 import { useSettings } from './SettingsProvider';
+import { downloadSubmissionContent } from './download-submission-content';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
-import { openControlledWindow } from './controlled-window';
 import type { Submission, SubmissionStatus } from './types';
 
 function formatDateTime(value: string): string {
@@ -106,47 +106,10 @@ export function SubmissionsLayer() {
       next.delete(submission.submission_id);
       return next;
     });
-    // 同步点击时先打开受控窗口（异步结束后填入/导航），处理 popup 被拦截；
-    // noopener 会使 window.open 返回 null 被误判 blocked：用 openControlledWindow
-    // 打开后立即切断 opener（避免泄露），再 document.write 加载页 + 异步 navigate blob。
-    const windowRef = openControlledWindow();
-    if (windowRef === null) {
-      setRowErrors((errors) => {
-        const next = new Map(errors);
-        next.set(submission.submission_id, {
-          message: copy.settings.knowledge.submissions.contentOpenBlocked,
-          retry: () => void openContent(submission),
-        });
-        return next;
-      });
-      return;
-    }
-    windowRef.document.write(
-      `<!doctype html><html lang="zh-CN"><body style="font-family:sans-serif;padding:24px;color:#333">${escapeHtml(copy.settings.knowledge.uploads.loading)}</body></html>`,
-    );
-    windowRef.document.close();
-    let objectUrl: string | null = null;
-    let revokeTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const blob = await api.getSubmissionContent(submission.submission_id);
-      objectUrl = URL.createObjectURL(blob);
-      // 成功导航后 revoke：不能立即 revoke（导航会失败）；受控窗口 load 后回收，
-      // 并给安全 fallback（load 未触发时延迟回收，避免泄漏）。
-      const scheduledUrl = objectUrl;
-      const revoke = () => {
-        URL.revokeObjectURL(scheduledUrl);
-      };
-      windowRef.addEventListener('load', revoke, { once: true });
-      revokeTimer = setTimeout(revoke, 60_000);
-      windowRef.location.href = scheduledUrl;
+      downloadSubmissionContent(blob, submission.name);
     } catch (error) {
-      windowRef.close();
-      if (objectUrl !== null) {
-        URL.revokeObjectURL(objectUrl);
-      }
-      if (revokeTimer !== undefined) {
-        clearTimeout(revokeTimer);
-      }
       if (error instanceof ApiError && error.status === 404 && error.code === 'submission_content_unavailable') {
         setRowErrors((errors) => {
           const next = new Map(errors);
@@ -168,14 +131,6 @@ export function SubmissionsLayer() {
       }
     }
   };
-
-  function escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
 
   /** 实际撤回（接收 submission 参数，避免 retry 读取尚未提交的 pendingWithdraw 而 no-op）。 */
   const runWithdraw = async (submission: Submission) => {

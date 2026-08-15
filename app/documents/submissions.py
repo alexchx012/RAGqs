@@ -394,7 +394,7 @@ class SubmissionService:
                 visible.append(self._public_row(row))
         return {"items": visible}
 
-    def content(self, *, principal: Any, submission_id: str) -> tuple[bytes, ObjectMetadata]:
+    def content(self, *, principal: Any, submission_id: str) -> tuple[bytes, ObjectMetadata, str]:
         with self._service._engine.connect() as connection:
             row = (
                 connection.execute(
@@ -426,11 +426,12 @@ class SubmissionService:
                 "submission_content_unavailable", "Submission content is unavailable", {}, 410
             )
         try:
-            return self._service._object_store.get(str(row["private_object_key"]))
+            content, metadata = self._service._object_store.get(str(row["private_object_key"]))
         except (StorageKeyError, KeyError) as exc:
             raise PlatformError(
                 "submission_content_unavailable", "Submission content is unavailable", {}, 410
             ) from exc
+        return content, metadata, str(row["file_name"])
 
     def approve(
         self,

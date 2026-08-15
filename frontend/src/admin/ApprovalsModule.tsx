@@ -20,8 +20,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api/errors';
 import { useAuthState } from '../auth/AuthProvider';
 import { copy } from '../copy';
+import { downloadSubmissionContent } from '../settings/download-submission-content';
 import { createIdempotencyScope, isBusinessResponse } from '../settings/idempotency';
-import { openControlledWindow } from '../settings/controlled-window';
 import { useSettings } from '../settings/SettingsProvider';
 import { useModalDialog } from '../settings/use-modal-dialog';
 import type { ApprovalListItem } from '../settings/types';
@@ -416,14 +416,6 @@ function filterForScope(scope: SubmissionScope): ApprovalSubmissionFilter | unde
   }
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 export function ApprovalSubmissionsLayer() {
   const { api, invalidateSummaries } = useAdmin();
   const { api: settingsApi } = useSettings();
@@ -485,38 +477,13 @@ export function ApprovalSubmissionsLayer() {
     });
   }
 
-  /** 查看内容：同步点击先开受控窗（防拦截）→ 异步 blob → objectURL 导航；404 行尾提示。 */
+  /** 查看内容：下载原件；不可用时保留行内提示。 */
   async function viewContent(item: ApprovalListItem): Promise<void> {
     setRowError(item.submission_id, null);
-    const windowRef = openControlledWindow();
-    if (windowRef === null) {
-      setRowError(item.submission_id, copy.settings.knowledge.submissions.contentOpenBlocked);
-      return;
-    }
-    windowRef.document.write(
-      `<!doctype html><html lang="zh-CN"><body style="font-family:sans-serif;padding:24px;color:#333">${escapeHtml(copy.settings.knowledge.uploads.loading)}</body></html>`,
-    );
-    windowRef.document.close();
-    let objectUrl: string | null = null;
-    let revokeTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const blob = await settingsApi.getSubmissionContent(item.submission_id);
-      objectUrl = URL.createObjectURL(blob);
-      const scheduledUrl = objectUrl;
-      const revoke = () => {
-        URL.revokeObjectURL(scheduledUrl);
-      };
-      windowRef.addEventListener('load', revoke, { once: true });
-      revokeTimer = setTimeout(revoke, 60_000);
-      windowRef.location.href = scheduledUrl;
+      downloadSubmissionContent(blob, item.name);
     } catch (error) {
-      windowRef.close();
-      if (objectUrl !== null) {
-        URL.revokeObjectURL(objectUrl);
-      }
-      if (revokeTimer !== undefined) {
-        clearTimeout(revokeTimer);
-      }
       setRowError(
         item.submission_id,
         error instanceof ApiError && error.status === 404

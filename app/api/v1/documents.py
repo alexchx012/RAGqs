@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Header, Path, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -253,10 +254,17 @@ def submission_content(
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
 ) -> Response:
-    content, metadata = document_service(request).submission_content(
+    content, _metadata, filename = document_service(request).submission_content(
         principal=principal, submission_id=submission_id
     )
-    return Response(content=content, media_type=metadata.content_type)
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/submissions/{submission_id}/withdraw")
