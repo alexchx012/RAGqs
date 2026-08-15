@@ -163,7 +163,13 @@ class DocumentsService:
         public_graph_source_service: Any | None = None,
         version_retention_days: int = 30,
         read_lease_ttl: timedelta = timedelta(minutes=5),
+        max_upload_bytes: int = 25 * 1024 * 1024,
+        cleanup_max_attempts: int = 3,
     ) -> None:
+        if max_upload_bytes < 1:
+            raise ValueError("max_upload_bytes must be positive")
+        if cleanup_max_attempts < 1:
+            raise ValueError("cleanup_max_attempts must be positive")
         self._engine = engine
         self._now = now or (lambda: datetime.now(UTC))
         self._object_store = object_store or MemoryObjectStore()
@@ -177,6 +183,8 @@ class DocumentsService:
         self._public_graph_source_service = public_graph_source_service
         self._version_retention_days = version_retention_days
         self._read_lease_ttl = read_lease_ttl
+        self._max_upload_bytes = max_upload_bytes
+        self._cleanup_max_attempts = cleanup_max_attempts
 
     def _current_time(self) -> datetime:
         return _utc(self._now())
@@ -606,7 +614,13 @@ class DocumentsService:
                 return
             resources.setdefault(
                 (backend_kind, resource_id),
-                {"backend_kind": backend_kind, "resource_id": resource_id, **extra},
+                {
+                    "backend_kind": backend_kind,
+                    "resource_id": resource_id,
+                    **extra,
+                    "document_id": version["document_id"],
+                    "document_version_id": version["id"],
+                },
             )
 
         publications = (
@@ -689,6 +703,11 @@ class DocumentsService:
             )
             if target["state"] == "completed":
                 continue
+            if (
+                target["state"] == "failed"
+                and int(target["attempt_count"]) >= self._cleanup_max_attempts
+            ):
+                return False
             connection.execute(
                 update(target_table)
                 .where(predicate)
@@ -933,15 +952,21 @@ class DocumentsService:
             .values(state=state, updated_at_utc=now)
         )
 
-    @staticmethod
-    def _file_fingerprint(file: DocumentUpload) -> dict[str, Any]:
-        normalized, normalized_name = DocumentsService._normalize_filename(file.filename)
+    def _file_fingerprint(self, file: DocumentUpload) -> dict[str, Any]:
+        if len(file.content) > self._max_upload_bytes:
+            raise PlatformError(
+                "upload_too_large",
+                "Upload exceeds the maximum size",
+                {"max_bytes": self._max_upload_bytes},
+                413,
+            )
+        normalized, normalized_name = self._normalize_filename(file.filename)
         return {
             "filename": normalized,
             "normalized_filename": normalized_name,
             "media_kind": file.media_kind,
             "size_bytes": len(file.content),
-            "content_hash_sha256": DocumentsService._hash(file.content),
+            "content_hash_sha256": self._hash(file.content),
         }
 
     def _put_original(
@@ -959,6 +984,57 @@ class DocumentsService:
             ),
         )
         return object_key, content_hash
+
+    def _deduplicated_upload_item(
+        self,
+        connection: Connection,
+        *,
+        batch_id: str,
+        now: datetime,
+        info: Mapping[str, Any],
+        claim: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        existing = (
+            connection.execute(
+                select(
+                    documents_table.c.id,
+                    documents_table.c.active_version_id,
+                    documents_table.c.pending_version_id,
+                ).where(documents_table.c.id == claim["document_id"])
+            )
+            .mappings()
+            .one_or_none()
+        )
+        version_id = (
+            (existing["active_version_id"] or existing["pending_version_id"])
+            if existing is not None
+            else None
+        )
+        connection.execute(
+            upload_batch_items_table.insert().values(
+                id=_new_id("batch_item"),
+                upload_batch_id=batch_id,
+                document_id=claim["document_id"],
+                submission_id=None,
+                file_name=info["filename"],
+                content_hash_sha256=info["content_hash_sha256"],
+                result_state="deduplicated",
+                deduplicated=True,
+                job_id=None,
+                rejection_reason=None,
+                created_at_utc=now,
+                updated_at_utc=now,
+            )
+        )
+        return {
+            "document_id": claim["document_id"],
+            "document_version_id": version_id,
+            "job_id": None,
+            "publication_id": None,
+            "filename": info["filename"],
+            "deduplicated": True,
+            "status": "deduplicated",
+        }
 
     def create_initial_upload(
         self,
@@ -1027,48 +1103,15 @@ class DocumentsService:
                     .one_or_none()
                 )
                 if claim is not None:
-                    existing = (
-                        connection.execute(
-                            select(
-                                documents_table.c.id,
-                                documents_table.c.active_version_id,
-                                documents_table.c.pending_version_id,
-                            ).where(documents_table.c.id == claim["document_id"])
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    version_id = (
-                        (existing["active_version_id"] or existing["pending_version_id"])
-                        if existing is not None
-                        else None
-                    )
-                    item = {
-                        "document_id": claim["document_id"],
-                        "document_version_id": version_id,
-                        "job_id": None,
-                        "publication_id": None,
-                        "filename": info["filename"],
-                        "deduplicated": True,
-                        "status": "deduplicated",
-                    }
-                    connection.execute(
-                        upload_batch_items_table.insert().values(
-                            id=_new_id("batch_item"),
-                            upload_batch_id=batch_id,
-                            document_id=claim["document_id"],
-                            submission_id=None,
-                            file_name=info["filename"],
-                            content_hash_sha256=info["content_hash_sha256"],
-                            result_state="deduplicated",
-                            deduplicated=True,
-                            job_id=None,
-                            rejection_reason=None,
-                            created_at_utc=now,
-                            updated_at_utc=now,
+                    items.append(
+                        self._deduplicated_upload_item(
+                            connection,
+                            batch_id=batch_id,
+                            now=now,
+                            info=info,
+                            claim=claim,
                         )
                     )
-                    items.append(item)
                     continue
 
                 document_id = _new_id("doc")
@@ -1166,15 +1209,55 @@ class DocumentsService:
                         discarded_at_utc=None,
                     )
                 )
-                connection.execute(
-                    upload_dedup_claims_table.insert().values(
-                        space_id=space_id,
-                        normalized_filename=info["normalized_filename"],
-                        content_hash_sha256=content_hash,
-                        document_id=document_id,
-                        created_at_utc=now,
-                    )
+                claimed = _insert_do_nothing(
+                    connection,
+                    upload_dedup_claims_table,
+                    {
+                        "space_id": space_id,
+                        "normalized_filename": info["normalized_filename"],
+                        "content_hash_sha256": content_hash,
+                        "document_id": document_id,
+                        "created_at_utc": now,
+                    },
+                    index_elements=["space_id", "normalized_filename", "content_hash_sha256"],
                 )
+                if not claimed:
+                    self._object_store.delete(object_key)
+                    connection.execute(
+                        publications_table.delete().where(publications_table.c.id == publication_id)
+                    )
+                    connection.execute(
+                        ingestion_jobs_table.delete().where(ingestion_jobs_table.c.id == job_id)
+                    )
+                    connection.execute(
+                        document_versions_table.delete().where(document_versions_table.c.id == version_id)
+                    )
+                    connection.execute(documents_table.delete().where(documents_table.c.id == document_id))
+                    claim = (
+                        connection.execute(
+                            select(upload_dedup_claims_table).where(
+                                and_(
+                                    upload_dedup_claims_table.c.space_id == space_id,
+                                    upload_dedup_claims_table.c.normalized_filename
+                                    == info["normalized_filename"],
+                                    upload_dedup_claims_table.c.content_hash_sha256
+                                    == content_hash,
+                                )
+                            )
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    items.append(
+                        self._deduplicated_upload_item(
+                            connection,
+                            batch_id=batch_id,
+                            now=now,
+                            info=info,
+                            claim=claim,
+                        )
+                    )
+                    continue
                 connection.execute(
                     upload_batch_items_table.insert().values(
                         id=_new_id("batch_item"),
@@ -1798,6 +1881,20 @@ class DocumentsService:
                     409,
                 )
             active_attempt_id = str(job["active_attempt_id"])
+            raw_receipt_attempt_id = (
+                receipt.attempt_id
+                if isinstance(receipt, IndexProcessingReceipt)
+                else receipt.get("attempt_id")
+                if isinstance(receipt, Mapping)
+                else None
+            )
+            if (
+                not isinstance(raw_receipt_attempt_id, str)
+                or raw_receipt_attempt_id != active_attempt_id
+            ):
+                raise PlatformError(
+                    "fence_conflict", "The processing attempt is no longer current", {}, 409
+                )
             attempt = (
                 connection.execute(
                     select(ingestion_attempts_table)
@@ -1838,7 +1935,11 @@ class DocumentsService:
             receipt = typed_receipt.to_mapping()
             receipt_attempt_id = receipt.get("attempt_id")
             receipt_fencing_token = receipt.get("fencing_token")
-            if str(receipt_attempt_id) != active_attempt_id or receipt_fencing_token is None:
+            if str(receipt_attempt_id) != active_attempt_id:
+                raise PlatformError(
+                    "fence_conflict", "The processing attempt is no longer current", {}, 409
+                )
+            if receipt_fencing_token is None:
                 reject_receipt("fence_conflict", "The processing attempt is no longer current")
             if int(receipt_fencing_token) != int(attempt["fencing_token"]):
                 reject_receipt("fence_conflict", "The processing attempt is no longer current")

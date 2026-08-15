@@ -108,6 +108,22 @@ def test_configuration_includes_shared_logging_and_index_namespace() -> None:
     assert settings.index.namespace == "enterprise-main"
 
 
+def test_documents_and_indexing_processing_limits_are_configurable() -> None:
+    settings = load_platform_settings(
+        development_environment(
+            RAG_DOCUMENTS_UPLOAD_MAX_BYTES="9",
+            RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS="2",
+            RAG_INDEX_TEXT_CHUNK_MAX_CHARS="7",
+            RAG_INDEX_XLSX_MERGED_CELLS_MAX="11",
+        )
+    )
+
+    assert settings.documents.upload_max_bytes == 9
+    assert settings.documents.cleanup_max_attempts == 2
+    assert settings.index.text_chunk_max_chars == 7
+    assert settings.index.xlsx_merged_cells_max == 11
+
+
 @pytest.mark.parametrize(
     "key",
     ["TENANT_ID", "ENTERPRISE_ID", "OBSERVABILITY_RETENTION_DAYS", "TEST_POSTGRES_URL"],

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.chat.conversations import ConversationService
@@ -154,15 +154,16 @@ def patch_conversation(
     )
 
 
-@router.delete("/conversations/{conversation_id}", status_code=204)
+@router.delete("/conversations/{conversation_id}", status_code=204, response_class=Response)
 def delete_conversation(
     conversation_id: str,
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
-) -> None:
+) -> Response:
     _conversation_service(request).delete_conversation(
         user_id=str(principal.user_id), conversation_id=conversation_id
     )
+    return Response(status_code=204)
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -233,10 +234,11 @@ def patch_group(
     )
 
 
-@router.delete("/conversation-groups/{group_id}", status_code=204)
+@router.delete("/conversation-groups/{group_id}", status_code=204, response_class=Response)
 def delete_group(
     group_id: str,
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
-) -> None:
+) -> Response:
     _conversation_service(request).delete_group(user_id=str(principal.user_id), group_id=group_id)
+    return Response(status_code=204)

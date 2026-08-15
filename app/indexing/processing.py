@@ -5,8 +5,11 @@ import csv
 import hashlib
 import io
 import json
+import posixpath
 import re
 import tomllib
+import zipfile
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -160,6 +163,110 @@ def _column_name(number: int) -> str:
     return result or "A"
 
 
+def _split_text(value: str, *, maximum: int) -> list[str]:
+    return [value[start : start + maximum] for start in range(0, len(value), maximum)]
+
+
+def _xlsx_merged_ranges(content: bytes, *, maximum_cells: int) -> dict[str, tuple[str, ...]]:
+    from openpyxl.utils.cell import range_boundaries  # type: ignore[import-untyped]
+
+    main_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    document_rel_namespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    package_rel_namespace = "http://schemas.openxmlformats.org/package/2006/relationships"
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        targets: dict[str, str] = {}
+        with archive.open("xl/_rels/workbook.xml.rels") as source:
+            for _, relation in ElementTree.iterparse(source, events=("end",)):
+                if relation.tag == f"{{{package_rel_namespace}}}Relationship":
+                    target = relation.attrib["Target"].lstrip("/")
+                    if not target.startswith("xl/"):
+                        target = posixpath.join("xl", target)
+                    targets[relation.attrib["Id"]] = posixpath.normpath(target)
+                relation.clear()
+        sheets: list[tuple[str, str]] = []
+        with archive.open("xl/workbook.xml") as source:
+            for _, sheet in ElementTree.iterparse(source, events=("end",)):
+                if sheet.tag == f"{{{main_namespace}}}sheet":
+                    relationship_id = sheet.attrib.get(f"{{{document_rel_namespace}}}id")
+                    if relationship_id is None:
+                        raise ValueError("Excel worksheet relationship is missing")
+                    sheets.append((sheet.attrib["name"], relationship_id))
+                sheet.clear()
+        if not sheets:
+            raise ValueError("Excel workbook has no sheets")
+        result: dict[str, tuple[str, ...]] = {}
+        for sheet_name, relationship_id in sheets:
+            target = targets.get(relationship_id)
+            if target is None:
+                raise ValueError("Excel worksheet relationship is missing")
+            ranges: list[str] = []
+            with archive.open(target) as source:
+                for _, merged in ElementTree.iterparse(source, events=("end",)):
+                    if merged.tag != f"{{{main_namespace}}}mergeCell":
+                        merged.clear()
+                        continue
+                    reference = merged.attrib["ref"]
+                    min_column, min_row, max_column, max_row = range_boundaries(reference)
+                    if (max_column - min_column + 1) * (max_row - min_row + 1) > maximum_cells:
+                        raise PlatformError(
+                            "table_parse_failed",
+                            "Excel merged region exceeds the supported size",
+                            {},
+                            422,
+                        )
+                    ranges.append(reference)
+                    merged.clear()
+            result[sheet_name] = tuple(ranges)
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class _MergedRange:
+    min_column: int
+    min_row: int
+    max_column: int
+    max_row: int
+
+
+class _MergedCellResolver:
+    def __init__(self, merged_ranges: Sequence[str]) -> None:
+        from openpyxl.utils.cell import range_boundaries  # type: ignore[import-untyped]
+
+        self._active_ranges: list[_MergedRange] = []
+        self._active_starts: list[int] = []
+        self._starting: dict[int, list[_MergedRange]] = {}
+        self._ending: dict[int, list[_MergedRange]] = {}
+        self.horizontally_merged_rows: set[int] = set()
+        for reference in merged_ranges:
+            min_column, min_row, max_column, max_row = range_boundaries(reference)
+            merged = _MergedRange(min_column, min_row, max_column, max_row)
+            self._starting.setdefault(min_row, []).append(merged)
+            self._ending.setdefault(max_row + 1, []).append(merged)
+            if min_row == max_row and min_column < max_column:
+                self.horizontally_merged_rows.add(min_row)
+
+    def advance(self, row_number: int) -> None:
+        for merged in self._ending.pop(row_number, ()):
+            index = bisect_left(self._active_starts, merged.min_column)
+            while self._active_ranges[index] is not merged:
+                index += 1
+            del self._active_starts[index]
+            del self._active_ranges[index]
+        for merged in self._starting.pop(row_number, ()):
+            index = bisect_right(self._active_starts, merged.min_column)
+            self._active_starts.insert(index, merged.min_column)
+            self._active_ranges.insert(index, merged)
+
+    def origin_at(self, column: int) -> tuple[int, int] | None:
+        index = bisect_right(self._active_starts, column) - 1
+        if index < 0:
+            return None
+        merged = self._active_ranges[index]
+        if column > merged.max_column:
+            return None
+        return (merged.min_row, merged.min_column)
+
+
 def _flatten(value: Any, prefix: str = "") -> list[tuple[str, str]]:
     if isinstance(value, Mapping):
         result: list[tuple[str, str]] = []
@@ -188,11 +295,15 @@ class ContentProcessor:
         mineru: Callable[[bytes], Mapping[str, Any]] | None = None,
         image_describer: Callable[[bytes, Mapping[str, Any]], str] | None = None,
         image_ocr: Callable[[bytes, Mapping[str, Any]], str] | None = None,
+        text_chunk_max_chars: int = 8_000,
+        xlsx_merged_cells_max: int = 10_000,
     ) -> None:
         self._compressor = compressor or IdentityCompression()
         self._mineru = mineru
         self._image_describer = image_describer
         self._image_ocr = image_ocr
+        self._text_chunk_max_chars = text_chunk_max_chars
+        self._xlsx_merged_cells_max = xlsx_merged_cells_max
 
     def process(
         self,
@@ -463,31 +574,33 @@ class ContentProcessor:
         if not sections and text.strip():
             sections = [("", text.strip())]
         chunks: list[IndexChunk] = []
-        for index, (path, body) in enumerate(sections, start=1):
-            compressed = self._compressor.compress(body, context={"section_path": path})
-            chunks.append(
-                IndexChunk(
-                    chunk_id=f"chunk_{index}",
-                    generation_id=request.expected_generation_id,
-                    publication_id=request.publication_id,
-                    document_id=request.document_id,
-                    document_version_id=request.document_version_id,
-                    space_id=request.space_id,
-                    text=body,
-                    embedding_text=compressed,
-                    sparse_text=(f"{path}\n{body}" if path else body),
-                    locator={"section_path": path} if path else {},
-                    snippet=body[:500],
-                    media_kind=media_kind,
-                    manifest_hash=manifest_hash,
-                    metadata={"section_path": path, "cr_unit": "chunk"},
+        for path, section in sections:
+            for body in _split_text(section, maximum=self._text_chunk_max_chars):
+                index = len(chunks) + 1
+                compressed = self._compressor.compress(body, context={"section_path": path})
+                chunks.append(
+                    IndexChunk(
+                        chunk_id=f"chunk_{index}",
+                        generation_id=request.expected_generation_id,
+                        publication_id=request.publication_id,
+                        document_id=request.document_id,
+                        document_version_id=request.document_version_id,
+                        space_id=request.space_id,
+                        text=body,
+                        embedding_text=compressed,
+                        sparse_text=(f"{path}\n{body}" if path else body),
+                        locator={"section_path": path} if path else {},
+                        snippet=body[:500],
+                        media_kind=media_kind,
+                        manifest_hash=manifest_hash,
+                        metadata={"section_path": path, "cr_unit": "chunk"},
+                    )
                 )
-            )
         return (
             chunks,
             {
                 "chunk_count": len(chunks),
-                "page_count": 0,
+                "page_count": 1,
                 "image_count": 0,
                 "table_count": 0,
                 "ocr": {"sample_strategy": "head_middle_tail", "low_confidence": False},
@@ -515,7 +628,8 @@ class ContentProcessor:
         data = rows[1:]
         ranges = _split_rows(data, len(headers))
         chunks: list[IndexChunk] = []
-        for index, (start, end) in enumerate(ranges, start=1):
+        row_groups: list[Mapping[str, Any]] = []
+        for start, end in ranges:
             values = data[start:end]
             lines = [
                 " | ".join(
@@ -525,37 +639,40 @@ class ContentProcessor:
                 for row in values
             ]
             body = "\n".join(lines)
-            chunks.append(
-                IndexChunk(
-                    chunk_id=f"chunk_{index}",
-                    generation_id=request.expected_generation_id,
-                    publication_id=request.publication_id,
-                    document_id=request.document_id,
-                    document_version_id=request.document_version_id,
-                    space_id=request.space_id,
-                    text=body,
-                    embedding_text=body,
-                    sparse_text=body,
-                    locator={
-                        "sheet": "CSV",
-                        "a1_range": f"A{start + 2}:{chr(65 + min(len(headers), 26) - 1)}{end + 1}",
-                    },
-                    snippet=None,
-                    media_kind="text/csv",
-                    manifest_hash=manifest_hash,
-                    metadata={
-                        "headers": headers,
-                        "row_start": start + 2,
-                        "row_end": end + 1,
-                        "table": True,
-                    },
+            for part in _split_text(body, maximum=self._text_chunk_max_chars) or [""]:
+                index = len(chunks) + 1
+                chunks.append(
+                    IndexChunk(
+                        chunk_id=f"chunk_{index}",
+                        generation_id=request.expected_generation_id,
+                        publication_id=request.publication_id,
+                        document_id=request.document_id,
+                        document_version_id=request.document_version_id,
+                        space_id=request.space_id,
+                        text=part,
+                        embedding_text=part,
+                        sparse_text=part,
+                        locator={
+                            "sheet": "CSV",
+                            "a1_range": f"A{start + 2}:{chr(65 + min(len(headers), 26) - 1)}{end + 1}",
+                        },
+                        snippet=None,
+                        media_kind="text/csv",
+                        manifest_hash=manifest_hash,
+                        metadata={
+                            "headers": headers,
+                            "row_start": start + 2,
+                            "row_end": end + 1,
+                            "table": True,
+                        },
+                    )
                 )
-            )
+                row_groups.append({"sheet": "CSV", "start": start + 2, "end": end + 1})
         return (
             chunks,
             {
                 "chunk_count": len(chunks),
-                "page_count": 0,
+                "page_count": 1,
                 "image_count": 0,
                 "table_count": len(chunks),
                 "ocr": {},
@@ -564,9 +681,7 @@ class ContentProcessor:
                 "sheet_count": 1,
                 "headers": headers,
                 "sheet_manifest": [{"sheet": "CSV", "headers": headers}],
-                "row_groups": [
-                    {"sheet": "CSV", "start": start + 2, "end": end + 1} for start, end in ranges
-                ],
+                "row_groups": row_groups,
             },
             (),
         )
@@ -580,7 +695,12 @@ class ContentProcessor:
         try:
             from openpyxl import load_workbook  # type: ignore[import-untyped]
 
-            workbook = load_workbook(io.BytesIO(content), read_only=False, data_only=True)
+            merged_ranges_by_sheet = _xlsx_merged_ranges(
+                content, maximum_cells=self._xlsx_merged_cells_max
+            )
+            workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        except PlatformError:
+            raise
         except Exception as exc:
             raise PlatformError(
                 "table_parse_failed", "Excel workbook could not be parsed", {}, 422
@@ -592,88 +712,120 @@ class ContentProcessor:
         row_groups: list[Mapping[str, Any]] = []
         try:
             for worksheet in workbook.worksheets:
-                rows = [
-                    (row_number, ["" if value is None else str(value) for value in row])
-                    for row_number, row in enumerate(worksheet.iter_rows(values_only=True), start=1)
-                ]
-                merged_ranges = [str(value) for value in worksheet.merged_cells.ranges]
-                horizontally_merged_rows: set[int] = set()
-                for merged in worksheet.merged_cells.ranges:
-                    value = worksheet.cell(merged.min_row, merged.min_col).value
-                    if merged.min_row == merged.max_row and merged.min_col < merged.max_col:
-                        horizontally_merged_rows.add(merged.min_row)
-                    for row in range(merged.min_row, merged.max_row + 1):
-                        for column in range(merged.min_col, merged.max_col + 1):
-                            if row - 1 < len(rows) and column - 1 < len(rows[row - 1][1]):
-                                rows[row - 1][1][column - 1] = "" if value is None else str(value)
-                rows = [
-                    (row_number, row)
-                    for row_number, row in rows
-                    if any(cell.strip() for cell in row)
-                ]
-                if not rows or not rows[0]:
-                    raise PlatformError("table_parse_failed", "Excel sheet has no header", {}, 422)
-                headers = rows[0][1]
-                sheet_manifest.append(
-                    {"sheet": worksheet.title, "headers": headers, "merged_ranges": merged_ranges}
-                )
-                data = rows[1:]
-                for start, end in _split_rows([row for _, row in data], len(headers)):
-                    values = data[start:end]
-                    start_row = values[0][0]
-                    end_row = values[-1][0]
+                merged_ranges = list(merged_ranges_by_sheet.get(worksheet.title, ()))
+                merged_cells = _MergedCellResolver(merged_ranges)
+                origin_values: dict[tuple[int, int], str] = {}
+                headers: list[str] | None = None
+                pending_rows: list[tuple[int, list[str]]] = []
+
+                def emit_rows(
+                    rows: list[tuple[int, list[str]]],
+                    *,
+                    sheet_name: str,
+                    sheet_headers: list[str],
+                    sheet_merged_ranges: Sequence[str],
+                    sheet_horizontally_merged_rows: set[int],
+                ) -> None:
+                    nonlocal table_count
+                    if not rows:
+                        return
+                    start_row = rows[0][0]
+                    end_row = rows[-1][0]
                     total_rows = [
                         row_number
-                        for row_number, _ in values
-                        if row_number in horizontally_merged_rows
+                        for row_number, _ in rows
+                        if row_number in sheet_horizontally_merged_rows
                     ]
                     body = "\n".join(
                         " | ".join(
                             f"{header}: {row[index] if index < len(row) else ''}"
-                            for index, header in enumerate(headers)
+                            for index, header in enumerate(sheet_headers)
                         )
-                        for _, row in values
+                        for _, row in rows
                     )
-                    if not body.strip():
-                        continue
-                    table_count += 1
-                    row_groups.append(
-                        {
-                            "sheet": worksheet.title,
-                            "start": start_row,
-                            "end": end_row,
-                            "block": len(row_groups) + 1,
-                            "total_rows": total_rows,
-                        }
-                    )
-                    chunks.append(
-                        IndexChunk(
-                            chunk_id=f"chunk_{len(chunks) + 1}",
-                            generation_id=request.expected_generation_id,
-                            publication_id=request.publication_id,
-                            document_id=request.document_id,
-                            document_version_id=request.document_version_id,
-                            space_id=request.space_id,
-                            text=body,
-                            embedding_text=body,
-                            sparse_text=body,
-                            locator={
-                                "sheet": worksheet.title,
-                                "a1_range": (f"A{start_row}:{_column_name(len(headers))}{end_row}"),
-                            },
-                            snippet=None,
-                            media_kind="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            manifest_hash=manifest_hash,
-                            metadata={
-                                "headers": headers,
-                                "row_start": start_row,
-                                "row_end": end_row,
-                                "table": True,
-                                "merged_ranges": merged_ranges,
+                    if body.strip():
+                        table_count += 1
+                        row_groups.append(
+                            {
+                                "sheet": sheet_name,
+                                "start": start_row,
+                                "end": end_row,
+                                "block": len(row_groups) + 1,
                                 "total_rows": total_rows,
-                            },
+                            }
                         )
-                    )
+                        chunks.append(
+                            IndexChunk(
+                                chunk_id=f"chunk_{len(chunks) + 1}",
+                                generation_id=request.expected_generation_id,
+                                publication_id=request.publication_id,
+                                document_id=request.document_id,
+                                document_version_id=request.document_version_id,
+                                space_id=request.space_id,
+                                text=body,
+                                embedding_text=body,
+                                sparse_text=body,
+                                locator={
+                                    "sheet": sheet_name,
+                                    "a1_range": f"A{start_row}:{_column_name(len(sheet_headers))}{end_row}",
+                                },
+                                snippet=None,
+                                media_kind="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                manifest_hash=manifest_hash,
+                                metadata={
+                                    "headers": sheet_headers,
+                                    "row_start": start_row,
+                                    "row_end": end_row,
+                                    "table": True,
+                                    "merged_ranges": sheet_merged_ranges,
+                                    "total_rows": total_rows,
+                                },
+                            )
+                        )
+                    rows.clear()
+
+                for row_number, raw_row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+                    merged_cells.advance(row_number)
+                    row: list[str] = []
+                    for column, value in enumerate(raw_row, start=1):
+                        origin = merged_cells.origin_at(column)
+                        rendered = "" if value is None else str(value)
+                        if origin == (row_number, column):
+                            origin_values[origin] = rendered
+                        elif origin is not None:
+                            rendered = origin_values.get(origin, rendered)
+                        row.append(rendered)
+                    if not any(cell.strip() for cell in row):
+                        continue
+                    if headers is None:
+                        headers = row
+                        sheet_manifest.append(
+                            {
+                                "sheet": worksheet.title,
+                                "headers": headers,
+                                "merged_ranges": merged_ranges,
+                            }
+                        )
+                        continue
+                    pending_rows.append((row_number, row))
+                    row_limit = 30 if len(headers) < 20 else 20
+                    if len(pending_rows) >= row_limit:
+                        emit_rows(
+                            pending_rows,
+                            sheet_name=worksheet.title,
+                            sheet_headers=headers,
+                            sheet_merged_ranges=merged_ranges,
+                            sheet_horizontally_merged_rows=merged_cells.horizontally_merged_rows,
+                        )
+                if headers is None:
+                    raise PlatformError("table_parse_failed", "Excel sheet has no header", {}, 422)
+                emit_rows(
+                    pending_rows,
+                    sheet_name=worksheet.title,
+                    sheet_headers=headers,
+                    sheet_merged_ranges=merged_ranges,
+                    sheet_horizontally_merged_rows=merged_cells.horizontally_merged_rows,
+                )
         finally:
             workbook.close()
         return (
@@ -706,6 +858,10 @@ class ContentProcessor:
             elif kind in {"application/toml", "toml"}:
                 value = tomllib.loads(text)
             elif kind in {"application/xml", "text/xml", "xml"}:
+                if re.search(r"<!\s*ENTITY\b", text, flags=re.IGNORECASE):
+                    raise PlatformError(
+                        "structured_parse_failed", "XML entity declarations are not supported", {}, 422
+                    )
                 root = ElementTree.fromstring(text)
                 value = {root.tag: {child.tag: child.text or "" for child in root}}
             else:
@@ -871,26 +1027,30 @@ class ContentProcessor:
                 symbols.append((match.group(1), text[match.start() : end].strip()))
         if not symbols:
             symbols = [("module", text.strip())]
-        chunks = [
-            IndexChunk(
-                chunk_id=f"chunk_{index}",
-                generation_id=request.expected_generation_id,
-                publication_id=request.publication_id,
-                document_id=request.document_id,
-                document_version_id=request.document_version_id,
-                space_id=request.space_id,
-                text=body,
-                embedding_text=self._compressor.compress(body, context={"symbol": name}),
-                sparse_text=body,
-                locator={"section_path": name},
-                snippet=body[:500],
-                media_kind="code",
-                manifest_hash=manifest_hash,
-                metadata={"symbol": name, "cr_unit": "symbol"},
-            )
-            for index, (name, body) in enumerate(symbols, start=1)
-            if body.strip()
-        ]
+        chunks: list[IndexChunk] = []
+        for name, symbol in symbols:
+            if not symbol.strip():
+                continue
+            for body in _split_text(symbol, maximum=self._text_chunk_max_chars):
+                index = len(chunks) + 1
+                chunks.append(
+                    IndexChunk(
+                        chunk_id=f"chunk_{index}",
+                        generation_id=request.expected_generation_id,
+                        publication_id=request.publication_id,
+                        document_id=request.document_id,
+                        document_version_id=request.document_version_id,
+                        space_id=request.space_id,
+                        text=body,
+                        embedding_text=self._compressor.compress(body, context={"symbol": name}),
+                        sparse_text=body,
+                        locator={"section_path": name},
+                        snippet=body[:500],
+                        media_kind="code",
+                        manifest_hash=manifest_hash,
+                        metadata={"symbol": name, "cr_unit": "symbol"},
+                    )
+                )
         return (
             chunks,
             {

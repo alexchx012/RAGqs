@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import zipfile
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
@@ -41,6 +43,7 @@ from app.indexing import (
     intersect_scopes,
 )
 from app.indexing.models import RetrievalHit
+from app.indexing.processing import _xlsx_merged_ranges
 from app.indexing.retrieval import CitationService
 from app.indexing.schema import index_chunks_table, index_generation_heads_table
 from app.platform.errors import PlatformError
@@ -359,6 +362,38 @@ def test_retrieval_keeps_hybrid_before_rerank_and_routes_tree_afterwards() -> No
         ("tree", (("sparse_1", "dense_1"), 7, 4)),
     ]
     assert [hit.chunk.chunk_id for hit in result.hits] == ["sparse_1", "dense_1"]
+
+
+def test_cleanup_resource_removes_dense_and_sparse_document_version_resources() -> None:
+    dense = InMemoryIndexWriter(provider_name="dense")
+    sparse = InMemorySparseIndexProvider(provider_name="sparse")
+    chunk = replace(
+        _chunk("cleanup_chunk", document_id="document_cleanup"),
+        publication_id="publication_cleanup",
+        document_version_id="version_cleanup",
+    )
+    for provider in (dense, sparse):
+        provider.stage_chunks(
+            "attempt_cleanup",
+            "publication_cleanup",
+            "document_cleanup",
+            "version_cleanup",
+            [chunk],
+        )
+        provider.publish_staged("attempt_cleanup", "publication_cleanup")
+    service = IndexingService(dense_writer=dense, sparse_provider=sparse)
+
+    service.cleanup_resource(
+        {
+            "backend_kind": "index_chunk",
+            "resource_id": "cleanup_chunk",
+            "document_id": "document_cleanup",
+            "document_version_id": "version_cleanup",
+        }
+    )
+
+    assert dense.visible_chunks() == ()
+    assert sparse.visible_chunks() == ()
 
 
 @pytest.mark.parametrize(
@@ -1354,7 +1389,10 @@ def test_excel_expands_merged_cells_and_records_ranges() -> None:
     worksheet.append(["category", "amount"])
     worksheet.append(["North", 10])
     worksheet.append([None, 20])
+    worksheet.append(["South", 30])
+    worksheet.append([None, 40])
     worksheet.merge_cells("A2:A3")
+    worksheet.merge_cells("A4:A5")
     stream = io.BytesIO()
     workbook.save(stream)
 
@@ -1367,7 +1405,138 @@ def test_excel_expands_merged_cells_and_records_ranges() -> None:
     )
 
     assert "North" in output.chunks[0].text
-    assert output.receipt.processing_summary["sheet_manifest"][0]["merged_ranges"] == ["A2:A3"]
+    assert "South" in output.chunks[0].text
+    assert set(output.receipt.processing_summary["sheet_manifest"][0]["merged_ranges"]) == {
+        "A2:A3",
+        "A4:A5",
+    }
+
+
+def test_excel_streams_merged_range_scan_without_materializing_worksheet_xml(monkeypatch) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Revenue"
+    worksheet.append(["category", "amount"])
+    worksheet.append(["North", 10])
+    worksheet.append([None, 20])
+    worksheet.append(["South", 30])
+    worksheet.append([None, 40])
+    worksheet.merge_cells("A2:A3")
+    worksheet.merge_cells("A4:A5")
+    stream = io.BytesIO()
+    workbook.save(stream)
+
+    original_read = zipfile.ZipFile.read
+
+    def reject_worksheet_read(archive, name, *args, **kwargs):
+        filename = getattr(name, "filename", name)
+        if str(filename).startswith("xl/worksheets/"):
+            raise AssertionError("worksheet XML must be scanned as a stream")
+        return original_read(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", reject_worksheet_read)
+
+    assert set(_xlsx_merged_ranges(stream.getvalue(), maximum_cells=10_000)["Revenue"]) == {
+        "A2:A3",
+        "A4:A5",
+    }
+
+
+def test_unheaded_text_is_split_into_bounded_chunks() -> None:
+    output = ContentProcessor().process(
+        _request(),
+        "x" * 16_001,
+        media_kind="text/plain",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+
+    assert len(output.chunks) == 3
+    assert all(len(chunk.text) <= 8_000 for chunk in output.chunks)
+    assert "".join(chunk.text for chunk in output.chunks) == "x" * 16_001
+
+
+@pytest.mark.parametrize(
+    ("content", "media_kind"),
+    (
+        ("value\n" + "x" * 9, "text/csv"),
+        ("x" * 9, "text/x-python"),
+    ),
+)
+def test_csv_and_code_chunks_respect_configured_character_limit(
+    content: str, media_kind: str
+) -> None:
+    output = ContentProcessor(text_chunk_max_chars=7).process(
+        _request(),
+        content,
+        media_kind=media_kind,
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+
+    assert output.chunks
+    assert all(len(chunk.text) <= 7 for chunk in output.chunks)
+
+
+@pytest.mark.parametrize(
+    ("content", "media_kind"),
+    (("plain text", "text/plain"), ("name,amount\na,1\n", "text/csv")),
+)
+def test_nonpaged_content_is_billed_as_one_page(content: str, media_kind: str) -> None:
+    output = ContentProcessor().process(
+        _request(),
+        content,
+        media_kind=media_kind,
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+
+    assert output.receipt.processing_summary["page_count"] == 1
+
+
+def test_xml_entity_declarations_are_rejected() -> None:
+    with pytest.raises(PlatformError) as error:
+        ContentProcessor().process(
+            _request(),
+            "<!DOCTYPE root [<!ENTITY expanded 'value'>]><root>&expanded;</root>",
+            media_kind="application/xml",
+            content_manifest_id="manifest_1",
+            content_manifest_hash="manifest_hash_1",
+        )
+
+    assert error.value.code == "structured_parse_failed"
+
+
+def test_xml_without_entity_declarations_remains_processible() -> None:
+    output = ContentProcessor().process(
+        _request(),
+        "<!DOCTYPE root><root><item>ok</item></root>",
+        media_kind="application/xml",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+
+    assert output.chunks
+
+
+def test_excel_rejects_a_merged_region_above_the_supported_limit() -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet["A1"] = "merged"
+    worksheet.merge_cells("A1:A10001")
+    stream = io.BytesIO()
+    workbook.save(stream)
+
+    with pytest.raises(PlatformError) as error:
+        ContentProcessor().process(
+            _request(),
+            stream.getvalue(),
+            media_kind="xlsx",
+            content_manifest_id="manifest_1",
+            content_manifest_hash="manifest_hash_1",
+        )
+
+    assert error.value.code == "table_parse_failed"
 
 
 def test_mineru_pdf_preserves_native_page_and_span_locators() -> None:

@@ -3,10 +3,15 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import delete, select
 
-from app.documents.schema import ingestion_attempts_table, submission_execution_grants_table
+from app.documents.schema import (
+    ingestion_attempts_table,
+    knowledge_submissions_table,
+    submission_execution_grants_table,
+)
 from app.documents.submissions import DocumentsSubmissionInvalidationPort
 from app.identity.ports import PendingSubmissionInvalidationCommand
 from app.platform.errors import PlatformError
+from app.platform.storage import StorageKeyError
 
 from .test_commands import _upload
 
@@ -75,6 +80,44 @@ def test_approval_creates_immutable_grant_and_initial_job(service, principal) ->
             idempotency_key="approve-1",
         )
     assert error.value.code == "submission_review_forbidden"
+
+
+def test_approval_deletes_private_submission_original_after_copying_document(
+    service, principal
+) -> None:
+    submission = service.create_submission(
+        principal=principal,
+        space_id="space_1",
+        file=_upload(),
+        idempotency_key="submission-private-cleanup-1",
+    )
+    with service._engine.connect() as connection:
+        private_object_key = connection.execute(
+            select(knowledge_submissions_table.c.private_object_key).where(
+                knowledge_submissions_table.c.id == submission["submission_id"]
+            )
+        ).scalar_one()
+
+    reviewer = principal.__class__(
+        user_id="user_1",
+        auth_session_id="admin-session",
+        username="admin",
+        role="admin",
+        department_id=None,
+    )
+    approved = service.approve_submission(
+        principal=reviewer,
+        submission_id=submission["submission_id"],
+        expected_version=1,
+        idempotency_key="approve-private-cleanup-1",
+    )
+
+    document_content, _ = service._object_store.get(
+        f"documents/{approved['document_id']}/{approved['document_version_id']}/original"
+    )
+    assert document_content == b"hello"
+    with pytest.raises(StorageKeyError):
+        service._object_store.get(private_object_key)
 
 
 def test_submitter_can_withdraw_pending_submission(service, principal) -> None:

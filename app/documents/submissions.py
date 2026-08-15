@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import and_, delete, select, update
 
 from app.identity.ports import PendingSubmissionInvalidationCommand
+from app.platform.database import _insert_do_nothing
 from app.platform.errors import PlatformError
 from app.platform.storage import ObjectMetadata, StorageKeyError
 
@@ -673,15 +674,41 @@ class SubmissionService:
                         discarded_at_utc=None,
                     )
                 )
-                connection.execute(
-                    upload_dedup_claims_table.insert().values(
-                        space_id=submission["space_id"],
-                        normalized_filename=normalized_name,
-                        content_hash_sha256=submission["content_hash_sha256"],
-                        document_id=document_id,
-                        created_at_utc=now,
-                    )
+                claimed = _insert_do_nothing(
+                    connection,
+                    upload_dedup_claims_table,
+                    {
+                        "space_id": submission["space_id"],
+                        "normalized_filename": normalized_name,
+                        "content_hash_sha256": submission["content_hash_sha256"],
+                        "document_id": document_id,
+                        "created_at_utc": now,
+                    },
+                    index_elements=["space_id", "normalized_filename", "content_hash_sha256"],
                 )
+                if not claimed:
+                    self._service._object_store.delete(object_key)
+                    winning_claim = (
+                        connection.execute(
+                            select(upload_dedup_claims_table.c.document_id).where(
+                                and_(
+                                    upload_dedup_claims_table.c.space_id == submission["space_id"],
+                                    upload_dedup_claims_table.c.normalized_filename == normalized_name,
+                                    upload_dedup_claims_table.c.content_hash_sha256
+                                    == submission["content_hash_sha256"],
+                                )
+                            )
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    raise PlatformError(
+                        "duplicate_document",
+                        "A document with the same name and content already exists",
+                        {"document_id": winning_claim["document_id"]},
+                        409,
+                    )
+                self._service._object_store.delete(str(submission["private_object_key"]))
                 grant_id = _new_id("grant")
                 grant_fingerprint = self._service._idempotency_fingerprint(
                     {
@@ -718,6 +745,8 @@ class SubmissionService:
                         version=expected_version + 1,
                         reviewer_user_id=actor_id,
                         reviewer_role_snapshot=str(principal.role),
+                        private_object_cleanup_requested_at_utc=now,
+                        private_object_cleaned_at_utc=now,
                         reviewed_at_utc=now,
                         updated_at_utc=now,
                     )

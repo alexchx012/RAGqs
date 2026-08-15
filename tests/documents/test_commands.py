@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine, select, update
+from sqlalchemy import create_engine, func, select, update
 
 from app.documents.indexing import NoopIndexingHandoff
 from app.documents.schema import (
@@ -56,6 +56,17 @@ def _upload(name: str = "guide.txt", content: bytes = b"hello") -> DocumentUploa
         filename=name,
         content=content,
         media_kind="text/plain",
+    )
+
+
+def _service_with_upload_limit(service, max_upload_bytes: int) -> DocumentsService:
+    return DocumentsService(
+        service._engine,
+        now=service._now,
+        object_store=service._object_store,
+        identity_access=service._identity_access,
+        indexing_handoff_port=service._indexing_handoff_port,
+        max_upload_bytes=max_upload_bytes,
     )
 
 
@@ -168,6 +179,53 @@ def test_initial_upload_stays_staged_until_processing_receipt(service, principal
     assert visible["total"] == 1
     assert visible["items"][0]["document_version_id"] == item["document_version_id"]
     assert visible["items"][0]["usage"] == {"pages": 1, "images": 0}
+
+
+def test_initial_upload_rejects_an_oversized_file_before_persisting(service, principal) -> None:
+    limited = _service_with_upload_limit(service, max_upload_bytes=4)
+
+    with pytest.raises(PlatformError) as error:
+        limited.create_initial_upload(
+            principal=principal,
+            space_id="space_1",
+            files=[_upload(content=b"12345")],
+            idempotency_key="oversized-initial-upload",
+        )
+
+    assert error.value.code == "upload_too_large"
+    with limited._engine.connect() as connection:
+        assert connection.execute(select(func.count()).select_from(documents_table)).scalar_one() == 0
+        assert (
+            connection.execute(select(func.count()).select_from(document_versions_table)).scalar_one()
+            == 0
+        )
+
+
+def test_replace_rejects_an_oversized_file_without_creating_a_version(service, principal) -> None:
+    limited = _service_with_upload_limit(service, max_upload_bytes=4)
+    item = limited.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload(content=b"okay")],
+        idempotency_key="initial-for-oversized-replacement",
+    )["items"][0]
+    _accept(limited, principal, item)
+
+    with pytest.raises(PlatformError) as error:
+        limited.replace_version(
+            principal=principal,
+            document_id=item["document_id"],
+            expected_version=1,
+            file=_upload(content=b"12345"),
+            idempotency_key="oversized-replacement",
+        )
+
+    assert error.value.code == "upload_too_large"
+    with limited._engine.connect() as connection:
+        assert (
+            connection.execute(select(func.count()).select_from(document_versions_table)).scalar_one()
+            == 1
+        )
 
 
 def test_same_space_name_and_hash_is_deduplicated(service, principal) -> None:

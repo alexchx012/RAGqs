@@ -374,7 +374,23 @@ class IndexingService:
     def cleanup_resource(
         self, resource: Mapping[str, Any], *, connection: Any | None = None
     ) -> None:
-        del resource, connection
+        del connection
+        if resource.get("backend_kind") not in {"index", "index_chunk", "cache"}:
+            return
+        document_id = str(resource.get("document_id") or "").strip()
+        document_version_id = str(resource.get("document_version_id") or "").strip()
+        if not document_id:
+            raise PlatformError(
+                "cleanup_target_invalid", "Documents cleanup target is invalid", {}, 422
+            )
+        if document_version_id:
+            self.delete_document_version(
+                document_id,
+                document_version_id,
+                cleanup_target=resource,
+            )
+            return
+        self.delete_document(document_id, cleanup_target=resource)
 
     @staticmethod
     def _validate_cleanup_target(
