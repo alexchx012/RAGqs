@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from threading import Lock
 from typing import Any, Protocol
 
 from app.platform.errors import PlatformError
@@ -25,7 +27,7 @@ from .usage import EvaluationUsageRecorder
 JUDGE_PROVIDER = "bailian"
 JUDGE_MODEL = "qwen3.7-plus"
 JUDGE_MODE = "non_thinking"
-JUDGE_PROMPT_VERSION = "v1"
+JUDGE_PROMPT_VERSION = "v2"
 
 # Bounded short-retry budget for one judge call; the run-level retry_wait loop
 # (policy max_attempts) sits on top of this lane-local budget (A18).
@@ -33,6 +35,7 @@ JUDGE_SHORT_RETRY_ATTEMPTS = 3
 JUDGE_RETRY_BASE_DELAY_SECONDS = 0.5
 JUDGE_RETRY_MAX_DELAY_SECONDS = 4.0
 JUDGE_BREAKER_THRESHOLD = 3
+JUDGE_BREAKER_COOLDOWN_SECONDS = 30
 
 
 def bounded_backoff_seconds(attempt: int) -> float:
@@ -59,7 +62,7 @@ class JudgeRequest:
     answer: str
     context: tuple[Mapping[str, Any], ...] = ()
     expected_sources: tuple[str, ...] = ()
-    expects_refusal: bool = False
+    expects_refusal: bool | None = None
     # Usage attribution for A19; preflight/fakes leave these unset.
     run_id: str | None = None
     attempt_id: str | None = None
@@ -117,40 +120,88 @@ class CircuitBreakerRegistry:
     the online generation or image VLM lanes.
     """
 
-    def __init__(self, *, threshold: int = JUDGE_BREAKER_THRESHOLD) -> None:
+    def __init__(
+        self,
+        *,
+        threshold: int = JUDGE_BREAKER_THRESHOLD,
+        cooldown_seconds: int = JUDGE_BREAKER_COOLDOWN_SECONDS,
+    ) -> None:
         self.failures = 0
         self.opened_at: datetime | None = None
         self.threshold = threshold
+        self.cooldown_seconds = cooldown_seconds
+        self._half_open_probe = False
+        self._lock = Lock()
 
-    def record_failure(self, now: datetime) -> None:
-        self.failures += 1
-        if self.failures >= self.threshold:
-            self.opened_at = now
+    def record_failure(self, now: datetime) -> bool:
+        """Record a failed call and return whether it was the half-open probe."""
+
+        with self._lock:
+            was_half_open_probe = self._half_open_probe
+            self._half_open_probe = False
+            if self.opened_at is not None:
+                self.opened_at = now
+                self.failures = max(self.failures, self.threshold)
+                return was_half_open_probe
+            self.failures += 1
+            if self.failures >= self.threshold:
+                self.opened_at = now
+            return was_half_open_probe
 
     def reset(self) -> None:
-        self.failures = 0
-        self.opened_at = None
+        with self._lock:
+            self.failures = 0
+            self.opened_at = None
+            self._half_open_probe = False
+
+    def allow(self, now: datetime) -> bool:
+        """Reject during cooldown, then grant exactly one recovery probe."""
+
+        with self._lock:
+            if self.opened_at is None:
+                return True
+            if now < self.opened_at + timedelta(seconds=self.cooldown_seconds):
+                return False
+            if self._half_open_probe:
+                return False
+            self._half_open_probe = True
+            return True
+
+    def abort_probe(self) -> None:
+        with self._lock:
+            self._half_open_probe = False
 
     def is_open(self) -> bool:
-        return self.opened_at is not None
+        with self._lock:
+            return self.opened_at is not None
 
 
-def faithfulness_prompt(question: str, answer: str, context: tuple[str, ...]) -> str:
-    del context
+def faithfulness_prompt(
+    question: str,
+    answer: str,
+    context: tuple[Mapping[str, Any], ...],
+) -> str:
+    serialized_context = json.dumps(
+        [dict(item) for item in context],
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     return (
         "You are evaluating answer faithfulness. Judge whether every claim in the "
-        "answer is supported by the provided context. Return a JSON object with a "
-        f"single number `faithfulness` between 0 and 1.\n\nQuestion: {question}\n\n"
-        f"Answer: {answer}\n"
+        "answer is supported by the provided context. Return a JSON object with "
+        "numeric `faithfulness` and `answer_relevancy` values between 0 and 1, "
+        "and boolean `is_refusal`.\n\n"
+        f"Question: {question}\n\nContext: {serialized_context}\n\nAnswer: {answer}\n"
     )
 
 
 def answer_relevancy_prompt(question: str, answer: str) -> str:
     return (
         "You are evaluating answer relevancy. Judge how directly the answer addresses "
-        "the question without unrelated content. Return a JSON object with a single "
-        f"number `answer_relevancy` between 0 and 1.\n\nQuestion: {question}\n\n"
-        f"Answer: {answer}\n"
+        "the question without unrelated content. Return the same JSON object schema: "
+        "numeric `faithfulness` and `answer_relevancy` values between 0 and 1, and "
+        f"boolean `is_refusal`.\n\nQuestion: {question}\n\nAnswer: {answer}\n"
     )
 
 
@@ -182,6 +233,30 @@ class HttpJudgeProvider:
         self._sleep = sleep or time.sleep
         self._breaker = CircuitBreakerRegistry()
 
+    @property
+    def provider(self) -> str:
+        return self._configuration.provider
+
+    @property
+    def model(self) -> str:
+        return self._configuration.model
+
+    @property
+    def mode(self) -> str:
+        return self._configuration.mode
+
+    @property
+    def capability(self) -> str:
+        return self._configuration.capability
+
+    @property
+    def release(self) -> str:
+        return self._configuration.release
+
+    @property
+    def prompt_version(self) -> str:
+        return self._configuration.prompt_version
+
     def close(self) -> None:
         self._client.close()
 
@@ -206,6 +281,10 @@ class HttpJudgeProvider:
             deadline_utc=deadline_utc,
             started_at=self._now,
         )
+
+    @staticmethod
+    def _usage_result(response: Any) -> str:
+        return "failed" if int(getattr(response, "status_code", 500)) >= 400 else "succeeded"
 
     def preflight_probe(self) -> None:
         """Authentication/capability probe with judge-only credentials (A17).
@@ -236,6 +315,7 @@ class HttpJudgeProvider:
                         "max_tokens": 1,
                     },
                 ),
+                result_for=self._usage_result,
             )
             response.raise_for_status()
         except PlatformError:
@@ -250,7 +330,7 @@ class HttpJudgeProvider:
             ) from error
 
     def judge(self, request: JudgeRequest) -> JudgeScores:
-        if self._breaker.is_open():
+        if not self._breaker.allow(self._now()):
             raise PlatformError(
                 "judge_rate_limited",
                 "The judge lane circuit is open",
@@ -279,7 +359,7 @@ class HttpJudgeProvider:
                                 {
                                     "role": "user",
                                     "content": faithfulness_prompt(
-                                        request.question, request.answer, ()
+                                        request.question, request.answer, request.context
                                     ),
                                 },
                                 {
@@ -292,16 +372,26 @@ class HttpJudgeProvider:
                             "max_tokens": 256,
                         },
                     ),
+                    result_for=self._usage_result,
                 )
             except PlatformError as error:
                 if error.code == "evaluation_judge_deadline_exceeded":
+                    self._breaker.abort_probe()
                     raise
                 self._breaker.record_failure(self._now())
                 raise
             status_code = getattr(response, "status_code", 0)
             if status_code == 429:
                 # 429 consumes only the judge lane's bounded budget (A18).
-                self._breaker.record_failure(self._now())
+                probe_failed = self._breaker.record_failure(self._now())
+                if probe_failed:
+                    raise PlatformError(
+                        "judge_rate_limited",
+                        "The judge provider is rate limited",
+                        {"retryable": True},
+                        429,
+                        True,
+                    )
                 if attempt < JUDGE_SHORT_RETRY_ATTEMPTS:
                     remaining = (deadline - self._now()).total_seconds()
                     if remaining <= 0:
@@ -330,12 +420,21 @@ class HttpJudgeProvider:
                     503,
                     True,
                 )
+            try:
+                body = self._parse_json(response)
+                faithfulness = self._score_value(body, "faithfulness")
+                answer_relevancy = self._score_value(body, "answer_relevancy")
+                refusal = body.get("is_refusal")
+                if not isinstance(refusal, bool):
+                    raise self._invalid_response("is_refusal must be a boolean")
+            except PlatformError:
+                self._breaker.record_failure(self._now())
+                raise
             self._breaker.reset()
-            body = self._parse_json(response)
             return JudgeScores(
-                faithfulness=float(body.get("faithfulness", body.get("score", 0.0))),
-                answer_relevancy=float(body.get("answer_relevancy", 0.0)),
-                is_refusal=bool(body.get("is_refusal", False)),
+                faithfulness=faithfulness,
+                answer_relevancy=answer_relevancy,
+                is_refusal=refusal,
                 latency_ms=int((self._now() - started).total_seconds() * 1000),
             )
         raise PlatformError(
@@ -346,23 +445,57 @@ class HttpJudgeProvider:
             True,
         )
 
+    @staticmethod
+    def _invalid_response(message: str) -> PlatformError:
+        return PlatformError(
+            "evaluation_judge_unavailable",
+            message,
+            {"retryable": True},
+            503,
+            True,
+        )
+
+    @staticmethod
+    def _score_value(body: Mapping[str, Any], name: str) -> float:
+        value = body.get(name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= 1.0
+        ):
+            raise HttpJudgeProvider._invalid_response(
+                f"{name} must be a finite number between 0 and 1"
+            )
+        return float(value)
+
+    @staticmethod
     def _parse_json(response: Any) -> Mapping[str, Any]:
         try:
             payload = response.json()
-        except ValueError as error:
-            raise PlatformError(
-                "evaluation_judge_unavailable",
-                "The judge response is not valid JSON",
-                {"retryable": True},
-                503,
-                True,
+        except (TypeError, ValueError) as error:
+            raise HttpJudgeProvider._invalid_response(
+                "The judge response is not valid JSON"
             ) from error
-        content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-        try:
-            if isinstance(content, str) and content.strip():
-                return json.loads(content)
-        except ValueError:
-            pass
+        if not isinstance(payload, Mapping):
+            raise HttpJudgeProvider._invalid_response("The judge response must be a JSON object")
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            message = choices[0].get("message") if isinstance(choices[0], Mapping) else None
+            content = message.get("content") if isinstance(message, Mapping) else None
+            if not isinstance(content, str) or not content.strip():
+                raise HttpJudgeProvider._invalid_response("The judge response content is missing")
+            try:
+                decoded = json.loads(content)
+            except (TypeError, ValueError) as error:
+                raise HttpJudgeProvider._invalid_response(
+                    "The judge response is not valid JSON"
+                ) from error
+            if not isinstance(decoded, Mapping):
+                raise HttpJudgeProvider._invalid_response(
+                    "The judge response must be a JSON object"
+                )
+            return decoded
         return payload
 
 

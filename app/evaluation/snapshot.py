@@ -9,8 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.engine import Connection, Engine
 
 from app.chat.schema import (
+    chat_ab_pair_table,
     chat_ab_vote_table,
     chat_conversation_table,
+    chat_generation_table,
     chat_message_feedback_table,
     chat_message_table,
 )
@@ -101,27 +103,40 @@ class SqlAlchemyChatFactsSnapshot:
         return tuple(samples)
 
     def _weak_signals(self, connection: Connection, *, message_id: str) -> dict[str, Any]:
-        message = (
+        assistant = (
             connection.execute(
                 select(
+                    chat_message_table.c.id.label("assistant_message_id"),
                     chat_message_table.c.citations_json,
-                    chat_message_table.c.generation_id,
-                ).where(chat_message_table.c.id == message_id)
+                    chat_generation_table.c.id.label("generation_id"),
+                )
+                .join(
+                    chat_generation_table,
+                    chat_generation_table.c.message_id == chat_message_table.c.id,
+                )
+                .where(
+                    chat_generation_table.c.user_message_id == message_id,
+                    chat_generation_table.c.status == "completed",
+                    chat_message_table.c.role == "assistant",
+                )
+                .order_by(chat_generation_table.c.attempt_number.desc())
+                .limit(1)
             )
             .mappings()
             .one_or_none()
         )
         signals: dict[str, Any] = {
-            "weak_has_citation": bool(message and (message["citations_json"] or None)),
+            "weak_has_citation": bool(assistant and (assistant["citations_json"] or None)),
             "weak_feedback_up": 0,
             "weak_feedback_down": 0,
             "weak_ab_vote_count": 0,
         }
-        if message is not None:
+        if assistant is not None:
             feedback = (
                 connection.execute(
                     select(chat_message_feedback_table.c.vote).where(
-                        chat_message_feedback_table.c.message_id == message_id
+                        chat_message_feedback_table.c.message_id
+                        == assistant["assistant_message_id"]
                     )
                 )
                 .scalars()
@@ -129,12 +144,16 @@ class SqlAlchemyChatFactsSnapshot:
             )
             signals["weak_feedback_up"] = sum(1 for vote in feedback if str(vote) == "up")
             signals["weak_feedback_down"] = sum(1 for vote in feedback if str(vote) == "down")
-            generation_id = message["generation_id"]
-            if generation_id is not None:
+            pair_id = connection.execute(
+                select(chat_ab_pair_table.c.pair_id).where(
+                    chat_ab_pair_table.c.generation_id == assistant["generation_id"]
+                )
+            ).scalar_one_or_none()
+            if pair_id is not None:
                 signals["weak_ab_vote_count"] = len(
                     connection.execute(
                         select(chat_ab_vote_table.c.pair_id).where(
-                            chat_ab_vote_table.c.pair_id == generation_id
+                            chat_ab_vote_table.c.pair_id == pair_id
                         )
                     ).all()
                 )

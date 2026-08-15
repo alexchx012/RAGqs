@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -13,11 +14,13 @@ from app.evaluation.judge import (
     JUDGE_PROVIDER,
     JUDGE_SHORT_RETRY_ATTEMPTS,
     CircuitBreakerRegistry,
+    HttpJudgeProvider,
     JudgeConfiguration,
     JudgePreflight,
     JudgeRequest,
     UnavailableJudgeProvider,
     bounded_backoff_seconds,
+    faithfulness_prompt,
 )
 from app.evaluation.usage import EvaluationUsageRecorder
 from app.platform.errors import PlatformError
@@ -25,11 +28,49 @@ from app.platform.errors import PlatformError
 from .conftest import FakeJudgeProvider, RecordingUsageSubmission
 
 
+class _Response:
+    def __init__(self, *, status_code: int, payload: Any) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _Client:
+    def __init__(self, responses: list[_Response]) -> None:
+        self._responses = responses
+        self.requests: list[dict[str, Any]] = []
+
+    def close(self) -> None:
+        return None
+
+    def post(self, path: str, *, json: dict[str, Any]) -> _Response:
+        self.requests.append({"path": path, "json": json})
+        return self._responses.pop(0)
+
+
+def _http_judge(
+    *, submission: RecordingUsageSubmission, responses: list[_Response]
+) -> tuple[Any, _Client]:
+    provider = HttpJudgeProvider(
+        base_url="https://judge.invalid",
+        api_key="test-key",
+        usage_submission=submission,
+        now=lambda: datetime(2026, 8, 13, 12, 0, tzinfo=UTC),
+        sleep=lambda _: None,
+    )
+    provider.close()
+    client = _Client(responses)
+    provider._client = client
+    return provider, client
+
+
 def test_judge_constants_are_fixed() -> None:
     assert JUDGE_PROVIDER == "bailian"
     assert JUDGE_MODEL == "qwen3.7-plus"
     assert JUDGE_MODE == "non_thinking"
-    assert JUDGE_PROMPT_VERSION == "v1"
+    assert JUDGE_PROMPT_VERSION == "v2"
 
 
 def test_judge_configuration_is_frozen() -> None:
@@ -37,7 +78,18 @@ def test_judge_configuration_is_frozen() -> None:
     assert config.provider == "bailian"
     assert config.model == "qwen3.7-plus"
     assert config.mode == "non_thinking"
-    assert config.prompt_version == "v1"
+    assert config.prompt_version == "v2"
+
+
+def test_http_judge_exposes_configuration_for_comparator() -> None:
+    provider, _ = _http_judge(submission=RecordingUsageSubmission(), responses=[])
+
+    assert provider.provider == JUDGE_PROVIDER
+    assert provider.model == JUDGE_MODEL
+    assert provider.mode == JUDGE_MODE
+    assert provider.capability == "qwen3.7-plus"
+    assert provider.release == "stable"
+    assert provider.prompt_version == JUDGE_PROMPT_VERSION
 
 
 def test_unavailable_judge_fails_closed_on_preflight() -> None:
@@ -77,12 +129,142 @@ def test_circuit_breaker_is_lane_private_and_bounded() -> None:
     assert CircuitBreakerRegistry().failures == 0
 
 
+def test_circuit_breaker_allows_one_probe_after_the_cooldown() -> None:
+    breaker = CircuitBreakerRegistry(threshold=1, cooldown_seconds=30)
+    opened_at = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+    breaker.record_failure(opened_at)
+
+    assert breaker.allow(opened_at + timedelta(seconds=29)) is False
+    assert breaker.allow(opened_at + timedelta(seconds=30)) is True
+    assert breaker.allow(opened_at + timedelta(seconds=30)) is False
+    breaker.reset()
+    assert breaker.allow(opened_at + timedelta(seconds=30)) is True
+
+
 def test_bounded_backoff_is_lane_local() -> None:
     assert bounded_backoff_seconds(1) == 0.5
     assert bounded_backoff_seconds(2) == 1.0
     # Bounded: never exceeds the lane-local max delay.
     assert bounded_backoff_seconds(10) <= 4.0
     assert JUDGE_SHORT_RETRY_ATTEMPTS >= 1
+
+
+def test_faithfulness_prompt_includes_context_and_requests_all_judge_fields() -> None:
+    prompt = faithfulness_prompt(
+        "What supports this?",
+        "The answer is supported.",
+        ({"document_id": "doc_1", "snippet": "supporting source"},),
+    )
+
+    assert "supporting source" in prompt
+    assert "faithfulness" in prompt
+    assert "answer_relevancy" in prompt
+    assert "is_refusal" in prompt
+
+
+def test_http_judge_rejects_non_boolean_refusal_response() -> None:
+    submission = RecordingUsageSubmission()
+    provider, _ = _http_judge(
+        submission=submission,
+        responses=[
+            _Response(
+                status_code=200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"faithfulness": 0.9, "answer_relevancy": 0.8, '
+                                    '"is_refusal": "false"}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(PlatformError) as raised:
+        provider.judge(JudgeRequest(question="q", answer="a"))
+
+    assert raised.value.code == "evaluation_judge_unavailable"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"answer_relevancy": 0.8, "is_refusal": false}',
+        '{"faithfulness": 1.1, "answer_relevancy": 0.8, "is_refusal": false}',
+        '{"faithfulness": NaN, "answer_relevancy": 0.8, "is_refusal": false}',
+    ],
+)
+def test_http_judge_rejects_missing_nonfinite_or_out_of_range_scores(content: str) -> None:
+    submission = RecordingUsageSubmission()
+    provider, _ = _http_judge(
+        submission=submission,
+        responses=[
+            _Response(
+                status_code=200,
+                payload={"choices": [{"message": {"content": content}}]},
+            )
+        ],
+    )
+
+    with pytest.raises(PlatformError) as raised:
+        provider.judge(JudgeRequest(question="q", answer="a"))
+
+    assert raised.value.code == "evaluation_judge_unavailable"
+
+
+def test_http_judge_sends_the_request_context_to_the_faithfulness_prompt() -> None:
+    submission = RecordingUsageSubmission()
+    provider, client = _http_judge(
+        submission=submission,
+        responses=[
+            _Response(
+                status_code=200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"faithfulness": 0.9, "answer_relevancy": 0.8, '
+                                    '"is_refusal": false}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+
+    provider.judge(
+        JudgeRequest(
+            question="q",
+            answer="a",
+            context=({"document_id": "doc_1", "snippet": "current context"},),
+        )
+    )
+
+    prompt = client.requests[0]["json"]["messages"][0]["content"]
+    assert "current context" in prompt
+
+
+def test_http_judge_records_sent_rate_limits_as_failed_usage() -> None:
+    submission = RecordingUsageSubmission()
+    provider, _ = _http_judge(
+        submission=submission,
+        responses=[_Response(status_code=429, payload={}) for _ in range(3)],
+    )
+
+    with pytest.raises(PlatformError) as raised:
+        provider.judge(JudgeRequest(question="q", answer="a"))
+
+    assert raised.value.code == "judge_rate_limited"
+    assert len(submission.completed) == JUDGE_SHORT_RETRY_ATTEMPTS
+    assert {entry["result"] for entry in submission.completed} == {"failed"}
 
 
 def test_usage_recorder_records_every_real_send_without_quota() -> None:

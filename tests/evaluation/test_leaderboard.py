@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.evaluation.service import EvaluationService
+
 from .conftest import NOW, build_test_env, provision_and_login
 
 
@@ -111,3 +113,14 @@ def test_leaderboard_does_not_leak_raw_content() -> None:
         "token",
     ):
         assert forbidden not in text
+
+
+def test_result_metric_aggregation_uses_nearest_rank_p95_latency() -> None:
+    metrics = EvaluationService._aggregate_result_metrics(
+        [
+            {"metrics_json": {"p95_latency_ms": latency}}
+            for latency in (10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+        ]
+    )
+
+    assert metrics["p95_latency_ms"] == 100

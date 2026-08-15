@@ -19,6 +19,7 @@ from .metrics import (
     ndcg_at_k,
 )
 from .models import JudgeScores, ShadowRunRecord
+from .ports import UnavailableAnswerReplayPort
 from .repository import SqlAlchemyEvaluationRepository
 
 
@@ -45,7 +46,9 @@ def _hit_source_ids(hits: tuple[Mapping[str, Any], ...]) -> list[str]:
     return result
 
 
-_RETRYABLE_JUDGE_CODES = frozenset({"judge_rate_limited", "evaluation_judge_unavailable"})
+_RETRYABLE_JUDGE_CODES = frozenset(
+    {"judge_rate_limited", "evaluation_generation_unavailable", "evaluation_judge_unavailable"}
+)
 
 
 class _JudgeFailure(Exception):
@@ -84,6 +87,7 @@ class ShadowEvaluationWorker:
         judge: JudgeProviderPort,
         retrieval: Any,
         *,
+        answer_replay: Any | None = None,
         owner: str = "shadow-evaluation-worker",
         now: Any = None,
         suggestion_callback: Callable[[str], None] | None = None,
@@ -92,6 +96,7 @@ class ShadowEvaluationWorker:
         self._repository = repository
         self._judge = judge
         self._retrieval = retrieval
+        self._answer_replay = answer_replay or UnavailableAnswerReplayPort()
         self._owner = owner
         self._now = now or (lambda: datetime.now(UTC))
         self._suggestion_callback = suggestion_callback
@@ -181,7 +186,9 @@ class ShadowEvaluationWorker:
                     expected_sources = (
                         tuple(golden_item["expected_sources_json"]) if golden_item else ()
                     )
-                    expects_refusal = bool(golden_item["expects_refusal"]) if golden_item else False
+                    expects_refusal = (
+                        bool(golden_item["expects_refusal"]) if golden_item is not None else None
+                    )
                     for candidate in candidate_configs:
                         if (self._now_utc() - last_heartbeat).total_seconds() >= heartbeat_seconds:
                             ok = self._repository.heartbeat(
@@ -209,9 +216,30 @@ class ShadowEvaluationWorker:
                             session_id=session_id,
                         )
                         hits = tuple(outcome.get("hits", ()))
+                        try:
+                            answer = self._answer_replay.replay(
+                                question=str(item["question_text"]),
+                                source_ref=str(item["source_ref"]),
+                                principal=self._principal_for(run),
+                                space_id=run.space_id,
+                                candidate_config_version=candidate,
+                                session_id=session_id,
+                            )
+                        except PlatformError as error:
+                            raise _JudgeFailure(error) from error
+                        if not isinstance(answer, str) or not answer.strip():
+                            raise _JudgeFailure(
+                                PlatformError(
+                                    "evaluation_generation_unavailable",
+                                    "Answer replay did not return a usable answer",
+                                    {"retryable": True},
+                                    503,
+                                    True,
+                                )
+                            )
                         judge_request = JudgeRequest(
                             question=str(item["question_text"]),
-                            answer="",
+                            answer=answer.strip(),
                             context=hits,
                             expected_sources=expected_sources,
                             expects_refusal=expects_refusal,
@@ -228,6 +256,7 @@ class ShadowEvaluationWorker:
                             scores,
                             hits=hits,
                             expected_sources=expected_sources,
+                            expects_refusal=expects_refusal,
                             judge_k=judge_k,
                         )
                         self._repository.insert_result(
@@ -290,6 +319,7 @@ class ShadowEvaluationWorker:
                 "judge_rate_limited",
                 "evaluation_judge_unavailable",
                 "evaluation_judge_deadline_exceeded",
+                "evaluation_generation_unavailable",
             }
             else "shadow_judge_failed"
         )
@@ -355,6 +385,7 @@ class ShadowEvaluationWorker:
         *,
         hits: tuple[Mapping[str, Any], ...],
         expected_sources: tuple[str, ...],
+        expects_refusal: bool | None,
         judge_k: int,
     ) -> dict[str, float]:
         candidate_ids = _hit_source_ids(hits)
@@ -376,10 +407,9 @@ class ShadowEvaluationWorker:
             hit_final = 0.0
             mrr_value = 0.0
             ndcg = 0.0
-        return {
+        metrics = {
             "faithfulness": scores.faithfulness or 0.0,
             "answer_relevancy": scores.answer_relevancy or 0.0,
-            "refusal_rate": 1.0 if scores.is_refusal else 0.0,
             "hit_at_k_candidate": hit_candidate,
             "hit_at_k_final": hit_final,
             "mrr": mrr_value,
@@ -387,6 +417,9 @@ class ShadowEvaluationWorker:
             "p95_latency_ms": float(scores.latency_ms or 0),
             "cost_per_query": 0.0,
         }
+        if expects_refusal is not None:
+            metrics["refusal_rate"] = 1.0 if scores.is_refusal == expects_refusal else 0.0
+        return metrics
 
     def _finish_succeeded(
         self,

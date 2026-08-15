@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
 from app.evaluation.policy import default_policy_snapshot
@@ -14,6 +15,7 @@ from app.platform.errors import PlatformError
 
 from .conftest import (
     NOW,
+    FakeAnswerReplayPort,
     FakeRetrievalReplayPort,
     build_test_env,
 )
@@ -151,6 +153,7 @@ def _worker(env, judge, retrieval=None):
         repo,
         judge,
         retrieval or FakeRetrievalReplayPort(),
+        answer_replay=FakeAnswerReplayPort(),
         now=lambda: NOW,
     )
 
@@ -189,7 +192,13 @@ def test_golden_set_publish_is_versioned_and_immutable() -> None:
     assert stored[0]["expected_sources_json"] == ["s1"]
     assert stored[0]["question_hash"] == hashlib.sha256(b"q1").hexdigest()
     # A revision creates a NEW version row; v1 facts stay untouched.
-    items_v2 = ({"question_text": "q1", "expected_sources": ["s1", "s9"]},)
+    items_v2 = (
+        {
+            "question_text": "q1",
+            "expected_sources": ["s1", "s9"],
+            "expects_refusal": False,
+        },
+    )
     service.publish_golden_set(space_id="space_1", version="gv2", items=items_v2)
     with env["engine"].begin() as connection:
         assert repo.latest_golden_set_version(connection, space_id="space_1") == "gv2"
@@ -197,6 +206,20 @@ def test_golden_set_publish_is_versioned_and_immutable() -> None:
         v2 = repo.list_golden_items(connection, space_id="space_1", golden_version="gv2")
     assert v1[0]["expected_sources_json"] == ["s1"]
     assert v2[0]["expected_sources_json"] == ["s1", "s9"]
+
+
+def test_golden_set_rejects_missing_refusal_label() -> None:
+    env = build_test_env()
+    service = env["runtime"].resolve("evaluation_service")
+
+    with pytest.raises(PlatformError) as raised:
+        service.publish_golden_set(
+            space_id="space_1",
+            version="gv1",
+            items=({"question_text": "q1", "expected_sources": ["s1"]},),
+        )
+
+    assert raised.value.code == "validation_error"
 
 
 # ------------------------------------------------------- real metrics (A14)
@@ -235,8 +258,34 @@ def test_worker_computes_real_retrieval_metrics_from_golden() -> None:
     assert metrics["hit_at_k_final"] == 1.0
     assert metrics["mrr"] == 1.0
     assert metrics["ndcg_at_k"] > 0
+    assert metrics["refusal_rate"] == 1.0
     # The golden sample's expected sources reached the judge request (A14).
     assert judge.requests[0].expected_sources == ("s1", "s2")
+
+
+def test_worker_does_not_fabricate_refusal_quality_without_a_golden_label() -> None:
+    from app.evaluation.models import JudgeScores
+
+    env = build_test_env()
+    _insert_run(env, sample_items=(_sample(),))
+    worker = _worker(
+        env,
+        AttributionJudge(
+            scores=JudgeScores(
+                faithfulness=0.9,
+                answer_relevancy=0.8,
+                is_refusal=True,
+                latency_ms=50,
+            )
+        ),
+    )
+
+    worker.run_once()
+
+    repository = env["runtime"].resolve("evaluation_repository")
+    with env["engine"].connect() as connection:
+        results = repository.list_results(connection, run_id="run_1")
+    assert "refusal_rate" not in results[0]["metrics_json"]
 
 
 # ------------------------------------------------ retry classification (A12/A18)
@@ -272,6 +321,7 @@ def test_retryable_judge_failure_at_max_attempts_fails() -> None:
         repo,
         judge,
         FakeRetrievalReplayPort(),
+        answer_replay=FakeAnswerReplayPort(),
         now=clock,
     )
     for _ in range(3):

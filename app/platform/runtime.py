@@ -36,6 +36,7 @@ from app.evaluation import (
     SqlAlchemyCalibrationOutboxAdapter,
     SqlAlchemyChatFactsPort,
     SqlAlchemyEvaluationRepository,
+    UnavailableAnswerReplayPort,
     UnavailableJudgeProvider,
     default_policy_snapshot,
 )
@@ -734,6 +735,8 @@ def build_runtime(
         indexing_service
     )
     configured.setdefault("retrieval_replay_port", retrieval_replay_port)
+    answer_replay_port = configured.get("answer_replay_port") or UnavailableAnswerReplayPort()
+    configured.setdefault("answer_replay_port", answer_replay_port)
     evaluation_space_visibility = configured.get("evaluation_space_visibility") or (
         IdentitySpaceVisibilityPort(identity_access)
     )
@@ -756,6 +759,7 @@ def build_runtime(
         evaluation_repository,
         judge_provider,
         retrieval_replay_port,
+        answer_replay=answer_replay_port,
         now=clock.now_utc,
         suggestion_callback=evaluation_service.compute_suggestion,
     )

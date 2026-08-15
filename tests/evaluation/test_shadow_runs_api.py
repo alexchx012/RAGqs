@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from app.evaluation.schema import shadow_evaluation_result_table
+from app.evaluation.schema import evaluation_policy_table, shadow_evaluation_result_table
 
 from .conftest import build_test_env, provision_and_login
 
@@ -49,6 +49,45 @@ def test_create_enqueues_and_does_not_run_handler() -> None:
     assert env["judge"].calls == []
     with env["engine"].connect() as connection:
         assert connection.execute(select(shadow_evaluation_result_table)).all() == []
+
+
+def test_shadow_run_collects_up_to_the_policy_sample_cap() -> None:
+    env = build_test_env()
+    token, _, user_id = _ops(env)
+    repository = env["runtime"].resolve("evaluation_repository")
+    with env["engine"].begin() as connection:
+        policy = repository.latest_policy(connection)
+        assert policy is not None
+        connection.execute(
+            update(evaluation_policy_table)
+            .where(evaluation_policy_table.c.policy_version == policy.policy_version)
+            .values(shadow_max_examples=55)
+        )
+
+    response = _post_run(env, token, space_id=f"personal:{user_id}", key="sample-cap")
+
+    assert response.status_code == 202
+    assert env["chat_facts"].calls[-1] == (f"personal:{user_id}", 55)
+
+
+def test_shadow_run_keeps_the_minimum_gate_when_the_policy_cap_is_lower() -> None:
+    env = build_test_env()
+    token, _, user_id = _ops(env)
+    repository = env["runtime"].resolve("evaluation_repository")
+    with env["engine"].begin() as connection:
+        policy = repository.latest_policy(connection)
+        assert policy is not None
+        connection.execute(
+            update(evaluation_policy_table)
+            .where(evaluation_policy_table.c.policy_version == policy.policy_version)
+            .values(shadow_max_examples=20)
+        )
+
+    response = _post_run(env, token, space_id=f"personal:{user_id}", key="lower-cap")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "evaluation_not_eligible"
+    assert env["chat_facts"].calls[-1] == (f"personal:{user_id}", 20)
 
 
 def test_idempotent_replay_and_conflict() -> None:

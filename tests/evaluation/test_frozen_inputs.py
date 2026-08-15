@@ -7,11 +7,18 @@ from sqlalchemy import select
 from app.evaluation.policy import default_policy_snapshot
 from app.evaluation.schema import (
     evaluation_sample_snapshot_item_table,
+    shadow_evaluation_result_table,
     shadow_evaluation_run_table,
 )
 from app.evaluation.worker import ShadowEvaluationWorker
 
-from .conftest import NOW, FakeJudgeProvider, FakeRetrievalReplayPort, build_test_env
+from .conftest import (
+    NOW,
+    FakeAnswerReplayPort,
+    FakeJudgeProvider,
+    FakeRetrievalReplayPort,
+    build_test_env,
+)
 
 
 def _insert_run(env, *, sample_items=(), candidate_configs=("default",)) -> str:
@@ -93,6 +100,7 @@ def test_sample_snapshot_is_immutable_and_read_only() -> None:
 def test_worker_uses_shadow_session_and_no_online_messages() -> None:
     env = build_test_env()
     retrieval = FakeRetrievalReplayPort()
+    answer_replay = FakeAnswerReplayPort()
     judge = FakeJudgeProvider()
     env["retrieval"] = retrieval
     env["judge"] = judge
@@ -114,6 +122,7 @@ def test_worker_uses_shadow_session_and_no_online_messages() -> None:
         repo,
         judge,
         retrieval,
+        answer_replay=answer_replay,
         now=lambda: NOW,
     )
     worker.run_once()
@@ -124,3 +133,87 @@ def test_worker_uses_shadow_session_and_no_online_messages() -> None:
 
     with env["engine"].connect() as connection:
         assert connection.execute(select(chat_message_table)).all() == []
+
+
+def test_worker_replays_a_non_empty_answer_without_writing_chat_facts() -> None:
+    env = build_test_env()
+    retrieval = FakeRetrievalReplayPort()
+    answer_replay = FakeAnswerReplayPort(answer="completed answer")
+    judge = FakeJudgeProvider()
+    _insert_run(
+        env,
+        sample_items=(
+            {
+                "item_id": "item_1",
+                "position": 1,
+                "question_text": "question 1",
+                "question_hash": "hash_1",
+                "evidence_hash": "ev_1",
+                "weak_signals": {},
+                "source_ref": "user_message_1",
+            },
+        ),
+        candidate_configs=("default",),
+    )
+    repository = env["runtime"].resolve("evaluation_repository")
+    worker = ShadowEvaluationWorker(
+        env["engine"],
+        repository,
+        judge,
+        retrieval,
+        answer_replay=answer_replay,
+        now=lambda: NOW,
+    )
+
+    worker.run_once()
+
+    assert judge.calls[0].answer == "completed answer"
+    assert answer_replay.calls[0]["source_ref"] == "user_message_1"
+    assert answer_replay.calls[0]["session_id"] == "shadow:run_1:item_1:default"
+    from app.chat.schema import chat_message_table
+
+    with env["engine"].connect() as connection:
+        assert connection.execute(select(chat_message_table)).all() == []
+
+
+def test_worker_retries_when_answer_replay_returns_no_usable_answer() -> None:
+    env = build_test_env()
+    answer_replay = FakeAnswerReplayPort(answer="   ")
+    judge = FakeJudgeProvider()
+    _insert_run(
+        env,
+        sample_items=(
+            {
+                "item_id": "item_1",
+                "position": 1,
+                "question_text": "question 1",
+                "question_hash": "hash_1",
+                "evidence_hash": "ev_1",
+                "weak_signals": {},
+                "source_ref": "user_message_1",
+            },
+        ),
+        candidate_configs=("default",),
+    )
+    repository = env["runtime"].resolve("evaluation_repository")
+    worker = ShadowEvaluationWorker(
+        env["engine"],
+        repository,
+        judge,
+        FakeRetrievalReplayPort(),
+        answer_replay=answer_replay,
+        now=lambda: NOW,
+    )
+
+    worker.run_once()
+
+    with env["engine"].connect() as connection:
+        state = connection.execute(
+            select(shadow_evaluation_run_table.c.state).where(
+                shadow_evaluation_run_table.c.run_id == "run_1"
+            )
+        ).scalar_one()
+        results = connection.execute(select(shadow_evaluation_result_table)).all()
+    assert state == "retry_wait"
+    assert judge.calls == []
+    assert results == []

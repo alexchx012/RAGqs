@@ -33,6 +33,7 @@ from .policy import (
     weighted_score,
 )
 from .ports import (
+    AnswerReplayPort,
     CandidateConfigSourcePort,
     ChatFactsPort,
     IdentitySpaceVisibilityPort,
@@ -42,6 +43,7 @@ from .ports import (
     RetrievalReplayPort,
     SpaceVisibilityPort,
     SqlAlchemyChatFactsPort,
+    UnavailableAnswerReplayPort,
     UnavailableRetrievalReplayPort,
 )
 from .repository import SqlAlchemyEvaluationRepository
@@ -61,6 +63,7 @@ from .worker import CalibrationCloseWorker, ShadowEvaluationWorker
 
 __all__ = [
     "CalibrationCloseWorker",
+    "AnswerReplayPort",
     "CandidateConfigSourcePort",
     "ChatFactsPort",
     "COST_CENTER_KEY",
@@ -98,6 +101,7 @@ __all__ = [
     "SqlAlchemyEvaluationRepository",
     "SuggestionRecord",
     "UnavailableJudgeProvider",
+    "UnavailableAnswerReplayPort",
     "UnavailableRetrievalReplayPort",
     "WindowSnapshot",
     "build_comparator_key",

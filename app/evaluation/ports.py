@@ -81,6 +81,21 @@ class RetrievalReplayPort(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+class AnswerReplayPort(Protocol):
+    """Reads an already completed answer for one shadow-evaluation sample."""
+
+    def replay(
+        self,
+        *,
+        question: str,
+        source_ref: str,
+        principal: Any,
+        space_id: str,
+        candidate_config_version: str,
+        session_id: str,
+    ) -> str: ...
+
+
 class IndexingReplayAdapter:
     """Replays one sample through the indexing retrieval port with a fresh lease.
 
@@ -229,7 +244,29 @@ class UnavailableRetrievalReplayPort:
         )
 
 
+class UnavailableAnswerReplayPort:
+    def replay(
+        self,
+        *,
+        question: str,
+        source_ref: str,
+        principal: Any,
+        space_id: str,
+        candidate_config_version: str,
+        session_id: str,
+    ) -> str:
+        del question, source_ref, principal, space_id, candidate_config_version, session_id
+        raise PlatformError(
+            "evaluation_generation_unavailable",
+            "Answer replay is not configured",
+            {"retryable": True},
+            503,
+            True,
+        )
+
+
 __all__ = [
+    "AnswerReplayPort",
     "CalibrationOutboxPort",
     "CandidateConfigSourcePort",
     "ChatFactsPort",
@@ -243,6 +280,7 @@ __all__ = [
     "RetrievalReplayPort",
     "SpaceVisibilityPort",
     "SqlAlchemyChatFactsPort",
+    "UnavailableAnswerReplayPort",
     "UnavailableRetrievalReplayPort",
     "UsageSubmissionPort",
 ]

@@ -243,7 +243,7 @@ class SqlAlchemyEvaluationRepository:
                     question_text=str(item["question_text"]),
                     question_hash=str(item["question_hash"]),
                     expected_sources_json=list(item.get("expected_sources", ())),
-                    expects_refusal=bool(item.get("expects_refusal", False)),
+                    expects_refusal=item["expects_refusal"],
                     evidence_hash=str(item.get("evidence_hash", item["question_hash"])),
                     created_at_utc=now,
                 )
@@ -1074,6 +1074,7 @@ class SqlAlchemyEvaluationRepository:
             .values(
                 pairs_collected=calibration_window_table.c.pairs_collected + 1,
                 version=calibration_window_table.c.version + 1,
+                updated_at_utc=datetime.now(UTC),
             )
         )
         # 0 rows affected means the window no longer exists: silently ignore to

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import secrets
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -165,7 +166,7 @@ class EvaluationService:
             samples = self._chat_facts.collect_samples(
                 connection,
                 space_id=space_id,
-                limit=policy.min_real_queries,
+                limit=policy.shadow_max_examples,
             )
             if len(samples) < policy.min_real_queries:
                 raise PlatformError(
@@ -426,7 +427,11 @@ class EvaluationService:
                 for result in results
                 if result["metrics_json"] and result["metrics_json"].get(key) is not None
             ]
-            aggregates[key] = (sum(numbers) / len(numbers)) if numbers else 0.0
+            if key == "p95_latency_ms" and numbers:
+                rank = math.ceil(len(numbers) * 0.95)
+                aggregates[key] = sorted(numbers)[rank - 1]
+            else:
+                aggregates[key] = (sum(numbers) / len(numbers)) if numbers else 0.0
         return aggregates
 
     # -------------------------------------------------------------- suggestion
@@ -470,17 +475,22 @@ class EvaluationService:
                 return
             if abs(first[1] - second[1]) > policy.calibration_open_score_gap:
                 return
-            if (
-                self._repository.latest_actionable_suggestion(
+            now = self._now_utc(connection)
+            actionable = self._repository.latest_actionable_suggestion(
+                connection,
+                space_id=run.space_id,
+                comparator_key=run.comparator_key or "",
+            )
+            if actionable is not None:
+                if actionable.rank_summary.get("source_run_id") == run.run_id:
+                    # Duplicate computation must not publish (A27).
+                    return
+                self._repository.supersede_actionable_suggestions(
                     connection,
                     space_id=run.space_id,
                     comparator_key=run.comparator_key or "",
+                    now=now,
                 )
-                is not None
-            ):
-                # Duplicate computation must not publish (A27).
-                return
-            now = self._now_utc(connection)
             suggestion_id = _new_id("suggestion")
             self._repository.create_suggestion(
                 connection,
@@ -489,10 +499,11 @@ class EvaluationService:
                 policy_version=run.policy_version,
                 comparator_key=run.comparator_key,
                 rank_summary={
+                    "source_run_id": run.run_id,
                     "rankings": [
                         {"name": name, "score": score, "eligible": eligible}
                         for name, score, eligible in scored
-                    ]
+                    ],
                 },
                 now=now,
             )
@@ -528,8 +539,8 @@ class EvaluationService:
         Deployment-side entry point (no HTTP API): new/revisioned sets always
         create a new version row and never backfill or rewrite existing
         results. Each item carries ``question_text``, ``expected_sources``,
-        optional ``expects_refusal`` and optional ``evidence_hash``; the
-        question hash uses the same canonical algorithm as the chat-facts
+        an explicit boolean ``expects_refusal`` and optional ``evidence_hash``;
+        the question hash uses the same canonical algorithm as the chat-facts
         snapshot so worker golden matching is exact.
         """
         if not version.strip():
@@ -541,13 +552,20 @@ class EvaluationService:
                 raise PlatformError(
                     "validation_error", "golden item question_text is required", {}, 422
                 )
+            if not isinstance(item.get("expects_refusal"), bool):
+                raise PlatformError(
+                    "validation_error",
+                    "golden item expects_refusal must be an explicit boolean",
+                    {},
+                    422,
+                )
             expected_sources = list(item.get("expected_sources", ()))
             normalized.append(
                 {
                     "question_text": question,
                     "question_hash": hashlib.sha256(question.encode("utf-8")).hexdigest(),
                     "expected_sources": expected_sources,
-                    "expects_refusal": bool(item.get("expects_refusal", False)),
+                    "expects_refusal": item["expects_refusal"],
                     "evidence_hash": str(item.get("evidence_hash", ""))
                     or hashlib.sha256(question.encode("utf-8")).hexdigest(),
                 }

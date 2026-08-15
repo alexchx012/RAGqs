@@ -156,6 +156,16 @@ class FakeRetrievalReplayPort:
         }
 
 
+class FakeAnswerReplayPort:
+    def __init__(self, *, answer: str = "replayed answer") -> None:
+        self.answer = answer
+        self.calls: list[dict] = []
+
+    def replay(self, **kwargs: Any) -> str:
+        self.calls.append(kwargs)
+        return self.answer
+
+
 class RecordingCalibrationOutboxPort:
     def __init__(self) -> None:
         self.events: list[dict] = []
@@ -201,6 +211,7 @@ def build_test_env(
     candidate_configs: FakeCandidateConfigSource | None = None,
     index_generation: FakeIndexGenerationSource | None = None,
     retrieval: FakeRetrievalReplayPort | None = None,
+    answer_replay: FakeAnswerReplayPort | None = None,
     outbox: RecordingCalibrationOutboxPort | None = None,
 ):
     engine = make_engine()
@@ -220,6 +231,7 @@ def build_test_env(
     candidate_configs = candidate_configs or FakeCandidateConfigSource()
     index_generation = index_generation or FakeIndexGenerationSource()
     retrieval = retrieval or FakeRetrievalReplayPort()
+    answer_replay = answer_replay or FakeAnswerReplayPort()
     outbox = outbox or RecordingCalibrationOutboxPort()
     runtime = build_runtime(
         settings,
@@ -234,6 +246,7 @@ def build_test_env(
             "candidate_config_source": candidate_configs,
             "index_generation_source": index_generation,
             "retrieval_replay_port": retrieval,
+            "answer_replay_port": answer_replay,
             "calibration_outbox_port": outbox,
             "evaluation_usage_submission": RecordingUsageSubmission(),
         },
@@ -250,6 +263,7 @@ def build_test_env(
         "candidate_configs": candidate_configs,
         "index_generation": index_generation,
         "retrieval": retrieval,
+        "answer_replay": answer_replay,
         "outbox": outbox,
     }
 

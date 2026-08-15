@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy import select, update
@@ -95,6 +95,7 @@ class EvaluationCalibrationWindowPort:
             .values(
                 pairs_collected=calibration_window_table.c.pairs_collected + 1,
                 version=calibration_window_table.c.version + 1,
+                updated_at_utc=datetime.now(UTC),
             )
         )
 

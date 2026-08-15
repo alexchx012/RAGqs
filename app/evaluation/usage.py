@@ -41,6 +41,7 @@ class EvaluationUsageRecorder:
         resource_id: str | None,
         request_fingerprint: str,
         send: Callable[[], Any],
+        result_for: Callable[[Any], str] | None = None,
     ) -> Any:
         now = self.started_at()
         if now >= self.deadline_utc:
@@ -108,11 +109,14 @@ class EvaluationUsageRecorder:
                 503,
                 True,
             ) from error
+        result_status = result_for(result) if result_for is not None else "succeeded"
+        if result_status not in {"succeeded", "failed"}:
+            raise ValueError("provider usage result must be succeeded or failed")
         self.submission.complete_provider_call(
             provider_call_id=call_id,
             measurement=measurement,
             ownership=ownership,
-            result="succeeded",
+            result=result_status,
         )
         return result
 

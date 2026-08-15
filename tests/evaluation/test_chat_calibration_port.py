@@ -83,6 +83,27 @@ def test_increment_pairs_collected_same_transaction_and_once() -> None:
     assert value == 2
 
 
+def test_increment_pairs_collected_updates_the_window_timestamp() -> None:
+    env = build_test_env()
+    _seed_window(env)
+    port = EvaluationCalibrationWindowPort(env["engine"])
+    with env["engine"].connect() as connection:
+        before = connection.execute(
+            select(calibration_window_table.c.updated_at_utc).where(
+                calibration_window_table.c.window_id == "window_1"
+            )
+        ).scalar_one()
+    with env["engine"].begin() as connection:
+        port.increment_pairs_collected(connection, "window_1")
+    with env["engine"].connect() as connection:
+        after = connection.execute(
+            select(calibration_window_table.c.updated_at_utc).where(
+                calibration_window_table.c.window_id == "window_1"
+            )
+        ).scalar_one()
+    assert after != before
+
+
 def test_increment_unknown_window_is_silent() -> None:
     env = build_test_env()
     _seed_window(env)
