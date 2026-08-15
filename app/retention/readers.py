@@ -415,7 +415,7 @@ class OpsJobsReadModel:
                 "stale": job_id in stale_ids,
                 "allowed_actions": [] if is_admin else list(row["allowed_actions"]),
                 "enqueued_at": row["created_at"],
-                "wait_seconds": self._wait_seconds(row, state, now),
+                "wait_seconds": self._wait_seconds(row, now),
             }
             items.append(item)
         if view == "active":
@@ -432,12 +432,8 @@ class OpsJobsReadModel:
         return {"items": items, "stale_count": stale_count}
 
     @staticmethod
-    def _wait_seconds(row: Mapping[str, Any], state: str, now: datetime) -> int:
+    def _wait_seconds(row: Mapping[str, Any], now: datetime) -> int:
         created = row.get("created_at")
-        if state in {"pending", "running"}:
-            return max(0, int((now - created).total_seconds())) if created else 0
-        if state == "retry_wait":
-            next_attempt = row.get("next_attempt_at")
-            if next_attempt is not None and next_attempt <= now:
-                return max(0, int((now - next_attempt).total_seconds()))
-        return 0
+        if isinstance(created, str):
+            created = datetime.fromisoformat(created)
+        return max(0, int((now - created).total_seconds())) if created else 0

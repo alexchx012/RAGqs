@@ -7,11 +7,11 @@ fabricate values from absent facts.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import BigInteger, String, and_, case, cast, func, or_, select, true
 from sqlalchemy.engine import Connection
 
 from app.chat.schema import chat_message_feedback_table, chat_message_table
@@ -39,6 +39,7 @@ from app.usage.schema import quota_request_table, usage_event_table
 _WINDOW_DAYS = {"today": 0, "7d": 7, "30d": 30}
 _ACTIVE_JOB_STATES = ("pending", "running", "retry_wait")
 _REPLAYABLE_JOB_STATES = ("failed", "cancelled", "dead_letter")
+_OCR_QUALITY_BUCKETS = ("high_confidence", "medium_confidence", "low_confidence")
 
 
 def window_bounds(window: str, now: datetime) -> tuple[datetime, datetime]:
@@ -134,53 +135,147 @@ def stale_running_job_ids(connection: Connection, *, now: datetime) -> set[str]:
     return {str(job_id) for job_id in ids}
 
 
+def _quality_window_conditions(start: datetime, end: datetime) -> tuple[Any, ...]:
+    return (
+        ingestion_jobs_table.c.state == "succeeded",
+        ingestion_jobs_table.c.updated_at_utc >= start,
+        ingestion_jobs_table.c.updated_at_utc <= end,
+    )
+
+
+def _sqlite_quality_distribution(
+    connection: Connection,
+    *,
+    summary_key: str,
+    allowed_labels: tuple[str, ...] | None,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    path = f"$.{summary_key}"
+    entries = func.json_each(
+        ingestion_jobs_table.c.processing_summary_json,
+        path,
+    ).table_valued("key", "value", "type")
+    total = func.sum(cast(entries.c.value, BigInteger))
+    conditions: list[Any] = [
+        *_quality_window_conditions(start, end),
+        func.json_type(ingestion_jobs_table.c.processing_summary_json, path) == "object",
+        entries.c.type.in_(("integer", "true", "false")),
+    ]
+    if allowed_labels is not None:
+        conditions.append(entries.c.key.in_(allowed_labels))
+    rows = connection.execute(
+        select(entries.c.key.label("label"), total.label("count"))
+        .select_from(ingestion_jobs_table.join(entries, true()))
+        .where(*conditions)
+        .group_by(entries.c.key)
+        .having(total > 0)
+        .order_by(entries.c.key)
+    ).all()
+    return [{"label": str(label), "count": int(count)} for label, count in rows]
+
+
+def _postgres_quality_distribution(
+    connection: Connection,
+    *,
+    summary_key: str,
+    allowed_labels: tuple[str, ...] | None,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    summary = ingestion_jobs_table.c.processing_summary_json[summary_key]
+    entries = func.json_each(summary).table_valued("key", "value")
+    value_kind = func.json_typeof(entries.c.value)
+    value_text = cast(entries.c.value, String)
+    is_integer = and_(
+        value_kind == "number",
+        value_text.op("~")(r"^-?[0-9]+$"),
+    )
+    is_boolean = value_kind == "boolean"
+    numeric_value = case(
+        (value_text == "true", 1),
+        (value_text == "false", 0),
+        (is_integer, cast(value_text, BigInteger)),
+        else_=None,
+    )
+    total = func.sum(numeric_value)
+    conditions: list[Any] = [
+        *_quality_window_conditions(start, end),
+        func.json_typeof(summary) == "object",
+        or_(is_boolean, is_integer),
+    ]
+    if allowed_labels is not None:
+        conditions.append(entries.c.key.in_(allowed_labels))
+    rows = connection.execute(
+        select(entries.c.key.label("label"), total.label("count"))
+        .select_from(ingestion_jobs_table.join(entries, true()))
+        .where(*conditions)
+        .group_by(entries.c.key)
+        .having(total > 0)
+        .order_by(entries.c.key)
+    ).all()
+    return [{"label": str(label), "count": int(count)} for label, count in rows]
+
+
+def _quality_distribution(
+    connection: Connection,
+    *,
+    summary_key: str,
+    allowed_labels: tuple[str, ...] | None,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    if connection.dialect.name == "sqlite":
+        return _sqlite_quality_distribution(
+            connection,
+            summary_key=summary_key,
+            allowed_labels=allowed_labels,
+            start=start,
+            end=end,
+        )
+    if connection.dialect.name == "postgresql":
+        return _postgres_quality_distribution(
+            connection,
+            summary_key=summary_key,
+            allowed_labels=allowed_labels,
+            start=start,
+            end=end,
+        )
+    raise ValueError("ingestion quality aggregation requires SQLite or PostgreSQL")
+
+
 def ingestion_quality_facts(
     connection: Connection, *, start: datetime, end: datetime
 ) -> Mapping[str, Any]:
-    rows = connection.execute(
+    ocr_rows = _quality_distribution(
+        connection,
+        summary_key="ocr",
+        allowed_labels=_OCR_QUALITY_BUCKETS,
+        start=start,
+        end=end,
+    )
+    tree_rows = _quality_distribution(
+        connection,
+        summary_key="tree",
+        allowed_labels=None,
+        start=start,
+        end=end,
+    )
+    low_confidence, total = connection.execute(
         select(
-            ingestion_jobs_table.c.processing_summary_json,
-            ingestion_jobs_table.c.ocr_low_confidence,
-        ).where(
-            ingestion_jobs_table.c.state == "succeeded",
-            ingestion_jobs_table.c.updated_at_utc >= start,
-            ingestion_jobs_table.c.updated_at_utc <= end,
-        )
-    ).all()
-    ocr_buckets: dict[str, int] = {}
-    tree_routes: dict[str, int] = {}
-    low_confidence = 0
-    normal = 0
-    for summary, flagged in rows:
-        summary = summary or {}
-        ocr = summary.get("ocr") if isinstance(summary.get("ocr"), Mapping) else None
-        if isinstance(ocr, Mapping):
-            for key in ("high_confidence", "medium_confidence", "low_confidence"):
-                value = ocr.get(key)
-                if isinstance(value, int):
-                    ocr_buckets[key] = ocr_buckets.get(key, 0) + int(value)
-        tree = summary.get("tree") if isinstance(summary.get("tree"), Mapping) else None
-        if isinstance(tree, Mapping):
-            for key, value in tree.items():
-                if isinstance(value, int):
-                    tree_routes[str(key)] = tree_routes.get(str(key), 0) + int(value)
-        if flagged:
-            low_confidence += 1
-        else:
-            normal += 1
+            func.coalesce(
+                func.sum(case((ingestion_jobs_table.c.ocr_low_confidence.is_(True), 1), else_=0)),
+                0,
+            ),
+            func.count(),
+        ).where(*_quality_window_conditions(start, end))
+    ).one()
+    low_confidence_docs = int(low_confidence)
     return {
-        "ocr_rows": [
-            {"label": label, "count": count}
-            for label, count in sorted(ocr_buckets.items())
-            if count > 0
-        ],
-        "tree_rows": [
-            {"label": label, "count": count}
-            for label, count in sorted(tree_routes.items())
-            if count > 0
-        ],
-        "low_confidence_docs": low_confidence,
-        "normal_docs": normal,
+        "ocr_rows": ocr_rows,
+        "tree_rows": tree_rows,
+        "low_confidence_docs": low_confidence_docs,
+        "normal_docs": int(total) - low_confidence_docs,
     }
 
 
@@ -313,7 +408,11 @@ def space_document_rows(connection: Connection) -> list[Mapping[str, Any]]:
 
 
 def gc_candidate_generations(
-    connection: Connection, *, now: datetime, limit: int = 50
+    connection: Connection,
+    *,
+    now: datetime,
+    limit: int = 50,
+    excluded_generation_ids: Collection[str] = (),
 ) -> list[Mapping[str, Any]]:
     head = (
         connection.execute(
@@ -328,27 +427,26 @@ def gc_candidate_generations(
     active_id = str(head["active_generation_id"]) if head is not None else None
     rollback_id = str(head["rollback_candidate_id"]) if head is not None else None
     excluded = {value for value in (active_id, rollback_id) if value is not None}
+    excluded.update(excluded_generation_ids)
     leased = (
         select(index_generation_leases_table.c.generation_id).where(
             index_generation_leases_table.c.expires_at_utc > now,
             index_generation_leases_table.c.released_at_utc.is_(None),
         )
     ).subquery()
-    query = (
-        select(index_generations_table.c.id, index_generations_table.c.status)
-        .where(
-            index_generations_table.c.status.in_(("retired", "failed")),
-            or_(
-                index_generations_table.c.rollback_until_utc.is_(None),
-                index_generations_table.c.rollback_until_utc <= now,
-            ),
-            ~index_generations_table.c.id.in_(select(leased.c.generation_id)),
-        )
-        .order_by(index_generations_table.c.retired_at_utc, index_generations_table.c.id)
-        .limit(limit)
+    query = select(index_generations_table.c.id, index_generations_table.c.status).where(
+        index_generations_table.c.status == "retired",
+        or_(
+            index_generations_table.c.rollback_until_utc.is_(None),
+            index_generations_table.c.rollback_until_utc <= now,
+        ),
+        ~index_generations_table.c.id.in_(select(leased.c.generation_id)),
     )
     if excluded:
         query = query.where(index_generations_table.c.id.not_in(excluded))
+    query = query.order_by(
+        index_generations_table.c.retired_at_utc, index_generations_table.c.id
+    ).limit(limit)
     rows = connection.execute(query).mappings()
     return [dict(row) for row in rows]
 
@@ -370,6 +468,14 @@ def gc_blocked_rollback_candidate(connection: Connection) -> Mapping[str, Any] |
         "active_generation_id": str(head["active_generation_id"]),
         "rollback_candidate_id": str(head["rollback_candidate_id"]),
     }
+
+
+def generation_status(connection: Connection, *, generation_id: str) -> str | None:
+    return connection.execute(
+        select(index_generations_table.c.status).where(
+            index_generations_table.c.id == generation_id
+        )
+    ).scalar_one_or_none()
 
 
 def graph_component_ids(connection: Connection, *, generation_id: str) -> list[str]:

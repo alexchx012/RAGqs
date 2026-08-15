@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi.testclient import TestClient
 from retention_helpers import (
     build_engine,
@@ -145,6 +147,7 @@ def test_ops_jobs_views_and_item_shape() -> None:
     )
     from app.identity.schema import identity_space_table
 
+    now = fixed_now()
     with engine.begin() as connection:
         connection.execute(
             identity_space_table.insert().values(
@@ -153,7 +156,7 @@ def test_ops_jobs_views_and_item_shape() -> None:
                 name="Public",
                 owner_user_id=None,
                 department_id=None,
-                created_at_utc=fixed_now(),
+                created_at_utc=now,
             )
         )
         connection.execute(
@@ -164,9 +167,9 @@ def test_ops_jobs_views_and_item_shape() -> None:
                 version=1,
                 name="Broken",
                 normalized_name="broken",
-                uploaded_at_utc=fixed_now(),
-                created_at_utc=fixed_now(),
-                updated_at_utc=fixed_now(),
+                uploaded_at_utc=now,
+                created_at_utc=now,
+                updated_at_utc=now,
             )
         )
         connection.execute(
@@ -184,8 +187,26 @@ def test_ops_jobs_views_and_item_shape() -> None:
                 notification_event_ids_json=[],
                 created_by_user_id=str(ops_principal["record"]["id"]),
                 quota_role_snapshot="ops",
-                created_at_utc=fixed_now(),
-                updated_at_utc=fixed_now(),
+                created_at_utc=now,
+                updated_at_utc=now,
+            )
+        )
+        connection.execute(
+            ingestion_jobs_table.insert().values(
+                id="job_2",
+                document_id="doc_1",
+                operation="initial",
+                state="pending",
+                version=1,
+                replay_generation=0,
+                degradations_json=[],
+                processing_summary_json={},
+                ocr_low_confidence=False,
+                notification_event_ids_json=[],
+                created_by_user_id=str(ops_principal["record"]["id"]),
+                quota_role_snapshot="ops",
+                created_at_utc=now - timedelta(minutes=3),
+                updated_at_utc=now - timedelta(minutes=3),
             )
         )
     app = create_platform_app(configured, runtime=runtime)
@@ -207,3 +228,5 @@ def test_ops_jobs_views_and_item_shape() -> None:
         active = client.get("/v1/ops/jobs?view=active", headers=headers)
         assert active.status_code == 200
         assert not any(item["job_id"] == "job_1" for item in active.json()["items"])
+        pending = next(item for item in active.json()["items"] if item["job_id"] == "job_2")
+        assert isinstance(pending["wait_seconds"], int)

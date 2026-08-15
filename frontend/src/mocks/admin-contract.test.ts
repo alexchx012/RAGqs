@@ -101,14 +101,26 @@ describe('admin contract：dashboard（§9.1）', () => {
     expect(cards.some((card) => card.link !== null)).toBe(true);
   });
 
-  it('窗口缩放：today / 30d 与 7d 数值不同', async () => {
+  it('backlog 是当前快照，事件卡仍按窗口变化', async () => {
     const ops = bearerOf('ops-wang');
     const today = (await (await jsonRequest(ops, '/v1/metrics/dashboard?window=today')).json()) as DashboardResponse;
     const month = (await (await jsonRequest(ops, '/v1/metrics/dashboard?window=30d')).json()) as DashboardResponse;
-    const todayBacklog = today.packs[0]?.cards[0];
-    const monthBacklog = month.packs[0]?.cards[0];
-    expect(todayBacklog && 'value' in todayBacklog ? todayBacklog.value : null).toBe(10);
-    expect(monthBacklog && 'value' in monthBacklog ? monthBacklog.value : null).toBe(68);
+    const cardValue = (dashboard: DashboardResponse, key: string) => {
+      const card = dashboard.packs.flatMap((pack) => pack.cards).find((candidate) => candidate.key === key);
+      return card && 'value' in card ? card.value : null;
+    };
+    const backlog = (dashboard: DashboardResponse) => {
+      const card = dashboard
+        .packs.flatMap((pack) => pack.cards)
+        .find((candidate) => candidate.key === 'ingestion_backlog');
+      return card?.kind === 'stat' ? card : null;
+    };
+
+    expect(cardValue(today, 'ingestion_backlog')).toBe(26);
+    expect(cardValue(month, 'ingestion_backlog')).toBe(26);
+    expect(backlog(today)?.sparkline).toEqual([4, 6, 5, 9, 12]);
+    expect(backlog(month)?.sparkline).toEqual([4, 6, 5, 9, 12]);
+    expect(cardValue(today, 'failure_rate')).not.toBe(cardValue(month, 'failure_rate'));
   });
 
   it('admin 组包：结构不同、threshold/link 恒 null、user_rank 15 行', async () => {

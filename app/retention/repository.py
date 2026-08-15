@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import Connection, Engine
 
 from .schema import (
@@ -86,6 +86,32 @@ class SqlAlchemyRetentionRepository:
                 )
             )
 
+    def prune_terminal_history(self, *, before: datetime) -> None:
+        """Remove expired terminal records without severing any finding from its run."""
+        with self._engine.begin() as connection:
+            connection.execute(
+                delete(retention_reconciliation_findings_table).where(
+                    retention_reconciliation_findings_table.c.status.in_(("repaired", "ignored")),
+                    retention_reconciliation_findings_table.c.updated_at_utc < before,
+                )
+            )
+            remaining_findings = (
+                select(retention_reconciliation_findings_table.c.id)
+                .where(
+                    retention_reconciliation_findings_table.c.run_id
+                    == retention_reconciliation_runs_table.c.id
+                )
+                .exists()
+            )
+            connection.execute(
+                delete(retention_reconciliation_runs_table).where(
+                    retention_reconciliation_runs_table.c.status.in_(("completed", "failed")),
+                    retention_reconciliation_runs_table.c.completed_at_utc.is_not(None),
+                    retention_reconciliation_runs_table.c.completed_at_utc < before,
+                    ~remaining_findings,
+                )
+            )
+
     # ---- findings ----
 
     def add_finding(
@@ -137,6 +163,29 @@ class SqlAlchemyRetentionRepository:
             rows = connection.execute(query).mappings()
             return [dict(row) for row in rows]
 
+    def open_findings_for_resource_type(
+        self, *, scope: str, resource_type: str
+    ) -> list[Mapping[str, Any]]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(
+                    retention_reconciliation_findings_table.c.id,
+                    retention_reconciliation_findings_table.c.category,
+                    retention_reconciliation_findings_table.c.resource_id,
+                )
+                .join(
+                    retention_reconciliation_runs_table,
+                    retention_reconciliation_runs_table.c.id
+                    == retention_reconciliation_findings_table.c.run_id,
+                )
+                .where(
+                    retention_reconciliation_runs_table.c.scope == scope,
+                    retention_reconciliation_findings_table.c.resource_type == resource_type,
+                    retention_reconciliation_findings_table.c.status == "open",
+                )
+            ).mappings()
+            return [dict(row) for row in rows]
+
     def mark_finding(
         self,
         finding_id: str,
@@ -144,17 +193,25 @@ class SqlAlchemyRetentionRepository:
         status: str,
         hook_operation_id: str | None = None,
         detail: str | None = None,
+        connection: Connection | None = None,
     ) -> None:
         values: dict[str, Any] = {"status": status}
         if hook_operation_id is not None:
             values["hook_operation_id"] = hook_operation_id
         if detail is not None:
             values["detail"] = detail[:512]
-        with self._engine.begin() as connection:
+        if connection is not None:
             connection.execute(
                 update(retention_reconciliation_findings_table)
                 .where(retention_reconciliation_findings_table.c.id == finding_id)
                 .values(**values, updated_at_utc=self._current_time(connection))
+            )
+            return
+        with self._engine.begin() as transaction:
+            transaction.execute(
+                update(retention_reconciliation_findings_table)
+                .where(retention_reconciliation_findings_table.c.id == finding_id)
+                .values(**values, updated_at_utc=self._current_time(transaction))
             )
 
     # ---- hook receipts ----
@@ -178,7 +235,6 @@ class SqlAlchemyRetentionRepository:
                 target_id=target_id,
                 receipt_json=dict(receipt_json),
                 state=state,
-                attempt_count=0,
                 last_error=error,
                 created_at_utc=now,
                 updated_at_utc=now,
@@ -198,7 +254,6 @@ class SqlAlchemyRetentionRepository:
             "receipt_json": dict(receipt_json),
             "state": state,
             "last_error": error,
-            "attempt_count": retention_hook_receipts_table.c.attempt_count + 1,
             "updated_at_utc": self._current_time(connection),
         }
         connection.execute(
@@ -258,16 +313,3 @@ class SqlAlchemyRetentionRepository:
                     error=error,
                     connection=connection,
                 )
-
-    def list_due_receipts(self, *, kind: str, limit: int = 100) -> list[Mapping[str, Any]]:
-        with self._engine.connect() as connection:
-            rows = connection.execute(
-                select(retention_hook_receipts_table)
-                .where(
-                    retention_hook_receipts_table.c.kind == kind,
-                    retention_hook_receipts_table.c.state.in_(("requested", "accepted", "blocked")),
-                )
-                .order_by(retention_hook_receipts_table.c.updated_at_utc)
-                .limit(limit)
-            ).mappings()
-            return [dict(row) for row in rows]

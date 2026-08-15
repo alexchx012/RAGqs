@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 from retention_helpers import build_engine, fixed_now
+from sqlalchemy import event
+from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 
 from app.chat.schema import chat_message_table, chat_metadata
 from app.documents.schema import (
@@ -22,7 +25,8 @@ from app.platform.observability import (
     ObservabilityReadRequest,
     SamplingRead,
 )
-from app.retention.readers import DashboardReadModels
+from app.retention.facts import ingestion_quality_facts
+from app.retention.readers import DashboardReadModels, OpsJobsReadModel
 from app.usage.schema import quota_request_table, usage_metadata
 
 
@@ -61,6 +65,15 @@ class FakeObservabilityPort:
 class RaisingObservabilityPort(FakeObservabilityPort):
     def read(self, request: ObservabilityReadRequest) -> ObservabilityMetricsRead:
         raise AssertionError("operations reader must not call the observability port")
+
+
+class FakeDocumentsJobsService:
+    def __init__(self, items: list[dict[str, object]]) -> None:
+        self._items = items
+
+    def list_jobs(self, *, principal: object, limit: int) -> dict[str, list[dict[str, object]]]:
+        del principal, limit
+        return {"items": self._items}
 
 
 def _seed_basics(engine):
@@ -200,6 +213,193 @@ def _reader(engine, port):
     )
 
 
+def test_ops_jobs_uses_created_age_for_serialized_active_tasks() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    now = fixed_now()
+    rows = [
+        {
+            "job_id": "pending_job",
+            "name": "pending.pdf",
+            "state": "pending",
+            "allowed_actions": [],
+            "created_at": (now - timedelta(minutes=3)).isoformat(),
+            "next_attempt_at": None,
+        },
+        {
+            "job_id": "running_job",
+            "name": "running.pdf",
+            "state": "running",
+            "allowed_actions": [],
+            "created_at": (now - timedelta(minutes=2)).isoformat(),
+            "next_attempt_at": None,
+        },
+        {
+            "job_id": "retry_future_job",
+            "name": "retry-future.pdf",
+            "state": "retry_wait",
+            "allowed_actions": [],
+            "created_at": (now - timedelta(minutes=4)).isoformat(),
+            "next_attempt_at": (now + timedelta(minutes=1)).isoformat(),
+        },
+        {
+            "job_id": "retry_overdue_job",
+            "name": "retry-overdue.pdf",
+            "state": "retry_wait",
+            "allowed_actions": [],
+            "created_at": (now - timedelta(minutes=5)).isoformat(),
+            "next_attempt_at": (now - timedelta(minutes=1)).isoformat(),
+        },
+    ]
+    reader = OpsJobsReadModel(
+        engine=engine,
+        now=lambda connection=None: now,
+        documents_service=FakeDocumentsJobsService(rows),
+    )
+    principal = SimpleNamespace(role="ops")
+
+    all_items = reader.jobs(principal=principal, view="all")["items"]
+    active_items = reader.jobs(principal=principal, view="active")["items"]
+
+    expected_wait_seconds = {
+        "pending_job": 180,
+        "running_job": 120,
+        "retry_future_job": 240,
+        "retry_overdue_job": 300,
+    }
+    assert {item["job_id"]: item["wait_seconds"] for item in all_items} == expected_wait_seconds
+    assert {item["job_id"]: item["wait_seconds"] for item in active_items} == expected_wait_seconds
+    assert all(isinstance(item["wait_seconds"], int) for item in all_items)
+
+
+def test_ingestion_quality_aggregates_json_in_the_database() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    _seed_basics(engine)
+    now = fixed_now()
+    shared_values = {
+        "document_id": "doc_3",
+        "operation": "initial",
+        "state": "succeeded",
+        "stage": None,
+        "upload_batch_id": None,
+        "active_attempt_id": None,
+        "active_publication_id": None,
+        "version": 1,
+        "replay_generation": 0,
+        "next_attempt_at_utc": None,
+        "failure_reason": None,
+        "degradations_json": [],
+        "usage_json": None,
+        "notification_event_ids_json": [],
+        "created_by_user_id": "u_ops",
+        "quota_role_snapshot": "ops",
+        "quota_department_id_snapshot": None,
+        "quota_exempt_reason": None,
+        "created_at_utc": now,
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            ingestion_jobs_table.insert().values(
+                id="job_3",
+                **shared_values,
+                processing_summary_json={
+                    "ocr": {"high_confidence": 2, "medium_confidence": True, "ignored": 99},
+                    "tree": {"tree": 1, "basic": True},
+                },
+                ocr_low_confidence=True,
+                updated_at_utc=now - timedelta(days=29),
+            )
+        )
+        connection.execute(
+            ingestion_jobs_table.insert().values(
+                id="job_4",
+                **shared_values,
+                processing_summary_json={
+                    "ocr": {"high_confidence": 100},
+                    "tree": {"outside": 100},
+                },
+                ocr_low_confidence=True,
+                updated_at_utc=now - timedelta(days=31),
+            )
+        )
+
+    statements: list[str] = []
+
+    def capture_statement(connection, cursor, statement, parameters, context, executemany) -> None:
+        del connection, cursor, parameters, context, executemany
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        with engine.connect() as connection:
+            facts = ingestion_quality_facts(
+                connection,
+                start=now - timedelta(days=30),
+                end=now,
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_statement)
+
+    assert facts == {
+        "ocr_rows": [
+            {"label": "high_confidence", "count": 5},
+            {"label": "low_confidence", "count": 1},
+            {"label": "medium_confidence", "count": 1},
+        ],
+        "tree_rows": [{"label": "basic", "count": 2}, {"label": "tree", "count": 2}],
+        "low_confidence_docs": 1,
+        "normal_docs": 1,
+    }
+    assert any("sum(" in statement.lower() for statement in statements)
+    assert not any(
+        "select ingestion_jobs.processing_summary_json" in statement.lower()
+        for statement in statements
+    )
+
+
+def test_ingestion_quality_compiles_postgresql_json_aggregation() -> None:
+    class EmptyResult:
+        def all(self) -> list[object]:
+            return []
+
+        def one(self) -> tuple[int, int]:
+            return (0, 0)
+
+    class CapturingPostgresConnection:
+        dialect = postgresql_dialect()
+
+        def __init__(self) -> None:
+            self.statements: list[object] = []
+
+        def execute(self, statement: object) -> EmptyResult:
+            self.statements.append(statement)
+            return EmptyResult()
+
+    connection = CapturingPostgresConnection()
+    facts = ingestion_quality_facts(
+        connection,  # type: ignore[arg-type]
+        start=fixed_now() - timedelta(days=30),
+        end=fixed_now(),
+    )
+
+    compiled = [
+        str(statement.compile(dialect=postgresql_dialect())) for statement in connection.statements
+    ]
+    assert facts == {
+        "ocr_rows": [],
+        "tree_rows": [],
+        "low_confidence_docs": 0,
+        "normal_docs": 0,
+    }
+    assert any("json_each(" in statement for statement in compiled)
+    assert any("json_typeof(" in statement for statement in compiled)
+
+
 def test_ops_dashboard_has_fixed_four_packs_and_port_values() -> None:
     engine = build_engine()
     core_metadata.create_all(engine)
@@ -228,6 +428,55 @@ def test_ops_dashboard_has_fixed_four_packs_and_port_values() -> None:
     assert todo_cards["submission_pending"]["value"] == 1
     assert [call.caller for call in port.calls] == ["retention-ops"]
     assert [call.audience for call in port.calls] == ["ops"]
+
+
+def test_ingestion_backlog_is_a_current_snapshot_across_dashboard_windows() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    _seed_basics(engine)
+    old = fixed_now() - timedelta(days=40)
+    with engine.begin() as connection:
+        connection.execute(
+            ingestion_jobs_table.insert().values(
+                id="job_old_pending",
+                document_id="doc_old",
+                operation="initial",
+                state="pending",
+                stage=None,
+                upload_batch_id=None,
+                active_attempt_id=None,
+                active_publication_id=None,
+                version=1,
+                replay_generation=0,
+                next_attempt_at_utc=None,
+                failure_reason=None,
+                degradations_json=[],
+                processing_summary_json={},
+                usage_json=None,
+                ocr_low_confidence=False,
+                notification_event_ids_json=[],
+                created_by_user_id="u_ops",
+                quota_role_snapshot="ops",
+                quota_department_id_snapshot=None,
+                quota_exempt_reason=None,
+                created_at_utc=old,
+                updated_at_utc=old,
+            )
+        )
+
+    today = _reader(engine, FakeObservabilityPort()).dashboard(role="ops", window="today")
+    thirty_days = _reader(engine, FakeObservabilityPort()).dashboard(role="ops", window="30d")
+
+    def backlog(response: dict[str, object]) -> object:
+        tasks = next(pack for pack in response["packs"] if pack["key"] == "tasks_health")
+        return next(card["value"] for card in tasks["cards"] if card["key"] == "ingestion_backlog")
+
+    assert backlog(today) == 2
+    assert backlog(thirty_days) == 2
 
 
 def test_empty_and_unavailable_port_keep_cards_null_without_fabrication() -> None:
