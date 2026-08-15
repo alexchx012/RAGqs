@@ -169,11 +169,12 @@ def test_submitter_can_read_an_uncleaned_withdrawn_original(service, principal) 
         idempotency_key="withdraw-1",
     )
 
-    content, _metadata = service.submission_content(
+    content, _metadata, filename = service.submission_content(
         principal=principal,
         submission_id=submission["submission_id"],
     )
     assert content == b"hello"
+    assert filename == "guide.txt"
 
 
 def test_withdrawal_schedules_cleanup_without_revoking_uncleaned_owner_access(

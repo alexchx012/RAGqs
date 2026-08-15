@@ -24,9 +24,9 @@ import { Pill } from '../ui/Pill';
 import { TextLink } from '../ui/TextLink';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import { useSettings } from './SettingsProvider';
+import { downloadSubmissionContent } from './download-submission-content';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
 import { useModalDialog } from './use-modal-dialog';
-import { openControlledWindow } from './controlled-window';
 import { getManageSpaceSelection, setManageSpaceSelection } from './manage-context';
 import type {
   ApprovalListItem,
@@ -571,42 +571,10 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
       next.delete(approval.submission_id);
       return next;
     });
-    // 同步点击时先打开受控窗口（异步成功后导航）；noopener 会使 window.open 返回 null
-    // 被误判 blocked：用 openControlledWindow 打开后立即切断 opener（避免泄露）。
-    const windowRef = openControlledWindow();
-    if (windowRef === null) {
-      setRowErrors((errors) => {
-        const next = new Map(errors);
-        next.set(approval.submission_id, copy.settings.knowledge.submissions.contentOpenBlocked);
-        return next;
-      });
-      return;
-    }
-    windowRef.document.write(
-      `<!doctype html><html lang="zh-CN"><body style="font-family:sans-serif;padding:24px;color:#333">${escapeHtml(copy.settings.knowledge.uploads.loading)}</body></html>`,
-    );
-    windowRef.document.close();
-    let objectUrl: string | null = null;
-    let revokeTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const blob = await api.getSubmissionContent(approval.submission_id);
-      objectUrl = URL.createObjectURL(blob);
-      // 成功导航后 revoke：受控窗口 load 后回收，并给安全 fallback（load 未触发时延迟回收）
-      const scheduledUrl = objectUrl;
-      const revoke = () => {
-        URL.revokeObjectURL(scheduledUrl);
-      };
-      windowRef.addEventListener('load', revoke, { once: true });
-      revokeTimer = setTimeout(revoke, 60_000);
-      windowRef.location.href = scheduledUrl;
+      downloadSubmissionContent(blob, approval.name);
     } catch (error) {
-      windowRef.close();
-      if (objectUrl !== null) {
-        URL.revokeObjectURL(objectUrl);
-      }
-      if (revokeTimer !== undefined) {
-        clearTimeout(revokeTimer);
-      }
       setRowErrors((errors) => {
         const next = new Map(errors);
         next.set(
@@ -619,14 +587,6 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
       });
     }
   };
-
-  function escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
 
   const decide = async (approval: ApprovalListItem, approved: boolean) => {
     if (rejecting) {

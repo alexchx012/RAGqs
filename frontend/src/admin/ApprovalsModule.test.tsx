@@ -579,18 +579,17 @@ describe('投稿审核（§8.4–8.5）', () => {
     await waitFor(() => expect(screen.queryByText('行业研报汇总.pdf')).not.toBeInTheDocument());
   });
 
-  it('查看内容：同步受控窗 → 异步 blob objectURL 导航', async () => {
+  it('查看内容：下载原件而不打开 Blob 预览窗口', async () => {
     const token = loginToken('ops-wang');
-    const win = {
-      opener: null as Window | null,
-      document: { write: vi.fn(), close: vi.fn() },
-      location: { href: '' },
-      close: vi.fn(),
-      addEventListener: vi.fn(),
-    };
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window);
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
     const createSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:mock-0');
     const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const downloads: Array<{ href: string; filename: string }> = [];
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function click(this: HTMLAnchorElement) {
+      downloads.push({ href: this.href, filename: this.download });
+      });
     try {
       const settingsApi = contractSettingsApi(token, {
         getSubmissionContent: vi.fn(async () => new Blob(['content'], { type: 'application/pdf' })),
@@ -604,17 +603,21 @@ describe('投稿审核（§8.4–8.5）', () => {
       const user = userEvent.setup();
       await user.click(within(rowOf('行业研报汇总.pdf')).getByRole('button', { name: copyManage.viewContent }));
 
-      await waitFor(() => expect(openSpy).toHaveBeenCalledWith('', '_blank'));
-      await waitFor(() => expect(win.location.href).toBe('blob:mock-0'));
-      expect(win.close).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(downloads).toEqual([{ href: 'blob:mock-0', filename: '行业研报汇总.pdf' }]),
+      );
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(revokeSpy).toHaveBeenCalledWith('blob:mock-0');
     } finally {
       openSpy.mockRestore();
       createSpy.mockRestore();
       revokeSpy.mockRestore();
+      clickSpy.mockRestore();
     }
   });
 
-  it('查看内容 404：关闭受控窗 + 行尾「内容已不可用」', async () => {
+  it('查看内容不可用：保留行内提示且不打开预览窗口', async () => {
     const token = loginToken('ops-wang');
     const win = {
       opener: null as Window | null,
@@ -646,7 +649,7 @@ describe('投稿审核（§8.4–8.5）', () => {
       await user.click(within(rowOf('行业研报汇总.pdf')).getByRole('button', { name: copyManage.viewContent }));
 
       expect(await screen.findByText(copyManage.contentUnavailable)).toBeInTheDocument();
-      expect(win.close).toHaveBeenCalled();
+      expect(openSpy).not.toHaveBeenCalled();
     } finally {
       openSpy.mockRestore();
     }

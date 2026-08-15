@@ -3331,7 +3331,7 @@ class DocumentsService:
 
     def submission_content(
         self, *, principal: Any, submission_id: str
-    ) -> tuple[bytes, ObjectMetadata]:
+    ) -> tuple[bytes, ObjectMetadata, str]:
         from .submissions import SubmissionService
 
         return SubmissionService(self).content(principal=principal, submission_id=submission_id)

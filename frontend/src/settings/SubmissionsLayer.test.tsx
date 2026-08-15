@@ -289,60 +289,41 @@ describe('SubmissionsLayer 409 epoch fence（review A2）', () => {
   });
 });
 
-describe('SubmissionsLayer 查看内容 blob URL 生命周期（review Medium 4）', () => {
-  it('成功导航 load 后 revoke blob URL；失败路径 revoke', async () => {
+describe('SubmissionsLayer 查看内容下载行为', () => {
+  it('下载原件而不打开 Blob 预览窗口', async () => {
     const { accessToken } = mockAuth.login('zhangsan', 'password123', 'blob-life');
     const token = `Bearer ${accessToken}`;
-    // 投稿（含内容）
     const upload = await mockKnowledge.uploadDocuments(token, 'public', [
       { name: 'blob-life.md', size: 5, type: 'text/markdown', contentHash: 'hash-blob-life' },
     ], 'idem-blob-life');
     const item = upload.items[0];
     const submissionId = item && 'submission_id' in item ? (item.submission_id ?? '') : '';
-    const content = mockKnowledge.getSubmissionContent(token, submissionId);
-
-    // 受控窗口 spy：捕获 load 监听并记录 location
-    const loadListeners: (() => void)[] = [];
-    const win = {
-      opener: {} as Window | null,
-      document: { write: vi.fn(), close: vi.fn() },
-      location: { href: '' },
-      close: vi.fn(),
-      addEventListener: (type: string, cb: () => void) => {
-        if (type === 'load') loadListeners.push(cb);
-      },
-    } as unknown as Window & { addEventListener: (t: string, c: () => void) => void };
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(win);
-    const created: string[] = [];
-    const revoked: string[] = [];
-    const createSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
-      const url = `blob:mock-${created.length}`;
-      created.push(url);
-      return url;
-    });
-    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation((url) => {
-      revoked.push(url);
-    });
+    expect(submissionId).not.toBe('');
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+    const createSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:submission-download');
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const downloads: { href: string; filename: string }[] = [];
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push({ href: this.href, filename: this.download });
+      });
 
     const api = createContractApi();
     const user = userEvent.setup();
     await renderLayer(api);
 
-    // 查看内容
     await user.click((await screen.findAllByRole('button', { name: copy.settings.knowledge.submissions.viewContent }))[0]);
-    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
-    // 已导航到 blob URL
-    await waitFor(() => expect(win.location.href).toMatch(/^blob:mock-/));
-    // 成功路径未立即 revoke
-    expect(revoked.length).toBe(0);
-    // load 触发后 revoke
-    expect(loadListeners.length).toBeGreaterThan(0);
-    for (const listener of loadListeners) listener();
-    expect(revoked.length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(downloads).toEqual([{ href: 'blob:submission-download', filename: 'blob-life.md' }]),
+    );
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(revokeSpy).toHaveBeenCalledWith('blob:submission-download');
 
     openSpy.mockRestore();
     createSpy.mockRestore();
     revokeSpy.mockRestore();
-    void content;
+    clickSpy.mockRestore();
   });
 });
