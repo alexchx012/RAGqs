@@ -402,7 +402,7 @@ def pg_env():
         with admin.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         created_schema = True
-        # 真实 Alembic migration：upgrade 到 head（当前为 0019），alembic_version
+        # 真实 Alembic migration：upgrade 到 head（当前为 0020），alembic_version
         # 与全部对象经 search_path 落在临时 schema，不是 metadata.create_all。
         config = _alembic_config(schema_url)
         command.upgrade(config, "head")
@@ -2001,7 +2001,7 @@ def test_pg_migration_parity_head_objects_in_temp_schema(pg_env) -> None:
         assert connection.execute(text("SELECT current_schema()")).scalar_one() == pg_env.schema
         assert (
             connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            == "0019_usage_projection_bigint"
+            == "0020_merge_usage_retention"
         )
         projection_types = dict(
             connection.execute(
