@@ -104,6 +104,13 @@ class IndexSettings(_StrictModel):
         default="ragqs_chunks", min_length=1, max_length=128, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$"
     )
     sparse_data_path: str | None = None
+    text_chunk_max_chars: int = Field(default=8_000, ge=1)
+    xlsx_merged_cells_max: int = Field(default=10_000, ge=1)
+
+
+class DocumentsSettings(_StrictModel):
+    upload_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
+    cleanup_max_attempts: int = Field(default=3, ge=1)
 
 
 class EvaluationSettings(_StrictModel):
@@ -178,6 +185,7 @@ class PlatformSettings(BaseSettings):
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
+    documents: DocumentsSettings = Field(default_factory=DocumentsSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     business_timezone: str | None = None
     # 受保护维护 CLI（ragqs-usage-maintenance）的显式密钥：只从环境读取，不进参数/
@@ -235,6 +243,10 @@ _ENV_KEYS = {
     "RAG_INDEX_SPARSE_API_KEY",
     "RAG_INDEX_SPARSE_INDEX",
     "RAG_INDEX_SPARSE_DATA_PATH",
+    "RAG_INDEX_TEXT_CHUNK_MAX_CHARS",
+    "RAG_INDEX_XLSX_MERGED_CELLS_MAX",
+    "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
+    "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS",
     "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
     "RAG_EVALUATION_JUDGE_BASE_URL",
     "RAG_EVALUATION_JUDGE_API_KEY",
@@ -405,6 +417,16 @@ def load_platform_settings(
                 "sparse_api_key": _optional_secret(env, "RAG_INDEX_SPARSE_API_KEY"),
                 "sparse_index": _optional(env, "RAG_INDEX_SPARSE_INDEX") or "ragqs_chunks",
                 "sparse_data_path": _optional(env, "RAG_INDEX_SPARSE_DATA_PATH"),
+                "text_chunk_max_chars": _int(env, "RAG_INDEX_TEXT_CHUNK_MAX_CHARS"),
+                "xlsx_merged_cells_max": _int(env, "RAG_INDEX_XLSX_MERGED_CELLS_MAX"),
+            }.items()
+            if value is not None
+        },
+        "documents": {
+            key: value
+            for key, value in {
+                "upload_max_bytes": _int(env, "RAG_DOCUMENTS_UPLOAD_MAX_BYTES"),
+                "cleanup_max_attempts": _int(env, "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS"),
             }.items()
             if value is not None
         },

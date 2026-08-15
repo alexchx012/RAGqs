@@ -57,6 +57,16 @@ class _FailOnceDerivedCleanup(NoopIndexingHandoff):
             raise RuntimeError("temporary derived-resource outage")
 
 
+class _AlwaysFailDerivedCleanup(NoopIndexingHandoff):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def cleanup_resource(self, resource, *, connection) -> None:
+        del resource, connection
+        self.calls += 1
+        raise RuntimeError("persistent derived-resource outage")
+
+
 def test_completed_delete_becomes_non_descriptive_tombstone(service, principal) -> None:
     service._lifecycle_port = _Lifecycle()
     created = service.create_initial_upload(
@@ -248,3 +258,51 @@ def test_deletion_waits_for_and_retries_failed_derived_cleanup_target(service, p
         ("index", "index-1"),
         ("parsing", "parse-1"),
     ]
+
+
+def test_deletion_cleanup_stops_retrying_a_target_after_three_failures(service, principal) -> None:
+    service._lifecycle_port = _Lifecycle()
+    derived_cleanup = _AlwaysFailDerivedCleanup()
+    service._indexing_handoff_port = derived_cleanup
+    item = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-derived-retry-limit-1",
+    )["items"][0]
+    _accept(
+        service,
+        principal,
+        item,
+        stage_resources=[{"backend_kind": "index", "resource_id": "index-persistent"}],
+    )
+    deletion = service.delete_document(
+        principal=principal,
+        document_id=item["document_id"],
+        expected_version=1,
+        idempotency_key="delete-derived-retry-limit-1",
+        capability_token="token",
+    )
+
+    for _ in range(3):
+        assert service.finalize_deletion(
+            document_id=item["document_id"], deletion_id=deletion["deletion_id"]
+        ) == {"document_id": item["document_id"], "state": "cleaning"}
+
+    assert service.finalize_deletion(
+        document_id=item["document_id"], deletion_id=deletion["deletion_id"]
+    ) == {"document_id": item["document_id"], "state": "cleaning"}
+    assert derived_cleanup.calls == 3
+    with service._engine.connect() as connection:
+        target = (
+            connection.execute(
+                select(document_deletion_cleanup_targets_table).where(
+                    document_deletion_cleanup_targets_table.c.backend_kind == "index"
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert target["state"] == "failed"
+    assert target["attempt_count"] == 3
+    assert target["last_error"] == "RuntimeError"

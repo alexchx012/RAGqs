@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from app.chat.generation import GenerationService
@@ -131,13 +131,13 @@ def retry_generation(
     )
 
 
-@router.post("/messages/{message_id}/feedback", status_code=204)
+@router.post("/messages/{message_id}/feedback", status_code=204, response_class=Response)
 def submit_feedback(
     message_id: str,
     body: FeedbackBody,
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
-) -> None:
+) -> Response:
     if body.vote == "down" and body.reason is None:
         raise PlatformError(
             "validation_error", "reason is required for a down vote", {"field": "reason"}, 422
@@ -152,6 +152,7 @@ def submit_feedback(
         request=FeedbackRequest(vote=body.vote, down_reason=body.reason),
         idempotency_key=_key(request),
     )
+    return Response(status_code=204)
 
 
 @router.post("/messages/{message_id}/ab-vote")

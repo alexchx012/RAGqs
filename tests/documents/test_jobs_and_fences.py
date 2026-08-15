@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from app.documents.schema import (
     document_versions_table,
@@ -10,6 +12,7 @@ from app.documents.schema import (
     ingestion_jobs_table,
     publications_table,
 )
+from app.indexing import ContentProcessor
 from app.platform.errors import PlatformError
 
 from .test_commands import _accept, _upload
@@ -557,6 +560,95 @@ def test_malformed_receipt_discards_the_current_attempt(service, principal) -> N
     assert [request.attempt_id for request in handoff.discarded] == [lease.attempt_id]
 
 
+def test_late_receipt_does_not_discard_expired_current_attempt_staging(service, principal) -> None:
+    clock = [datetime(2026, 1, 1, tzinfo=UTC)]
+    service._now = lambda: clock[0]
+    handoff = _IndexingHandoff()
+    service._indexing_handoff_port = handoff
+    item = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-late-receipt-1",
+    )["items"][0]
+    first = service.claim_job(worker_id="worker-first", job_id=item["job_id"])
+
+    clock[0] += timedelta(minutes=6)
+    with pytest.raises(PlatformError) as error:
+        service.claim_job(worker_id="worker-reclaim", job_id=item["job_id"])
+    assert error.value.code == "job_unavailable"
+    with service._engine.connect() as connection:
+        retry_at = connection.execute(
+            select(ingestion_jobs_table.c.next_attempt_at_utc).where(
+                ingestion_jobs_table.c.id == item["job_id"]
+            )
+        ).scalar_one()
+    clock[0] = retry_at + timedelta(seconds=1)
+    second = service.claim_job(worker_id="worker-second", job_id=item["job_id"])
+    clock[0] += timedelta(minutes=6)
+
+    with pytest.raises(PlatformError) as error:
+        service.accept_processing_receipt(
+            principal=principal,
+            job_id=item["job_id"],
+            receipt={
+                "job_id": item["job_id"],
+                "attempt_id": first.attempt_id,
+                "fencing_token": first.fencing_token,
+                "publication_id": first.publication_id,
+                "generation_id": first.expected_generation_id,
+                "document_id": item["document_id"],
+                "document_version_id": item["document_version_id"],
+                "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
+                "processing_config_version": "v1",
+                "authorization_fence": dict(first.authorization_fence),
+                **_receipt_request_echoes(service, first.attempt_id),
+                **_receipt_contract_fields(),
+            },
+        )
+    assert error.value.code == "fence_conflict"
+    assert [request.attempt_id for request in handoff.discarded] == [first.attempt_id]
+    assert second.attempt_id not in [request.attempt_id for request in handoff.discarded]
+
+
+def test_malformed_late_receipt_does_not_discard_current_attempt_staging(service, principal) -> None:
+    clock = [datetime(2026, 1, 1, tzinfo=UTC)]
+    service._now = lambda: clock[0]
+    handoff = _IndexingHandoff()
+    service._indexing_handoff_port = handoff
+    item = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-malformed-late-receipt-1",
+    )["items"][0]
+    first = service.claim_job(worker_id="worker-first", job_id=item["job_id"])
+
+    clock[0] += timedelta(minutes=6)
+    with pytest.raises(PlatformError) as error:
+        service.claim_job(worker_id="worker-reclaim", job_id=item["job_id"])
+    assert error.value.code == "job_unavailable"
+    with service._engine.connect() as connection:
+        retry_at = connection.execute(
+            select(ingestion_jobs_table.c.next_attempt_at_utc).where(
+                ingestion_jobs_table.c.id == item["job_id"]
+            )
+        ).scalar_one()
+    clock[0] = retry_at + timedelta(seconds=1)
+    second = service.claim_job(worker_id="worker-second", job_id=item["job_id"])
+
+    with pytest.raises(PlatformError) as error:
+        service.accept_processing_receipt(
+            principal=principal,
+            job_id=item["job_id"],
+            receipt={"attempt_id": first.attempt_id},
+        )
+
+    assert error.value.code == "fence_conflict"
+    assert [request.attempt_id for request in handoff.discarded] == [first.attempt_id]
+    assert second.attempt_id not in [request.attempt_id for request in handoff.discarded]
+
+
 def test_receipt_revalidates_direct_acl_after_handoff_publish(service, principal) -> None:
     created = service.create_initial_upload(
         principal=principal,
@@ -646,6 +738,49 @@ def test_handoff_and_quota_are_part_of_publication_transaction(service, principa
     service.cancel_job(principal=principal, job_id=reindex["job_id"])
     assert quota.checked[-1] == {"quota_subject_user_id": "user_1", "pages": 1, "role": "user"}
     assert len(handoff.discarded) == 1
+
+
+def test_text_processor_receipt_records_one_page_of_quota(service, principal) -> None:
+    handoff = _IndexingHandoff()
+    quota = _Quota()
+    service._indexing_handoff_port = handoff
+    service._quota_service = quota
+    content = b"A plain text document without page metadata."
+    item = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload(content=content)],
+        idempotency_key="upload-text-processor-quota-1",
+    )["items"][0]
+    lease = service.claim_job(worker_id="worker-text-processor", job_id=item["job_id"])
+    with service._engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                select(ingestion_attempts_table).where(
+                    ingestion_attempts_table.c.id == lease.attempt_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    request = service._index_request_from_attempt(attempt)
+    assert request is not None
+    output = ContentProcessor().process(
+        request,
+        content,
+        media_kind="text/plain",
+        content_manifest_id="manifest-text-processor-quota",
+        content_manifest_hash=hashlib.sha256(content).hexdigest(),
+    )
+
+    service.accept_processing_receipt(
+        principal=principal,
+        job_id=item["job_id"],
+        receipt=output.receipt,
+    )
+
+    assert output.receipt.processing_summary["page_count"] == 1
+    assert quota.recorded[-1]["pages"] == 1
 
 
 def test_successful_publication_records_creator_notification_event_ids(service, principal) -> None:

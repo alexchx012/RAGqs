@@ -426,6 +426,8 @@ def build_runtime(
         mineru=configured.get("indexing_mineru"),
         image_describer=configured.get("indexing_image_describer"),
         image_ocr=configured.get("indexing_image_ocr"),
+        text_chunk_max_chars=settings.index.text_chunk_max_chars,
+        xlsx_merged_cells_max=settings.index.xlsx_merged_cells_max,
     )
     configured.setdefault("indexing_processor", processor)
     embedding = configured.get("indexing_embedding")
@@ -549,6 +551,8 @@ def build_runtime(
             submission_notification_port=submission_outbox_port,
             ingestion_notification_port=ingestion_outbox_port,
             public_graph_source_service=public_graph_source_service,
+            max_upload_bytes=settings.documents.upload_max_bytes,
+            cleanup_max_attempts=settings.documents.cleanup_max_attempts,
         )
     elif isinstance(documents_service, DocumentsService):
         if documents_service._lifecycle_port is None:

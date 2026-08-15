@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from app.documents.service import DocumentsService, DocumentUpload
+from app.documents.uploads import read_limited_upload
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
 
@@ -31,10 +32,10 @@ def _key(value: str | None) -> str:
     return value.strip()
 
 
-async def _upload(file: UploadFile) -> DocumentUpload:
+async def _upload(file: UploadFile, *, max_bytes: int) -> DocumentUpload:
     return DocumentUpload(
         filename=file.filename or "",
-        content=await file.read(),
+        content=await read_limited_upload(file, max_bytes=max_bytes),
         media_kind=file.content_type or "application/octet-stream",
     )
 
@@ -49,7 +50,7 @@ async def upload_documents(
 ) -> dict[str, object]:
     service = document_service(request)
     key = _key(idempotency_key)
-    uploads = [await _upload(file) for file in files]
+    uploads = [await _upload(file, max_bytes=service._max_upload_bytes) for file in files]
     permission = "manage"
     if service._identity_access is not None:
         try:
@@ -101,11 +102,12 @@ async def replace_document_version(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
-    result = document_service(request).replace_version(
+    service = document_service(request)
+    result = service.replace_version(
         principal=principal,
         document_id=document_id,
         expected_version=expected_version,
-        file=await _upload(file),
+        file=await _upload(file, max_bytes=service._max_upload_bytes),
         idempotency_key=_key(idempotency_key),
     )
     if result.get("deduplicated"):
