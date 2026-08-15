@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from _helpers import (
     build_engine,
@@ -177,6 +177,34 @@ def test_lease_expiry_records_lease_expired_metric() -> None:
 
     names = metric_names(engine)
     assert "outbox.deliveries.lease_expired" in names
+
+
+def test_compact_due_events_prunes_expired_metrics_without_due_event() -> None:
+    engine = build_engine()
+    current = datetime(2026, 8, 5, 12, 0, 0, tzinfo=UTC)
+    dispatcher = make_dispatcher(engine, now=lambda: current)
+    with engine.begin() as connection:
+        connection.execute(
+            outbox_metric_table.insert(),
+            [
+                {
+                    "metric_name": "outbox.deliveries.expired",
+                    "observed_at_utc": current - timedelta(days=31),
+                    "value": 1.0,
+                    "event_id": None,
+                },
+                {
+                    "metric_name": "outbox.deliveries.recent",
+                    "observed_at_utc": current - timedelta(days=30),
+                    "value": 1.0,
+                    "event_id": None,
+                },
+            ],
+        )
+
+    assert dispatcher.compact_due_events(now=current) == 0
+
+    assert metric_names(engine) == {"outbox.deliveries.recent"}
 
 
 def test_oldest_pending_metric_is_recorded_when_claiming() -> None:

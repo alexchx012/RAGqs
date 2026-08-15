@@ -109,6 +109,42 @@ class _BackgroundRenewalFailureDispatcher:
         return DeliveryOutcome(status="delivered")
 
 
+class _TrailingFenceLossDispatcher:
+    def __init__(self) -> None:
+        self.heartbeat_requires_exclusive_connection = False
+        self.claim = SimpleNamespace(event_id="evt_trailing_fence_loss")
+        self._claimed = False
+        self.finalized = False
+        self.background_renewed_after_finalize = threading.Event()
+
+    def claim_one(self, owner):
+        del owner
+        if self._claimed:
+            return None
+        self._claimed = True
+        return self.claim
+
+    def renew_lease(self, claim, *, owner):
+        del owner
+        if threading.current_thread().name == "outbox-heartbeat" and self.finalized:
+            self.background_renewed_after_finalize.set()
+            return None
+        return claim
+
+    def run_consumer_and_finalize(self, claim, *, owner):
+        del claim, owner
+        self.finalized = True
+        assert self.background_renewed_after_finalize.wait(timeout=1)
+        return DeliveryOutcome(status="delivered")
+
+    def recycle_expired_running(self, *, limit):
+        del limit
+        return 0
+
+    def compact_due_events(self):
+        return 0
+
+
 def _wait_for_background_heartbeat_to_stop() -> None:
     deadline = time.monotonic() + 1
     while any(thread.name == "outbox-heartbeat" for thread in threading.enumerate()):
@@ -212,6 +248,28 @@ def test_background_fence_loss_aborts_before_the_next_work_chunk() -> None:
 
     assert chunks == 1
     assert dispatcher.finalized is False
+
+
+def test_trailing_heartbeat_loss_after_successful_finalize_is_delivered() -> None:
+    class _FastHeartbeatWorker(OutboxWorker):
+        def run_delivery_with_heartbeat(self, claim, owner, *, work=None):
+            return super().run_delivery_with_heartbeat(
+                claim,
+                owner,
+                work=work,
+                heartbeat_interval_seconds=0.001,
+            )
+
+    dispatcher = _TrailingFenceLossDispatcher()
+    worker = object.__new__(_FastHeartbeatWorker)
+    worker._dispatcher = dispatcher  # type: ignore[assignment]
+
+    stats = worker.run_once(owner="worker-1", limit=1)
+
+    assert dispatcher.finalized is True
+    assert stats.claimed == 1
+    assert stats.delivered == 1
+    assert stats.failed == 0
 
 
 def test_final_database_phase_does_not_overlap_the_heartbeat_thread() -> None:

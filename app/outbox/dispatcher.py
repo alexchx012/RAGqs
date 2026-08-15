@@ -628,6 +628,12 @@ class OutboxDispatcher:
                             outbox_delivery_table.c.lease_expires_at_utc <= now,
                         )
                     )
+                    .order_by(
+                        outbox_delivery_table.c.lease_expires_at_utc,
+                        outbox_delivery_table.c.event_id,
+                        outbox_delivery_table.c.consumer_name,
+                    )
+                    .limit(limit)
                 )
                 .mappings()
                 .all()
@@ -1058,6 +1064,11 @@ class OutboxDispatcher:
         compacted = 0
         with self._engine.begin() as connection:
             current = _utc(now) if now is not None else self._current_time(connection)
+            if self._metrics is not None:
+                self._metrics.prune_before(
+                    connection,
+                    cutoff=current - timedelta(days=self._retention_days),
+                )
             candidates = (
                 connection.execute(
                     select(outbox_event_table.c.event_id).where(

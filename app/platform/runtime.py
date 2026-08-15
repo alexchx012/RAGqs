@@ -316,6 +316,7 @@ def build_runtime(
         clock=clock,
         capability_secret=None,
         graph_activated_receipt_port=graph_activated_receipt_verifier,
+        retention_days=settings.outbox.outbox_delivered_retention_days,
     )
     configured.setdefault("outbox_publisher", outbox_publisher)
     public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (

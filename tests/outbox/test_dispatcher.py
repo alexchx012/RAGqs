@@ -15,10 +15,14 @@ from _helpers import (
 )
 from sqlalchemy import select, update
 
+from app.graph.outbox import SqlAlchemyGraphBuildOutboxAdapter
+from app.identity.schema import identity_user_table
 from app.outbox.dispatcher import OutboxDispatcher, RetryPolicy
 from app.outbox.notifications import NotificationMaterializer
 from app.outbox.publisher import SqlAlchemyOutboxPublisher
 from app.outbox.schema import (
+    notification_delivery_receipt_table,
+    notification_suppression_table,
     notification_table,
     outbox_delivery_attempt_table,
     outbox_delivery_table,
@@ -30,6 +34,7 @@ def publish(engine, publisher: SqlAlchemyOutboxPublisher, *, user_ids: tuple[str
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
 
     event_id = kwargs.pop("event_id", "evt_1")
+    aggregate_id = kwargs.pop("aggregate_id", "job_1")
     payload = kwargs.pop(
         "payload",
         {
@@ -47,7 +52,7 @@ def publish(engine, publisher: SqlAlchemyOutboxPublisher, *, user_ids: tuple[str
         capability=cap("ingestion"),
         schema_version=1,
         aggregate_type="ingestion_job",
-        aggregate_id="job_1",
+        aggregate_id=aggregate_id,
         transition_version=1,
         occurred_at=fixed_now(),
         payload=payload,
@@ -258,6 +263,64 @@ def test_inactive_recipient_is_suppressed_without_a_notification() -> None:
         assert connection.execute(select(notification_table)).all() == []
 
 
+def test_graph_event_for_existing_inactive_initiator_is_suppressed_and_receipted() -> None:
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+    clock = _MutableClock(fixed_now())
+    publisher = make_publisher(engine, now=clock.now)
+    with engine.begin() as connection:
+        connection.execute(
+            update(identity_user_table)
+            .where(identity_user_table.c.id == alice)
+            .values(lifecycle_status="pending_delete")
+        )
+    adapter = SqlAlchemyGraphBuildOutboxAdapter(publisher)
+
+    with engine.begin() as connection:
+        event_id = adapter.publish_completed(
+            graph_build_id="graph_1",
+            status="failed",
+            source_revision=1,
+            transition_version=1,
+            occurred_at=fixed_now(),
+            recipient_user_id=alice,
+            failure_class="index_error",
+            connection=connection,
+        )
+
+    assert event_id == "evt_graph_build_completed_graph_1_1"
+    dispatcher = make_dispatcher(engine, now=clock.now)
+    claim = dispatcher.claim_one(owner="worker-1")
+    assert claim is not None
+    dispatcher.run_consumer_and_finalize(claim, owner="worker-1")
+    with engine.connect() as connection:
+        suppression = (
+            connection.execute(
+                select(notification_suppression_table).where(
+                    notification_suppression_table.c.event_id == event_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert suppression["reason"] == "recipient_inactive"
+
+    clock.advance(seconds=31 * 24 * 60 * 60)
+    assert dispatcher.compact_due_events() == 1
+    with engine.connect() as connection:
+        receipt = (
+            connection.execute(
+                select(notification_delivery_receipt_table).where(
+                    notification_delivery_receipt_table.c.event_id == event_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert receipt["outcome"] == "recipient_inactive"
+
+
 def test_retryable_failure_schedules_retry_wait_with_jittered_delay() -> None:
     engine = build_engine()
     identity = build_identity_service(engine)
@@ -380,6 +443,40 @@ def test_expired_lease_is_recycled_and_consumes_an_attempt() -> None:
     assert second is not None
     assert second.attempt_number == 2
     assert second.cycle_attempt_number == 2
+
+
+def test_recycle_expired_running_respects_limit() -> None:
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+    publisher = make_publisher(engine, now=lambda: fixed_now())
+    for index in range(3):
+        publish(
+            engine,
+            publisher,
+            user_ids=(alice,),
+            event_id=f"evt_{index}",
+            aggregate_id=f"job_{index}",
+            payload={
+                "job_id": f"job_{index}",
+                "document_id": f"doc_{index}",
+                "document_version_id": f"docv_{index}",
+                "publication_id": f"pub_{index}",
+            },
+        )
+    clock = _MutableClock(datetime(2026, 8, 5, 12, 0, 4, tzinfo=UTC))
+    dispatcher = make_dispatcher(engine, now=clock.now)
+
+    claims = [dispatcher.claim_one(owner=f"worker-{index}") for index in range(3)]
+    assert all(claim is not None for claim in claims)
+    clock.advance(seconds=120)
+
+    assert dispatcher.recycle_expired_running(limit=2) == 2
+    with engine.connect() as connection:
+        statuses = connection.execute(select(outbox_delivery_table.c.status)).scalars().all()
+    assert statuses.count("retry_wait") == 2
+    assert statuses.count("running") == 1
+    assert dispatcher.recycle_expired_running(limit=2) == 1
 
 
 def test_renew_extends_the_lease_with_the_same_fence() -> None:

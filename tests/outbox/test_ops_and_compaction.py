@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.notifications import NotificationMaterializer
-from app.outbox.publisher import SqlAlchemyOutboxPublisher
+from app.outbox.publisher import SqlAlchemyOutboxPublisher, SqlAlchemyPublicGraphSourceOutboxAdapter
 from app.outbox.schema import (
     notification_table,
     outbox_delivery_attempt_table,
@@ -315,6 +315,39 @@ def test_compaction_only_after_every_delivery_is_delivered_and_retention_elapsed
         assert summary[0]["delivered_at"] is not None
         assert connection.execute(select(outbox_recipient_table)).all() == []
         assert connection.execute(select(outbox_delivery_attempt_table)).all() == []
+
+
+def test_zero_recipient_outbox_event_compacts_after_retention() -> None:
+    engine = build_engine()
+    clock = _MutableClock(fixed_now())
+    publisher = make_publisher(engine, now=clock.now)
+    adapter = SqlAlchemyPublicGraphSourceOutboxAdapter(publisher)
+    with engine.begin() as connection:
+        event_id = adapter.publish_public_graph_source_change(
+            source_revision=1,
+            source_manifest_id="manifest_1",
+            source_manifest_hash="hash_1",
+            document_id="doc_1",
+            change_type="publish",
+            occurred_at=clock.now(),
+            connection=connection,
+        )
+    dispatcher = make_dispatcher(engine, now=clock.now, retention_days=30)
+
+    clock.advance(seconds=31 * 24 * 60 * 60)
+    assert dispatcher.compact_due_events() == 1
+
+    with engine.connect() as connection:
+        event = (
+            connection.execute(
+                select(outbox_event_table).where(outbox_event_table.c.event_id == event_id)
+            )
+            .mappings()
+            .one()
+        )
+        assert event["storage_state"] == "compacted"
+        assert event["payload_json"] is None
+        assert event["compacted_delivery_summary_json"] == []
 
 
 def test_dead_letter_events_never_compact() -> None:

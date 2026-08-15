@@ -18,6 +18,7 @@ from sqlalchemy.engine import Connection, Engine
 
 from app.platform.errors import PlatformError
 
+from .compaction import canonical_receipt_fingerprint
 from .schema import (
     notification_context_ack_table,
     notification_delivery_receipt_table,
@@ -31,24 +32,6 @@ MAX_ONLINE_NOTIFICATIONS = 50
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
-def _receipt_fingerprint(event_id: str, user_id: str, seq: int) -> str:
-    import hashlib
-    import json
-
-    encoded = json.dumps(
-        {
-            "event_id": event_id,
-            "recipient_user_id": user_id,
-            "seq": seq,
-            "outcome": "materialized",
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return hashlib.sha256(b"outbox-receipt-v1\0" + encoded.encode("utf-8")).hexdigest()
 
 
 class NotificationRetentionMaintenance:
@@ -188,7 +171,12 @@ class NotificationRetentionMaintenance:
                     occurred_at_utc=row["event_occurred_at_utc"],
                     materialized_at_utc=row["materialized_at_utc"],
                     retired_at_utc=now,
-                    fingerprint=_receipt_fingerprint(event_id, user_id, seq),
+                    fingerprint=canonical_receipt_fingerprint(
+                        event_id,
+                        user_id,
+                        "materialized",
+                        seq,
+                    ),
                 )
             )
         else:
@@ -198,7 +186,8 @@ class NotificationRetentionMaintenance:
             if (
                 str(existing["outcome"]) != "materialized"
                 or int(existing["original_notification_seq"]) != seq
-                or str(existing["fingerprint"]) != _receipt_fingerprint(event_id, user_id, seq)
+                or str(existing["fingerprint"])
+                != canonical_receipt_fingerprint(event_id, user_id, "materialized", seq)
             ):
                 raise PlatformError(
                     "receipt_fingerprint_mismatch",
