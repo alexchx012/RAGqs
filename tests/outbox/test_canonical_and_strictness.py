@@ -391,6 +391,50 @@ def test_maintenance_and_compaction_share_the_canonical_receipt_fingerprint() ->
         assert receipt["fingerprint"] == expected
 
 
+def test_maintenance_delegates_materialized_receipt_fingerprints_to_the_canonical_helper(
+    monkeypatch,
+) -> None:
+    import app.outbox.maintenance as maintenance_module
+
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+    publish(engine, user_ids=(alice,))
+    dispatcher = make_dispatcher(engine)
+    claim = dispatcher.claim_one(owner="worker-1")
+    assert claim is not None
+    dispatcher.run_consumer_and_finalize(claim, owner="worker-1")
+    with engine.begin() as connection:
+        connection.execute(
+            update(notification_table)
+            .where(notification_table.c.event_id == "evt_1")
+            .values(retire_after_at_utc=datetime(2000, 1, 1, tzinfo=UTC))
+        )
+    calls = []
+
+    def canonical(event_id, user_id, outcome, seq):
+        calls.append((event_id, user_id, outcome, seq))
+        return "canonical-fingerprint"
+
+    monkeypatch.setattr(
+        maintenance_module,
+        "canonical_receipt_fingerprint",
+        canonical,
+        raising=False,
+    )
+
+    NotificationRetentionMaintenance(engine, now=lambda: fixed_now()).run_once()
+
+    assert calls == [("evt_1", alice, "materialized", 1)]
+    with engine.connect() as connection:
+        fingerprint = connection.execute(
+            select(notification_delivery_receipt_table.c.fingerprint).where(
+                notification_delivery_receipt_table.c.event_id == "evt_1"
+            )
+        ).scalar_one()
+    assert fingerprint == "canonical-fingerprint"
+
+
 def test_suppression_receipt_occurred_at_comes_from_the_event() -> None:
     engine = build_engine()
     identity = build_identity_service(engine)

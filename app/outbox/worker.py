@@ -184,7 +184,14 @@ class OutboxWorker:
                 heartbeat_stopped = True
                 heartbeat.raise_if_inactive()
             outcome = self._dispatcher.run_consumer_and_finalize(current, owner=owner)
-            heartbeat.raise_if_inactive()
+            if not heartbeat_stopped:
+                # Finalization has committed the terminal delivery state. A
+                # trailing renewal can now observe a non-running row, which is
+                # expected and must not turn this completed delivery into a
+                # worker failure.
+                heartbeat.stop()
+                heartbeat_stopped = True
+            return outcome
         except BaseException:
             if not heartbeat_stopped:
                 try:
@@ -192,10 +199,6 @@ class OutboxWorker:
                 except BaseException:
                     _logger.exception("outbox heartbeat cleanup failed after delivery error")
             raise
-        if not heartbeat_stopped:
-            heartbeat.stop()
-            heartbeat.raise_if_inactive()
-        return outcome
 
     def run_once(self, *, owner: str, limit: int = 100) -> OutboxWorkerStats:
         normalized_owner = owner.strip()

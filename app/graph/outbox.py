@@ -15,7 +15,6 @@ from sqlalchemy.engine import Connection
 from app.outbox.ports import OutboxPublishCommand, RecipientSelection
 from app.outbox.publisher import SUPPORTED_EVENT_SCHEMA_VERSION, SqlAlchemyOutboxPublisher
 from app.platform.context import current_context
-from app.platform.errors import PlatformError
 
 from .repository import SqlAlchemyGraphRepository
 
@@ -38,7 +37,7 @@ class SqlAlchemyGraphBuildOutboxAdapter:
         failure_class: str | None = None,
         connection: Connection,
     ) -> str:
-        payload = {
+        payload: dict[str, object] = {
             "graph_build_id": graph_build_id,
             "status": status,
             "source_revision": str(source_revision),
@@ -66,16 +65,11 @@ class SqlAlchemyGraphBuildOutboxAdapter:
             ),
             trace_id=context.trace_id if context is not None else None,
         )
-        try:
-            self._publisher._publish_authorized(  # noqa: SLF001 - scoped internal assembly path
-                command,
-                connection=connection,
-                caller="knowledge_graph",
-            )
-        except PlatformError as error:
-            if error.code == "recipient_account_inactive":
-                return ""
-            raise
+        self._publisher._publish_authorized(  # noqa: SLF001 - scoped internal assembly path
+            command,
+            connection=connection,
+            caller="knowledge_graph",
+        )
         return command.event_id
 
 

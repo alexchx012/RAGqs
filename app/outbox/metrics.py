@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import delete
 from sqlalchemy.engine import Connection
 
 from .schema import outbox_metric_table
@@ -40,6 +41,12 @@ class SqlAlchemyOutboxMetrics:
             )
         )
 
+    def prune_before(self, connection: Connection, *, cutoff: datetime) -> int:
+        result = connection.execute(
+            delete(outbox_metric_table).where(outbox_metric_table.c.observed_at_utc < _utc(cutoff))
+        )
+        return int(result.rowcount or 0)
+
 
 class NoopOutboxMetrics:
     """Explicit no-op for tests that do not assert on metric rows."""
@@ -54,3 +61,7 @@ class NoopOutboxMetrics:
         value: float | None = None,
     ) -> None:
         del connection, metric_name, observed_at, event_id, value
+
+    def prune_before(self, connection: Connection, *, cutoff: datetime) -> int:
+        del connection, cutoff
+        return 0

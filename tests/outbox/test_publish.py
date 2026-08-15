@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
+
 import pytest
 from _helpers import (
     build_engine,
@@ -178,6 +181,56 @@ def test_publish_fingerprint_conflict_rolls_back_and_records_invariant_alert() -
         from app.outbox.schema import outbox_event_table
 
         assert len(connection.execute(select(outbox_event_table)).all()) == 1
+
+
+def test_publish_fingerprint_conflict_logs_without_a_second_engine_checkout(
+    caplog, monkeypatch
+) -> None:
+    class _PostgresDialectConnection:
+        def __init__(self, connection) -> None:
+            self._connection = connection
+            self.dialect = SimpleNamespace(name="postgresql")
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    class _CheckoutProbe:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def begin(self):
+            self.calls += 1
+            raise AssertionError("fingerprint conflict must not checkout another connection")
+
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+    publisher = make_publisher(engine, now=lambda: fixed_now())
+    with engine.begin() as connection:
+        publisher.publish(make_publish_command(user_ids=(alice,)), connection=connection)
+    checkout_probe = _CheckoutProbe()
+    monkeypatch.setattr(publisher, "_engine", checkout_probe)
+    caplog.set_level(logging.ERROR, logger="app.outbox.publisher")
+
+    with pytest.raises(PlatformError) as raised:
+        with engine.begin() as connection:
+            publisher.publish(
+                make_publish_command(
+                    user_ids=(alice,),
+                    event_id="evt_conflict",
+                    payload={
+                        "job_id": "job_1",
+                        "document_id": "doc_CHANGED",
+                        "document_version_id": "docv_1",
+                        "publication_id": "pub_1",
+                    },
+                ),
+                connection=_PostgresDialectConnection(connection),
+            )
+
+    assert raised.value.code == "outbox_fingerprint_conflict"
+    assert checkout_probe.calls == 0
+    assert any("outbox fingerprint conflict" in record.message for record in caplog.records)
 
 
 def test_publish_captures_recipient_role_and_lifecycle_snapshot() -> None:

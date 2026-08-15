@@ -16,7 +16,7 @@ import json
 import logging
 import secrets
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -25,7 +25,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.identity.schema import identity_user_table
 from app.platform.context import current_context
-from app.platform.database import platform_audit_table
 from app.platform.errors import PlatformError
 
 from .capabilities import verify_token
@@ -361,11 +360,13 @@ class SqlAlchemyOutboxPublisher:
         capabilities: Mapping[str, frozenset[str]] | None = None,
         graph_activated_receipt_port: Any = None,
         capability_secret: bytes | None = None,
+        retention_days: int = 30,
     ) -> None:
         self._engine = engine
         self._clock = clock
         self._now = now
         self._graph_activated_receipt_port = graph_activated_receipt_port
+        self._retention_days = retention_days
         # Assembly-time registry: caller -> allowed event types. `None` builds
         # the production matrix; an EXPLICIT empty mapping is deny-all and is
         # never replaced by the default.
@@ -474,7 +475,7 @@ class SqlAlchemyOutboxPublisher:
         )
         if unique is not None:
             if unique["payload_fingerprint"] != fingerprint:
-                self._alert_fingerprint_conflict(connection, command, fingerprint)
+                self._alert_fingerprint_conflict(command, fingerprint)
                 raise PlatformError(
                     "outbox_fingerprint_conflict",
                     "Event fingerprint conflicts with the existing transition",
@@ -537,7 +538,7 @@ class SqlAlchemyOutboxPublisher:
             )
             if concurrent is not None:
                 if concurrent["payload_fingerprint"] != fingerprint:
-                    self._alert_fingerprint_conflict(connection, command, fingerprint)
+                    self._alert_fingerprint_conflict(command, fingerprint)
                     raise PlatformError(
                         "outbox_fingerprint_conflict",
                         "Event fingerprint conflicts with the existing transition",
@@ -731,6 +732,11 @@ class SqlAlchemyOutboxPublisher:
         fingerprint: str,
         created_at: datetime,
     ) -> None:
+        compact_after = (
+            created_at + timedelta(days=self._retention_days)
+            if command.event_type in OUTBOX_ONLY_EVENT_TYPES
+            else None
+        )
         connection.execute(
             outbox_event_table.insert().values(
                 event_id=command.event_id,
@@ -745,7 +751,7 @@ class SqlAlchemyOutboxPublisher:
                 trace_id=command.trace_id,
                 created_at_utc=created_at,
                 storage_state="full",
-                compact_after_at_utc=None,
+                compact_after_at_utc=compact_after,
                 compacted_at_utc=None,
                 compacted_delivery_summary_json=None,
             )
@@ -753,44 +759,14 @@ class SqlAlchemyOutboxPublisher:
 
     def _alert_fingerprint_conflict(
         self,
-        connection: Connection,
         command: OutboxPublishCommand,
         fingerprint: str,
     ) -> None:
-        context = current_context()
-        if connection.dialect.name == "postgresql":
-            # Write the audit row through a SEPARATE connection/transaction so
-            # the high-priority invariant alert survives the business
-            # transaction rollback that always accompanies a fingerprint
-            # conflict.
-            try:
-                with self._engine.begin() as audit_connection:
-                    audit_connection.execute(
-                        platform_audit_table.insert().values(
-                            actor_id=f"producer:{command.caller_principal}",
-                            resource_type="outbox_event",
-                            resource_id=command.event_id,
-                            request_id=(
-                                context.request_id if context is not None else "req_outbox"
-                            ),
-                            occurred_at_utc=self._database_now(audit_connection),
-                            result="fingerprint_conflict",
-                            details_json={
-                                "event_type": command.event_type,
-                                "aggregate_type": command.aggregate_type,
-                                "aggregate_id": command.aggregate_id,
-                                "transition_version": command.transition_version,
-                                "fingerprint": fingerprint,
-                            },
-                        )
-                    )
-            except Exception:
-                # The alert must never mask the original conflict error.
-                _logger.exception("outbox fingerprint conflict alert failed")
-        # Non-PostgreSQL dialects have no independent transaction; the log is
-        # the durable alert signal there.
         _logger.error(
-            "outbox fingerprint conflict event_type=%s aggregate=%s/%s transition=%s",
+            "outbox fingerprint conflict event_id=%s fingerprint=%s event_type=%s "
+            "aggregate=%s/%s transition=%s",
+            command.event_id,
+            fingerprint,
             command.event_type,
             command.aggregate_type,
             command.aggregate_id,
@@ -864,7 +840,7 @@ class SqlAlchemyOutboxPublisher:
             .mappings()
             .one_or_none()
         )
-        if account is None or account["lifecycle_status"] != "active":
+        if account is None:
             raise PlatformError(
                 "recipient_account_inactive",
                 "Recipient account is not active",
