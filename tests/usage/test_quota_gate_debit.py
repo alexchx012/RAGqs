@@ -405,7 +405,7 @@ def test_gate_input_boundaries_stable() -> None:
     engine, quota = make_quota()
     with engine.begin() as connection:
         quota.calendar.lock_or_verify(connection)
-        for bad_pages in (0, -1, True, False):
+        for bad_pages in (0, -1, True, False, 2_147_483_648):
             with pytest.raises(PlatformError) as exc:
                 quota.check_direct_ingest_balance(
                     connection, quota_subject_user_id="u1", pages=bad_pages, role="user"
@@ -458,6 +458,57 @@ def test_publication_debit_charged_once_after_success() -> None:
         assert len(proj) == 1
         assert proj[0]["used"] == 120  # 不二次投影
         assert proj[0]["last_debit_id"] == debit_id
+
+
+def test_publication_debit_replay_succeeds_after_quota_is_full() -> None:
+    """已持久化 debit 的同事实重放优先于新的容量校验。"""
+    engine, quota = make_quota()
+    with engine.begin() as connection:
+        lock = quota.calendar.lock_or_verify(connection)
+        first_debit_id = quota.record_publication_debit(
+            connection,
+            publication_status="succeeded",
+            quota_operation_id="job_1",
+            publication_id="pub_1",
+            quota_subject_user_id="u1",
+            pages=300,
+            ownership=ownership(),
+            calendar_lock=lock,
+            role="user",
+            published_at=NOW,
+        )
+        second_debit_id = quota.record_publication_debit(
+            connection,
+            publication_status="succeeded",
+            quota_operation_id="job_2",
+            publication_id="pub_2",
+            quota_subject_user_id="u1",
+            pages=200,
+            ownership=ownership(),
+            calendar_lock=lock,
+            role="user",
+            published_at=NOW,
+        )
+        replayed_debit_id = quota.record_publication_debit(
+            connection,
+            publication_status="succeeded",
+            quota_operation_id="job_1",
+            publication_id="pub_1",
+            quota_subject_user_id="u1",
+            pages=300,
+            ownership=ownership(),
+            calendar_lock=lock,
+            role="user",
+            published_at=NOW,
+        )
+        snapshot = quota.read_snapshot(connection, quota_subject_user_id="u1", role="user")
+
+    assert first_debit_id is not None
+    assert second_debit_id is not None
+    assert replayed_debit_id == first_debit_id
+    assert snapshot.used == 500
+    with engine.connect() as connection:
+        assert len(debit_rows(connection)) == 2
 
 
 def test_publication_debit_exempt_unlimited_replay() -> None:

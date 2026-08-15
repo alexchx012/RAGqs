@@ -61,6 +61,10 @@ class BusinessCalendarService:
         Concurrent callers race on the primary key: exactly one insert wins,
         the rest observe the existing row and verify their timezone against it.
         """
+        existing = self._read_existing_lock(connection)
+        if existing is not None:
+            return existing
+
         now = self._clock.now_utc(connection)
         version_id = f"cal_{secrets.token_urlsafe(9)}"
         inserted = _insert_do_nothing(
@@ -75,6 +79,15 @@ class BusinessCalendarService:
             },
             ["id"],
         )
+        if inserted:
+            return CalendarLock(version_id, self._timezone, now)
+
+        lock = self._read_existing_lock(connection)
+        if lock is not None:
+            return lock
+        raise _ledger_invariant("business calendar singleton row is missing after lock attempt")
+
+    def _read_existing_lock(self, connection: Connection) -> CalendarLock | None:
         row = (
             connection.execute(
                 select(
@@ -87,12 +100,10 @@ class BusinessCalendarService:
             .one_or_none()
         )
         if row is None:
-            raise _ledger_invariant("business calendar singleton row is missing after lock attempt")
+            return None
         effective_from = row["effective_from_utc"]
         if not isinstance(effective_from, datetime):
             raise _ledger_invariant("business calendar effective_from_utc is not a timestamp")
-        if inserted:
-            return CalendarLock(version_id, self._timezone, now)
         if row["timezone"] != self._timezone:
             raise PlatformError(
                 "calendar_timezone_conflict",

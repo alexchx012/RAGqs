@@ -25,11 +25,11 @@ escape（``set_main_option``/``get_main_option`` 读回时还原），由 sentin
 config 单元测试证明不解析失败、不泄露。
 
 并发测试的临界点：不把 barrier 放在服务调用前（可能退化为串行），而是包装
-``QuotaService._update_projection_locked`` / ``QuotaRequestService._require_approvable``，
+``QuotaService._lock_projection`` / ``QuotaRequestService._require_approvable``，
 使两个独立事务都到达"即将执行 ``SELECT ... FOR UPDATE``"的点后才放行（barrier 每线程
 一次 + timeout + 异常收集）；离线单测证明若某线程未到临界点测试必然失败。
 
-迁移 parity：fixture 执行真实 Alembic ``upgrade head``（0011 为 head），不是
+迁移 parity：fixture 执行真实 Alembic ``upgrade head``（当前为 0019），不是
 ``metadata.create_all``；``alembic_version`` 与全部对象（表/触发器/函数/partial
 index/约束）落在临时 schema。对象存在性经 pg_catalog 验证；partial index 的
 predicate 用 ``pg_index.indpred`` + ``pg_get_expr`` 取回并经规范化 helper 与
@@ -402,7 +402,7 @@ def pg_env():
         with admin.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         created_schema = True
-        # 真实 Alembic migration：upgrade 到 head（0011 为 head），alembic_version
+        # 真实 Alembic migration：upgrade 到 head（当前为 0019），alembic_version
         # 与全部对象经 search_path 落在临时 schema，不是 metadata.create_all。
         config = _alembic_config(schema_url)
         command.upgrade(config, "head")
@@ -935,44 +935,54 @@ def test_pg_projection_insert_then_update_uses_real_insert_result(pg_env) -> Non
 
 
 # ---------------------------------------------------------------------------
-# H9 barrier：并发 debit 无丢失更新（临界点 = 投影行 SELECT ... FOR UPDATE）
+# H9 barrier：并发 debit 不越过额度（临界点 = 投影行 SELECT ... FOR UPDATE）
 # ---------------------------------------------------------------------------
 
 
-def test_pg_concurrent_debits_do_not_lose_updates(pg_env, monkeypatch) -> None:
-    """H9：两个独立事务同时 append_debit；临界点 barrier 包在
-    ``_update_projection_locked``（真实锁点：投影行 FOR UPDATE）前。
+@pytest.mark.parametrize(
+    "prebuild_projection",
+    [False, True],
+    ids=["first-projection-row", "existing-projection-row"],
+)
+def test_pg_concurrent_debits_do_not_exceed_effective_limit(
+    pg_env, monkeypatch, prebuild_projection: bool
+) -> None:
+    """两个独立事务同时 final debit 时，容量检查在投影行锁内串行执行。
 
-    预建投影行，两个 worker 直接竞争投影行锁（真正 row-lock update 路径）；
-    断言只基于**提交后**的独立连接读取：quota_debit 恰 2 行、sum=600、
-    projection.used=600（无 lost update），并覆盖并发后的 limit gate 最终一致性。
+    每个 worker 的首次 ``_lock_projection`` 前汇合；分别覆盖首次创建和既有投影行，
+    放行后由真实 PostgreSQL 唯一键/行锁串行化。断言一个 300 页 debit 成功、另一个以
+    quota_exceeded 失败，提交后只有一笔 ledger 行且 projection.used=300。
     """
     engine = pg_env.engine
     quota = pg_env.quota
     with engine.begin() as connection:
         quota.calendar.lock_or_verify(connection)
-        # 预建投影行：两个 worker 都走 SELECT ... FOR UPDATE 行锁，不竞争首行 INSERT。
-        connection.execute(
-            quota_projection_table.insert().values(
-                quota_subject_user_id="u1",
-                quota_period="2026-08",
-                base_limit=500,
-                extra_granted=0,
-                used=0,
-                last_debit_id=None,
-                updated_at_utc=NOW,
+        if prebuild_projection:
+            connection.execute(
+                quota_projection_table.insert().values(
+                    quota_subject_user_id="u1",
+                    quota_period="2026-08",
+                    base_limit=500,
+                    extra_granted=0,
+                    used=0,
+                    last_debit_id=None,
+                    updated_at_utc=NOW,
+                )
             )
-        )
     barrier = _ArrivalBarrier(2, timeout=30)
     errors: list[BaseException] = []
-    original_update = quota._update_projection_locked
+    original_lock = quota._lock_projection
+    thread_state = threading.local()
 
     def critical_point(connection, **kwargs):
-        # 两个事务都已打开并到达投影行锁之前；放行后由 DB 行锁串行化。
-        barrier.wait()
-        return original_update(connection, **kwargs)
+        # 每个 worker 仅在首次投影锁前汇合；成功 debit 随后的投影更新会重入该方法，
+        # 但已持有同一事务行锁，不应再次等待 barrier。
+        if not getattr(thread_state, "arrived_at_initial_lock", False):
+            thread_state.arrived_at_initial_lock = True
+            barrier.wait()
+        return original_lock(connection, **kwargs)
 
-    monkeypatch.setattr(quota, "_update_projection_locked", critical_point)
+    monkeypatch.setattr(quota, "_lock_projection", critical_point)
 
     def worker(operation_id: str, pages: int) -> None:
         try:
@@ -1002,15 +1012,18 @@ def test_pg_concurrent_debits_do_not_lose_updates(pg_env, monkeypatch) -> None:
         t.join(timeout=60)
     assert all(not t.is_alive() for t in threads)
     assert barrier.broken == []
-    assert errors == [], errors
+    assert len(errors) == 1
+    assert isinstance(errors[0], PlatformError)
+    assert errors[0].code == "quota_exceeded"
+    assert errors[0].status_code == 409
     # 提交后状态：全新连接（独立事务）验证
     with engine.connect() as connection:
         debit_count = connection.execute(
             select(func.count()).select_from(quota_debit_table)
         ).scalar_one()
-        assert debit_count == 2
+        assert debit_count == 1
         total = connection.execute(select(func.sum(quota_debit_table.c.page_delta))).scalar_one()
-        assert total == 600
+        assert total == 300
         row = (
             connection.execute(
                 select(quota_projection_table).where(
@@ -1023,13 +1036,13 @@ def test_pg_concurrent_debits_do_not_lose_updates(pg_env, monkeypatch) -> None:
             .mappings()
             .one()
         )
-        assert row["used"] == 600  # 无 lost update
+        assert row["used"] == 300
         snapshot = quota.read_snapshot(connection, quota_subject_user_id="u1", role="user")
-        assert snapshot.used == 600
-        # 并发 limit gate 最终一致性：提交后新请求被拒
+        assert snapshot.used == 300
+        # 并发后的 advisory gate 与已提交额度一致。
         with pytest.raises(PlatformError) as gate:
             quota.check_direct_ingest_balance(
-                connection, quota_subject_user_id="u1", pages=1, role="user"
+                connection, quota_subject_user_id="u1", pages=201, role="user"
             )
         assert gate.value.code == "quota_exceeded"
 
@@ -1972,12 +1985,12 @@ def test_pg_month_boundary_precise_instants(pg_env) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 0011 迁移 parity：对象存在性（pg_catalog）
+# head 迁移 parity：对象存在性（pg_catalog）
 # ---------------------------------------------------------------------------
 
 
-def test_pg_migration_parity_0011_head_objects_in_temp_schema(pg_env) -> None:
-    """0011 真实迁移产物：alembic_version=0011；触发器/函数/partial index/约束齐备。
+def test_pg_migration_parity_head_objects_in_temp_schema(pg_env) -> None:
+    """真实 head 迁移产物：alembic_version=head；触发器/函数/partial index/约束齐备。
 
     全部经 pg_catalog 在临时 schema 内验证（current_schema() == 随机 schema）；
     partial index 的 unique/columns/predicate 经 pg_index（indisunique/indkey/
@@ -1988,8 +2001,22 @@ def test_pg_migration_parity_0011_head_objects_in_temp_schema(pg_env) -> None:
         assert connection.execute(text("SELECT current_schema()")).scalar_one() == pg_env.schema
         assert (
             connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            == "0011_usage_quota"
+            == "0019_usage_projection_bigint"
         )
+        projection_types = dict(
+            connection.execute(
+                text(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'quota_projection' "
+                    "AND column_name IN ('base_limit', 'extra_granted', 'used')"
+                )
+            ).all()
+        )
+        assert projection_types == {
+            "base_limit": "bigint",
+            "extra_granted": "bigint",
+            "used": "bigint",
+        }
         triggers = set(
             connection.execute(
                 text(

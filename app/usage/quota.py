@@ -81,6 +81,7 @@ _EXEMPT_REASON = "shared_library_submission"
 _PUBLICATION_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "dead_letter"})
 _PERIOD_RE = re.compile(r"^(\d{4})-(\d{2})$")
 _CREDIT_NAMESPACE = "quota_request"
+_MAX_PAGE_DELTA = 2_147_483_647
 
 
 class Clock(Protocol):
@@ -143,8 +144,13 @@ def _require_role(value: Any) -> str:
 
 
 def _require_positive_pages(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise PlatformError("validation_error", "pages must be a positive integer", {}, 422)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= _MAX_PAGE_DELTA:
+        raise PlatformError(
+            "validation_error",
+            "pages must be a positive integer within the quota ledger range",
+            {},
+            422,
+        )
     return value
 
 
@@ -371,6 +377,44 @@ class QuotaService:
             "created_at_utc": recorded,
         }
 
+    def _lock_projection(
+        self,
+        connection: Connection,
+        *,
+        quota_subject_user_id: str,
+        quota_period: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """确保投影行存在并持有写路径的行锁。"""
+        _insert_do_nothing(
+            connection,
+            quota_projection_table,
+            {
+                "quota_subject_user_id": quota_subject_user_id,
+                "quota_period": quota_period,
+                "base_limit": self._base_limit,
+                "extra_granted": 0,
+                "used": 0,
+                "last_debit_id": None,
+                "updated_at_utc": now,
+            },
+            ["quota_subject_user_id", "quota_period"],
+        )
+        return dict(
+            connection.execute(
+                select(quota_projection_table)
+                .where(
+                    and_(
+                        quota_projection_table.c.quota_subject_user_id == quota_subject_user_id,
+                        quota_projection_table.c.quota_period == quota_period,
+                    )
+                )
+                .with_for_update()
+            )
+            .mappings()
+            .one()
+        )
+
     def _update_projection_locked(
         self,
         connection: Connection,
@@ -394,29 +438,11 @@ class QuotaService:
         调用方缺省路径）。数值/锁序/调用方事务语义不变。
         """
         now = updated_at_utc if updated_at_utc is not None else self._clock.now_utc(connection)
-        _insert_do_nothing(
+        self._lock_projection(
             connection,
-            quota_projection_table,
-            {
-                "quota_subject_user_id": quota_subject_user_id,
-                "quota_period": quota_period,
-                "base_limit": self._base_limit,
-                "extra_granted": 0,
-                "used": 0,
-                "last_debit_id": None,
-                "updated_at_utc": now,
-            },
-            ["quota_subject_user_id", "quota_period"],
-        )
-        connection.execute(
-            select(quota_projection_table)
-            .where(
-                and_(
-                    quota_projection_table.c.quota_subject_user_id == quota_subject_user_id,
-                    quota_projection_table.c.quota_period == quota_period,
-                )
-            )
-            .with_for_update()
+            quota_subject_user_id=quota_subject_user_id,
+            quota_period=quota_period,
+            now=now,
         )
         connection.execute(
             update(quota_projection_table)
@@ -427,6 +453,7 @@ class QuotaService:
                 )
             )
             .values(
+                base_limit=self._base_limit,
                 extra_granted=quota_projection_table.c.extra_granted + credit_delta,
                 used=quota_projection_table.c.used + debit_delta,
                 last_debit_id=(
@@ -509,19 +536,45 @@ class QuotaService:
                 "effective_calendar_version_id": calendar_lock.version_id,
             },
         )
+        values = {
+            "quota_debit_id": f"qd_{secrets.token_urlsafe(9)}",
+            **base,
+            "quota_operation_id": quota_operation_id,
+            "publication_id": publication_id,
+            "quota_subject_user_id": quota_subject_user_id,
+            "quota_period": period,
+            "quota_exempt_reason": quota_exempt_reason,
+        }
+        unique_where = quota_debit_table.c.quota_operation_id == quota_operation_id
+        existing_id = self._existing_entry(
+            connection,
+            unique_where=unique_where,
+            entry_fingerprint=str(values["entry_fingerprint"]),
+        )
+        if existing_id is not None:
+            return existing_id
+        projection = self._lock_projection(
+            connection,
+            quota_subject_user_id=quota_subject_user_id,
+            quota_period=period,
+            now=now,
+        )
+        # A same-operation concurrent writer may have committed while this call waited for the
+        # projection lock. Replays must return the persisted debit instead of failing quota check.
+        existing_id = self._existing_entry(
+            connection,
+            unique_where=unique_where,
+            entry_fingerprint=str(values["entry_fingerprint"]),
+        )
+        if existing_id is not None:
+            return existing_id
+        if int(projection["used"]) + pages > self._base_limit + int(projection["extra_granted"]):
+            raise PlatformError("quota_exceeded", "Quota limit exceeded", {}, 409)
         debit_id, inserted = self._insert_entry(
             connection,
-            values={
-                "quota_debit_id": f"qd_{secrets.token_urlsafe(9)}",
-                **base,
-                "quota_operation_id": quota_operation_id,
-                "publication_id": publication_id,
-                "quota_subject_user_id": quota_subject_user_id,
-                "quota_period": period,
-                "quota_exempt_reason": quota_exempt_reason,
-            },
+            values=values,
             conflict_index=["quota_operation_id"],
-            unique_where=quota_debit_table.c.quota_operation_id == quota_operation_id,
+            unique_where=unique_where,
         )
         if inserted:
             self._update_projection_locked(
@@ -1094,6 +1147,7 @@ class QuotaService:
                 )
             )
             .values(
+                base_limit=self._base_limit,
                 used=used,
                 extra_granted=extra,
                 last_debit_id=last_debit_id,

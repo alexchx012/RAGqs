@@ -49,6 +49,80 @@ def test_usage_revision_downgrade_removes_usage_tables(tmp_path: Path) -> None:
     assert "identity_user" in tables
 
 
+def test_projection_bigint_migration_preserves_existing_row(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'projection_bigint.sqlite3'}"
+    config = alembic_config(database_url)
+    command.upgrade(config, "0018_retention_ops")
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO quota_projection (quota_subject_user_id, quota_period, "
+                    "base_limit, extra_granted, used, last_debit_id, updated_at_utc) VALUES "
+                    "('u1', '2026-08', 500, 75, 425, 'debit_1', '2026-08-01T00:00:00+00:00')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        columns = {
+            column["name"]: str(column["type"]).upper()
+            for column in inspect(engine).get_columns("quota_projection")
+        }
+        with engine.connect() as connection:
+            row = (
+                connection.execute(
+                    text(
+                        "SELECT base_limit, extra_granted, used, last_debit_id "
+                        "FROM quota_projection WHERE quota_subject_user_id = 'u1'"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert {columns[name] for name in ("base_limit", "extra_granted", "used")} == {"BIGINT"}
+        assert dict(row) == {
+            "base_limit": 500,
+            "extra_granted": 75,
+            "used": 425,
+            "last_debit_id": "debit_1",
+        }
+    finally:
+        engine.dispose()
+
+    command.downgrade(config, "0018_retention_ops")
+    engine = create_engine(database_url)
+    try:
+        columns = {
+            column["name"]: str(column["type"]).upper()
+            for column in inspect(engine).get_columns("quota_projection")
+        }
+        with engine.connect() as connection:
+            row = (
+                connection.execute(
+                    text(
+                        "SELECT base_limit, extra_granted, used, last_debit_id "
+                        "FROM quota_projection WHERE quota_subject_user_id = 'u1'"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert {columns[name] for name in ("base_limit", "extra_granted", "used")} == {"INTEGER"}
+        assert dict(row) == {
+            "base_limit": 500,
+            "extra_granted": 75,
+            "used": 425,
+            "last_debit_id": "debit_1",
+        }
+    finally:
+        engine.dispose()
+
+
 def test_migration_creates_immutability_triggers(tmp_path: Path) -> None:
     """M2：迁移产物必须含账本与引用数据表的不可变/append-only 触发器（sqlite sqlite_master）。"""
     engine = _upgraded_engine(tmp_path, "triggers.sqlite3")

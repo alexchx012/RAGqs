@@ -376,9 +376,9 @@ quota_projection_table = Table(
     usage_metadata,
     Column("quota_subject_user_id", String(64), primary_key=True),
     Column("quota_period", String(7), primary_key=True),
-    Column("base_limit", Integer, nullable=False),
-    Column("extra_granted", Integer, nullable=False),
-    Column("used", Integer, nullable=False),
+    Column("base_limit", BigInteger, nullable=False),
+    Column("extra_granted", BigInteger, nullable=False),
+    Column("used", BigInteger, nullable=False),
     Column("last_debit_id", String(64), nullable=True),
     Column("updated_at_utc", DateTime(timezone=True), nullable=False),
 )
