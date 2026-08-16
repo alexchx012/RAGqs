@@ -637,10 +637,9 @@ export class MockKnowledgeController {
           document_id: doc.id,
           document_version_id: activeVersion.documentVersionId,
           job_id: null,
-          publication_id: null,
           version: doc.version,
           deduplicated: true,
-          status: 'deduplicated',
+          status: 'active',
         };
       }
       const processing = this.addProcessingVersion(doc, newHash);

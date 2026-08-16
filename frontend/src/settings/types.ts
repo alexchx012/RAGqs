@@ -215,16 +215,24 @@ export interface RebuildDocumentResponse {
 }
 
 /** §6.4 上传新版本：固定目标（document_id）+ expected_version，任务进上传结果层。 */
-export interface NewVersionResponse {
+interface NewVersionResponseBase {
   readonly document_id: string;
   readonly document_version_id: string;
-  /** null 表示内容与当前版本重复（deduplicated），未创建任务。 */
-  readonly job_id: string | null;
-  readonly publication_id: string | null;
   readonly version: number;
-  readonly deduplicated: boolean;
-  readonly status: string;
 }
+
+export type NewVersionResponse =
+  | (NewVersionResponseBase & {
+      readonly job_id: null;
+      readonly deduplicated: true;
+      readonly status: 'active';
+    })
+  | (NewVersionResponseBase & {
+      readonly job_id: string;
+      readonly publication_id: string;
+      readonly deduplicated: false;
+      readonly status: 'pending';
+    });
 
 /** §6.10 投稿。 */
 export type SubmissionStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn' | 'invalidated';

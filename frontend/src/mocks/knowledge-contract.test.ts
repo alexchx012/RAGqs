@@ -862,16 +862,14 @@ describe('knowledge contract mock：上传新版本（§6.4）与幂等回放', 
       'document_id',
       'document_version_id',
       'job_id',
-      'publication_id',
       'status',
       'version',
     ]);
     expect(result).toMatchObject({
       document_id: documentId,
       job_id: null,
-      publication_id: null,
       deduplicated: true,
-      status: 'deduplicated',
+      status: 'active',
     });
   });
 
