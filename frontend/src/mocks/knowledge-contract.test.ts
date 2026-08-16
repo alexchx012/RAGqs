@@ -22,6 +22,10 @@ function expectHttpError(fn: () => unknown, status: number, code: string): void 
   throw new Error(`expected MockHttpError ${status} ${code}`);
 }
 
+function sortedKeys(value: object): string[] {
+  return Object.keys(value).sort();
+}
+
 async function uploadRequest(
   token: string,
   spaceId: string,
@@ -52,6 +56,45 @@ async function uploadRequest(
     offset += chunk.length;
   }
   return fetch(resolveUrl(`/v1/spaces/${encodeURIComponent(spaceId)}/documents`), {
+    method: 'POST',
+    headers: {
+      Authorization: token,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Idempotency-Key': idempotencyKey,
+    },
+    body,
+  });
+}
+
+async function uploadNewVersionRequest(
+  token: string,
+  documentId: string,
+  expectedVersion: number,
+  file: { name: string; type: string; content: string },
+  idempotencyKey: string,
+): Promise<Response> {
+  const boundary = '----RAGqsNewVersionBoundary7MA4YWxk';
+  const encoder = new TextEncoder();
+  const chunks = [
+    encoder.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\n` +
+        `Content-Type: ${file.type}\r\n\r\n`,
+    ),
+    encoder.encode(file.content),
+    encoder.encode('\r\n'),
+    encoder.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="expected_version"\r\n\r\n${expectedVersion}\r\n`,
+    ),
+    encoder.encode(`--${boundary}--\r\n`),
+  ];
+  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return fetch(resolveUrl(`/v1/documents/${encodeURIComponent(documentId)}/versions`), {
     method: 'POST',
     headers: {
       Authorization: token,
@@ -114,33 +157,66 @@ describe('knowledge contract mock：文档列表与分页', () => {
 });
 
 describe('knowledge contract mock：上传三分支', () => {
-  it('manage 目标多文件：逐文件结果 + 批次 + 任务卡；dedupe 基于内容 hash（review C12）', async () => {
+  it('manage 目标多文件：返回 202、真实上传结果字段、批次与任务卡；dedupe 需要规范化文件名和内容 hash 都相同', async () => {
     const token = bearerOf('zhangsan');
     const response = await uploadRequest(
       token,
       'personal:u_user',
       [
-        { name: '季度总结.pdf', type: 'application/pdf', content: '%PDF-1.4' },
-        // 内容与上一文件相同（hash 相同）→ deduplicated；文件名不同不影响判定
-        { name: '员工手册-副本.pdf', type: 'application/pdf', content: '%PDF-1.4' },
+        { name: '季度  总结.pdf', type: 'application/pdf', content: '%PDF-1.4' },
+        // 规范化后同名且内容相同 → deduplicated。
+        { name: ' 季度 总结.PDF ', type: 'application/pdf', content: '%PDF-1.4' },
       ],
       'idem-upload-1',
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     const body = (await response.json()) as {
-      upload_batch_id: string | null;
-      items: { name: string; accepted: boolean; deduplicated?: boolean; job_id: string | null; submission_id?: string }[];
+      upload_batch_id: string;
+      items: {
+        filename: string;
+        document_id: string;
+        document_version_id: string | null;
+        job_id: string | null;
+        publication_id: string | null;
+        deduplicated: boolean;
+        status: string;
+      }[];
     };
     expect(body.upload_batch_id).toBeTruthy();
     expect(body.items).toHaveLength(2);
-    expect(body.items[0]).toMatchObject({ name: '季度总结.pdf', accepted: true });
-    expect(body.items[0].deduplicated).toBeUndefined();
+    expect(body.items[0]).toMatchObject({
+      filename: '季度  总结.pdf',
+      deduplicated: false,
+      status: 'pending',
+    });
+    expect(sortedKeys(body.items[0]!)).toEqual([
+      'deduplicated',
+      'document_id',
+      'document_version_id',
+      'filename',
+      'job_id',
+      'publication_id',
+      'status',
+    ]);
     expect(body.items[0].job_id).toBeTruthy();
-    expect(body.items[1]).toMatchObject({ name: '员工手册-副本.pdf', accepted: true, deduplicated: true });
+    expect(body.items[1]).toMatchObject({
+      filename: ' 季度 总结.PDF ',
+      deduplicated: true,
+      status: 'deduplicated',
+    });
+    expect(sortedKeys(body.items[1]!)).toEqual([
+      'deduplicated',
+      'document_id',
+      'document_version_id',
+      'filename',
+      'job_id',
+      'publication_id',
+      'status',
+    ]);
     expect(body.items[1].job_id).toBeNull();
 
     const jobs = (await (await listJobs(token)).json()) as { items: { job_id: string; state: string; name: string }[] };
-    expect(jobs.items.some((job) => job.name === '季度总结.pdf')).toBe(true);
+    expect(jobs.items.some((job) => job.name === '季度  总结.pdf')).toBe(true);
     // 批次统计：rejected=0、deduplicated=1（全部文件结果保留在 items）
     const batch = (await (await fetch(resolveUrl(`/v1/upload-batches/${body.upload_batch_id}`), { headers: { Authorization: token } })).json()) as {
       summary: { rejected: number; deduplicated: number; total_files: number };
@@ -148,28 +224,27 @@ describe('knowledge contract mock：上传三分支', () => {
     expect(batch.summary).toMatchObject({ rejected: 0, deduplicated: 1, total_files: 2 });
   });
 
-  it('失败项按服务端错误对象呈现（不预拒），含 413/422/415 映射', async () => {
+  it('上传校验失败为整请求错误，不伪造逐文件 accepted/error 结果', async () => {
     const token = bearerOf('zhangsan');
-    mockKnowledge.setNextUploadFailure('big', 'upload_too_large');
     mockKnowledge.setNextUploadFailure('virus', 'malware_detected');
     const response = await uploadRequest(
       token,
       'personal:u_user',
       [
-        { name: 'big-file.pdf', type: 'application/pdf', content: '%PDF' },
-        { name: 'virus.pdf', type: 'application/pdf', content: '%PDF' },
-        { name: 'notes.zip', type: 'application/zip', content: 'PK' },
-        { name: 'weird.xyz', type: 'application/x-custom', content: 'x' },
+        { name: 'would-be-created.pdf', type: 'application/pdf', content: '%PDF' },
+        { name: 'virus.pdf', type: 'application/pdf', content: '%PDF-virus' },
       ],
       'idem-upload-2',
     );
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { items: { name: string; accepted: boolean; error?: { code: string } }[] };
-    const byName = new Map(body.items.map((item) => [item.name, item]));
-    expect(byName.get('big-file.pdf')).toMatchObject({ accepted: false, error: { code: 'upload_too_large' } });
-    expect(byName.get('virus.pdf')).toMatchObject({ accepted: false, error: { code: 'malware_detected' } });
-    expect(byName.get('notes.zip')).toMatchObject({ accepted: false, error: { code: 'unsafe_archive' } });
-    expect(byName.get('weird.xyz')).toMatchObject({ accepted: false, error: { code: 'unsupported_media_type' } });
+    expect(response.status).toBe(422);
+    expect((await response.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: 'malware_detected' },
+    });
+    expect(
+      (await (await listJobs(token)).json()).items.some(
+        (job: { name: string }) => job.name === 'would-be-created.pdf',
+      ),
+    ).toBe(false);
   });
 
   it('quota_exceeded 整批拒绝：不预扣不冻结，配额未变化', async () => {
@@ -199,16 +274,124 @@ describe('knowledge contract mock：上传三分支', () => {
       [{ name: '公共建议稿.md', type: 'text/markdown', content: '# 建议' }],
       'idem-upload-4',
     );
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { upload_batch_id: string | null; items: { submission_id?: string; quota_exempt?: boolean }[] };
-    expect(body.upload_batch_id).toBeNull();
-    expect(body.items[0]?.submission_id).toBeTruthy();
-    expect(body.items[0]?.quota_exempt).toBe(true);
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as {
+      items: {
+        submission_id: string;
+        version: number;
+        status: string;
+        space_id: string;
+        quota_exempt: boolean;
+        document_id: null;
+        document_version_id: null;
+        job_id: null;
+      }[];
+    };
+    expect(body).not.toHaveProperty('upload_batch_id');
+    expect(body.items[0]).toMatchObject({ status: 'pending', space_id: 'public', quota_exempt: true });
+    expect(sortedKeys(body.items[0]!)).toEqual([
+      'document_id',
+      'document_version_id',
+      'job_id',
+      'quota_exempt',
+      'space_id',
+      'status',
+      'submission_id',
+      'version',
+    ]);
 
     const submissions = (await (await listSubmissions(token, 'pending')).json()) as {
-      items: { name: string; status: string }[];
+      items: { file_name: string; status: string }[];
     };
-    expect(submissions.items.some((item) => item.name === '公共建议稿.md')).toBe(true);
+    expect(submissions.items.some((item) => item.file_name === '公共建议稿.md')).toBe(true);
+  });
+
+  it('初始管理上传：同一内容换文件名和同名换内容都创建新文档', async () => {
+    const token = bearerOf('zhangsan');
+    const sameBytesDifferentName = await uploadRequest(
+      token,
+      'personal:u_user',
+      [
+        { name: '原文件.pdf', type: 'application/pdf', content: '%PDF-identical' },
+        { name: '另一文件.pdf', type: 'application/pdf', content: '%PDF-identical' },
+      ],
+      'idem-filename-aware-1',
+    );
+    expect(sameBytesDifferentName.status).toBe(202);
+    const firstBody = (await sameBytesDifferentName.json()) as {
+      items: { document_id: string; deduplicated: boolean }[];
+    };
+    expect(firstBody.items.map((item) => item.deduplicated)).toEqual([false, false]);
+    expect(firstBody.items[1]!.document_id).not.toBe(firstBody.items[0]!.document_id);
+
+    const sameNameDifferentBytes = await uploadRequest(
+      token,
+      'personal:u_user',
+      [
+        { name: '同名文件.pdf', type: 'application/pdf', content: '%PDF-one' },
+        { name: ' 同名  文件.PDF ', type: 'application/pdf', content: '%PDF-two' },
+      ],
+      'idem-filename-aware-2',
+    );
+    expect(sameNameDifferentBytes.status).toBe(202);
+    const secondBody = (await sameNameDifferentBytes.json()) as {
+      items: { document_id: string; deduplicated: boolean }[];
+    };
+    expect(secondBody.items.map((item) => item.deduplicated)).toEqual([false, false]);
+    expect(secondBody.items[1]!.document_id).not.toBe(secondBody.items[0]!.document_id);
+  });
+
+  it('初始上传 claim 不随替换版本改写，且文件名按服务端 casefold 归一化', async () => {
+    const token = bearerOf('zhangsan');
+    const initial = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: 'immutable.pdf', type: 'application/pdf', content: '%PDF-original' }],
+      'idem-immutable-initial',
+    );
+    const initialItem = ((await initial.json()) as { items: { document_id: string; job_id: string }[] }).items[0]!;
+    mockKnowledge.advanceJob(token, initialItem.job_id, 'succeeded');
+
+    const replacement = await uploadNewVersionRequest(
+      token,
+      initialItem.document_id,
+      1,
+      { name: 'immutable.pdf', type: 'application/pdf', content: '%PDF-replacement' },
+      'idem-immutable-replacement',
+    );
+    const replacementItem = (await replacement.json()) as { job_id: string };
+    mockKnowledge.advanceJob(token, replacementItem.job_id, 'succeeded');
+
+    const originalAgain = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: ' immutable.pdf ', type: 'application/pdf', content: '%PDF-original' }],
+      'idem-immutable-original-again',
+    );
+    const originalItem = ((await originalAgain.json()) as { items: { document_id: string; deduplicated: boolean }[] }).items[0]!;
+    expect(originalItem).toMatchObject({ document_id: initialItem.document_id, deduplicated: true });
+
+    const replacementAgain = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: 'immutable.pdf', type: 'application/pdf', content: '%PDF-replacement' }],
+      'idem-immutable-replacement-again',
+    );
+    const replacementUploadItem = ((await replacementAgain.json()) as { items: { document_id: string; deduplicated: boolean }[] }).items[0]!;
+    expect(replacementUploadItem).toMatchObject({ deduplicated: false });
+    expect(replacementUploadItem.document_id).not.toBe(initialItem.document_id);
+
+    const casefolded = await uploadRequest(
+      token,
+      'personal:u_user',
+      [
+        { name: 'Straße.pdf', type: 'application/pdf', content: '%PDF-casefold' },
+        { name: 'STRASSE.pdf', type: 'application/pdf', content: '%PDF-casefold' },
+      ],
+      'idem-casefold-upload',
+    );
+    const casefoldItems = (await casefolded.json()) as { items: { deduplicated: boolean }[] };
+    expect(casefoldItems.items.map((item) => item.deduplicated)).toEqual([false, true]);
   });
 });
 
@@ -447,7 +630,7 @@ describe('knowledge contract mock：投稿五态与 409', () => {
 describe('knowledge contract mock：查看内容审核范围（§8.4）', () => {
   /** 经对应角色待审列表按名取种子投稿 id（范围即 listApprovals 口径；无范围角色会 403，故用 ops/admin 视角查）。 */
   function pendingIdByName(token: string, name: string): string {
-    const item = mockKnowledge.listApprovals(token).items.find((entry) => entry.name === name);
+    const item = mockKnowledge.listApprovals(token).items.find((entry) => entry.file_name === name);
     if (item === undefined) {
       throw new Error(`pending submission not found: ${name}`);
     }
@@ -501,7 +684,7 @@ describe('knowledge contract mock：部长部门库审核', () => {
     expect(summary.submission_pending).toBeGreaterThan(0);
 
     const list = (await (await fetch(resolveUrl('/v1/approvals/submissions'), { headers: { Authorization: ministerToken } })).json()) as {
-      items: { submission_id: string; version: number; name: string }[];
+      items: { submission_id: string; version: number; file_name: string }[];
     };
     expect(list.items.length).toBe(summary.submission_pending);
     const target = list.items[0];
@@ -515,8 +698,10 @@ describe('knowledge contract mock：部长部门库审核', () => {
     expect(((await approve.json()) as { status: string; job_id?: string }).status).toBe('approved');
 
     // 投稿人侧联动
-    const mine = (await (await listSubmissions(submitterToken)).json()) as { items: { name: string; status: string }[] };
-    expect(mine.items.find((item) => item.name === target.name)?.status).toBe('approved');
+    const mine = (await (await listSubmissions(submitterToken)).json()) as {
+      items: { file_name: string; status: string }[];
+    };
+    expect(mine.items.find((item) => item.file_name === target.file_name)?.status).toBe('approved');
 
     // 铃铛送达（未读数含 submission_approved）
     expect(mockNotifications.unreadCount(submitterToken)).toBeGreaterThan(0);
@@ -549,11 +734,11 @@ describe('knowledge contract mock：部长部门库审核', () => {
     expect(((await reject.json()) as { status: string }).status).toBe('rejected');
 
     const mine = (await (await listSubmissions(submitterToken, 'rejected')).json()) as {
-      items: { name: string; status: string; reject_reason: string | null }[];
+      items: { file_name: string; status: string; reviewed_at: string | null }[];
     };
     const rejected = mine.items.find((item) => item.status === 'rejected');
     expect(rejected).toBeDefined();
-    expect(rejected?.reject_reason).toBe('格式不符合要求');
+    expect(rejected?.reviewed_at).not.toBeNull();
     expect(mockNotifications.unreadCount(submitterToken)).toBeGreaterThan(0);
   });
 
@@ -582,11 +767,11 @@ describe('knowledge contract mock：上传新版本（§6.4）与幂等回放', 
     };
     expect(before.active_version_id).toBe(target.document_version_id);
 
-    // 新版本 multipart：files（单文件）+ expected_version 表单字段
+    // 新版本 multipart：file（单文件）+ expected_version 表单字段
     const boundary = '----RAGqsNewVersionBoundary42';
     const encoder = new TextEncoder();
     const chunks = [
-      encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="员工手册-v2.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+      encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="员工手册-v2.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
       encoder.encode('%PDF-1.4'),
       encoder.encode('\r\n'),
       encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="expected_version"\r\n\r\n${target.version}\r\n`),
@@ -608,11 +793,30 @@ describe('knowledge contract mock：上传新版本（§6.4）与幂等回放', 
       },
       body,
     });
-    expect(response.status).toBe(200);
-    const created = (await response.json()) as { document_id: string; document_version_id: string; job_id: string; version: number };
+    expect(response.status).toBe(202);
+    const created = (await response.json()) as {
+      document_id: string;
+      document_version_id: string;
+      job_id: string;
+      publication_id: string;
+      deduplicated: boolean;
+      status: string;
+      version: number;
+    };
+    expect(sortedKeys(created)).toEqual([
+      'deduplicated',
+      'document_id',
+      'document_version_id',
+      'job_id',
+      'publication_id',
+      'status',
+      'version',
+    ]);
     expect(created.document_id).toBe(target.id);
     expect(created.version).toBe(target.version + 1);
     expect(created.job_id).toBeTruthy();
+    expect(created.publication_id).toBeTruthy();
+    expect(created).toMatchObject({ deduplicated: false, status: 'pending' });
 
     // 任务 succeeded 前：旧 active 继续服务（active_version_id 未变）
     const pending = (await (await fetch(resolveUrl(`/v1/documents/${target.id}/versions`), { headers: { Authorization: token } })).json()) as {
@@ -630,6 +834,43 @@ describe('knowledge contract mock：上传新版本（§6.4）与幂等回放', 
     };
     expect(after.active_version_id).toBe(created.document_version_id);
     expect(after.items.find((item) => item.document_version_id === target.document_version_id)?.status).toBe('superseded');
+  });
+
+  it('重复的新版本返回 200，并包含完整的去重替换响应', async () => {
+    const token = bearerOf('zhangsan');
+    const initial = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: '替换去重.pdf', type: 'application/pdf', content: '%PDF-same-content' }],
+      'idem-replacement-source',
+    );
+    const initialBody = (await initial.json()) as {
+      items: { document_id: string; version?: number }[];
+    };
+    const documentId = initialBody.items[0]!.document_id;
+    const duplicate = await uploadNewVersionRequest(
+      token,
+      documentId,
+      1,
+      { name: '替换去重.pdf', type: 'application/pdf', content: '%PDF-same-content' },
+      'idem-replacement-dedupe',
+    );
+    expect(duplicate.status).toBe(200);
+    const result = (await duplicate.json()) as Record<string, unknown>;
+    expect(sortedKeys(result)).toEqual([
+      'deduplicated',
+      'document_id',
+      'document_version_id',
+      'job_id',
+      'status',
+      'version',
+    ]);
+    expect(result).toMatchObject({
+      document_id: documentId,
+      job_id: null,
+      deduplicated: true,
+      status: 'active',
+    });
   });
 
   it('同 Idempotency-Key 同 payload 回放同一结果；不同 payload 409 idempotency_key_conflict', async () => {
@@ -719,7 +960,7 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
     const ministerToken = bearerOf('minister-li');
     const submitterToken = bearerOf('zhangsan');
     const list = (await (await fetch(resolveUrl('/v1/approvals/submissions'), { headers: { Authorization: ministerToken } })).json()) as {
-      items: { submission_id: string; version: number; name: string }[];
+      items: { submission_id: string; version: number; file_name: string }[];
     };
     const target = list.items[0];
 
@@ -736,14 +977,14 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
 
     // job 成功前：文档不可检索（部门库文档列表不出现）
     const before = (await (await listDocuments(ministerToken, 'department:d_finance')).json()) as { items: { name: string }[] };
-    expect(before.items.some((item) => item.name === target.name)).toBe(false);
+    expect(before.items.some((item) => item.name === target.file_name)).toBe(false);
 
     // job 成功后：文档可检索
     const jobId = approved.job_id ?? '';
     expect(jobId).toBeTruthy();
     mockKnowledge.advanceJob(ministerToken, jobId, 'succeeded');
     const after = (await (await listDocuments(ministerToken, 'department:d_finance')).json()) as { items: { name: string }[] };
-    expect(after.items.some((item) => item.name === target.name)).toBe(true);
+    expect(after.items.some((item) => item.name === target.file_name)).toBe(true);
   });
 
   it('幂等记录按 actor+endpoint+target 隔离：同 key 不同用户各自独立', async () => {
@@ -753,13 +994,13 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
     const first = mockKnowledge.uploadDocuments(zhangsanToken, 'personal:u_user', [
       { name: '隔离文档.pdf', size: 4, type: 'application/pdf', contentHash: 'hash-aaa' },
     ], 'idem-shared-key');
-    expect(first.items[0]?.accepted).toBe(true);
+    expect(first.items[0]?.status).toBe('pending');
 
     // ops 用同 key 上传到自己的个人库：独立记录，不冲突
     const second = mockKnowledge.uploadDocuments(opsToken, 'personal:u_ops', [
       { name: '隔离文档2.pdf', size: 5, type: 'application/pdf', contentHash: 'hash-bbb' },
     ], 'idem-shared-key');
-    expect(second.items[0]?.accepted).toBe(true);
+    expect(second.items[0]?.status).toBe('pending');
     expect(second.items[0] && 'job_id' in second.items[0] ? (second.items[0].job_id ?? '') : '').not.toBe(
       first.items[0] && 'job_id' in first.items[0] ? (first.items[0].job_id ?? '') : '',
     );

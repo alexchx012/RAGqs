@@ -473,18 +473,55 @@ describe('图谱维护区（§6.12，ops）', () => {
     expect(await screen.findByRole('dialog', { name: copyGraph.confirmTitleRebuild })).toBeInTheDocument();
   });
 
+  it('终态图谱构建从 completed_at 渲染完成时间', async () => {
+    const token = loginToken('ops-wang');
+    const completedRun: GraphBuildRun = {
+      graph_build_id: 'gb_completed_1',
+      version: 3,
+      state: 'succeeded',
+      source_revision: 12,
+      estimated_primary_model_calls: 3,
+      actual_usage: { primary_model_calls: 3, provider_calls: 3 },
+      created_at: 'created-at-sentinel',
+      started_at: 'started-at-sentinel',
+      completed_at: 'completed-at-sentinel',
+      failure_class: null,
+      allowed_actions: [],
+    };
+    const adminApi = contractAdminApi(token, {
+      getCurrentGraphBuild: vi.fn(async () => ({
+        space_id: 'public' as const,
+        source_revision: 12,
+        graph_availability: 'ready' as const,
+        active_generation: null,
+        latest_run: completedRun,
+      })),
+    });
+
+    await renderSpaces(
+      <PublicSpaceLayer />,
+      opsUser(),
+      adminApi,
+      contractSettingsApi(token),
+    );
+
+    expect(
+      await screen.findByText(textIncluding(copyGraph.runFinishedAt('completed-at-sentinel'))),
+    ).toBeInTheDocument();
+  });
+
   it('取消 409 graph_build_not_cancellable：错误行 + 状态刷新', async () => {
     const token = loginToken('ops-wang');
     const runningRun: GraphBuildRun = {
       graph_build_id: 'gb_running_1',
       version: 2,
-      status: 'running',
+      state: 'running',
       source_revision: 12,
       estimated_primary_model_calls: 3,
       actual_usage: null,
       created_at: '2026-08-01T00:00:00Z',
       started_at: '2026-08-01T00:00:05Z',
-      finished_at: null,
+      completed_at: null,
       failure_class: null,
       allowed_actions: ['cancel'],
     };

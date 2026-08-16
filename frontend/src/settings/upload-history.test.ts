@@ -5,7 +5,17 @@ function entry(name: string) {
   return {
     response: {
       upload_batch_id: 'ub_1',
-      items: [{ name, accepted: true as const, space_id: 'personal:u_user', document_id: 'doc_1', job_id: 'job_1' }],
+      items: [
+        {
+          filename: name,
+          document_id: 'doc_1',
+          document_version_id: 'ver_1',
+          job_id: 'job_1',
+          publication_id: 'pub_1',
+          deduplicated: false,
+          status: 'pending',
+        },
+      ],
     },
     target: null,
     at: '2026-08-09T00:00:00Z',
@@ -17,8 +27,8 @@ describe('upload-history（review A2：按 auth session 隔离）', () => {
     clearUploadHistory();
     expect(recordUploadHistory(entry('A'), 'sess1:u_user')).toBe(true);
     expect(recordUploadHistory(entry('B'), 'sess2:u_user')).toBe(true);
-    expect(readUploadHistory('sess1:u_user')?.response.items[0]?.name).toBe('A');
-    expect(readUploadHistory('sess2:u_user')?.response.items[0]?.name).toBe('B');
+    expect(readUploadHistory('sess1:u_user')?.response.items[0]).toMatchObject({ filename: 'A' });
+    expect(readUploadHistory('sess2:u_user')?.response.items[0]).toMatchObject({ filename: 'B' });
     // 未认证（null）写入被拒
     expect(recordUploadHistory(entry('C'), null)).toBe(false);
     expect(readUploadHistory(null)).toBeNull();
@@ -33,7 +43,7 @@ describe('upload-history（review A2：按 auth session 隔离）', () => {
     expect(recordUploadHistory(entry('new'), 'sessB:u_user')).toBe(true);
     expect(listener).toHaveBeenCalledTimes(2);
     // 会话 A 的槽位不被 B 覆盖
-    expect(readUploadHistory('sessA:u_user')?.response.items[0]?.name).toBe('old');
+    expect(readUploadHistory('sessA:u_user')?.response.items[0]).toMatchObject({ filename: 'old' });
     unsubscribe();
   });
 });

@@ -193,6 +193,42 @@ describe('设置域 API 封装（账户基座）', () => {
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('idem-upload-1');
   });
 
+  it('uploadNewVersion：使用后端要求的单数 file multipart 字段', async () => {
+    const mock = vi.fn<typeof fetch>(async () =>
+      jsonResponse(202, {
+        document_id: 'doc_1',
+        document_version_id: 'version_2',
+        job_id: 'job_2',
+        publication_id: 'publication_2',
+        version: 2,
+        deduplicated: false,
+        status: 'pending',
+      }),
+    );
+    const api = makeApi(mock);
+
+    const result = await api.uploadNewVersion(
+      'doc_1',
+      new File(['replacement'], 'replacement.pdf', { type: 'application/pdf' }),
+      1,
+      'idem-version-1',
+    );
+
+    const { init } = captureFetch(mock);
+    const text = new TextDecoder('latin1').decode(init.body as Uint8Array);
+    expect(text).toContain('name="file"; filename="replacement.pdf"');
+    expect(text).not.toContain('name="files";');
+    expect(text).toContain('name="expected_version"');
+    expect(result).toMatchObject({
+      document_id: 'doc_1',
+      document_version_id: 'version_2',
+      job_id: 'job_2',
+      publication_id: 'publication_2',
+      deduplicated: false,
+      status: 'pending',
+    });
+  });
+
   it('getSubmissionContent：请求 Blob 内容并保留 bytes 和 MIME type', async () => {
     const expectedBytes = new Uint8Array([37, 80, 68, 70]);
     const mock = vi.fn<typeof fetch>(async () =>

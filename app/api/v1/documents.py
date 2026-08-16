@@ -8,6 +8,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, Form, Header, Path, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from app.documents.preview import (
+    PreviewContent,
+    is_pdf_preview_content,
+    is_raw_preview_content,
+    parse_single_byte_range,
+)
 from app.documents.service import DocumentsService, DocumentUpload
 from app.documents.uploads import read_limited_upload
 from app.identity.service import AuthPrincipal
@@ -30,6 +36,43 @@ def _key(value: str | None) -> str:
     if not value or not value.strip():
         raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
     return value.strip()
+
+
+def _range_content(content: PreviewContent, range_header: str | None) -> PreviewContent:
+    if range_header is None or not is_pdf_preview_content(content.media_type):
+        return content
+    byte_range = parse_single_byte_range(range_header, len(content.body))
+    headers = dict(content.headers)
+    headers.setdefault("Accept-Ranges", "bytes")
+    if byte_range is None:
+        headers["Content-Range"] = f"bytes */{len(content.body)}"
+        return PreviewContent(
+            body=b"",
+            media_type=content.media_type,
+            status_code=416,
+            headers=headers,
+        )
+    start, end = byte_range
+    headers["Content-Range"] = f"bytes {start}-{end}/{len(content.body)}"
+    return PreviewContent(
+        body=content.body[start : end + 1],
+        media_type=content.media_type,
+        status_code=206,
+        headers=headers,
+    )
+
+
+def _content_response(content: PreviewContent, *, include_body: bool) -> Response:
+    headers = dict(content.headers)
+    if is_pdf_preview_content(content.media_type):
+        headers.setdefault("Accept-Ranges", "bytes")
+    headers.setdefault("Content-Length", str(len(content.body)))
+    return Response(
+        content=content.body if include_body else b"",
+        status_code=content.status_code,
+        headers=headers,
+        media_type=content.media_type,
+    )
 
 
 async def _upload(file: UploadFile, *, max_bytes: int) -> DocumentUpload:
@@ -180,23 +223,36 @@ def preview_document(
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     document_version_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    message_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
 ) -> dict[str, object]:
     return document_service(request).preview(
-        principal=principal, document_id=document_id, document_version_id=document_version_id
+        principal=principal,
+        document_id=document_id,
+        document_version_id=document_version_id,
+        message_id=message_id,
     )
 
 
+@router.head("/documents/{document_id}/content")
 @router.get("/documents/{document_id}/content")
 def content_document(
     document_id: Annotated[str, Path(min_length=1, max_length=128)],
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     document_version_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    sheet: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    range_header: Annotated[str | None, Header(alias="Range")] = None,
 ) -> Response:
-    content, metadata = document_service(request).content(
-        principal=principal, document_id=document_id, document_version_id=document_version_id
+    content = document_service(request).content(
+        principal=principal,
+        document_id=document_id,
+        document_version_id=document_version_id,
+        sheet=sheet,
     )
-    return Response(content=content, media_type=metadata.content_type)
+    content = _range_content(content, range_header)
+    if request.method == "HEAD" and not is_raw_preview_content(content.media_type):
+        return Response(status_code=405, headers={"Allow": "GET"})
+    return _content_response(content, include_body=request.method != "HEAD")
 
 
 @router.get("/upload-batches/{upload_batch_id}")

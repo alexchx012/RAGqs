@@ -218,6 +218,8 @@ function mediaKindOf(type: string, name: string): string {
 
 export class MockKnowledgeController {
   private readonly documents = new Map<string, StoredDocument[]>();
+  /** 初始上传 claim 独立于文档活动版本；新版本激活不得改写它。 */
+  private readonly initialUploadClaims = new Map<string, string>();
   private readonly jobs = new Map<string, StoredJob>();
   /** §10.1 运维任务队列独立任务池：不进上传结果层（listJobs 只迭代 jobs），cancel/replay 双池查找。 */
   private readonly opsJobs = new Map<string, StoredJob>();
@@ -244,6 +246,7 @@ export class MockKnowledgeController {
 
   reset(): void {
     this.documents.clear();
+    this.initialUploadClaims.clear();
     this.jobs.clear();
     this.opsJobs.clear();
     this.batches.clear();
@@ -498,61 +501,60 @@ export class MockKnowledgeController {
     }
 
     const items: UploadItem[] = [];
-    const accepted: { file: UploadFileInput; doc: StoredDocument; job: StoredJob }[] = [];
-    const contributed: { file: UploadFileInput; submission: StoredSubmission }[] = [];
+    const accepted: { file: UploadFileInput; doc: StoredDocument; job: StoredJob; initialClaimKey: string }[] = [];
 
+    // 管理上传在服务端事务中执行；先完成整批校验，避免错误响应留下半批文档或任务。
     for (const file of files) {
       const error = this.uploadErrorFor(file);
       if (error !== null) {
-        items.push({ name: file.name, accepted: false, error });
-        continue;
+        throw new MockHttpError(422, error.code, error.details);
       }
-      // dedupe 基于内容 hash（不能只按文件名）：同名不同内容 → 新文档；不同名同内容 → deduplicated
-      const hash = file.contentHash ?? this.fallbackHash(file);
-      const existing = this.findByContentHash(spaceId, hash);
-      if (existing !== undefined) {
-        items.push({
-          name: file.name,
-          accepted: true,
-          space_id: spaceId,
-          document_id: existing.id,
-          document_version_id: existing.activeVersionId,
-          job_id: null,
-          deduplicated: true,
-          version: existing.version,
-          status: 'deduplicated',
-        });
-        continue;
-      }
+    }
+
+    for (const file of files) {
+      // 初始上传仅在规范化文件名和内容 hash 都相同的情况下去重。
       if (permission === 'manage') {
+        const hash = file.contentHash ?? this.fallbackHash(file);
+        const initialClaimKey = this.initialUploadClaimKey(spaceId, file.name, hash);
+        const existing = this.findInitialUploadDuplicate(initialClaimKey);
+        if (existing !== undefined) {
+          items.push({
+            filename: file.name,
+            document_id: existing.id,
+            document_version_id: existing.activeVersionId,
+            job_id: null,
+            publication_id: null,
+            deduplicated: true,
+            status: 'deduplicated',
+          });
+          continue;
+        }
         const doc = this.createDocument(space, file);
         const job = this.createJob(doc, 'upload');
+        this.initialUploadClaims.set(initialClaimKey, doc.id);
         // 生命周期：初始上传任务 succeeded 前文档不出现在文档列表
         (doc as { initialUploadJobId: string | null }).initialUploadJobId = job.jobId;
-        accepted.push({ file, doc, job });
+        accepted.push({ file, doc, job, initialClaimKey });
         items.push({
-          name: file.name,
-          accepted: true,
-          space_id: spaceId,
+          filename: file.name,
           document_id: doc.id,
           document_version_id: doc.activeVersionId,
           job_id: job.jobId,
-          version: doc.version,
-          status: 'accepted',
+          publication_id: this.nextId('publication'),
+          deduplicated: false,
+          status: 'pending',
         });
       } else {
         const submission = this.createSubmission(user, space, file);
-        contributed.push({ file, submission });
         items.push({
-          name: file.name,
-          accepted: true,
-          space_id: spaceId,
-          document_id: null,
-          job_id: null,
           submission_id: submission.submissionId,
-          quota_exempt: true,
           version: submission.version,
           status: 'pending',
+          space_id: spaceId,
+          quota_exempt: true,
+          document_id: null,
+          document_version_id: null,
+          job_id: null,
         });
       }
     }
@@ -565,6 +567,7 @@ export class MockKnowledgeController {
         // 整批拒绝：撤销已创建状态，不预扣不冻结。
         for (const entry of accepted) {
           this.jobs.delete(entry.job.jobId);
+          this.initialUploadClaims.delete(entry.initialClaimKey);
           const list = this.documents.get(spaceId) ?? [];
           this.documents.set(
             spaceId,
@@ -578,17 +581,13 @@ export class MockKnowledgeController {
       }
     }
 
-    if (permission === 'manage' && accepted.length > 0) {
+    if (permission === 'manage') {
       const uploadBatchId = this.nextId('ub');
-      // 批次统计：rejected = 逐文件失败项数；deduplicated = 内容去重项数（全部文件结果保留在 items）
-      const rejected = items.filter((item) => !item.accepted).length;
-      const deduplicated = items.filter(
-        (item) => item.accepted && 'deduplicated' in item && item.deduplicated === true,
-      ).length;
+      const deduplicated = items.filter((item) => 'filename' in item && item.deduplicated).length;
       this.batches.set(uploadBatchId, {
         uploadBatchId,
         jobIds: accepted.map((entry) => entry.job.jobId),
-        rejected,
+        rejected: 0,
         deduplicated,
       });
       for (const entry of accepted) {
@@ -599,7 +598,7 @@ export class MockKnowledgeController {
       }
       return { upload_batch_id: uploadBatchId, items };
     }
-    return { upload_batch_id: null, items };
+    return { items };
   }
 
   /* ---------- §6.4 上传新版本 ---------- */
@@ -640,6 +639,7 @@ export class MockKnowledgeController {
           job_id: null,
           version: doc.version,
           deduplicated: true,
+          status: 'active',
         };
       }
       const processing = this.addProcessingVersion(doc, newHash);
@@ -649,7 +649,10 @@ export class MockKnowledgeController {
           document_id: doc.id,
           document_version_id: processing.documentVersionId,
           job_id: job.jobId,
+          publication_id: this.nextId('publication'),
           version: doc.version,
+          deduplicated: false,
+          status: 'pending',
         };
       },
       user.id,
@@ -1111,46 +1114,16 @@ export class MockKnowledgeController {
   }
 
   /** §8.4 待审列表：只返回当前审核者有权处理的 pending 投稿（正序，先投先审）。 */
-  listApprovals(
-    auth: string | null,
-    filter: { readonly targetKind?: 'public' | 'department'; readonly targetSpaceId?: string } = {},
-  ): { items: ApprovalListItem[] } {
+  listApprovals(auth: string | null): { items: ApprovalListItem[] } {
     const user = this.auth(auth);
     const scope = this.reviewScopeSpaceIds(user);
     if (scope.length === 0) {
       throw new MockHttpError(403, 'approval_forbidden');
     }
-    if (filter.targetKind !== undefined && filter.targetKind !== 'public' && filter.targetKind !== 'department') {
-      throw new MockHttpError(422, 'validation_error', { field: 'target_kind' });
-    }
     const items = [...this.submissions.values()]
       .filter((submission) => submission.status === 'pending' && scope.includes(submission.targetSpaceId))
-      .filter((submission) => {
-        if (filter.targetSpaceId !== undefined && submission.targetSpaceId !== filter.targetSpaceId) {
-          return false;
-        }
-        if (filter.targetKind !== undefined) {
-          const kind = submission.targetSpaceId === 'public' ? 'public' : 'department';
-          return kind === filter.targetKind;
-        }
-        return true;
-      })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((submission) => ({
-        submission_id: submission.submissionId,
-        version: submission.version,
-        submitter: {
-          id: submission.submitterUserId,
-          display_name: submission.submitterName,
-          department: submission.submitterDepartment,
-        },
-        name: submission.name,
-        media_kind: submission.mediaKind,
-        size_bytes: submission.sizeBytes,
-        target_space_id: submission.targetSpaceId,
-        target_space_name: submission.targetSpaceName,
-        created_at: submission.createdAt,
-      }));
+      .map((submission) => this.toSubmission(submission));
     return { items };
   }
 
@@ -1500,8 +1473,22 @@ export class MockKnowledgeController {
     return (this.documents.get(spaceId) ?? []).find((doc) => doc.name === name);
   }
 
-  private findByContentHash(spaceId: string, hash: string): StoredDocument | undefined {
-    return (this.documents.get(spaceId) ?? []).find((doc) => doc.contentHash === hash);
+  private findInitialUploadDuplicate(initialClaimKey: string): StoredDocument | undefined {
+    const documentId = this.initialUploadClaims.get(initialClaimKey);
+    if (documentId === undefined) {
+      return undefined;
+    }
+    return [...this.documents.values()].flat().find((document) => document.id === documentId);
+  }
+
+  private initialUploadClaimKey(spaceId: string, filename: string, contentHash: string): string {
+    return JSON.stringify([spaceId, this.normalizeFilename(filename), contentHash]);
+  }
+
+  private normalizeFilename(filename: string): string {
+    // JavaScript has no native Unicode casefold. These mappings cover the backend-reachable
+    // case-fold differences relevant to user-facing filenames without adding a new dependency.
+    return filename.trim().replace(/\s+/g, ' ').toLowerCase().replaceAll('ß', 'ss').replaceAll('ς', 'σ');
   }
 
   /** 缺省 hash：夹具未提供 contentHash 时按 name+size 派生（保持既有测试语义）。 */
@@ -1510,10 +1497,6 @@ export class MockKnowledgeController {
   }
 
   private createDocument(space: SpaceDef, file: UploadFileInput): StoredDocument {
-    const existing = this.findByName(space.id, file.name);
-    if (existing !== undefined) {
-      return existing;
-    }
     const now = new Date().toISOString();
     const seq = (this.documentSeq.get(space.id) ?? 0) + 1;
     this.documentSeq.set(space.id, seq);
@@ -1794,19 +1777,13 @@ export class MockKnowledgeController {
   private toSubmission(submission: StoredSubmission): Submission {
     return {
       submission_id: submission.submissionId,
+      space_id: submission.targetSpaceId,
       version: submission.version,
-      target_space_id: submission.targetSpaceId,
-      target_space_name: submission.targetSpaceName,
-      name: submission.name,
-      media_kind: submission.mediaKind,
-      size_bytes: submission.sizeBytes,
       status: submission.status,
+      file_name: submission.name,
+      media_kind: submission.mediaKind,
       created_at: submission.createdAt,
       reviewed_at: submission.reviewedAt,
-      reject_reason: submission.rejectReason,
-      invalidated_reason: submission.invalidatedReason,
-      document_id: submission.documentId,
-      job_id: submission.jobId,
     };
   }
 

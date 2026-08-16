@@ -77,18 +77,13 @@ describe('ApprovalsLayer submission content download', () => {
         items: [
           {
             submission_id: 'submission_approval_1',
+            space_id: 'department:finance',
             version: 1,
-            submitter: {
-              id: 'u_submitter',
-              display_name: 'submitter',
-              department: { id: 'd_finance', name: '财务部' },
-            },
-            name: 'unsafe.svg',
+            status: 'pending',
+            file_name: 'unsafe.svg',
             media_kind: 'image/svg+xml',
-            size_bytes: 24,
-            target_space_id: 'department:finance',
-            target_space_name: '财务部知识库',
             created_at: '2026-08-15T00:00:00Z',
+            reviewed_at: null,
           },
         ],
       })),

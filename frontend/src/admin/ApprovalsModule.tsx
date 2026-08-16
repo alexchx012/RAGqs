@@ -7,18 +7,15 @@
  *   409 version_conflict 刷新后对话框内顶部说明重新确认，already_processed / quota_request_not_approvable
  *   刷新列表 + 页头说明；idempotency_key_conflict 不换键不自动重发（scope 管）。
  * - ApprovalSubmissionsLayer（§8.4–8.5，ops 仅公共库 / admin 公共库+全部部门库）：
- *   五列（文件名含类型大小 / 投稿人 / 投稿人部门 / 目标空间 / 投稿时间）+ 查看内容 TextLink +
+ *   最小行（文件名 / 类型 / 投稿时间）+ 查看内容 TextLink +
  *   通过 filled / 驳回 ghost 小 pill（驳回对话框 400px 可选单行原因）；通过 202 行淡出；
  *   duplicate_document 仅行内提示不移除不刷新；version_conflict 刷新该行 version 后重试；
  *   submission_already_reviewed / scope_changed / 投稿人冻结删除均刷新列表。
- *   ops 与 admin 同一组件：按当前会话角色决定（ops 不传筛选参数、不渲染分段控件；admin 渲染
- *   全部 / 公共库 / 部门库分段并传 target_kind）——抽屉注册表两处均挂载本组件且无 props，
- *   角色取自 AuthProvider，与 registry 解耦。
+ *   后端按当前角色决定审核范围，前端不附加范围筛选——抽屉注册表两处均挂载本组件且无 props。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api/errors';
-import { useAuthState } from '../auth/AuthProvider';
 import { copy } from '../copy';
 import { downloadSubmissionContent } from '../settings/download-submission-content';
 import { createIdempotencyScope, isBusinessResponse } from '../settings/idempotency';
@@ -32,12 +29,11 @@ import {
   HeaderNotice,
   LoadingRows,
   Pill,
-  SegmentedControl,
   TextLink,
 } from '../ui';
 import { useAdmin } from './AdminProvider';
-import { formatBytes, formatDateTime } from './format';
-import type { ApprovalSubmissionFilter, QuotaRequestItem } from './types';
+import { formatDateTime } from './format';
+import type { QuotaRequestItem } from './types';
 
 /* ---------- 配额申请（§8.2–8.3） ---------- */
 
@@ -403,26 +399,9 @@ function QuotaApproveDialog({
 
 /* ---------- 投稿审核（§8.4–8.5） ---------- */
 
-type SubmissionScope = 'all' | 'public' | 'department';
-
-function filterForScope(scope: SubmissionScope): ApprovalSubmissionFilter | undefined {
-  switch (scope) {
-    case 'public':
-      return { targetKind: 'public' };
-    case 'department':
-      return { targetKind: 'department' };
-    default:
-      return undefined;
-  }
-}
-
 export function ApprovalSubmissionsLayer() {
   const { api, invalidateSummaries } = useAdmin();
   const { api: settingsApi } = useSettings();
-  const { user } = useAuthState();
-  // ops 与 admin 同一组件：ops 不传筛选参数、不渲染分段控件；admin 渲染范围分段并传 target_kind
-  const isAdmin = user?.role === 'admin';
-  const [scope, setScope] = useState<SubmissionScope>('all');
   const [items, setItems] = useState<readonly ApprovalListItem[]>([]);
   const [versionByRow, setVersionByRow] = useState<ReadonlyMap<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -444,7 +423,7 @@ export function ApprovalSubmissionsLayer() {
     setLoading(true);
     setLoadError(false);
     try {
-      const response = await api.listApprovalSubmissions(isAdmin ? filterForScope(scope) : undefined);
+      const response = await api.listApprovalSubmissions();
       if (seq !== seqRef.current) {
         return;
       }
@@ -459,7 +438,7 @@ export function ApprovalSubmissionsLayer() {
         setLoading(false);
       }
     }
-  }, [api, isAdmin, scope]);
+  }, [api]);
 
   useEffect(() => {
     void loadSubmissions();
@@ -482,7 +461,7 @@ export function ApprovalSubmissionsLayer() {
     setRowError(item.submission_id, null);
     try {
       const blob = await settingsApi.getSubmissionContent(item.submission_id);
-      downloadSubmissionContent(blob, item.name);
+      downloadSubmissionContent(blob, item.file_name);
     } catch (error) {
       setRowError(
         item.submission_id,
@@ -575,18 +554,6 @@ export function ApprovalSubmissionsLayer() {
     <section aria-label={copyApprovals.submissions} className="flex flex-col gap-3 pb-10">
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-[20px] font-medium text-ink-black">{copyApprovals.submissions}</h2>
-        {isAdmin && (
-          <SegmentedControl
-            options={[
-              { value: 'all', label: copyApprovals.scopeAll },
-              { value: 'public', label: copyApprovals.scopePublic },
-              { value: 'department', label: copyApprovals.scopeDepartment },
-            ]}
-            value={scope}
-            onChange={(value) => setScope(value as SubmissionScope)}
-            ariaLabel={copyApprovals.submissions}
-          />
-        )}
       </div>
       {notice !== null && (
         <HeaderNotice intent="success" message={notice} onDismiss={() => setNotice(null)} />
@@ -614,20 +581,13 @@ export function ApprovalSubmissionsLayer() {
                   fading.has(item.submission_id) ? 'opacity-0' : 'opacity-100'
                 }`}
               >
-                <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.1fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray">
+                <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray">
                   <div className="min-w-0">
-                    <p className="truncate text-[15px] text-ink-black">{item.name}</p>
+                    <p className="truncate text-[15px] text-ink-black">{item.file_name}</p>
                     <p className="mt-0.5 truncate text-[14px] text-smoke-gray">
-                      {copyManage.fileMeta(item.media_kind, formatBytes(item.size_bytes))}
+                      {item.media_kind}
                     </p>
                   </div>
-                  <span className="truncate text-[15px] text-slate-gray">
-                    {item.submitter.display_name}
-                  </span>
-                  <span className="truncate text-[15px] text-slate-gray">
-                    {item.submitter.department?.name ?? copy.admin.users.noDepartment}
-                  </span>
-                  <span className="truncate text-[15px] text-slate-gray">{item.target_space_name}</span>
                   <span className="truncate text-[15px] text-slate-gray">
                     {formatDateTime(item.created_at)}
                   </span>

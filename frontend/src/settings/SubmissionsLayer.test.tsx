@@ -105,7 +105,7 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
       [{ name: '待撤回稿件.md', size: 5, type: 'text/markdown' }],
       'idem-layer-1',
     );
-    expect(upload.items[0]?.accepted).toBe(true);
+    expect(upload.items[0]?.status).toBe('pending');
     const user = userEvent.setup();
 
     await renderLayer(api);
@@ -140,10 +140,10 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
     await renderLayer(api);
 
     await user.click(await screen.findByRole('button', { name: copy.settings.knowledge.submissions.delete }));
-    expect(screen.getByText(copy.settings.knowledge.submissions.deleteConfirmDescription(target.name))).toBeInTheDocument();
+    expect(screen.getByText(copy.settings.knowledge.submissions.deleteConfirmDescription(target.file_name))).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.delete }));
 
-    await waitFor(() => expect(screen.queryByText(target.name)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText(target.file_name)).not.toBeInTheDocument());
   });
 });
 
@@ -233,7 +233,7 @@ describe('SubmissionsLayer mutation filter generation（review A4）', () => {
     });
     // 服务端确已 withdrawn（数据验证）
     const withdrawn = mockKnowledge.listSubmissions(token, 'withdrawn');
-    expect(withdrawn.items.some((item) => item.name === '代际撤回.md')).toBe(true);
+    expect(withdrawn.items.some((item) => item.file_name === '代际撤回.md')).toBe(true);
     void upload;
   });
 });

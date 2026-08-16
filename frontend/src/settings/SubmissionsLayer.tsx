@@ -108,7 +108,7 @@ export function SubmissionsLayer() {
     });
     try {
       const blob = await api.getSubmissionContent(submission.submission_id);
-      downloadSubmissionContent(blob, submission.name);
+      downloadSubmissionContent(blob, submission.file_name);
     } catch (error) {
       if (error instanceof ApiError && error.status === 404 && error.code === 'submission_content_unavailable') {
         setRowErrors((errors) => {
@@ -418,7 +418,7 @@ export function SubmissionsLayer() {
           }
         }}
         title={copy.settings.knowledge.submissions.deleteConfirmTitle}
-        description={copy.settings.knowledge.submissions.deleteConfirmDescription(pendingDelete?.name ?? '')}
+        description={copy.settings.knowledge.submissions.deleteConfirmDescription(pendingDelete?.file_name ?? '')}
         confirmLabel={copy.settings.knowledge.submissions.delete}
         danger
         onConfirm={() => void confirmDelete()}
@@ -441,24 +441,13 @@ function SubmissionRow({ submission, error, onView, onWithdraw, onDelete }: Subm
     <li className="py-4" data-submission-id={submission.submission_id}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="truncate text-body text-ink-black">{submission.name}</p>
+          <p className="truncate text-body text-ink-black">{submission.file_name}</p>
           <p className="mt-1 text-caption text-smoke-gray">
-            {copy.settings.knowledge.submissions.targetSpace(submission.target_space_name)} ·{' '}
-            {copy.settings.knowledge.submissions.submittedAt(formatDateTime(submission.created_at))}
+            {submission.media_kind} · {copy.settings.knowledge.submissions.submittedAt(formatDateTime(submission.created_at))}
           </p>
           <span className={`mt-2 inline-block rounded-[var(--radius-buttons)] px-2 py-0.5 text-caption ${statusClass(status)}`}>
             {copy.settings.knowledge.submissions.statusTag[status]}
           </span>
-          {status === 'rejected' && submission.reject_reason !== null && (
-            <p className="mt-1 text-caption text-danger">
-              {copy.settings.knowledge.submissions.rejectReason(submission.reject_reason)}
-            </p>
-          )}
-          {status === 'invalidated' && (
-            <p className="mt-1 text-caption text-warning">
-              {copy.settings.knowledge.submissions.invalidatedReason}
-            </p>
-          )}
           {error !== null && (
             <p className="mt-2 text-caption text-danger">
               {error.message}

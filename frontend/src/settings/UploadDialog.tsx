@@ -174,8 +174,8 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
     onOpenChange(false);
   };
 
-  const acceptedCount = result?.items.filter((item) => item.accepted).length ?? 0;
-  const failedCount = result === null ? 0 : result.items.length - acceptedCount;
+  const acceptedCount = result?.items.length ?? 0;
+  const failedCount = 0;
 
   if (!open) {
     return null;
@@ -291,7 +291,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
           <div className="mt-4">
             <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto" aria-live="polite">
               {result.items.map((item, index) => (
-                <UploadItemRow key={`${item.name}:${index}`} item={item} />
+                <UploadItemRow key={`${uploadItemKey(item)}:${index}`} item={item} />
               ))}
             </ul>
             <p className="mt-2 text-caption text-slate-gray">
@@ -330,30 +330,27 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
 }
 
 function UploadItemRow({ item }: { item: UploadItem }) {
-  if (item.accepted) {
+  if ('filename' in item) {
     if (item.deduplicated === true) {
       return (
         <li className="text-caption text-slate-gray">
-          {`${item.name} · ${copy.settings.knowledge.upload.deduplicated}`}
-        </li>
-      );
-    }
-    if (item.submission_id !== undefined) {
-      return (
-        <li className="text-caption text-slate-gray">
-          {`${item.name} · ${copy.settings.knowledge.upload.submissionCreated}`}
+          {`${item.filename} · ${copy.settings.knowledge.upload.deduplicated}`}
         </li>
       );
     }
     return (
       <li className="text-caption text-success">
-        {`${item.name} · ${copy.settings.knowledge.upload.accepted}`}
+        {`${item.filename} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : item.status}`}
       </li>
     );
   }
   return (
-    <li className="text-caption text-danger">
-      {`${item.name} · ${copy.settings.knowledge.upload.itemError(item.error.code)}`}
+    <li className="text-caption text-slate-gray">
+      {`${item.submission_id} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : item.status}`}
     </li>
   );
+}
+
+function uploadItemKey(item: UploadItem): string {
+  return 'filename' in item ? item.filename : item.submission_id;
 }

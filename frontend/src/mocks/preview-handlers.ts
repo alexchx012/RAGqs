@@ -1,8 +1,8 @@
 /*
  * 原文预览 MSW handlers（fe-doc-preview；契约《前端接口需求.md》§4）。
  * 把 GET /documents/{id}/preview 与 GET /documents/{id}/content 接到 MockPreviewController。
- * content 支持 Range 分段加载（pdfjs）：bytes 区间 → 206 + Content-Range + Accept-Ranges，
- * 非法/越界区间 → 416 + Content-Range bytes *​/size；HEAD 返回同头空体（预检分段能力）。
+ * content 仅为 PDF 支持 Range 分段加载（pdfjs）：bytes 区间 → 206 + Content-Range + Accept-Ranges，
+ * 非法/越界区间 → 416 + Content-Range bytes *​/size；HEAD 只允许原始 PDF/图片内容。
  * 非 2xx 一律按 §1 HTTP 请求级错误对象返回。
  */
 
@@ -31,21 +31,28 @@ function errorResponse(error: unknown) {
   );
 }
 
-/** Range 分段（契约 §4：PDF/图片文件流支持 Range；文本/JSON 全量 200）。 */
+function bareMediaType(contentType: string): string {
+  return contentType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+}
+
+/** Range 分段（契约 §4：仅 PDF 支持 Range；文本/JSON 与图片全量 200）。 */
 function contentResponse(request: Request, result: MockContentResult): Response {
   const bytes = result.body;
+  const mediaType = bareMediaType(result.contentType);
+  const supportsRange = mediaType === 'application/pdf';
+  const supportsHead = supportsRange || mediaType.startsWith('image/');
   const baseHeaders: Record<string, string> = {
     'Content-Type': result.contentType,
-    'Accept-Ranges': 'bytes',
   };
-  if (request.method === 'HEAD') {
-    return new HttpResponse(null, {
-      status: 200,
-      headers: { ...baseHeaders, 'Content-Length': String(bytes.length) },
-    });
+  if (supportsRange) {
+    baseHeaders['Accept-Ranges'] = 'bytes';
   }
+  if (request.method === 'HEAD' && !supportsHead) {
+    return new HttpResponse(null, { status: 405, headers: { Allow: 'GET' } });
+  }
+  const includeBody = request.method !== 'HEAD';
   const rangeHeader = request.headers.get('Range');
-  if (rangeHeader !== null) {
+  if (supportsRange && rangeHeader !== null) {
     const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
     if (match === null || ((match[1] ?? '') === '' && (match[2] ?? '') === '')) {
       return new HttpResponse(null, { status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } });
@@ -66,7 +73,7 @@ function contentResponse(request: Request, result: MockContentResult): Response 
     if (!Number.isSafeInteger(start) || start > end || start >= bytes.length) {
       return new HttpResponse(null, { status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } });
     }
-    return new HttpResponse(bytes.slice(start, end + 1), {
+    return new HttpResponse(includeBody ? bytes.slice(start, end + 1) : null, {
       status: 206,
       headers: {
         ...baseHeaders,
@@ -75,7 +82,7 @@ function contentResponse(request: Request, result: MockContentResult): Response 
       },
     });
   }
-  return new HttpResponse(bytes, {
+  return new HttpResponse(includeBody ? bytes : null, {
     status: 200,
     headers: { ...baseHeaders, 'Content-Length': String(bytes.length) },
   });

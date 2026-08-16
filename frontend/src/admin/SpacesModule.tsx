@@ -451,7 +451,7 @@ function GraphBuildSection() {
   }, [loadProjection]);
 
   const latestRun = current?.latest_run ?? null;
-  const nonTerminal = latestRun !== null && isRunNonTerminal(latestRun.status);
+  const nonTerminal = latestRun !== null && isRunNonTerminal(latestRun.state);
 
   // 非终态期间 5s 轮询；终态 / 卸载 / 离开层清除
   useEffect(() => {
@@ -612,7 +612,7 @@ function GraphBuildSection() {
               <p className="text-[14px] text-slate-gray">
                 {graph.latestRunTitle}
                 {' · '}
-                {graphStatusLabel(latestRun.status)}
+                {graphStatusLabel(latestRun.state)}
                 {' · '}
                 {graph.sourceRevision(latestRun.source_revision)}
                 {' · '}
@@ -629,7 +629,7 @@ function GraphBuildSection() {
               <p className="text-[14px] text-smoke-gray">
                 {graph.runCreatedAt(formatDateTime(latestRun.created_at))}
                 {latestRun.started_at !== null && ` · ${graph.runStartedAt(formatDateTime(latestRun.started_at))}`}
-                {latestRun.finished_at !== null && ` · ${graph.runFinishedAt(formatDateTime(latestRun.finished_at))}`}
+                {latestRun.completed_at !== null && ` · ${graph.runFinishedAt(formatDateTime(latestRun.completed_at))}`}
               </p>
               {latestRun.failure_class !== null && (
                 <p className="text-[14px] text-danger">{graph.failureClass(latestRun.failure_class)}</p>

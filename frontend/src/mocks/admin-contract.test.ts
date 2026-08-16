@@ -366,34 +366,35 @@ describe('admin contract：配额申请审批（§8.2–8.3）', () => {
 /* ---------- §8.4–8.5 投稿审核（复用 knowledge 端点） ---------- */
 
 describe('admin contract：投稿审核（§8.4–8.5）', () => {
-  async function listSubmissions(token: string, query = ''): Promise<ApprovalListResponse> {
-    const response = await jsonRequest(token, `/v1/approvals/submissions${query}`);
+  async function listSubmissions(token: string): Promise<ApprovalListResponse> {
+    const response = await jsonRequest(token, '/v1/approvals/submissions');
     expect(response.status).toBe(200);
     return (await response.json()) as ApprovalListResponse;
   }
 
-  it('ops 只见公共库；admin 见公共库 + 全部部门库；超管过滤参数生效', async () => {
+  it('ops 只见公共库；admin 见公共库 + 全部部门库', async () => {
     const ops = bearerOf('ops-wang');
     const opsList = await listSubmissions(ops);
     expect(opsList.items.length).toBe(4);
-    expect(opsList.items.every((item) => item.target_space_id === 'public')).toBe(true);
+    expect(Object.keys(opsList.items[0] ?? {}).sort()).toEqual([
+      'created_at',
+      'file_name',
+      'media_kind',
+      'reviewed_at',
+      'space_id',
+      'status',
+      'submission_id',
+      'version',
+    ]);
+    expect(opsList.items.every((item) => item.space_id === 'public')).toBe(true);
 
     const admin = bearerOf('admin');
     expect((await listSubmissions(admin)).items.length).toBe(7);
-    expect((await listSubmissions(admin, '?target_kind=public')).items.length).toBe(4);
-    const departmentOnly = await listSubmissions(admin, '?target_kind=department');
-    expect(departmentOnly.items.map((item) => item.target_space_id)).toEqual([
-      'department:d_finance',
-      'department:d_finance',
-      'department:d_hr',
-    ]);
-    const bySpace = await listSubmissions(admin, '?target_space_id=department%3Ad_hr');
-    expect(bySpace.items.length).toBe(1);
   });
 
   it('批准 202；重复审批 409 submission_already_reviewed', async () => {
     const ops = bearerOf('ops-wang');
-    const target = (await listSubmissions(ops)).items.find((item) => item.name === '行业研报汇总.pdf');
+    const target = (await listSubmissions(ops)).items.find((item) => item.file_name === '行业研报汇总.pdf');
     const approved = await postWithKey(
       ops,
       `/v1/approvals/submissions/${target?.submission_id}/approve`,
@@ -417,7 +418,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
   it('duplicate_document 行不移除；scope_changed 行失效；冻结投稿人 409', async () => {
     const ops = bearerOf('ops-wang');
     const items = (await listSubmissions(ops)).items;
-    const duplicate = items.find((item) => item.name === '公共制度汇编.pdf');
+    const duplicate = items.find((item) => item.file_name === '公共制度汇编.pdf');
     await expectError(
       await postWithKey(
         ops,
@@ -432,7 +433,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
       (await listSubmissions(ops)).items.some((item) => item.submission_id === duplicate?.submission_id),
     ).toBe(true);
 
-    const scopeChanged = items.find((item) => item.name === '跨部门协作指引.pdf');
+    const scopeChanged = items.find((item) => item.file_name === '跨部门协作指引.pdf');
     await expectError(
       await postWithKey(
         ops,
@@ -447,7 +448,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
       (await listSubmissions(ops)).items.some((item) => item.submission_id === scopeChanged?.submission_id),
     ).toBe(false);
 
-    const frozen = items.find((item) => item.name === '历史遗留材料.pdf');
+    const frozen = items.find((item) => item.file_name === '历史遗留材料.pdf');
     await expectError(
       await postWithKey(
         ops,
@@ -459,7 +460,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
       'submitter_pending_delete',
     );
 
-    const normal = (await listSubmissions(ops)).items.find((item) => item.name === '行业研报汇总.pdf');
+    const normal = (await listSubmissions(ops)).items.find((item) => item.file_name === '行业研报汇总.pdf');
     await expectError(
       await postWithKey(
         ops,
@@ -500,7 +501,7 @@ describe('admin contract：图谱构建（§6.12）', () => {
     expect(created.status).toBe(202);
     const run = (await created.json()) as GraphBuildRun;
     expect(run).toMatchObject({
-      status: 'queued',
+      state: 'queued',
       version: 1,
       source_revision: 12,
       estimated_primary_model_calls: 3,
@@ -515,9 +516,9 @@ describe('admin contract：图谱构建（§6.12）', () => {
     );
 
     const running = (await (await jsonRequest(ops, '/v1/ops/graph-builds/current')).json()) as GraphBuildCurrent;
-    expect(running.latest_run).toMatchObject({ status: 'running', version: 2 });
+    expect(running.latest_run).toMatchObject({ state: 'running', version: 2 });
     const succeeded = (await (await jsonRequest(ops, '/v1/ops/graph-builds/current')).json()) as GraphBuildCurrent;
-    expect(succeeded.latest_run).toMatchObject({ status: 'succeeded', version: 3 });
+    expect(succeeded.latest_run).toMatchObject({ state: 'succeeded', version: 3 });
     expect(succeeded.graph_availability).toBe('ready');
     expect(succeeded.active_generation?.source_revision).toBe(12);
 
@@ -581,7 +582,7 @@ describe('admin contract：图谱构建（§6.12）', () => {
     expect(((await cancelled.json()) as GraphBuildCancelResponse)).toEqual({
       graph_build_id: run.graph_build_id,
       version: 2,
-      status: 'cancelled',
+      state: 'cancelled',
     });
     // 重复取消（新键）：返回当前终态而非 409
     const again = await postWithKey(
@@ -591,7 +592,7 @@ describe('admin contract：图谱构建（§6.12）', () => {
       'idem_g_8',
     );
     expect(again.status).toBe(200);
-    expect(((await again.json()) as GraphBuildCancelResponse).status).toBe('cancelled');
+    expect(((await again.json()) as GraphBuildCancelResponse).state).toBe('cancelled');
 
     await expectError(
       await postWithKey(ops, '/v1/ops/graph-builds/gb_nope/cancel', { expected_version: 1 }, 'idem_g_9'),
@@ -606,7 +607,7 @@ describe('admin contract：图谱构建（§6.12）', () => {
     const run = (await created.json()) as GraphBuildRun;
     await jsonRequest(ops, '/v1/ops/graph-builds/current');
     const terminal = (await (await jsonRequest(ops, '/v1/ops/graph-builds/current')).json()) as GraphBuildCurrent;
-    expect(terminal.latest_run?.status).toBe('succeeded');
+    expect(terminal.latest_run?.state).toBe('succeeded');
     await expectError(
       await postWithKey(
         ops,

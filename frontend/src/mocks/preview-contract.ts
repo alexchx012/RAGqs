@@ -3,7 +3,7 @@
  * 与传输层无关（preview-handlers.ts 负责 MSW 接线与 Range 分段），真实模拟：
  * - GET /documents/{id}/preview：message_id 携带时返回该次回答引用本文档的全部 hits，
  *   不携带则 hits 为空（管理侧只读形态）；document_version_id 历史引用必须透传，否则读当前 active 版本；
- * - GET /documents/{id}/content：PDF/图片为文件字节（handler 实现 Range → 206/416 + Accept-Ranges）；
+ * - GET /documents/{id}/content：PDF/图片为文件字节（仅 PDF 支持 Range；HEAD 仅原始 PDF/图片）；
  *   Word 建树为结构化 JSON、basic 为纯文本；md/txt/code/data 为纯文本；Excel/CSV 为按 Sheet 的 JSON（?sheet=）；
  * - 不可用态：文档删除 → 410 document_unavailable；版本 purging/purged → 410 document_version_unavailable；
  *   统一错误对象经 handler 归一化。
@@ -20,6 +20,18 @@ export { MockHttpError };
 /** 鉴权注入：装配处用 MockAuthController.me 实现；无有效 Bearer 时抛 MockHttpError(401)。 */
 export interface ValidatePreviewAuth {
   (header: string | null): { userId: string };
+}
+
+export interface PreviewMessageCitation {
+  readonly document_id: string;
+  readonly document_version_id: string;
+  readonly locator: PreviewHit['locator'];
+  readonly snippet?: string;
+}
+
+export interface GetPreviewMessageCitations {
+  /** `null` means the message does not belong to the authenticated user. */
+  (header: string | null, messageId: string): readonly PreviewMessageCitation[] | null;
 }
 
 /* ---------- 种子常量（e2e 经同一数据源引用，避免硬编码） ---------- */
@@ -87,20 +99,14 @@ const TINY_PNG = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfF
 
 /* ---------- 夹具模型 ---------- */
 
-interface MockPreviewHit {
-  readonly index: number;
-  readonly summary: string;
-  readonly snippet?: string;
-  readonly locator: PreviewHit['locator'];
-}
-
 interface MockPreviewVersion {
   readonly versionId: string;
   readonly status: 'active' | 'superseded' | 'purged';
   readonly contentType: string;
+  /** 原始文件字节数；结构化内容的响应体并不代表它。 */
+  readonly sizeBytes?: number;
   /** 已序列化的内容字节（JSON 在种子处 stringify）。 */
   readonly body: Uint8Array;
-  readonly hits: readonly MockPreviewHit[];
 }
 
 interface MockPreviewDocument {
@@ -121,6 +127,33 @@ function utf8(text: string): Uint8Array {
 
 function json(value: unknown): Uint8Array {
   return utf8(JSON.stringify(value));
+}
+
+function previewHitFromCitation(citation: PreviewMessageCitation, index: number): PreviewHit {
+  const structuredLocator = 'section_path' in citation.locator || 'sheet' in citation.locator;
+  const snippet =
+    !structuredLocator && typeof citation.snippet === 'string' && citation.snippet.trim() !== ''
+      ? citation.snippet.trim()
+      : undefined;
+  return {
+    index,
+    summary: snippet ?? summaryFromLocator(citation.locator),
+    locator: citation.locator,
+    ...(snippet === undefined ? {} : { snippet }),
+  };
+}
+
+function summaryFromLocator(locator: PreviewHit['locator']): string {
+  if ('page' in locator) {
+    return `Page ${locator.page}`;
+  }
+  if ('section_path' in locator) {
+    return locator.section_path.join(' / ');
+  }
+  if ('sheet' in locator) {
+    return `Sheet ${locator.sheet}, range ${locator.a1_range}`;
+  }
+  return 'Document citation';
 }
 
 const PDF_TEXT = 'application/pdf';
@@ -153,19 +186,14 @@ function seedDocuments(): MockPreviewDocument[] {
         status: 'active',
         contentType: PDF_TEXT,
         body: buildMinimalPdf(handbookV1Pages),
-        hits: [
-          { index: 1, summary: '年假天数按工龄分段', snippet: '5 days per year', locator: { page: 1, span: { start: 30, end: 45 } } },
-          { index: 2, summary: '病假需提供医疗证明', snippet: 'medical certificate', locator: { page: 2 } },
-        ],
       },
       {
         versionId: 'v_0',
         status: 'superseded',
         contentType: PDF_TEXT,
         body: buildMinimalPdf(handbookV0Pages),
-        hits: [{ index: 1, summary: '旧版年假规定', snippet: '4 days per year', locator: { page: 1 } }],
       },
-      { versionId: 'v_purged', status: 'purged', contentType: PDF_TEXT, body: new Uint8Array(0), hits: [] },
+      { versionId: 'v_purged', status: 'purged', contentType: PDF_TEXT, body: new Uint8Array(0) },
     ],
   };
 
@@ -185,7 +213,6 @@ function seedDocuments(): MockPreviewDocument[] {
         status: 'active',
         contentType: PDF_TEXT,
         body: buildMinimalPdf([[]]),
-        hits: [{ index: 1, summary: '扫描页命中', locator: { page: 1 } }],
       },
     ],
   };
@@ -208,11 +235,8 @@ function seedDocuments(): MockPreviewDocument[] {
         versionId: 'vx_1',
         status: 'active',
         contentType: JSON_TYPE,
+        sizeBytes: 256,
         body: new Uint8Array(0), // 表格内容按 ?sheet= 动态组装（见 sheetRows）
-        hits: [
-          { index: 1, summary: 'Q1 交通费记录', locator: { sheet: PREVIEW_SEED.excelSheetQ1, a1_range: 'A2:C2' } },
-          { index: 2, summary: 'Q2 住宿费记录', locator: { sheet: PREVIEW_SEED.excelSheetQ2, a1_range: 'A2' } },
-        ],
       },
     ],
   };
@@ -232,8 +256,8 @@ function seedDocuments(): MockPreviewDocument[] {
         versionId: 'vc_1',
         status: 'active',
         contentType: JSON_TYPE,
+        sizeBytes: 128,
         body: new Uint8Array(0),
-        hits: [{ index: 1, summary: '张三所在行', locator: { sheet: 'CSV', a1_range: 'A2:B2' } }],
       },
     ],
   };
@@ -254,7 +278,6 @@ function seedDocuments(): MockPreviewDocument[] {
         status: 'active',
         contentType: PNG,
         body: TINY_PNG,
-        hits: [{ index: 1, summary: '架构总览图', locator: {} }],
       },
     ],
   };
@@ -275,7 +298,6 @@ function seedDocuments(): MockPreviewDocument[] {
         status: 'active',
         contentType: TEXT_MARKDOWN,
         body: utf8('# 年假政策\n\n员工年假天数按工龄分段：满 1 年不满 10 年为 5 天。\n\n## 申请流程\n\n提前 3 个工作日提交申请。\n'),
-        hits: [{ index: 1, summary: '年假天数规则', snippet: '满 1 年不满 10 年为 5 天', locator: {} }],
       },
     ],
   };
@@ -294,7 +316,6 @@ function seedDocuments(): MockPreviewDocument[] {
         status: 'active',
         contentType: TEXT_PLAIN,
         body: utf8('值班安排\n\n周一至周五由各部门轮流值班。\n节假日值班另行通知。\n'),
-        hits: [{ index: 1, summary: '值班周期', snippet: '周一至周五', locator: {} }],
       },
     ],
   };
@@ -315,7 +336,6 @@ function seedDocuments(): MockPreviewDocument[] {
         status: 'active',
         contentType: TEXT_PLAIN,
         body: utf8('def main():\n    print("scan")\n\nif __name__ == "__main__":\n    main()\n'),
-        hits: [{ index: 1, summary: '入口函数', snippet: 'def main', locator: {} }],
       },
     ],
   };
@@ -334,7 +354,6 @@ function seedDocuments(): MockPreviewDocument[] {
         status: 'active',
         contentType: TEXT_PLAIN,
         body: utf8('{"annual_leave": 5, "sick_leave": 10}\n'),
-        hits: [{ index: 1, summary: '年假指标', snippet: '"annual_leave"', locator: {} }],
       },
     ],
   };
@@ -354,13 +373,13 @@ function seedDocuments(): MockPreviewDocument[] {
         versionId: 'vw_1',
         status: 'active',
         contentType: JSON_TYPE,
+        sizeBytes: 1536,
         body: json({
           sections: [
             { path: ['第 1 章', '总则'], paragraphs: ['本制度适用于全体员工。', '制度自发布之日起生效。'] },
             { path: ['第 2 章', '考勤管理'], paragraphs: ['标准工时为每日 8 小时。', '迟到 30 分钟以上记为缺勤。', '加班需提前审批。'] },
           ],
         }),
-        hits: [{ index: 1, summary: '考勤缺勤判定', locator: { section_path: ['第 2 章', '考勤管理'], paragraph: 2 } }],
       },
     ],
   };
@@ -378,8 +397,8 @@ function seedDocuments(): MockPreviewDocument[] {
         versionId: 'vwb_1',
         status: 'active',
         contentType: TEXT_PLAIN,
+        sizeBytes: 1024,
         body: utf8('会议纪要\n\n本次会议确认了上线节奏。\n\n后续行动项由各部门跟进。\n'),
-        hits: [{ index: 1, summary: '会议结论', locator: {} }],
       },
     ],
   };
@@ -435,7 +454,10 @@ export interface MockContentResult {
 export class MockPreviewController {
   private documents = new Map<string, MockPreviewDocument>();
 
-  constructor(private readonly validateAuth: ValidatePreviewAuth) {
+  constructor(
+    private readonly validateAuth: ValidatePreviewAuth,
+    private readonly getMessageCitations: GetPreviewMessageCitations,
+  ) {
     this.reset();
   }
 
@@ -454,19 +476,40 @@ export class MockPreviewController {
     query: { messageId?: string | null; documentVersionId?: string | null },
   ): DocumentPreviewResponse {
     this.requireAuth(auth);
+    if (query.messageId === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'message_id' });
+    }
+    if (query.documentVersionId === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'document_version_id' });
+    }
     const document = this.document(documentId);
     const version = this.version(document, query.documentVersionId);
+    const citations =
+      query.messageId === null || query.messageId === undefined
+        ? null
+        : this.getMessageCitations(auth, query.messageId);
+    if (query.messageId !== undefined && query.messageId !== null && citations === null) {
+      throw new MockHttpError(404, 'message_not_found');
+    }
     // message_id 携带 → 该次回答引用本文档的全部 hits；不携带 → 管理侧只读形态（hits 为空）
-    const hits = typeof query.messageId === 'string' && query.messageId !== '' ? version.hits : [];
+    const hits = (citations ?? [])
+      .filter(
+        (citation) =>
+          citation.document_id === document.id && citation.document_version_id === version.versionId,
+      )
+      .map((citation, index) => previewHitFromCitation(citation, index + 1));
     return {
       document_id: document.id,
+      document_version_id: version.versionId,
       name: document.name,
       media_kind: document.mediaKind,
+      size_bytes: version.sizeBytes ?? version.body.byteLength,
+      content_available: true,
       has_text_layer: document.hasTextLayer,
       tree_indexed: document.treeIndexed,
       page_count: document.pageCount,
       sheets: document.sheets,
-      content_url: `/documents/${document.id}/content`,
+      content_url: `/v1/documents/${document.id}/content?document_version_id=${encodeURIComponent(version.versionId)}`,
       hits,
     };
   }
@@ -479,6 +522,12 @@ export class MockPreviewController {
     query: { documentVersionId?: string | null; sheet?: string | null },
   ): MockContentResult {
     this.requireAuth(auth);
+    if (query.documentVersionId === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'document_version_id' });
+    }
+    if (query.sheet === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'sheet' });
+    }
     const document = this.document(documentId);
     const version = this.version(document, query.documentVersionId);
     if (document.sheets !== null) {
@@ -516,7 +565,7 @@ export class MockPreviewController {
 
   private version(document: MockPreviewDocument, versionId: string | null | undefined): MockPreviewVersion {
     const target =
-      versionId == null || versionId === ''
+      versionId == null
         ? document.versions.find((version) => version.status === 'active')
         : document.versions.find((version) => version.versionId === versionId);
     if (target === undefined) {

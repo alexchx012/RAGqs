@@ -81,6 +81,7 @@ interface MockAssistantRow {
 
 interface MockConversation {
   readonly id: string;
+  readonly ownerUserId: string;
   title: string;
   pinned: boolean;
   groupId: string | null;
@@ -232,7 +233,14 @@ export class MockChatController {
   /** 夹具：后续 ask 以 stopped 终态结束（stop_reason 可覆盖）。 */
   private nextStopReason: StopReason | null = null;
 
-  constructor(private readonly validateAuth: ValidateChatAuth) {
+  constructor(
+    private readonly validateAuth: ValidateChatAuth,
+    private readonly onAssistantMessageCreated?: (
+      messageId: string,
+      ownerUserId: string,
+      citations: readonly Citation[],
+    ) => void,
+  ) {
     this.reset();
   }
 
@@ -247,6 +255,29 @@ export class MockChatController {
     this.nextErrorCode = null;
     this.nextStopReason = null;
     this.seedFixtures();
+  }
+
+  hasMessage(auth: string | null, messageId: string): boolean {
+    const { userId } = this.requireAuth(auth);
+    return [...this.conversations.values()].some((conversation) =>
+      conversation.ownerUserId === userId && conversation.messages.some((message) => message.id === messageId),
+    );
+  }
+
+  getPreviewCitations(auth: string | null, messageId: string): readonly Citation[] | null {
+    const { userId } = this.requireAuth(auth);
+    for (const conversation of this.conversations.values()) {
+      if (conversation.ownerUserId !== userId) {
+        continue;
+      }
+      const message = conversation.messages.find((candidate) => candidate.id === messageId);
+      if (message === undefined) {
+        continue;
+      }
+      const previewMessage = this.toConversationMessage(message);
+      return previewMessage.role === 'assistant' ? previewMessage.citations : [];
+    }
+    return null;
   }
 
   /* ---------- 夹具 ---------- */
@@ -329,6 +360,7 @@ export class MockChatController {
       attempt_number: 1,
       feedback: null,
     });
+    this.announceAssistantMessage(conversation, messageId);
     conversation.lastActiveAt = this.iso();
     return { generationId, messageId, userMessageId };
   }
@@ -347,10 +379,11 @@ export class MockChatController {
   }
 
   createConversation(auth: string | null): ConversationSummary {
-    this.requireAuth(auth);
+    const { userId } = this.requireAuth(auth);
     const id = this.nextId('c');
     const conversation: MockConversation = {
       id,
+      ownerUserId: userId,
       title: '',
       pinned: false,
       groupId: null,
@@ -498,6 +531,7 @@ export class MockChatController {
       attempt_number: 1,
       feedback: null,
     });
+    this.announceAssistantMessage(conversation, messageId);
     conversation.lastActiveAt = this.iso();
     if (conversation.title === '') {
       conversation.title = body.content.slice(0, 30);
@@ -603,6 +637,7 @@ export class MockChatController {
       attempt_number: attemptNumber,
       feedback: null,
     });
+    this.announceAssistantMessage(conversation, messageId);
     conversation.lastActiveAt = this.iso();
     this.idemMap(userId).set(idempotencyKey, { kind: 'retry', normalized, generationId });
     return { generationId, messageId, userMessageId: parent.userMessageId, attemptNumber, events: generation.events };
@@ -859,6 +894,29 @@ export class MockChatController {
     return `${prefix}_${this.seq.toString(36)}${Date.now().toString(36)}`;
   }
 
+  private announceAssistantMessage(conversation: MockConversation, messageId: string): void {
+    this.onAssistantMessageCreated?.(
+      messageId,
+      conversation.ownerUserId,
+      this.getPreviewCitationsForOwner(conversation.ownerUserId, messageId),
+    );
+  }
+
+  private getPreviewCitationsForOwner(ownerUserId: string, messageId: string): readonly Citation[] {
+    const conversation = [...this.conversations.values()].find(
+      (candidate) => candidate.ownerUserId === ownerUserId && candidate.messages.some((message) => message.id === messageId),
+    );
+    if (conversation === undefined) {
+      return [];
+    }
+    const message = conversation.messages.find((candidate) => candidate.id === messageId);
+    if (message === undefined) {
+      return [];
+    }
+    const previewMessage = this.toConversationMessage(message);
+    return previewMessage.role === 'assistant' ? previewMessage.citations : [];
+  }
+
   private iso(): string {
     return new Date().toISOString();
   }
@@ -1074,7 +1132,20 @@ export class MockChatController {
       upgraded_from: null,
     });
     const plainContent = `Mock answer for "${body.content}" (effort=${body.effort_level}, attempt=${attemptNumber}).`;
-    const citationA: Citation = { document_id: 'doc_1', document_version_id: 'v_1', document_name: CHAT_SEED_DOCUMENT_NAMES.employeeHandbook, locator: { page: 12, span: { start: 345, end: 412 } }, snippet: 'mock snippet A' };
+    const citationA: Citation = {
+      document_id: 'doc_1',
+      document_version_id: 'v_1',
+      document_name: CHAT_SEED_DOCUMENT_NAMES.employeeHandbook,
+      locator: { page: 1, span: { start: 30, end: 45 } },
+      snippet: '5 days per year',
+    };
+    const citationSecond: Citation = {
+      document_id: 'doc_1',
+      document_version_id: 'v_1',
+      document_name: CHAT_SEED_DOCUMENT_NAMES.employeeHandbook,
+      locator: { page: 2 },
+      snippet: 'medical certificate',
+    };
     const citationB: Citation = { document_id: 'doc_2', document_version_id: 'v_2', document_name: '年假政策.md', locator: { section_path: ['第 4 章', '4.2'], paragraph: 7 } };
 
     if (opts.errorCode !== null) {
@@ -1091,7 +1162,7 @@ export class MockChatController {
       return [
         { event: 'start', data: base },
         { event: 'stage', data: { phase: 'retrieving' } },
-        { event: 'answer', data: answer(0, plainContent, [citationA]) },
+        { event: 'answer', data: answer(0, plainContent, [citationA, citationSecond]) },
         { event: 'stopped', data: { generation_id: generationId, message_id: messageId, status: 'stopped', stop_reason: opts.stopReason } },
       ];
     }
@@ -1118,14 +1189,14 @@ export class MockChatController {
         { event: 'stage', data: { phase: 'retrieving' } },
         { event: 'stage', data: { phase: 'generating' } },
         { event: 'notice', data: { kind: 'effort_upgraded', detail: { from: 'quick', to: 'think' } } },
-        { event: 'answer', data: answer(0, plainContent, [citationA]) },
+        { event: 'answer', data: answer(0, plainContent, [citationA, citationSecond]) },
         { event: 'done', data: { generation_id: generationId, message_id: messageId, status: 'completed' } },
       ];
     }
     // quick
     return [
       { event: 'start', data: base },
-      { event: 'answer', data: answer(0, plainContent, [citationA]) },
+      { event: 'answer', data: answer(0, plainContent, [citationA, citationSecond]) },
       { event: 'done', data: { generation_id: generationId, message_id: messageId, status: 'completed' } },
     ];
   }
@@ -1240,12 +1311,12 @@ export class MockChatController {
     const seedCreatedCab = '2026-07-21T11:58:00.000Z';
 
     // c_1：think 完成会话，含 feedback=up 与一条带页码引用的回答
-    const c1 = this.newConversation('c_1', '年假怎么休', false, groupId, 'think');
+    const c1 = this.newConversation('c_1', 'u_user', '年假怎么休', false, groupId, 'think');
     c1.lastActiveAt = seedActiveC1;
     const user1 = this.nextId('m');
     c1.messages.push({ id: user1, role: 'user', content: '年假怎么休', created_at: seedCreatedC1 });
     const g1 = this.nextId('g');
-    const m1 = this.nextId('m');
+    const m1 = 'm_1';
     this.generations.set(g1, {
       id: g1,
       conversationId: c1.id,
@@ -1257,7 +1328,32 @@ export class MockChatController {
       effortLevel: 'think',
       answerMode: 'grounded',
       answerContent: 'Mock seeded answer about annual leave.',
-      answerCitations: [{ document_id: 'doc_1', document_version_id: 'v_1', document_name: CHAT_SEED_DOCUMENT_NAMES.employeeHandbook, locator: { page: 12 }, snippet: 'mock snippet' }],
+      answerCitations: [
+        {
+          document_id: 'doc_1',
+          document_version_id: 'v_1',
+          document_name: CHAT_SEED_DOCUMENT_NAMES.employeeHandbook,
+          locator: { page: 1, span: { start: 30, end: 45 } },
+          snippet: '5 days per year',
+        },
+        {
+          document_id: 'doc_1',
+          document_version_id: 'v_1',
+          document_name: CHAT_SEED_DOCUMENT_NAMES.employeeHandbook,
+          locator: { page: 2 },
+          snippet: 'medical certificate',
+        },
+        {
+          document_id: 'doc_1',
+          document_version_id: 'v_0',
+          document_name: CHAT_SEED_DOCUMENT_NAMES.employeeHandbook,
+          locator: { page: 1 },
+          snippet: '4 days per year',
+        },
+        { document_id: 'doc_scan', document_version_id: 'vs_1', document_name: '扫描合同.pdf', locator: { page: 1 } },
+        { document_id: 'doc_xlsx', document_version_id: 'vx_1', document_name: '报销明细.xlsx', locator: { sheet: 'Q1 报销', a1_range: 'A2:C2' } },
+        { document_id: 'doc_xlsx', document_version_id: 'vx_1', document_name: '报销明细.xlsx', locator: { sheet: 'Q2 报销', a1_range: 'A2' } },
+      ],
       notices: [{ kind: 'effort_upgraded', detail: { from: 'quick', to: 'think' } }],
       status: 'completed',
       stopReason: null,
@@ -1278,9 +1374,10 @@ export class MockChatController {
       attempt_number: 1,
       feedback: { vote: 'up' },
     });
+    this.announceAssistantMessage(c1, m1);
 
     // c_ab：未投票 A/B 对比对（voted:false，双候选），供刷新重建与投票测试
-    const cab = this.newConversation('c_ab', CHAT_SEED_TITLES.abCompare, false, null, 'think');
+    const cab = this.newConversation('c_ab', 'u_user', CHAT_SEED_TITLES.abCompare, false, null, 'think');
     cab.lastActiveAt = seedActiveCab;
     const userAb = this.nextId('m');
     cab.messages.push({ id: userAb, role: 'user', content: '请对比两版回答', created_at: seedCreatedCab });
@@ -1322,11 +1419,20 @@ export class MockChatController {
       attempt_number: 1,
       feedback: null,
     });
+    this.announceAssistantMessage(cab, mab);
   }
 
-  private newConversation(id: string, title: string, pinned: boolean, groupId: string | null, effortLevel: EffortLevel): MockConversation {
+  private newConversation(
+    id: string,
+    ownerUserId: string,
+    title: string,
+    pinned: boolean,
+    groupId: string | null,
+    effortLevel: EffortLevel,
+  ): MockConversation {
     const conversation: MockConversation = {
       id,
+      ownerUserId,
       title,
       pinned,
       groupId,

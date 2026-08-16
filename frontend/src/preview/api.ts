@@ -70,7 +70,7 @@ function parseSupportedContentUrl(contentUrl: string): URL {
     throw new TypeError('Preview content URL must be application-relative.');
   }
   const parsed = new URL(contentUrl, applicationOrigin);
-  if (parsed.origin !== applicationOrigin || !parsed.pathname.startsWith('/documents/')) {
+  if (parsed.origin !== applicationOrigin || !parsed.pathname.startsWith('/v1/documents/')) {
     throw new TypeError('Preview content URL must be an application-relative document endpoint.');
   }
   return parsed;
@@ -98,12 +98,15 @@ export function createPreviewApi(client: ApiClient): PreviewApi {
     },
     buildContentUrl(contentUrl, documentVersionId) {
       const parsed = parseSupportedContentUrl(contentUrl);
-      if (typeof documentVersionId === 'string' && documentVersionId !== '') {
+      if (
+        !parsed.searchParams.has('document_version_id') &&
+        typeof documentVersionId === 'string' &&
+        documentVersionId !== ''
+      ) {
         parsed.searchParams.set('document_version_id', documentVersionId);
       }
       const query = parsed.searchParams.toString();
-      // content_url 为应用内相对路径（契约 §4 示例 "/documents/doc_9/content"）。
-      return resolveUrl(`/v1${parsed.pathname}${query === '' ? '' : `?${query}`}`);
+      return resolveUrl(`${parsed.pathname}${query === '' ? '' : `?${query}`}`);
     },
   };
 }

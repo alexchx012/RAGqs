@@ -233,7 +233,7 @@ export function createSettingsApi(client: ApiClient): SettingsApi {
       const chunks: Uint8Array[] = [
         encoder.encode(
           `--${boundary}\r\n` +
-            `Content-Disposition: form-data; name="files"; filename="${safeName}"\r\n` +
+            `Content-Disposition: form-data; name="file"; filename="${safeName}"\r\n` +
             `Content-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`,
         ),
         new Uint8Array(await file.arrayBuffer()),

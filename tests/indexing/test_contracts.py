@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,7 @@ from openpyxl import Workbook
 from sqlalchemy import create_engine, select, update
 
 from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
+from app.documents.preview import ProcessingReceiptPreviewRenderer
 from app.documents.public_graph import PublicGraphSourceService
 from app.documents.schema import (
     document_versions_table,
@@ -1382,6 +1384,55 @@ def test_excel_uses_structured_table_loader() -> None:
     assert output.receipt.processing_summary["sheet_count"] == 1
 
 
+def test_header_only_csv_preview_metadata_matches_content_rows() -> None:
+    source = b"name\n"
+    output = ContentProcessor().process(
+        _request(),
+        source,
+        media_kind="text/csv",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+    renderer = ProcessingReceiptPreviewRenderer()
+    metadata = renderer.metadata(processing_summary=output.receipt.processing_summary)
+    content = renderer.render(
+        version={"media_kind": "text/csv", "processing_summary": output.receipt.processing_summary},
+        content=source,
+        metadata=metadata,
+        sheet="CSV",
+    )
+
+    assert metadata.sheets == ({"name": "CSV", "row_count": 1},)
+    assert json.loads(content.body)["row_count"] == 1
+
+
+def test_header_only_xlsx_preview_metadata_matches_content_rows() -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(["name"])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    source = stream.getvalue()
+    output = ContentProcessor().process(
+        _request(),
+        source,
+        media_kind="xlsx",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+    renderer = ProcessingReceiptPreviewRenderer()
+    metadata = renderer.metadata(processing_summary=output.receipt.processing_summary)
+    content = renderer.render(
+        version={"media_kind": "xlsx", "processing_summary": output.receipt.processing_summary},
+        content=source,
+        metadata=metadata,
+        sheet="Sheet",
+    )
+
+    assert metadata.sheets == ({"name": "Sheet", "row_count": 1},)
+    assert json.loads(content.body)["row_count"] == 1
+
+
 def test_excel_expands_merged_cells_and_records_ranges() -> None:
     workbook = Workbook()
     worksheet = workbook.active
@@ -1560,6 +1611,7 @@ def test_mineru_pdf_preserves_native_page_and_span_locators() -> None:
     assert output.chunks[0].locator == {"page": 1, "span": "0:5"}
     assert output.chunks[1].locator == {"page": 2, "span": "0:6"}
     assert all(chunk.snippet for chunk in output.chunks)
+    assert output.receipt.processing_summary["page_count"] == 2
 
 
 def test_standard_docx_mime_is_accepted_and_routes_through_mineru() -> None:
@@ -1587,7 +1639,63 @@ def test_standard_docx_mime_is_accepted_and_routes_through_mineru() -> None:
     )
 
     assert processed == [b"word"]
-    assert output.chunks[0].locator == {"page": 1, "span": "0:12"}
+    assert output.chunks[0].locator == {"section_path": "Guide"}
+    assert output.chunks[0].snippet is None
+    assert output.receipt.processing_summary["tree"]["sections"] == [
+        {"path": ["Guide"], "paragraphs": ["Word content"]}
+    ]
+
+
+def test_processor_word_tree_receipt_renders_json_without_decoding_source() -> None:
+    output = ContentProcessor(
+        mineru=lambda content: {"text": "# Guide\n\nWord content", "page_count": 1}
+    ).process(
+        _request(),
+        b"\xff\xfe\x80",
+        media_kind="docx",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+    renderer = ProcessingReceiptPreviewRenderer()
+    metadata = renderer.metadata(processing_summary=output.receipt.processing_summary)
+
+    content = renderer.render(
+        version={"media_kind": "docx", "processing_summary": output.receipt.processing_summary},
+        content=b"\xff\xfe\x80",
+        metadata=metadata,
+        sheet=None,
+    )
+
+    assert metadata.tree_indexed is True
+    assert content.media_type == "application/json"
+    assert json.loads(content.body) == {
+        "sections": [{"path": ["Guide"], "paragraphs": ["Word content"]}]
+    }
+
+
+def test_processor_basic_word_receipt_renders_readable_text_without_decoding_source() -> None:
+    output = ContentProcessor(
+        mineru=lambda content: {"text": "Readable plain text", "page_count": 1}
+    ).process(
+        _request(),
+        b"\xff\xfe\x80",
+        media_kind="docx",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+    renderer = ProcessingReceiptPreviewRenderer()
+    metadata = renderer.metadata(processing_summary=output.receipt.processing_summary)
+
+    content = renderer.render(
+        version={"media_kind": "docx", "processing_summary": output.receipt.processing_summary},
+        content=b"\xff\xfe\x80",
+        metadata=metadata,
+        sheet=None,
+    )
+
+    assert metadata.tree_indexed is False
+    assert content.media_type == "text/plain"
+    assert content.body == b"Readable plain text"
 
 
 def test_structured_large_configuration_calls_compressor() -> None:

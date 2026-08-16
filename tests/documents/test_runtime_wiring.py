@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine, select
 
 import app.evaluation as evaluation_module
+from app.documents.preview import ProcessingReceiptPreviewRenderer
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.schema import documents_metadata
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
@@ -174,6 +175,15 @@ def test_runtime_exposes_documents_service_and_department_work_adapter() -> None
         assert runtime.resolve("documents_service")._indexing_handoff_port is runtime.resolve(
             "indexing_service"
         )
+        assert isinstance(
+            runtime.resolve("document_preview_renderer"), ProcessingReceiptPreviewRenderer
+        )
+        assert runtime.resolve("documents_service")._preview_renderer is runtime.resolve(
+            "document_preview_renderer"
+        )
+        assert runtime.resolve(
+            "documents_service"
+        )._message_citation_preview_port is runtime.resolve("message_citation_preview_port")
         assert runtime.resolve("outbox_lifecycle") is None
     finally:
         runtime.close()

@@ -25,6 +25,7 @@ from .domain import (
     canonical_request_fingerprint,
 )
 from .indexing import IndexProcessingReceipt
+from .preview import PreviewContent
 from .schema import (
     document_deletion_cleanup_targets_table,
     document_deletions_table,
@@ -161,6 +162,8 @@ class DocumentsService:
         submission_notification_port: Any | None = None,
         ingestion_notification_port: Any | None = None,
         public_graph_source_service: Any | None = None,
+        preview_renderer: Any | None = None,
+        message_citation_preview_port: Any | None = None,
         version_retention_days: int = 30,
         read_lease_ttl: timedelta = timedelta(minutes=5),
         max_upload_bytes: int = 25 * 1024 * 1024,
@@ -181,6 +184,8 @@ class DocumentsService:
         self._submission_notification_port = submission_notification_port
         self._ingestion_notification_port = ingestion_notification_port
         self._public_graph_source_service = public_graph_source_service
+        self._preview_renderer = preview_renderer
+        self._message_citation_preview_port = message_citation_preview_port
         self._version_retention_days = version_retention_days
         self._read_lease_ttl = read_lease_ttl
         self._max_upload_bytes = max_upload_bytes
@@ -1230,9 +1235,13 @@ class DocumentsService:
                         ingestion_jobs_table.delete().where(ingestion_jobs_table.c.id == job_id)
                     )
                     connection.execute(
-                        document_versions_table.delete().where(document_versions_table.c.id == version_id)
+                        document_versions_table.delete().where(
+                            document_versions_table.c.id == version_id
+                        )
                     )
-                    connection.execute(documents_table.delete().where(documents_table.c.id == document_id))
+                    connection.execute(
+                        documents_table.delete().where(documents_table.c.id == document_id)
+                    )
                     claim = (
                         connection.execute(
                             select(upload_dedup_claims_table).where(
@@ -1240,8 +1249,7 @@ class DocumentsService:
                                     upload_dedup_claims_table.c.space_id == space_id,
                                     upload_dedup_claims_table.c.normalized_filename
                                     == info["normalized_filename"],
-                                    upload_dedup_claims_table.c.content_hash_sha256
-                                    == content_hash,
+                                    upload_dedup_claims_table.c.content_hash_sha256 == content_hash,
                                 )
                             )
                         )
@@ -1604,6 +1612,7 @@ class DocumentsService:
         principal: Any,
         document_id: str,
         document_version_id: str | None = None,
+        message_id: str | None = None,
     ) -> dict[str, Any]:
         from .read_models import DocumentReadModels
 
@@ -1611,6 +1620,7 @@ class DocumentsService:
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
+            message_id=message_id,
         )
 
     def content(
@@ -1619,13 +1629,15 @@ class DocumentsService:
         principal: Any,
         document_id: str,
         document_version_id: str | None = None,
-    ) -> tuple[bytes, ObjectMetadata]:
+        sheet: str | None = None,
+    ) -> PreviewContent:
         from .read_models import DocumentReadModels
 
         return DocumentReadModels(self).content(
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
+            sheet=sheet,
         )
 
     def get_upload_batch(self, *, principal: Any, upload_batch_id: str) -> dict[str, Any]:
@@ -1884,9 +1896,7 @@ class DocumentsService:
             raw_receipt_attempt_id = (
                 receipt.attempt_id
                 if isinstance(receipt, IndexProcessingReceipt)
-                else receipt.get("attempt_id")
-                if isinstance(receipt, Mapping)
-                else None
+                else receipt.get("attempt_id") if isinstance(receipt, Mapping) else None
             )
             if (
                 not isinstance(raw_receipt_attempt_id, str)

@@ -64,7 +64,7 @@ interface ParsedUploadFile {
   readonly name: string;
   readonly size: number;
   readonly type: string;
-  /** 内容 hash（FNV-1a over 原始字节；dedupe 依据，review C12）。 */
+  /** 内容 hash（SHA-256 over 原始字节；dedupe 依据）。 */
   readonly contentHash: string;
 }
 
@@ -74,29 +74,29 @@ interface ParsedNewVersionParts {
 }
 
 /**
- * 解析上传新版本的 multipart：同时包含 `files`（单文件）与 `expected_version` 表单字段。
+ * 解析上传新版本的 multipart：同时包含 `file`（单文件）与 `expected_version` 表单字段。
  * 字节级解析与 parseUploadFiles 一致（undici 会抹掉 jsdom File 名）。
  */
 async function parseNewVersionParts(request: Request): Promise<ParsedNewVersionParts> {
   const contentType = request.headers.get('Content-Type') ?? '';
   const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
   if (boundaryMatch === null) {
-    throw new MockHttpError(422, 'validation_error', { field: 'files' });
+    throw new MockHttpError(422, 'validation_error', { field: 'file' });
   }
   const boundary = (boundaryMatch[1] ?? boundaryMatch[2] ?? '').trim();
   if (boundary === '') {
-    throw new MockHttpError(422, 'validation_error', { field: 'files' });
+    throw new MockHttpError(422, 'validation_error', { field: 'file' });
   }
   const bytes = new Uint8Array(await request.arrayBuffer());
   const boundaryBytes = new TextEncoder().encode(`--${boundary}`);
   const headerEndMark = new TextEncoder().encode('\r\n\r\n');
   const crlf = new TextEncoder().encode('\r\n');
-  const parts = parseMultipartParts(bytes, boundaryBytes, headerEndMark, crlf);
+  const parts = await parseMultipartParts(bytes, boundaryBytes, headerEndMark, crlf);
   const files = parts.filter(
-    (part) => part.field === 'files' && part.filename !== null && part.filename !== '',
+    (part) => part.field === 'file' && part.filename !== null && part.filename !== '',
   );
   if (files.length !== 1) {
-    throw new MockHttpError(422, 'validation_error', { field: 'files' });
+    throw new MockHttpError(422, 'validation_error', { field: 'file' });
   }
   const expectedVersionPart = parts.find((part) => part.field === 'expected_version');
   if (expectedVersionPart === undefined) {
@@ -124,26 +124,21 @@ interface MultipartPart {
   readonly type: string;
   readonly size: number;
   readonly text: string;
-  /** 原始字节内容 hash（FNV-1a 32-bit hex；二进制安全）。 */
+  /** 原始字节内容 hash（SHA-256 hex；二进制安全）。 */
   readonly contentHash: string;
 }
 
-/** FNV-1a 32-bit：对原始字节计算稳定内容指纹（dedupe 依据）。 */
-function fnv1a(bytes: Uint8Array): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < bytes.length; index += 1) {
-    hash ^= bytes[index]!;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function parseMultipartParts(
+async function parseMultipartParts(
   bytes: Uint8Array,
   boundaryBytes: Uint8Array,
   headerEndMark: Uint8Array,
   crlf: Uint8Array,
-): MultipartPart[] {
+): Promise<MultipartPart[]> {
   const parts: MultipartPart[] = [];
   let searchFrom = 0;
   while (true) {
@@ -173,8 +168,9 @@ function parseMultipartParts(
     if (size >= crlf.length && sequenceEquals(bytes, bodyEnd - crlf.length, crlf)) {
       size -= crlf.length;
     }
-    const text = new TextDecoder('utf-8').decode(bytes.slice(headerEnd + 4, headerEnd + 4 + size));
-    const contentHash = fnv1a(bytes.slice(headerEnd + 4, headerEnd + 4 + size));
+    const content = bytes.slice(headerEnd + 4, headerEnd + 4 + size);
+    const text = new TextDecoder('utf-8').decode(content);
+    const contentHash = await sha256Hex(content);
     parts.push({ field, filename, type, size: Math.max(0, size), text, contentHash });
     searchFrom = nextBoundary === -1 ? bytes.length : nextBoundary;
   }
@@ -199,7 +195,7 @@ async function parseUploadFiles(request: Request): Promise<ParsedUploadFile[]> {
     throw new MockHttpError(422, 'validation_error', { field: 'files' });
   }
   const bytes = new Uint8Array(await request.arrayBuffer());
-  const parts = parseMultipartParts(
+  const parts = await parseMultipartParts(
     bytes,
     new TextEncoder().encode(`--${boundary}`),
     new TextEncoder().encode('\r\n\r\n'),
@@ -280,6 +276,7 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
             files,
             idempotencyKey,
           ),
+          { status: 202 },
         );
       } catch (error) {
         return errorResponse(error);
@@ -292,15 +289,14 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
       try {
         const parts = await parseNewVersionParts(request);
         const idempotencyKey = requireIdempotencyKey(request);
-        return HttpResponse.json(
-          controller.uploadNewVersion(
+        const result = controller.uploadNewVersion(
             request.headers.get('Authorization'),
             String(params['id']),
             parts.file,
             parts.expectedVersion,
             idempotencyKey,
-          ),
-        );
+          );
+        return HttpResponse.json(result, { status: result.deduplicated ? 200 : 202 });
       } catch (error) {
         return errorResponse(error);
       }
@@ -497,16 +493,7 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
 
     http.get('/v1/approvals/submissions', ({ request }) => {
       try {
-        // §8.4：target_kind / target_space_id 仅超管筛选用；其余角色由控制器按范围固定。
-        const url = new URL(request.url);
-        const targetKind = url.searchParams.get('target_kind') ?? undefined;
-        const targetSpaceId = url.searchParams.get('target_space_id') ?? undefined;
-        return HttpResponse.json(
-          controller.listApprovals(request.headers.get('Authorization'), {
-            targetKind: targetKind as 'public' | 'department' | undefined,
-            targetSpaceId,
-          }),
-        );
+        return HttpResponse.json(controller.listApprovals(request.headers.get('Authorization')));
       } catch (error) {
         return errorResponse(error);
       }
