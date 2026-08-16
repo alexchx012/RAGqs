@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.chat.models import CalibrationWindowSnapshot, RetrievalHitOutcome, RetrievalOutcome
 from app.chat.schema import chat_ab_pair_table
@@ -530,3 +530,33 @@ def test_ab_pair_expires_at_uses_policy_ttl_and_is_not_overwritten_on_open() -> 
     from datetime import UTC
 
     assert opened["expires_at_utc"].replace(tzinfo=UTC) == NOW + timedelta(seconds=ttl)
+
+
+def test_expired_ab_pair_displays_candidate_zero_after_two_candidates_published() -> None:
+    env = build_test_env(
+        calibration=FakeCalibration(window=open_window()),
+        outcomes={"hello": RetrievalOutcome(hits=(_hit(),))},
+    )
+    env["provider"].candidate_bias = True
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    service = env["runtime"].resolve("chat_generation_service")
+    principal = env["identity"].authenticate_access_token(token)
+    from app.chat.models import AskRequest
+
+    service.ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=AskRequest(content="hello", effort_level="quick", scope=None),
+        idempotency_key="ask-expired-pair",
+    )
+    env["runtime"].resolve("chat_generation_worker").run_once()
+    with env["engine"].begin() as connection:
+        connection.execute(update(chat_ab_pair_table).values(status="expired"))
+
+    detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
+    assistant = detail["messages"][1]
+    assert assistant["ab"] is None
+    assert assistant["content"] == "answer for hello using the answer is 42"
+    assert assistant["answer_mode"] == "grounded"

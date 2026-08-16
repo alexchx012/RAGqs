@@ -184,7 +184,7 @@ class ChatGenerationWorker:
             if row["lease_expires_at_utc"] is not None and _utc(row["lease_expires_at_utc"]) >= now:
                 continue
             generation_id = str(row["generation_id"])
-            connection.execute(
+            claimed = connection.execute(
                 update(chat_generation_execution_table)
                 .where(
                     chat_generation_execution_table.c.execution_id == row["execution_id"],
@@ -197,7 +197,9 @@ class ChatGenerationWorker:
                     lease_expires_at_utc=None,
                     updated_at_utc=now,
                 )
-            )
+            ).rowcount
+            if claimed != 1:
+                continue
             generation = (
                 connection.execute(
                     select(
@@ -389,21 +391,14 @@ class ChatGenerationWorker:
                 return None
             execution_id = str(due["execution_id"])
             generation_id = str(due["generation_id"])
-            generation = self._lock_generation(connection, generation_id=generation_id)
-            execution = (
-                connection.execute(
-                    select(chat_generation_execution_table)
-                    .where(
-                        chat_generation_execution_table.c.execution_id == execution_id,
-                        chat_generation_execution_table.c.status.in_(["queued", "retry_wait"]),
-                    )
-                    .with_for_update()
-                )
-                .mappings()
-                .one_or_none()
+            execution = self._lock_execution(
+                connection,
+                generation_id=generation_id,
+                execution_id=execution_id,
             )
-            if execution is None:
+            if execution is None or str(execution["status"]) not in {"queued", "retry_wait"}:
                 return None
+            generation = self._lock_generation(connection, generation_id=generation_id)
             if str(generation["status"]) not in {"running", "stop_requested"}:
                 connection.execute(
                     update(chat_generation_execution_table)
@@ -445,9 +440,24 @@ class ChatGenerationWorker:
         round_index = 0
         while True:
             if round_index > 0 and not budget.can_start_rag_round():
+                previous_effort = budget.effort_level
                 upgraded = budget.upgrade_effort()
                 if upgraded is None:
                     break
+                if not self._persist_effort_upgrade(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    previous_effort=previous_effort,
+                    upgraded_effort=upgraded,
+                ):
+                    return
+                generation = {
+                    **generation,
+                    "effective_effort_level": upgraded,
+                    "upgraded_from": previous_effort,
+                }
                 self._emit_notice(
                     generation_id=generation_id,
                     execution_id=execution_id,
@@ -515,6 +525,65 @@ class ChatGenerationWorker:
             control_version=control_version,
             candidates=candidates,
         )
+
+    def _persist_effort_upgrade(
+        self,
+        *,
+        generation_id: str,
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        previous_effort: str,
+        upgraded_effort: str,
+    ) -> bool:
+        with self._engine.begin() as connection:
+            if not self._fence_current(
+                connection,
+                generation_id=generation_id,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+            ):
+                self._cancel_stale_execution(
+                    connection,
+                    execution_id=execution_id,
+                    generation_id=generation_id,
+                    now=self._now(connection),
+                )
+                return False
+            current_execution = (
+                select(chat_generation_execution_table.c.execution_id)
+                .where(
+                    chat_generation_execution_table.c.execution_id == execution_id,
+                    chat_generation_execution_table.c.generation_id == generation_id,
+                    chat_generation_execution_table.c.fencing_token == fencing_token,
+                    chat_generation_execution_table.c.status == "running",
+                )
+                .exists()
+            )
+            updated = connection.execute(
+                update(chat_generation_table)
+                .where(
+                    chat_generation_table.c.id == generation_id,
+                    chat_generation_table.c.control_version == control_version,
+                    chat_generation_table.c.status == "running",
+                    current_execution,
+                )
+                .values(
+                    effective_effort_level=upgraded_effort,
+                    upgraded_from=previous_effort,
+                    updated_at_utc=self._now(connection),
+                )
+            ).rowcount
+            if updated:
+                return True
+            self._cancel_stale_execution(
+                connection,
+                execution_id=execution_id,
+                generation_id=generation_id,
+                now=self._now(connection),
+            )
+            return False
 
     def _resolve_citations(
         self,
@@ -691,6 +760,47 @@ class ChatGenerationWorker:
                 fencing_token=fencing_token,
                 control_version=control_version,
             ):
+                self._cancel_stale_execution(
+                    connection,
+                    execution_id=execution_id,
+                    generation_id=str(generation["id"]),
+                    now=now,
+                )
+                return
+            current_execution = connection.execute(
+                update(chat_generation_execution_table)
+                .where(
+                    chat_generation_execution_table.c.execution_id == execution_id,
+                    chat_generation_execution_table.c.generation_id == str(generation["id"]),
+                    chat_generation_execution_table.c.fencing_token == fencing_token,
+                    chat_generation_execution_table.c.status == "running",
+                )
+                .values(heartbeat_at_utc=now, updated_at_utc=now)
+            ).rowcount
+            if not current_execution:
+                self._cancel_stale_execution(
+                    connection,
+                    execution_id=execution_id,
+                    generation_id=str(generation["id"]),
+                    now=now,
+                )
+                return
+            current_generation = connection.execute(
+                update(chat_generation_table)
+                .where(
+                    chat_generation_table.c.id == str(generation["id"]),
+                    chat_generation_table.c.control_version == control_version,
+                    chat_generation_table.c.status == "running",
+                )
+                .values(updated_at_utc=now)
+            ).rowcount
+            if not current_generation:
+                self._cancel_stale_execution(
+                    connection,
+                    execution_id=execution_id,
+                    generation_id=str(generation["id"]),
+                    now=now,
+                )
                 return
             pair = self._pair_row(connection, generation_id=str(generation["id"]))
             ab_open = pair is not None and len(candidates) == 2
@@ -813,57 +923,137 @@ class ChatGenerationWorker:
     def _stop_terminal(self, *, execution_id: str, generation_id: str, stop_reason: str) -> None:
         with self._engine.begin() as connection:
             now = self._now(connection)
+            self._lock_execution(
+                connection,
+                generation_id=generation_id,
+                execution_id=execution_id,
+            )
             generation = self._lock_generation(connection, generation_id=generation_id)
             if str(generation["status"]) not in {"stop_requested", "running"}:
                 return
-            connection.execute(
-                update(chat_generation_table)
-                .where(chat_generation_table.c.id == generation_id)
-                .values(
-                    status="stopped",
-                    stop_reason=stop_reason,
-                    updated_at_utc=now,
-                )
-            )
-            connection.execute(
-                update(chat_message_table)
-                .where(chat_message_table.c.generation_id == generation_id)
-                .values(
-                    status="stopped",
-                    stop_reason=stop_reason,
-                    updated_at_utc=now,
-                )
-            )
-            connection.execute(
-                update(chat_generation_execution_table)
-                .where(chat_generation_execution_table.c.execution_id == execution_id)
-                .values(status="cancelled", updated_at_utc=now)
-            )
-            self._discard_unfinished_ab_pair(connection, generation_id=generation_id, now=now)
-            self._append_terminal(
+            self._stop_terminal_in_transaction(
                 connection,
-                generation_id=generation_id,
-                event_type="stopped",
-                data={
-                    "generation_id": generation_id,
-                    "message_id": str(generation["message_id"]),
-                    "status": "stopped",
-                    "stop_reason": stop_reason,
-                },
+                execution_id=execution_id,
+                generation=generation,
+                stop_reason=stop_reason,
                 now=now,
             )
+
+    def _cancel_stale_execution(
+        self,
+        connection: Connection,
+        *,
+        execution_id: str,
+        generation_id: str,
+        now: datetime,
+    ) -> None:
+        self._lock_execution(
+            connection,
+            generation_id=generation_id,
+            execution_id=execution_id,
+        )
+        generation = self._lock_generation(connection, generation_id=generation_id)
+        if str(generation["status"]) == "stop_requested":
+            self._stop_terminal_in_transaction(
+                connection,
+                execution_id=execution_id,
+                generation=generation,
+                stop_reason=str(generation["stop_reason"] or "manual_request"),
+                now=now,
+            )
+            return
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(
+                chat_generation_execution_table.c.execution_id == execution_id,
+                chat_generation_execution_table.c.status == "running",
+            )
+            .values(
+                status="cancelled",
+                lease_owner=None,
+                lease_expires_at_utc=None,
+                updated_at_utc=now,
+            )
+        )
+
+    def _stop_terminal_in_transaction(
+        self,
+        connection: Connection,
+        *,
+        execution_id: str,
+        generation: Mapping[str, Any],
+        stop_reason: str,
+        now: datetime,
+    ) -> None:
+        generation_id = str(generation["id"])
+        connection.execute(
+            update(chat_generation_table)
+            .where(chat_generation_table.c.id == generation_id)
+            .values(
+                status="stopped",
+                stop_reason=stop_reason,
+                updated_at_utc=now,
+            )
+        )
+        connection.execute(
+            update(chat_message_table)
+            .where(chat_message_table.c.generation_id == generation_id)
+            .values(
+                status="stopped",
+                stop_reason=stop_reason,
+                updated_at_utc=now,
+            )
+        )
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(chat_generation_execution_table.c.execution_id == execution_id)
+            .values(
+                status="cancelled",
+                lease_owner=None,
+                lease_expires_at_utc=None,
+                updated_at_utc=now,
+            )
+        )
+        self._discard_unfinished_ab_pair(connection, generation_id=generation_id, now=now)
+        self._append_terminal(
+            connection,
+            generation_id=generation_id,
+            event_type="stopped",
+            data={
+                "generation_id": generation_id,
+                "message_id": str(generation["message_id"]),
+                "status": "stopped",
+                "stop_reason": stop_reason,
+            },
+            now=now,
+        )
 
     def _fail_execution(
         self, *, execution_id: str, generation_id: str, error: PlatformError
     ) -> None:
         with self._engine.begin() as connection:
             now = self._now(connection)
-            generation = self._lock_generation(connection, generation_id=generation_id)
-            if str(generation["status"]) == "stop_requested":
-                self._stop_terminal(
+            if error.code == "generation_state_conflict":
+                self._cancel_stale_execution(
+                    connection,
                     execution_id=execution_id,
                     generation_id=generation_id,
+                    now=now,
+                )
+                return
+            self._lock_execution(
+                connection,
+                generation_id=generation_id,
+                execution_id=execution_id,
+            )
+            generation = self._lock_generation(connection, generation_id=generation_id)
+            if str(generation["status"]) == "stop_requested":
+                self._stop_terminal_in_transaction(
+                    connection,
+                    execution_id=execution_id,
+                    generation=generation,
                     stop_reason=str(generation["stop_reason"] or "authorization_revoked"),
+                    now=now,
                 )
                 return
             if str(generation["status"]) != "running":
@@ -916,15 +1106,16 @@ class ChatGenerationWorker:
         fencing_token: int,
         control_version: int,
     ) -> bool:
+        execution = self._lock_execution(
+            connection,
+            generation_id=generation_id,
+            execution_id=execution_id,
+        )
         generation = self._lock_generation(connection, generation_id=generation_id)
-        execution = connection.execute(
-            select(chat_generation_execution_table.c.fencing_token).where(
-                chat_generation_execution_table.c.execution_id == execution_id
-            )
-        ).scalar_one_or_none()
         return bool(
             execution is not None
-            and int(execution) == fencing_token
+            and int(execution["fencing_token"]) == fencing_token
+            and str(execution["status"]) == "running"
             and int(generation["control_version"]) == control_version
             and str(generation["status"]) in {"running", "stop_requested"}
         )
@@ -1025,6 +1216,22 @@ class ChatGenerationWorker:
             data=dict(data),
             now=now,
         )
+
+    def _lock_execution(
+        self,
+        connection: Connection,
+        *,
+        generation_id: str,
+        execution_id: str,
+    ) -> Mapping[str, Any] | None:
+        statement = select(chat_generation_execution_table).where(
+            chat_generation_execution_table.c.execution_id == execution_id,
+            chat_generation_execution_table.c.generation_id == generation_id,
+        )
+        if connection.dialect.name != "sqlite":
+            statement = statement.with_for_update()
+        row = connection.execute(statement).mappings().one_or_none()
+        return None if row is None else dict(row)
 
     def _lock_generation(self, connection: Connection, *, generation_id: str) -> Mapping[str, Any]:
         statement = select(chat_generation_table).where(chat_generation_table.c.id == generation_id)

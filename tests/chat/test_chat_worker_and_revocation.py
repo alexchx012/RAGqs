@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import timedelta
 
 from sqlalchemy import select, update
 
-from app.chat.models import AskRequest, RetrievalOutcome
+from app.chat.models import AskRequest, RetrievalHitOutcome, RetrievalOutcome
+from app.chat.ports import RecordingChatRetrievalPort
 from app.chat.schema import (
     chat_ab_candidate_table,
     chat_ab_pair_table,
     chat_generation_event_table,
     chat_generation_execution_table,
     chat_generation_table,
+    chat_message_table,
     chat_subscription_lease_table,
 )
 from app.identity.revocation import GenerationRevocationCommand
@@ -202,6 +205,67 @@ def test_expired_execution_lease_recovers_and_respects_physical_cap() -> None:
     assert frames[-1][0] == "done"
 
 
+def test_recovery_skips_execution_lost_to_another_maintenance_worker() -> None:
+    env = build_test_env()
+    worker = env["runtime"].resolve("chat_generation_worker")
+    statements: list[object] = []
+
+    class _Result:
+        def __init__(
+            self,
+            *,
+            rows: list[dict[str, object]] | None = None,
+            row: dict[str, object] | None = None,
+            rowcount: int = 0,
+        ) -> None:
+            self._rows = [] if rows is None else rows
+            self._row = row
+            self.rowcount = rowcount
+
+        def mappings(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def all(self):  # type: ignore[no-untyped-def]
+            return self._rows
+
+        def one_or_none(self):  # type: ignore[no-untyped-def]
+            return self._row
+
+    class _Connection:
+        def execute(self, statement):  # type: ignore[no-untyped-def]
+            statements.append(statement)
+            if len(statements) == 1:
+                return _Result(
+                    rows=[
+                        {
+                            "execution_id": "exec_1",
+                            "generation_id": "gen_1",
+                            "execution_attempt_number": 0,
+                            "fencing_token": 1,
+                            "lease_expires_at_utc": NOW - timedelta(seconds=1),
+                        }
+                    ]
+                )
+            if len(statements) == 2:
+                # Another maintenance transaction already changed the row.
+                return _Result(rowcount=0)
+            if len(statements) == 3:
+                return _Result(
+                    row={
+                        "status": "running",
+                        "absolute_deadline_at_utc": NOW + timedelta(minutes=1),
+                    }
+                )
+            if len(statements) == 4:
+                return _Result(rows=[])
+            return _Result()
+
+    recovered = worker._recover_expired_executions(_Connection(), now=NOW)
+
+    assert recovered == 0
+    assert len(statements) == 2
+
+
 def test_disconnect_grace_reaps_unleased_generation() -> None:
     env = build_test_env()
     token, _ = provision_and_login(env["identity"], "alice")
@@ -333,3 +397,395 @@ def test_stop_rechecks_session_authorization_in_transaction() -> None:
         assert error.status_code == 401
     else:
         raise AssertionError("stop must reject a revoked session in-transaction")
+
+
+class _PartiallyVisibleRetrieval(RecordingChatRetrievalPort):
+    def __init__(self, *, before_first_partial_resolution: Callable[[], None] | None = None) -> None:
+        super().__init__()
+        self._resolution_count = 0
+        self._before_first_partial_resolution = before_first_partial_resolution
+
+    def resolve_citations(self, hits, *, principal):  # type: ignore[no-untyped-def]
+        self._resolution_count += 1
+        if self._resolution_count == 1:
+            if self._before_first_partial_resolution is not None:
+                self._before_first_partial_resolution()
+            return super().resolve_citations(hits[:1], principal=principal)
+        return super().resolve_citations(hits, principal=principal)
+
+
+def test_effort_upgrade_persists_the_effort_used_by_retrieval_provider_and_events() -> None:
+    retrieval = _PartiallyVisibleRetrieval()
+    retrieval.outcomes["hello"] = RetrievalOutcome(
+        hits=(
+            RetrievalHitOutcome(
+                document_id="doc_1",
+                document_version_id="ver_1",
+                publication_id="pub_1",
+                chunk_id="chunk_1",
+                space_id="space_1",
+                locator={"page": 1},
+                snippet="first",
+            ),
+            RetrievalHitOutcome(
+                document_id="doc_2",
+                document_version_id="ver_2",
+                publication_id="pub_2",
+                chunk_id="chunk_2",
+                space_id="space_1",
+                locator={"page": 2},
+                snippet="second",
+            ),
+        )
+    )
+    env = build_test_env(retrieval=retrieval)
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id)
+
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    with env["engine"].connect() as connection:
+        generation = connection.execute(select(chat_generation_table)).mappings().one()
+        answer = (
+            connection.execute(
+                select(chat_generation_event_table)
+                .where(
+                    chat_generation_event_table.c.generation_id == result.generation_id,
+                    chat_generation_event_table.c.event_type == "answer",
+                )
+                .order_by(chat_generation_event_table.c.event_seq)
+            )
+            .mappings()
+            .one()
+        )
+        notice = (
+            connection.execute(
+                select(chat_generation_event_table)
+                .where(
+                    chat_generation_event_table.c.generation_id == result.generation_id,
+                    chat_generation_event_table.c.event_type == "notice",
+                )
+                .order_by(chat_generation_event_table.c.event_seq)
+            )
+            .mappings()
+            .one()
+        )
+    assert generation["effective_effort_level"] == "think"
+    assert generation["upgraded_from"] == "quick"
+    assert [search["effort"] for search in retrieval.searches] == ["quick", "think"]
+    assert [request.effort_level for request in env["provider"].calls] == ["think"]
+    assert notice["data_json"] == {"kind": "effort_upgraded", "detail": {"effort_level": "think"}}
+    assert answer["data_json"]["effort_level"] == "think"
+    assert answer["data_json"]["upgraded_from"] == "quick"
+
+
+def test_stale_execution_cannot_persist_effort_upgrade_after_fence_then_lease_recovery(
+    monkeypatch,
+) -> None:
+    retrieval = _PartiallyVisibleRetrieval()
+    retrieval.outcomes["hello"] = RetrievalOutcome(
+        hits=(
+            RetrievalHitOutcome(
+                document_id="doc_1",
+                document_version_id="ver_1",
+                publication_id="pub_1",
+                chunk_id="chunk_1",
+                space_id="space_1",
+                locator={"page": 1},
+                snippet="first",
+            ),
+            RetrievalHitOutcome(
+                document_id="doc_2",
+                document_version_id="ver_2",
+                publication_id="pub_2",
+                chunk_id="chunk_2",
+                space_id="space_1",
+                locator={"page": 2},
+                snippet="second",
+            ),
+        )
+    )
+    env = build_test_env(retrieval=retrieval)
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id)
+    worker = env["runtime"].resolve("chat_generation_worker")
+    original_fence_current = worker._fence_current
+    recovery_triggered = False
+
+    def recover_claimed_execution() -> None:
+        with env["engine"].begin() as connection:
+            connection.execute(
+                update(chat_generation_execution_table)
+                .where(chat_generation_execution_table.c.generation_id == result.generation_id)
+                .values(lease_expires_at_utc=NOW - timedelta(seconds=1))
+        )
+        assert worker.run_maintenance()["executions_recovered"] == 1
+
+    def recover_after_current_fence(
+        connection,
+        *,
+        generation_id: str,
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+    ) -> bool:
+        nonlocal recovery_triggered
+        current = original_fence_current(
+            connection,
+            generation_id=generation_id,
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+        )
+        if current and not recovery_triggered:
+            recovery_triggered = True
+            recover_claimed_execution()
+        return current
+
+    def arm_post_fence_recovery() -> None:
+        monkeypatch.setattr(worker, "_fence_current", recover_after_current_fence)
+
+    retrieval._before_first_partial_resolution = arm_post_fence_recovery
+    worker.run_once()
+
+    with env["engine"].connect() as connection:
+        generation = connection.execute(select(chat_generation_table)).mappings().one()
+        executions = (
+            connection.execute(
+                select(chat_generation_execution_table).order_by(
+                    chat_generation_execution_table.c.execution_attempt_number
+                )
+            )
+            .mappings()
+            .all()
+        )
+        notices = (
+            connection.execute(
+                select(chat_generation_event_table).where(
+                    chat_generation_event_table.c.generation_id == result.generation_id,
+                    chat_generation_event_table.c.event_type == "notice",
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert recovery_triggered
+    assert generation["status"] == "running"
+    assert generation["effective_effort_level"] == "quick"
+    assert generation["upgraded_from"] is None
+    assert [execution["status"] for execution in executions] == ["expired", "queued"]
+    assert not notices
+    assert not env["provider"].calls
+
+    worker.run_once()
+    assert [request.effort_level for request in env["provider"].calls] == ["quick"]
+
+
+def test_recovered_execution_uses_persisted_effective_effort() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id)
+
+    with env["engine"].begin() as connection:
+        connection.execute(
+            update(chat_generation_table)
+            .where(chat_generation_table.c.id == result.generation_id)
+            .values(effective_effort_level="think", upgraded_from="quick")
+        )
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(chat_generation_execution_table.c.generation_id == result.generation_id)
+            .values(
+                status="running",
+                lease_owner="interrupted_worker",
+                lease_expires_at_utc=NOW - timedelta(seconds=1),
+            )
+        )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker.run_maintenance()
+    worker.run_once()
+
+    assert [request.effort_level for request in env["provider"].calls] == ["think"]
+
+
+def test_stale_publish_converges_a_stop_requested_generation_without_publishing_an_answer() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id)
+    worker = env["runtime"].resolve("chat_generation_worker")
+    claimed = worker._claim_execution()
+    assert claimed is not None
+    execution_id, generation_id = claimed
+    generation = worker._read_generation(generation_id)
+    fencing_token = worker._execution_fence(generation_id, execution_id)
+
+    env["runtime"].resolve("chat_generation_service").stop(
+        principal=principal,
+        generation_id=result.generation_id,
+    )
+
+    worker._publish(
+        generation=generation,
+        execution_id=execution_id,
+        fencing_token=fencing_token,
+        control_version=int(generation["control_version"]),
+        candidates=[
+            {
+                "candidate": 0,
+                "content": "stale answer",
+                "citations": [],
+                "answer_mode": "no_context",
+            }
+        ],
+    )
+
+    with env["engine"].connect() as connection:
+        execution = connection.execute(select(chat_generation_execution_table)).mappings().one()
+        generation_after = connection.execute(select(chat_generation_table)).mappings().one()
+        message = (
+            connection.execute(
+                select(chat_message_table).where(chat_message_table.c.generation_id == result.generation_id)
+            )
+            .mappings()
+            .one()
+        )
+        events = connection.execute(select(chat_generation_event_table)).mappings().all()
+    assert execution["status"] == "cancelled"
+    assert execution["lease_owner"] is None
+    assert execution["lease_expires_at_utc"] is None
+    assert generation_after["status"] == "stopped"
+    assert generation_after["stop_reason"] == "manual_request"
+    assert message["status"] == "stopped"
+    assert message["content"] == ""
+    assert events[-1]["event_type"] == "stopped"
+    assert all(event["event_type"] != "done" for event in events)
+
+
+def test_stale_publish_cannot_outlive_a_fence_then_lease_recovery(monkeypatch) -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    _ask(env, principal, conversation_id)
+    worker = env["runtime"].resolve("chat_generation_worker")
+    claimed = worker._claim_execution()
+    assert claimed is not None
+    execution_id, generation_id = claimed
+    generation = worker._read_generation(generation_id)
+    fencing_token = worker._execution_fence(generation_id, execution_id)
+    original_fence_current = worker._fence_current
+    recovery_triggered = False
+
+    def recover_claimed_execution() -> None:
+        with env["engine"].begin() as connection:
+            connection.execute(
+                update(chat_generation_execution_table)
+                .where(chat_generation_execution_table.c.execution_id == execution_id)
+                .values(lease_expires_at_utc=NOW - timedelta(seconds=1))
+            )
+        assert worker.run_maintenance()["executions_recovered"] == 1
+
+    def recover_after_current_fence(
+        connection,
+        *,
+        generation_id: str,
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+    ) -> bool:
+        nonlocal recovery_triggered
+        current = original_fence_current(
+            connection,
+            generation_id=generation_id,
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+        )
+        if current and not recovery_triggered:
+            recovery_triggered = True
+            recover_claimed_execution()
+        return current
+
+    monkeypatch.setattr(worker, "_fence_current", recover_after_current_fence)
+    worker._publish(
+        generation=generation,
+        execution_id=execution_id,
+        fencing_token=fencing_token,
+        control_version=int(generation["control_version"]),
+        candidates=[
+            {
+                "candidate": 0,
+                "content": "stale answer",
+                "citations": [],
+                "answer_mode": "no_context",
+            }
+        ],
+    )
+
+    with env["engine"].connect() as connection:
+        generation_after = connection.execute(select(chat_generation_table)).mappings().one()
+        executions = (
+            connection.execute(
+                select(chat_generation_execution_table).order_by(
+                    chat_generation_execution_table.c.execution_attempt_number
+                )
+            )
+            .mappings()
+            .all()
+        )
+        events = connection.execute(select(chat_generation_event_table)).mappings().all()
+    assert recovery_triggered
+    assert generation_after["status"] == "running"
+    assert [execution["status"] for execution in executions] == ["expired", "queued"]
+    assert all(event["event_type"] not in {"answer", "done"} for event in events)
+
+
+def test_fence_locks_execution_before_generation(monkeypatch) -> None:
+    env = build_test_env()
+    worker = env["runtime"].resolve("chat_generation_worker")
+    lock_order: list[str] = []
+
+    class _Result:
+        def mappings(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def one_or_none(self):  # type: ignore[no-untyped-def]
+            return {"fencing_token": 7, "status": "running"}
+
+    class _Connection:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        def execute(self, statement):  # type: ignore[no-untyped-def]
+            del statement
+            lock_order.append("execution")
+            return _Result()
+
+    def lock_generation(connection, *, generation_id: str):  # type: ignore[no-untyped-def]
+        del connection, generation_id
+        lock_order.append("generation")
+        return {"control_version": 3, "status": "running"}
+
+    monkeypatch.setattr(worker, "_lock_generation", lock_generation)
+
+    assert worker._fence_current(
+        _Connection(),
+        generation_id="gen_1",
+        execution_id="exec_1",
+        fencing_token=7,
+        control_version=3,
+    )
+    assert lock_order == ["execution", "generation"]
