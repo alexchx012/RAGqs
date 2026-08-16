@@ -16,13 +16,16 @@ import type { DocumentPreviewResponse, SheetContentResponse } from './types';
 
 const MD_PREVIEW: DocumentPreviewResponse = {
   document_id: 'doc_md',
+  document_version_id: 'v_md_selected',
   name: '年假政策.md',
   media_kind: 'md',
+  size_bytes: 1024,
+  content_available: true,
   has_text_layer: false,
   tree_indexed: false,
   page_count: null,
   sheets: null,
-  content_url: '/documents/doc_md/content',
+  content_url: '/documents/doc_md/content?document_version_id=v_md_selected',
   hits: [
     { index: 1, summary: '年假天数规则', snippet: '满 1 年不满 10 年为 5 天', locator: {} },
     { index: 2, summary: '申请流程', snippet: '申请流程', locator: {} },
@@ -33,8 +36,11 @@ const MD_TEXT = '# 年假政策\n\n员工年假天数按工龄分段：满 1 年
 
 const EXCEL_PREVIEW: DocumentPreviewResponse = {
   document_id: 'doc_xlsx',
+  document_version_id: 'v_xlsx_selected',
   name: '报销明细.xlsx',
   media_kind: 'excel',
+  size_bytes: 2048,
+  content_available: true,
   has_text_layer: false,
   tree_indexed: false,
   page_count: null,
@@ -42,7 +48,7 @@ const EXCEL_PREVIEW: DocumentPreviewResponse = {
     { name: 'Q1 报销', row_count: 5 },
     { name: 'Q2 报销', row_count: 3 },
   ],
-  content_url: '/documents/doc_xlsx/content',
+  content_url: '/documents/doc_xlsx/content?document_version_id=v_xlsx_selected',
   hits: [
     { index: 1, summary: 'Q1 交通费记录', locator: { sheet: 'Q1 报销', a1_range: 'A2:C2' } },
     { index: 2, summary: 'Q2 住宿费记录', locator: { sheet: 'Q2 报销', a1_range: 'A2' } },
@@ -133,6 +139,42 @@ describe('PreviewPage 加载与就绪', () => {
     expect(screen.getByText(copy.preview.navEmpty)).toBeInTheDocument();
     await waitFor(() => expect(container.textContent).toContain('年假政策'));
     expect(container.querySelector('mark')).toBeNull();
+  });
+
+  it('内容 renderer 使用 preview 返回的选定版本，而不是地址栏中的过期版本', async () => {
+    const getTextContent = vi.fn(async () => MD_TEXT);
+    const api = fakeApi({ getTextContent });
+
+    await renderPage(api, '/preview/doc_md?document_version_id=v_stale');
+
+    await waitFor(() =>
+      expect(getTextContent).toHaveBeenCalledWith('doc_md', { documentVersionId: 'v_md_selected' }),
+    );
+  });
+
+  it('缺少处理元数据时以保守默认值打开内容', async () => {
+    const previewWithoutRendererMetadata = {
+      document_id: 'doc_word_basic',
+      document_version_id: 'vwb_1',
+      name: '会议纪要.docx',
+      media_kind: 'word' as const,
+      size_bytes: 512,
+      content_available: true,
+      content_url: '/documents/doc_word_basic/content?document_version_id=vwb_1',
+      hits: [],
+    };
+    const getTextContent = vi.fn(async () => '会议纪要');
+    const api = fakeApi({
+      getPreview: vi.fn(async () => previewWithoutRendererMetadata as DocumentPreviewResponse),
+      getTextContent,
+    });
+
+    await renderPage(api, '/preview/doc_word_basic');
+
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('会议纪要.docx'));
+    await waitFor(() =>
+      expect(getTextContent).toHaveBeenCalledWith('doc_word_basic', { documentVersionId: 'vwb_1' }),
+    );
   });
 });
 

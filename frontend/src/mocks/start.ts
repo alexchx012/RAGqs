@@ -21,6 +21,12 @@ import { MockQuotaStore } from './quota-contract';
 import { MockSettingsController } from './settings-contract';
 import { createSettingsHandlers } from './settings-handlers';
 
+const PREVIEW_MESSAGE_STORAGE_PREFIX = 'ragqs.mock.preview.message.';
+
+function previewMessageStorageKey(userId: string, messageId: string): string {
+  return `${PREVIEW_MESSAGE_STORAGE_PREFIX}${userId}.${messageId}`;
+}
+
 const PERSISTENCE_KEY = 'ragqs.mock-auth.v1';
 const NOTIFICATIONS_PERSISTENCE_KEY = 'ragqs.mock-notifications.v1';
 
@@ -50,14 +56,23 @@ export async function startMockWorker(): Promise<void> {
   const chatController = new MockChatController((header) => {
     const user = authController.me(header);
     return { userId: user.id, role: user.role, departmentId: user.department?.id ?? null };
-  });
+  }, (messageId, ownerUserId) => localStorage.setItem(previewMessageStorageKey(ownerUserId, messageId), '1'));
   const knowledgeController = new MockKnowledgeController(
     (header) => authController.me(header),
     quota,
     notificationsController,
   );
   // 原文预览域（fe-doc-preview）：内存态即可，页面刷新后预览经接口重新拉取
-  const previewController = new MockPreviewController((header) => ({ userId: authController.me(header).id }));
+  const previewController = new MockPreviewController(
+    (header) => ({ userId: authController.me(header).id }),
+    (header, messageId) => {
+      const userId = authController.me(header).id;
+      return (
+        chatController.hasMessage(header, messageId) ||
+        localStorage.getItem(previewMessageStorageKey(userId, messageId)) === '1'
+      );
+    },
+  );
   // 管理面板域：内存态即可（admin 会话态不经 localStorage 持久化，刷新后读模型重新拉取）
   const adminController = new MockAdminController(
     (header) => authController.me(header),

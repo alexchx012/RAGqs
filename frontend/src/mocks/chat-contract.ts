@@ -81,6 +81,7 @@ interface MockAssistantRow {
 
 interface MockConversation {
   readonly id: string;
+  readonly ownerUserId: string;
   title: string;
   pinned: boolean;
   groupId: string | null;
@@ -232,7 +233,10 @@ export class MockChatController {
   /** 夹具：后续 ask 以 stopped 终态结束（stop_reason 可覆盖）。 */
   private nextStopReason: StopReason | null = null;
 
-  constructor(private readonly validateAuth: ValidateChatAuth) {
+  constructor(
+    private readonly validateAuth: ValidateChatAuth,
+    private readonly onAssistantMessageCreated?: (messageId: string, ownerUserId: string) => void,
+  ) {
     this.reset();
   }
 
@@ -247,6 +251,13 @@ export class MockChatController {
     this.nextErrorCode = null;
     this.nextStopReason = null;
     this.seedFixtures();
+  }
+
+  hasMessage(auth: string | null, messageId: string): boolean {
+    const { userId } = this.requireAuth(auth);
+    return [...this.conversations.values()].some((conversation) =>
+      conversation.ownerUserId === userId && conversation.messages.some((message) => message.id === messageId),
+    );
   }
 
   /* ---------- 夹具 ---------- */
@@ -329,6 +340,7 @@ export class MockChatController {
       attempt_number: 1,
       feedback: null,
     });
+    this.announceAssistantMessage(conversation, messageId);
     conversation.lastActiveAt = this.iso();
     return { generationId, messageId, userMessageId };
   }
@@ -347,10 +359,11 @@ export class MockChatController {
   }
 
   createConversation(auth: string | null): ConversationSummary {
-    this.requireAuth(auth);
+    const { userId } = this.requireAuth(auth);
     const id = this.nextId('c');
     const conversation: MockConversation = {
       id,
+      ownerUserId: userId,
       title: '',
       pinned: false,
       groupId: null,
@@ -498,6 +511,7 @@ export class MockChatController {
       attempt_number: 1,
       feedback: null,
     });
+    this.announceAssistantMessage(conversation, messageId);
     conversation.lastActiveAt = this.iso();
     if (conversation.title === '') {
       conversation.title = body.content.slice(0, 30);
@@ -603,6 +617,7 @@ export class MockChatController {
       attempt_number: attemptNumber,
       feedback: null,
     });
+    this.announceAssistantMessage(conversation, messageId);
     conversation.lastActiveAt = this.iso();
     this.idemMap(userId).set(idempotencyKey, { kind: 'retry', normalized, generationId });
     return { generationId, messageId, userMessageId: parent.userMessageId, attemptNumber, events: generation.events };
@@ -857,6 +872,10 @@ export class MockChatController {
   private nextId(prefix: string): string {
     this.seq += 1;
     return `${prefix}_${this.seq.toString(36)}${Date.now().toString(36)}`;
+  }
+
+  private announceAssistantMessage(conversation: MockConversation, messageId: string): void {
+    this.onAssistantMessageCreated?.(messageId, conversation.ownerUserId);
   }
 
   private iso(): string {
@@ -1240,12 +1259,12 @@ export class MockChatController {
     const seedCreatedCab = '2026-07-21T11:58:00.000Z';
 
     // c_1：think 完成会话，含 feedback=up 与一条带页码引用的回答
-    const c1 = this.newConversation('c_1', '年假怎么休', false, groupId, 'think');
+    const c1 = this.newConversation('c_1', 'u_user', '年假怎么休', false, groupId, 'think');
     c1.lastActiveAt = seedActiveC1;
     const user1 = this.nextId('m');
     c1.messages.push({ id: user1, role: 'user', content: '年假怎么休', created_at: seedCreatedC1 });
     const g1 = this.nextId('g');
-    const m1 = this.nextId('m');
+    const m1 = 'm_1';
     this.generations.set(g1, {
       id: g1,
       conversationId: c1.id,
@@ -1278,9 +1297,10 @@ export class MockChatController {
       attempt_number: 1,
       feedback: { vote: 'up' },
     });
+    this.announceAssistantMessage(c1, m1);
 
     // c_ab：未投票 A/B 对比对（voted:false，双候选），供刷新重建与投票测试
-    const cab = this.newConversation('c_ab', CHAT_SEED_TITLES.abCompare, false, null, 'think');
+    const cab = this.newConversation('c_ab', 'u_user', CHAT_SEED_TITLES.abCompare, false, null, 'think');
     cab.lastActiveAt = seedActiveCab;
     const userAb = this.nextId('m');
     cab.messages.push({ id: userAb, role: 'user', content: '请对比两版回答', created_at: seedCreatedCab });
@@ -1322,11 +1342,20 @@ export class MockChatController {
       attempt_number: 1,
       feedback: null,
     });
+    this.announceAssistantMessage(cab, mab);
   }
 
-  private newConversation(id: string, title: string, pinned: boolean, groupId: string | null, effortLevel: EffortLevel): MockConversation {
+  private newConversation(
+    id: string,
+    ownerUserId: string,
+    title: string,
+    pinned: boolean,
+    groupId: string | null,
+    effortLevel: EffortLevel,
+  ): MockConversation {
     const conversation: MockConversation = {
       id,
+      ownerUserId,
       title,
       pinned,
       groupId,

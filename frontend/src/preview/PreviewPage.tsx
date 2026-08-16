@@ -187,7 +187,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
   const retry = useCallback(() => setRetryNonce((nonce) => nonce + 1), []);
 
   // 激活 Sheet：?sheet= 合法优先 → 首个表格命中的 Sheet → 第一页签
-  const sheets = state.status === 'ready' ? state.preview.sheets : null;
+  const sheets = state.status === 'ready' ? state.preview.sheets ?? null : null;
   const activeSheet = (() => {
     if (sheets === null || sheets.length === 0) {
       return null;
@@ -223,15 +223,22 @@ export function PreviewPage({ api }: PreviewPageProps) {
     nav = <EmptyState text={copy.preview.navEmpty} />;
   } else if (state.status === 'ready') {
     const preview = state.preview;
-    const strategy = previewStrategy(preview);
+    const selectedVersionId = preview.document_version_id;
+    const hasTextLayer = preview.has_text_layer ?? false;
+    const treeIndexed = preview.tree_indexed ?? false;
+    const strategy = previewStrategy({
+      media_kind: preview.media_kind,
+      has_text_layer: hasTextLayer,
+      tree_indexed: treeIndexed,
+    });
     switch (strategy.renderer) {
       case 'pdf':
         body = (
           <Suspense fallback={<PreviewSkeleton />}>
             <PdfRenderer
-              fileUrl={api.buildContentUrl(preview.content_url, documentVersionId)}
+              fileUrl={api.buildContentUrl(preview.content_url)}
               token={token}
-              hasTextLayer={preview.has_text_layer}
+              hasTextLayer={hasTextLayer}
               hits={hits}
               currentHit={currentHit}
             />
@@ -243,8 +250,8 @@ export function PreviewPage({ api }: PreviewPageProps) {
           <WordRenderer
             api={api}
             documentId={documentId}
-            documentVersionId={documentVersionId}
-            treeIndexed={preview.tree_indexed}
+            documentVersionId={selectedVersionId}
+            treeIndexed={treeIndexed}
             hits={hits}
             currentHit={currentHit}
           />
@@ -255,7 +262,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
           <TextRenderer
             api={api}
             documentId={documentId}
-            documentVersionId={documentVersionId}
+            documentVersionId={selectedVersionId}
             textKind={strategy.textKind ?? 'plain'}
             hits={hits}
             currentHit={currentHit}
@@ -268,7 +275,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
             <SheetRenderer
               api={api}
               documentId={documentId}
-              documentVersionId={documentVersionId}
+              documentVersionId={selectedVersionId}
               sheets={sheets}
               activeSheet={activeSheet}
               onSheetChange={onSheetChange}
@@ -284,7 +291,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
           <ImageRenderer
             api={api}
             documentId={documentId}
-            documentVersionId={documentVersionId}
+            documentVersionId={selectedVersionId}
             name={preview.name}
           />
         );

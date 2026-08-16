@@ -3,7 +3,7 @@
  * 与传输层无关（preview-handlers.ts 负责 MSW 接线与 Range 分段），真实模拟：
  * - GET /documents/{id}/preview：message_id 携带时返回该次回答引用本文档的全部 hits，
  *   不携带则 hits 为空（管理侧只读形态）；document_version_id 历史引用必须透传，否则读当前 active 版本；
- * - GET /documents/{id}/content：PDF/图片为文件字节（handler 实现 Range → 206/416 + Accept-Ranges）；
+ * - GET /documents/{id}/content：PDF/图片为文件字节（仅 PDF 支持 Range；HEAD 仅原始 PDF/图片）；
  *   Word 建树为结构化 JSON、basic 为纯文本；md/txt/code/data 为纯文本；Excel/CSV 为按 Sheet 的 JSON（?sheet=）；
  * - 不可用态：文档删除 → 410 document_unavailable；版本 purging/purged → 410 document_version_unavailable；
  *   统一错误对象经 handler 归一化。
@@ -20,6 +20,10 @@ export { MockHttpError };
 /** 鉴权注入：装配处用 MockAuthController.me 实现；无有效 Bearer 时抛 MockHttpError(401)。 */
 export interface ValidatePreviewAuth {
   (header: string | null): { userId: string };
+}
+
+export interface IsKnownPreviewMessage {
+  (header: string | null, messageId: string): boolean;
 }
 
 /* ---------- 种子常量（e2e 经同一数据源引用，避免硬编码） ---------- */
@@ -98,6 +102,8 @@ interface MockPreviewVersion {
   readonly versionId: string;
   readonly status: 'active' | 'superseded' | 'purged';
   readonly contentType: string;
+  /** 原始文件字节数；结构化内容的响应体并不代表它。 */
+  readonly sizeBytes?: number;
   /** 已序列化的内容字节（JSON 在种子处 stringify）。 */
   readonly body: Uint8Array;
   readonly hits: readonly MockPreviewHit[];
@@ -111,6 +117,8 @@ interface MockPreviewDocument {
   readonly treeIndexed: boolean;
   readonly pageCount: number | null;
   readonly sheets: readonly { name: string; row_count: number }[] | null;
+  /** 无 processing summary 时真实响应只保留基础预览字段。 */
+  readonly hasRendererMetadata?: boolean;
   readonly available: boolean;
   readonly versions: readonly MockPreviewVersion[];
 }
@@ -208,6 +216,7 @@ function seedDocuments(): MockPreviewDocument[] {
         versionId: 'vx_1',
         status: 'active',
         contentType: JSON_TYPE,
+        sizeBytes: 256,
         body: new Uint8Array(0), // 表格内容按 ?sheet= 动态组装（见 sheetRows）
         hits: [
           { index: 1, summary: 'Q1 交通费记录', locator: { sheet: PREVIEW_SEED.excelSheetQ1, a1_range: 'A2:C2' } },
@@ -232,6 +241,7 @@ function seedDocuments(): MockPreviewDocument[] {
         versionId: 'vc_1',
         status: 'active',
         contentType: JSON_TYPE,
+        sizeBytes: 128,
         body: new Uint8Array(0),
         hits: [{ index: 1, summary: '张三所在行', locator: { sheet: 'CSV', a1_range: 'A2:B2' } }],
       },
@@ -354,6 +364,7 @@ function seedDocuments(): MockPreviewDocument[] {
         versionId: 'vw_1',
         status: 'active',
         contentType: JSON_TYPE,
+        sizeBytes: 1536,
         body: json({
           sections: [
             { path: ['第 1 章', '总则'], paragraphs: ['本制度适用于全体员工。', '制度自发布之日起生效。'] },
@@ -372,12 +383,14 @@ function seedDocuments(): MockPreviewDocument[] {
     treeIndexed: false,
     pageCount: null,
     sheets: null,
+    hasRendererMetadata: false,
     available: true,
     versions: [
       {
         versionId: 'vwb_1',
         status: 'active',
         contentType: TEXT_PLAIN,
+        sizeBytes: 1024,
         body: utf8('会议纪要\n\n本次会议确认了上线节奏。\n\n后续行动项由各部门跟进。\n'),
         hits: [{ index: 1, summary: '会议结论', locator: {} }],
       },
@@ -435,7 +448,10 @@ export interface MockContentResult {
 export class MockPreviewController {
   private documents = new Map<string, MockPreviewDocument>();
 
-  constructor(private readonly validateAuth: ValidatePreviewAuth) {
+  constructor(
+    private readonly validateAuth: ValidatePreviewAuth,
+    private readonly isKnownMessage: IsKnownPreviewMessage,
+  ) {
     this.reset();
   }
 
@@ -454,19 +470,37 @@ export class MockPreviewController {
     query: { messageId?: string | null; documentVersionId?: string | null },
   ): DocumentPreviewResponse {
     this.requireAuth(auth);
+    if (query.messageId === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'message_id' });
+    }
+    if (query.documentVersionId === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'document_version_id' });
+    }
     const document = this.document(documentId);
     const version = this.version(document, query.documentVersionId);
+    if (query.messageId !== undefined && query.messageId !== null && !this.isKnownMessage(auth, query.messageId)) {
+      throw new MockHttpError(404, 'message_not_found');
+    }
     // message_id 携带 → 该次回答引用本文档的全部 hits；不携带 → 管理侧只读形态（hits 为空）
-    const hits = typeof query.messageId === 'string' && query.messageId !== '' ? version.hits : [];
+    const hits = query.messageId === null || query.messageId === undefined ? [] : version.hits;
+    const rendererMetadata =
+      document.hasRendererMetadata === false
+        ? {}
+        : {
+            has_text_layer: document.hasTextLayer,
+            tree_indexed: document.treeIndexed,
+            page_count: document.pageCount,
+            sheets: document.sheets,
+          };
     return {
       document_id: document.id,
+      document_version_id: version.versionId,
       name: document.name,
       media_kind: document.mediaKind,
-      has_text_layer: document.hasTextLayer,
-      tree_indexed: document.treeIndexed,
-      page_count: document.pageCount,
-      sheets: document.sheets,
-      content_url: `/documents/${document.id}/content`,
+      size_bytes: version.sizeBytes ?? version.body.byteLength,
+      content_available: true,
+      content_url: `/documents/${document.id}/content?document_version_id=${encodeURIComponent(version.versionId)}`,
+      ...rendererMetadata,
       hits,
     };
   }
@@ -479,6 +513,12 @@ export class MockPreviewController {
     query: { documentVersionId?: string | null; sheet?: string | null },
   ): MockContentResult {
     this.requireAuth(auth);
+    if (query.documentVersionId === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'document_version_id' });
+    }
+    if (query.sheet === '') {
+      throw new MockHttpError(422, 'validation_error', { field: 'sheet' });
+    }
     const document = this.document(documentId);
     const version = this.version(document, query.documentVersionId);
     if (document.sheets !== null) {
@@ -516,7 +556,7 @@ export class MockPreviewController {
 
   private version(document: MockPreviewDocument, versionId: string | null | undefined): MockPreviewVersion {
     const target =
-      versionId == null || versionId === ''
+      versionId == null
         ? document.versions.find((version) => version.status === 'active')
         : document.versions.find((version) => version.versionId === versionId);
     if (target === undefined) {

@@ -85,13 +85,15 @@ export function createPreviewApi(client: ApiClient): PreviewApi {
       return client.request(contentPath(documentId, options), { responseType: 'blob' });
     },
     buildContentUrl(contentUrl, documentVersionId) {
-      const params = new URLSearchParams();
-      if (typeof documentVersionId === 'string' && documentVersionId !== '') {
-        params.set('document_version_id', documentVersionId);
+      const url = new URL(resolveUrl(`/v1${contentUrl}`));
+      if (
+        !url.searchParams.has('document_version_id') &&
+        typeof documentVersionId === 'string' &&
+        documentVersionId !== ''
+      ) {
+        url.searchParams.set('document_version_id', documentVersionId);
       }
-      const query = params.toString();
-      // content_url 为 /v1 相对路径（契约 §4 示例 "/documents/doc_9/content"）
-      return resolveUrl(`/v1${contentUrl}${query === '' ? '' : `?${query}`}`);
+      return url.toString();
     },
   };
 }

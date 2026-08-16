@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { copy } from '../src/copy';
 import { CHAT_SEED_DOCUMENT_NAMES } from '../src/mocks/chat-contract';
 import { PREVIEW_SEED } from '../src/mocks/preview-contract';
@@ -18,6 +18,15 @@ async function login(page: Page, username = 'zhangsan'): Promise<void> {
   await page.getByLabel(copy.login.passwordLabel, { exact: true }).fill('password123');
   await page.getByRole('button', { name: copy.login.submit }).click();
   await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
+}
+
+async function draggablePanelBox(page: Page, panel: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
+  const viewportHeight = page.viewportSize()?.height ?? 0;
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    return box === null ? Number.POSITIVE_INFINITY : box.y + 24;
+  }).toBeLessThan(viewportHeight);
+  return (await panel.boundingBox()) as { x: number; y: number; width: number; height: number };
 }
 
 test('citation click opens preview in a new window, and hit nav switches the current highlight', async ({
@@ -75,6 +84,24 @@ test('scanned PDF jumps to the hit page without fragment highlight or substitute
   // 只跳页：无片段高亮、无任何替代锚点 UI
   await expect(page.locator('mark.preview-hit')).toHaveCount(0);
   await expect(page.locator('[data-hit-anchor]')).toHaveCount(0);
+});
+
+test('historical PDF keeps the preview-selected version in its content request', async ({ page }) => {
+  await login(page);
+  const contentRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === '/v1/documents/doc_1/content' &&
+      url.searchParams.get('document_version_id') === 'v_0'
+    );
+  });
+
+  await page.goto('/preview/doc_1?message_id=m_1&document_version_id=v_0');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(CHAT_SEED_DOCUMENT_NAMES.employeeHandbook);
+
+  const request = await contentRequest;
+  const url = new URL(request.url());
+  expect(url.searchParams.getAll('document_version_id')).toEqual(['v_0']);
 });
 
 test('excel preview shows source sheet tabs, a1 highlight, and ?sheet= switching', async ({ page }) => {
@@ -139,7 +166,7 @@ test('narrow viewport: hit nav panel closes via swipe-down gesture (fe-preview-s
     await expect(panel).toBeVisible();
 
     // 下滑手势（pointer 序列：处理器接受任意 pointer 类型；dy=200 ≥ 阈值 80）
-    const box = (await panel.boundingBox()) as { x: number; y: number; width: number; height: number };
+    const box = await draggablePanelBox(page, panel);
     const startX = box.x + box.width / 2;
     const startY = box.y + 24;
     await page.mouse.move(startX, startY);
@@ -153,7 +180,7 @@ test('narrow viewport: hit nav panel closes via swipe-down gesture (fe-preview-s
     const panel2 = page.getByRole('dialog');
     await expect(panel2).toBeVisible();
     await expect(panel2).not.toHaveAttribute('style', /translateY/);
-    const box2 = (await panel2.boundingBox()) as { x: number; y: number; width: number; height: number };
+    const box2 = await draggablePanelBox(page, panel2);
     const startX2 = box2.x + box2.width / 2;
     const startY2 = box2.y + 24;
     await page.mouse.move(startX2, startY2);

@@ -42,8 +42,11 @@ export const mockKnowledge = new MockKnowledgeController(
   mockQuota,
   mockNotifications,
 );
-// 原文预览域：鉴权经 mockAuth.me 装配（fe-doc-preview）
-export const mockPreview = new MockPreviewController((header) => ({ userId: mockAuth.me(header).id }));
+// 原文预览域：鉴权经 mockAuth.me 装配，并与 chat mock 共用可读消息集合（fe-doc-preview）
+export const mockPreview = new MockPreviewController(
+  (header) => ({ userId: mockAuth.me(header).id }),
+  (header, messageId) => mockChat.hasMessage(header, messageId),
+);
 // 管理面板域：鉴权经 mockAuth.me 装配；配额审批联动 mockQuota，投稿计数/任务队列联动 mockKnowledge
 export const mockAdmin = new MockAdminController(
   (header) => mockAuth.me(header),

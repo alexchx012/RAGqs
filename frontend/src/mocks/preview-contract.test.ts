@@ -38,19 +38,59 @@ describe('GET /documents/{id}/preview：message_id 行为', () => {
     expect(preview.hits).toEqual([]);
     expect(preview.name).toBe('员工手册.pdf');
     expect(preview.media_kind).toBe('pdf');
+    expect(preview.document_version_id).toBe('v_1');
+    expect(preview.size_bytes).toBeGreaterThan(0);
+    expect(preview.content_available).toBe(true);
     expect(preview.has_text_layer).toBe(true);
     expect(preview.page_count).toBe(2);
-    expect(preview.content_url).toBe('/documents/doc_1/content');
+    expect(preview.content_url).toBe('/documents/doc_1/content?document_version_id=v_1');
   });
 
   it('携带 message_id：返回该次回答引用本文档的全部 hits（含 span 消歧数据）', () => {
-    const withEmpty = mockPreview.getPreview(bearerOf(), 'doc_1', { messageId: '' });
-    expect(withEmpty.hits).toEqual([]);
     const preview = mockPreview.getPreview(bearerOf(), 'doc_1', { messageId: 'm_1' });
     expect(preview.hits.length).toBe(2);
     const [first, second] = preview.hits;
     expect(first).toMatchObject({ index: 1, snippet: '5 days per year', locator: { page: 1, span: { start: 30, end: 45 } } });
     expect(second).toMatchObject({ index: 2, snippet: 'medical certificate', locator: { page: 2 } });
+  });
+
+  it('空或不可读的 message_id 按服务端契约拒绝', () => {
+    expectHttpError(() => mockPreview.getPreview(bearerOf(), 'doc_1', { messageId: '' }), 422, 'validation_error');
+    expectHttpError(
+      () => mockPreview.getPreview(bearerOf(), 'doc_1', { messageId: 'm_missing' }),
+      404,
+      'message_not_found',
+    );
+  });
+
+  it('其他用户不能读取另一用户的消息上下文', () => {
+    expectHttpError(
+      () => mockPreview.getPreview(bearerOf('minister-li'), 'doc_1', { messageId: 'm_1' }),
+      404,
+      'message_not_found',
+    );
+  });
+
+  it('没有 processing summary 时仅返回基础预览字段', () => {
+    const preview = mockPreview.getPreview(bearerOf(), 'doc_word_basic', {});
+
+    expect(preview).toMatchObject({
+      document_id: 'doc_word_basic',
+      document_version_id: 'vwb_1',
+      size_bytes: 1024,
+      content_available: true,
+      content_url: '/documents/doc_word_basic/content?document_version_id=vwb_1',
+    });
+    expect(preview).not.toHaveProperty('has_text_layer');
+    expect(preview).not.toHaveProperty('tree_indexed');
+    expect(preview).not.toHaveProperty('page_count');
+    expect(preview).not.toHaveProperty('sheets');
+  });
+
+  it('建树 Word 返回原始文件大小，而不是渲染 JSON 的长度', () => {
+    const preview = mockPreview.getPreview(bearerOf(), 'doc_word', { messageId: 'm_1' });
+
+    expect(preview.size_bytes).toBe(1536);
   });
 
   it('未知文档：404 document_not_found', () => {
@@ -61,6 +101,8 @@ describe('GET /documents/{id}/preview：message_id 行为', () => {
 describe('document_version_id 透传', () => {
   it('历史版本：preview hits 与 content 均为该版本', () => {
     const preview = mockPreview.getPreview(bearerOf(), 'doc_1', { messageId: 'm_1', documentVersionId: 'v_0' });
+    expect(preview.document_version_id).toBe('v_0');
+    expect(preview.content_url).toBe('/documents/doc_1/content?document_version_id=v_0');
     expect(preview.hits.length).toBe(1);
     expect(preview.hits[0]?.summary).toBe('旧版年假规定');
     const content = mockPreview.getContent(bearerOf(), 'doc_1', { documentVersionId: 'v_0' });
@@ -120,9 +162,44 @@ describe('Excel/CSV Sheet 数据', () => {
     );
   });
 
+  it('空 Query 参数在解析文档前按契约拒绝', () => {
+    expectHttpError(
+      () => mockPreview.getPreview(bearerOf(), 'doc_nope', { messageId: '' }),
+      422,
+      'validation_error',
+    );
+    expectHttpError(
+      () => mockPreview.getPreview(bearerOf(), 'doc_nope', { documentVersionId: '' }),
+      422,
+      'validation_error',
+    );
+    expectHttpError(
+      () => mockPreview.getContent(bearerOf(), 'doc_nope', { documentVersionId: '' }),
+      422,
+      'validation_error',
+    );
+  });
+
+  it('空 Sheet 参数按服务端 Query 校验返回 422', () => {
+    expectHttpError(
+      () => mockPreview.getContent(bearerOf(), PREVIEW_SEED.excelDocId, { sheet: '' }),
+      422,
+      'validation_error',
+    );
+  });
+
+  it('空 Sheet 参数在解析文档前按 Query 契约拒绝', () => {
+    expectHttpError(
+      () => mockPreview.getContent(bearerOf(), 'doc_nope', { sheet: '' }),
+      422,
+      'validation_error',
+    );
+  });
+
   it('CSV：固定唯一虚拟 Sheet CSV', () => {
     const preview = mockPreview.getPreview(bearerOf(), 'doc_csv', { messageId: 'm_1' });
     expect(preview.sheets).toEqual([{ name: 'CSV', row_count: 3 }]);
+    expect(preview.size_bytes).toBe(128);
     const content = mockPreview.getContent(bearerOf(), 'doc_csv', { sheet: 'CSV' });
     const payload = JSON.parse(new TextDecoder().decode(content.body)) as SheetContentResponse;
     expect(payload.rows.length).toBe(3);
@@ -187,6 +264,34 @@ describe('Range 分段（HTTP 层，经 MSW handler）', () => {
     expect(head.headers.get('Accept-Ranges')).toBe('bytes');
     expect(Number(head.headers.get('Content-Length'))).toBeGreaterThan(200);
     expect(await head.arrayBuffer()).toEqual(new ArrayBuffer(0));
+
+    const rangedHead = await fetchContent({ Authorization: bearerOf(), Range: 'bytes=0-3' }, 'HEAD');
+    expect(rangedHead.status).toBe(206);
+    expect(rangedHead.headers.get('Content-Range')).toMatch(/^bytes 0-3\/\d+$/);
+    expect(rangedHead.headers.get('Content-Length')).toBe('4');
+    expect(await rangedHead.arrayBuffer()).toEqual(new ArrayBuffer(0));
+  });
+
+  it('Range 与 HEAD 只按服务端支持的媒体类型开放', async () => {
+    const textRange = await fetch(resolveUrl('/v1/documents/doc_md/content'), {
+      headers: { Authorization: bearerOf(), Range: 'bytes=0-3' },
+    });
+    expect(textRange.status).toBe(200);
+    expect(textRange.headers.get('Accept-Ranges')).toBeNull();
+
+    const textHead = await fetch(resolveUrl('/v1/documents/doc_md/content'), {
+      method: 'HEAD',
+      headers: { Authorization: bearerOf() },
+    });
+    expect(textHead.status).toBe(405);
+    expect(textHead.headers.get('Allow')).toBe('GET');
+
+    const imageHead = await fetch(resolveUrl('/v1/documents/doc_img/content'), {
+      method: 'HEAD',
+      headers: { Authorization: bearerOf() },
+    });
+    expect(imageHead.status).toBe(200);
+    expect(imageHead.headers.get('Accept-Ranges')).toBeNull();
   });
 
   it('错误对象形态统一（HTTP 层）', async () => {
