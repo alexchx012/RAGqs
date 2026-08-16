@@ -112,12 +112,10 @@ def _message_projection(
     ab: Any = _ab_projection(pair, candidates)
     if ab is None and pair is not None and str(pair["status"]) == "expired":
         candidates = candidates or {}
-        published = [
-            candidate for candidate in candidates.values() if candidate["status"] == "published"
-        ]
-        if len(published) == 1:
-            content = str(published[0]["content"])
-            answer_mode = str(published[0]["answer_mode"])
+        candidate = candidates.get(0)
+        if candidate is not None and str(candidate["status"]) == "published":
+            content = str(candidate["content"])
+            answer_mode = str(candidate["answer_mode"])
             row = {**row, "content": content, "answer_mode": answer_mode}
     feedback_value: Any = None
     if ab is None or bool(ab.get("voted")):

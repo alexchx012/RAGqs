@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from app.platform.errors import PlatformError
@@ -192,7 +192,8 @@ def terminal_event_type(event_type: str) -> bool:
 
 
 def datetime_to_rfc3339(value: datetime) -> str:
-    return value.astimezone().replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    utc_value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return utc_value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True, slots=True)
