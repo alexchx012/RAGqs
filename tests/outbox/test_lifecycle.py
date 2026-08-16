@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import pytest
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
-    docs_redaction_token,
     fixed_now,
     make_publisher,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import select, update
 
@@ -55,7 +51,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_AcceptingArchiveVerifier(),
-        capability_secret=CAPABILITY_SECRET,
     )
 
 
@@ -76,7 +71,6 @@ def deliver(engine, *, user_ids, event_id="evt_1", event_type="ingestion_complet
     command = OutboxPublishCommand(
         event_id=event_id,
         caller_principal="ingestion" if event_type.startswith("ingestion") else "submissions",
-        capability=cap("ingestion" if event_type.startswith("ingestion") else "submissions"),
         event_type=event_type,
         schema_version=1,
         aggregate_type=(
@@ -122,7 +116,6 @@ def redact_command(
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=docs_redaction_token(deletion_id=deletion_id, transaction_id="tx_1"),
     )
 
 
@@ -145,7 +138,6 @@ def retire_command(
         transaction_id="tx_ret_1",
         mode=mode,
         canonical_input_fingerprint="fp_ret_1",
-        capability_token=retention_token(),
     )
 
 
@@ -165,7 +157,6 @@ def compact_command(
         ),
         transaction_id="tx_comp_1",
         canonical_input_fingerprint="fp_comp_1",
-        capability_token=retention_token(),
     )
 
 
@@ -186,7 +177,6 @@ def test_redaction_requires_the_documents_caller() -> None:
         transaction_id=command.transaction_id,
         mode=command.mode,
         canonical_input_fingerprint=command.canonical_input_fingerprint,
-        capability_token=command.capability_token,  # the DOCUMENTS token: not for retention-ops
     )
 
     with pytest.raises(PlatformError) as raised:
@@ -392,7 +382,6 @@ def test_compaction_compacts_only_fully_delivered_events() -> None:
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_2",
                 caller_principal="ingestion",
                 event_type="ingestion_completed",

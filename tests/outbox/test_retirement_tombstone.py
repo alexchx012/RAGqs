@@ -4,14 +4,11 @@ retirement serialize on the same user lock and re-check identity lifecycle."""
 from __future__ import annotations
 
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import select, update
 
@@ -33,7 +30,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_AcceptingArchiveVerifier(),
-        capability_secret=CAPABILITY_SECRET,
     )
 
 
@@ -48,7 +44,6 @@ def publish(engine, *, user_ids, event_id="evt_1"):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         caller_principal="ingestion",
         event_type="ingestion_completed",
@@ -103,7 +98,6 @@ def retire_command(*, user_id: str, operation_id="op_ret_1"):
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
 
 

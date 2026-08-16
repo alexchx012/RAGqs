@@ -7,7 +7,6 @@ from datetime import datetime
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     make_settings,
@@ -15,7 +14,6 @@ from _helpers import (
 )
 from sqlalchemy import select, update
 
-from app.outbox.capabilities import LifecycleCapabilityIssuer
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.notifications import NotificationMaterializer
 from app.outbox.retirement_worker import (
@@ -30,18 +28,6 @@ from app.outbox.schema import (
 )
 from app.platform.runtime import build_runtime
 from app.platform.worker import create_worker_runtime
-
-# The worker processes ALREADY-ACCEPTED durable retirement commands through
-# the lifecycle's internal no-token entry `apply_accepted_durable_retirement`;
-# no token is resolved from the runtime and no runtime capability secret
-# exists. The tests still sign the PUBLIC token-gated command tokens below
-# with a shared test secret so the accepted command row can be created.
-RUNTIME_SECRET = make_settings().auth.secret_key.get_secret_value().encode("utf-8")
-_RUNTIME_ISSUER = LifecycleCapabilityIssuer(RUNTIME_SECRET)
-
-
-def runtime_retention_token() -> str:
-    return _RUNTIME_ISSUER.issue_retention()
 
 
 class _AcceptingArchiveVerifier:
@@ -66,7 +52,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_AcceptingArchiveVerifier(),
-        capability_secret=RUNTIME_SECRET,
     )
 
 
@@ -77,7 +62,6 @@ def deliver(engine, *, user_ids, event_id="evt_1"):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         event_type="ingestion_completed",
         caller_principal="ingestion",
@@ -123,7 +107,6 @@ def retire_command(*, operation_id="op_ret_1", user_id="user_x"):
         transaction_id="tx_ret_1",
         mode="durable",
         canonical_input_fingerprint="fp_ret_1",
-        capability_token=runtime_retention_token(),
     )
 
 
@@ -172,7 +155,6 @@ def make_retirement_worker(engine, *, now=None, lifecycle=None, **kwargs):
             engine,
             now=lambda: fixed_now(),
             archive_verifier=_AcceptingArchiveVerifier(),
-            capability_secret=RUNTIME_SECRET,
         )
     if "processor" not in kwargs:
         # Build the narrow scoped processor around the lifecycle's internal
@@ -298,7 +280,6 @@ def test_durable_worker_skips_inline_and_unknown_operations() -> None:
         transaction_id="tx_inline",
         mode="inline",
         canonical_input_fingerprint="fp_inline",
-        capability_token=runtime_retention_token(),
     )
     with engine.begin() as connection:
         mark_account_deletable(engine, alice)

@@ -69,7 +69,6 @@ class OutboxPublishCommand:
     payload: dict[str, object]
     recipients: tuple[RecipientSelection, ...]
     trace_id: str | None = None
-    capability: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,17 +76,6 @@ class OutboxPublishReceipt:
     event_id: str
     fingerprint: str
     reused: bool
-
-
-class OutboxPublishPort(Protocol):
-    """Transactional publish boundary for notification-producing state transitions."""
-
-    def publish(
-        self,
-        command: OutboxPublishCommand,
-        *,
-        connection: Connection,
-    ) -> OutboxPublishReceipt: ...
 
 
 class PublicGraphSourceOutboxPort(Protocol):
@@ -137,7 +125,6 @@ class DocumentNotificationRedactionCommand:
     transaction_id: str
     mode: Literal["inline"]
     canonical_input_fingerprint: str
-    capability_token: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +148,6 @@ class AccountNotificationRetirementCommand:
     transaction_id: str
     mode: RetirementMode
     canonical_input_fingerprint: str
-    capability_token: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +172,6 @@ class EligibleAccountEventCompactionCommand:
     retirement_receipt_fingerprint: str
     transaction_id: str
     canonical_input_fingerprint: str
-    capability_token: str
 
 
 @dataclass(frozen=True, slots=True)

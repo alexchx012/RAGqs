@@ -342,7 +342,7 @@ def test_production_runtime_degrades_when_judge_configuration_is_missing(monkeyp
         runtime.close()
 
 
-def test_runtime_injects_scoped_document_redaction_capability_only_into_service() -> None:
+def test_runtime_injects_document_lifecycle_port_into_service() -> None:
     settings = load_platform_settings(
         {
             "RAG_PLATFORM_PROFILE": "development",
@@ -354,26 +354,18 @@ def test_runtime_injects_scoped_document_redaction_capability_only_into_service(
     )
     lifecycle = _LifecyclePort()
 
-    def issue_token(*, deletion_id: str, transaction_id: str) -> str:
-        return f"token:{deletion_id}:{transaction_id}"
-
     runtime = build_runtime(
         settings,
-        adapters={
-            "document_lifecycle_port": lifecycle,
-            "document_lifecycle_capability_provider": issue_token,
-        },
+        adapters={"document_lifecycle_port": lifecycle},
     )
     try:
         service = runtime.resolve("documents_service")
         assert service._lifecycle_port is lifecycle
-        assert service._capability_token_provider is issue_token
-        assert runtime.resolve("document_lifecycle_capability_provider") is None
     finally:
         runtime.close()
 
 
-def test_runtime_wires_default_document_lifecycle_gateway_without_a_capability_token() -> None:
+def test_runtime_wires_default_document_lifecycle_gateway() -> None:
     settings = load_platform_settings(
         {
             "RAG_PLATFORM_PROFILE": "development",
@@ -390,7 +382,6 @@ def test_runtime_wires_default_document_lifecycle_gateway_without_a_capability_t
         service = runtime.resolve("documents_service")
 
         assert service._lifecycle_port is not None
-        assert service._capability_token_provider is None
         with engine.begin() as connection:
             receipt = service._lifecycle_port.redact_document_notifications(
                 DocumentNotificationRedactionCommand(
@@ -403,7 +394,6 @@ def test_runtime_wires_default_document_lifecycle_gateway_without_a_capability_t
                     transaction_id="tx_1",
                     mode="inline",
                     canonical_input_fingerprint="not-authoritative",
-                    capability_token="",
                 ),
                 connection=connection,
             )

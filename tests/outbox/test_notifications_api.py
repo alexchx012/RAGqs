@@ -5,7 +5,6 @@ from __future__ import annotations
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_settings,
     provision_user,
@@ -62,7 +61,6 @@ def deliver(engine, *, user_ids, event_id="evt_1", event_type="ingestion_complet
         event_id=event_id,
         event_type=event_type,
         caller_principal="ingestion" if "ingestion" in event_type else "submissions",
-        capability=cap("ingestion" if "ingestion" in event_type else "submissions"),
         schema_version=1,
         aggregate_type="ingestion_job" if "ingestion" in event_type else "knowledge_submission",
         aggregate_id=f"job_{event_id}",

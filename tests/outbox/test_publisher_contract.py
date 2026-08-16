@@ -8,7 +8,6 @@ import pytest
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     provision_user,
@@ -38,22 +37,9 @@ class _AcceptingGraphReceipt:
 def make_command(**overrides):
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
 
-    event_type = overrides.get("event_type", "ingestion_completed")
-    principal_for = {
-        "ingestion_completed": "ingestion",
-        "ocr_low_confidence": "ingestion",
-        "submission_approved": "submissions",
-        "submission_rejected": "submissions",
-        "submission_invalidated": "submissions",
-        "quota_approved": "quota",
-        "quota_rejected": "quota",
-        "calibration_window_suggested": "calibration",
-        "graph_build_completed": "knowledge_graph",
-    }
     values = dict(
         event_id="evt_1",
         caller_principal="ingestion",
-        capability=cap(principal_for.get(event_type, "ingestion")),
         event_type="ingestion_completed",
         schema_version=1,
         aggregate_type="ingestion_job",
@@ -83,21 +69,10 @@ def publish(engine, publisher, *, user_ids, **overrides):
     )
 
 
-def test_publish_requires_a_trusted_caller_principal() -> None:
-    engine = build_engine()
-    publisher = make_publisher(
-        engine,
-        now=lambda: fixed_now(),
-        graph_activated_receipt_port=_AcceptingGraphReceipt(),
-    )
+def test_raw_publisher_has_no_generic_publish_entrypoint() -> None:
+    from app.outbox.publisher import SqlAlchemyOutboxPublisher
 
-    with pytest.raises(PlatformError) as missing:
-        with engine.begin() as connection:
-            publisher.publish(
-                make_command(caller_principal="", recipients=()),
-                connection=connection,
-            )
-    assert missing.value.status_code == 422
+    assert "publish" not in SqlAlchemyOutboxPublisher.__dict__
 
 
 def test_publish_rejects_a_caller_without_producer_rights_for_the_event() -> None:
@@ -110,9 +85,10 @@ def test_publish_rejects_a_caller_without_producer_rights_for_the_event() -> Non
 
     with pytest.raises(PlatformError) as raised:
         with engine.begin() as connection:
-            publisher.publish(
-                make_command(caller_principal="quota"),
+            publisher._publish_authorized(
+                make_command(),
                 connection=connection,
+                caller="quota",
             )
     assert raised.value.status_code == 403
     assert raised.value.code == "producer_not_authorized"

@@ -16,7 +16,6 @@ import pytest
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     make_settings,
@@ -65,7 +64,6 @@ def publish(engine, *, user_ids, event_id="evt_1"):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         caller_principal="ingestion",
         event_type="ingestion_completed",

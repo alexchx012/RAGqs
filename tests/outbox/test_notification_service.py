@@ -8,7 +8,6 @@ import pytest
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     provision_user,
@@ -46,7 +45,6 @@ def deliver(engine, *, user_ids, now=None, event_id="evt_1", materialize=True):
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
 
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         event_type="ingestion_completed",
         caller_principal="ingestion",

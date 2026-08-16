@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -140,11 +139,6 @@ class PlatformRuntime:
             if callable(dispose):
                 dispose()
         self.closed = True
-
-
-def _random_capability_secret() -> bytes:
-    """Independent random outbox capability key (never derived from auth)."""
-    return secrets.token_bytes(32)
 
 
 def _index_configuration_staging_table_exists(engine: Any, table_name: str) -> bool:
@@ -292,38 +286,13 @@ def build_runtime(
     # with a fixed principal/operation type. Every assembly-only sensitive/raw
     # override is CONSUMED with pop() so it never enters PlatformRuntime.
     # adapters: the injected raw lifecycle is still used to assemble the
-    # scoped workers/gateway, but `resolve("outbox_lifecycle")` stays None;
-    # an injected BYTES capability secret is never resolvable either. No
-    # bearer token and no signing secret are generated or stored anywhere on
-    # the runtime; the token model remains available only to explicit
-    # external/test boundaries that construct the lifecycle directly.
+    # scoped workers/gateway, but `resolve("outbox_lifecycle")` stays None.
     outbox_lifecycle = configured.pop("outbox_lifecycle", None) or SqlAlchemyOutboxLifecycle(
         engine,
         now=clock.now_utc,
         clock=clock,
         archive_verifier=archive_verifier,
-        capability_secret=None,
     )
-    if getattr(outbox_lifecycle, "holds_token_signing_secret", False):
-        # The injected raw lifecycle is used ONLY as internal no-token scoped
-        # assembly input (worker/gateway). A lifecycle whose capability
-        # authorizer holds a signing secret must never be assembled here: the
-        # secret would become reachable through the worker/gateway object
-        # graphs. Fail closed — the secret is never copied or stored.
-        raise RuntimeError(
-            "outbox_lifecycle override carries a token signing secret; "
-            "the runtime only accepts capability_secret=None lifecycles "
-            "for internal scoped assembly"
-        )
-    for _assembly_only_key in (
-        "outbox_capability_secret",
-        "retention_capability_token",
-        "_retention_capability_token",
-        "capability_secret",
-        "capability_issuer",
-        "producer_capabilities",
-    ):
-        configured.pop(_assembly_only_key, None)
     account_retirement_gateway = configured.get("account_retirement_gateway") or (
         _OutboxAccountRetirementGateway(outbox_lifecycle)
     )
@@ -350,14 +319,15 @@ def build_runtime(
     graph_activated_receipt_verifier = configured.get(
         "graph_activated_receipt_verifier"
     ) or RepositoryActivatedReceiptVerifier(graph_build_repository)
-    outbox_publisher = configured.get("outbox_publisher") or SqlAlchemyOutboxPublisher(
+    # The raw publisher is assembly input only. Domain-specific outbox facades
+    # below are the runtime adapters, so callers cannot select another domain
+    # by resolving a generic publisher and supplying an event type.
+    outbox_publisher = configured.pop("outbox_publisher", None) or SqlAlchemyOutboxPublisher(
         engine,
         clock=clock,
-        capability_secret=None,
         graph_activated_receipt_port=graph_activated_receipt_verifier,
         retention_days=settings.outbox.outbox_delivered_retention_days,
     )
-    configured.setdefault("outbox_publisher", outbox_publisher)
     startup_configuration_alert_port = configured.get("startup_configuration_alert_port") or (
         SqlAlchemyStartupConfigurationAlertAdapter(outbox_publisher)
     )
@@ -545,9 +515,6 @@ def build_runtime(
     configured.setdefault("submission_outbox_port", submission_outbox_port)
     configured.setdefault("ingestion_outbox_port", ingestion_outbox_port)
     configured.setdefault("quota_request_service", quota_request_service)
-    document_capability_token_provider = configured.pop(
-        "document_lifecycle_capability_provider", None
-    )
     if documents_service is None:
         documents_service = DocumentsService(
             engine,
@@ -557,7 +524,6 @@ def build_runtime(
             lifecycle_port=document_lifecycle_port,
             indexing_handoff_port=configured.get("indexing_handoff_port") or indexing_service,
             quota_service=quota_service,
-            capability_token_provider=document_capability_token_provider,
             submission_notification_port=submission_outbox_port,
             ingestion_notification_port=ingestion_outbox_port,
             public_graph_source_service=public_graph_source_service,
@@ -571,8 +537,6 @@ def build_runtime(
             documents_service._lifecycle_port = document_lifecycle_port
         if documents_service._quota_service is None:
             documents_service._quota_service = quota_service
-        if documents_service._capability_token_provider is None:
-            documents_service._capability_token_provider = document_capability_token_provider
         if documents_service._submission_notification_port is None:
             documents_service._submission_notification_port = submission_outbox_port
         if documents_service._ingestion_notification_port is None:
@@ -932,12 +896,10 @@ class _OutboxAccountRetirementGateway:
     """Identity-deletion scoped retirement façade.
 
     The gateway ONLY retires exactly the account named by an identity deletion
-    workflow request, through the lifecycle's internal no-token entry
+    workflow request, through the lifecycle's internal
     `retire_account_for_identity_deletion` (verified archive proof +
-    pending-delete account). It carries no bearer token, no signing secret and
-    no generic retention capability: the fixed principal/operation type is
-    baked into the façade, so a caller cannot submit a token or choose another
-    operation.
+    pending-delete account). Its fixed principal and operation type are baked
+    into the façade, so a caller cannot choose another operation.
     """
 
     def __init__(self, lifecycle: SqlAlchemyOutboxLifecycle) -> None:
@@ -965,7 +927,7 @@ class _OutboxAccountRetirementGateway:
 
 
 class _OutboxDocumentLifecycleGateway:
-    """Documents-deletion scoped redaction facade with no bearer capability."""
+    """Documents-deletion scoped redaction facade."""
 
     def __init__(self, lifecycle: SqlAlchemyOutboxLifecycle) -> None:
         self._lifecycle = lifecycle
@@ -991,9 +953,9 @@ class _OutboxAccountCompactionGateway:
 
     The gateway ONLY requests event compaction for exactly the completed
     retirement named by an identity deletion workflow, through the lifecycle's
-    internal no-token entry request_compaction_for_identity_deletion. It
-    carries no bearer token and no signing secret; the retirement row is
-    re-read server-side and its canonical fingerprint is never caller input.
+    internal request_compaction_for_identity_deletion entry. The retirement
+    row is re-read server-side and its canonical fingerprint is never caller
+    input.
     """
 
     def __init__(self, lifecycle: SqlAlchemyOutboxLifecycle) -> None:

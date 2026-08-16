@@ -7,15 +7,11 @@ from datetime import UTC, datetime
 
 import pytest
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
-    docs_redaction_token,
     fixed_now,
     make_publisher,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import select, update
 
@@ -35,7 +31,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_AcceptingArchiveVerifier(),
-        capability_secret=CAPABILITY_SECRET,
     )
 
 
@@ -62,7 +57,6 @@ def deliver(engine, *, user_ids, event_id="evt_1", materialize=True):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         event_type="ingestion_completed",
         caller_principal="ingestion",
@@ -116,7 +110,6 @@ def redact_command(
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=docs_redaction_token(deletion_id=deletion_id, transaction_id="tx_1"),
     )
 
 
@@ -209,7 +202,6 @@ def test_retirement_inline_rolls_back_with_the_caller_transaction() -> None:
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
 
     with pytest.raises(RuntimeError, match="retire failed"):
@@ -240,7 +232,6 @@ def test_archive_proof_mismatch_is_a_permanent_422() -> None:
         transaction_id="tx_1",
         mode="durable",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
     with engine.begin() as connection:
         mark_account_deletable(engine, alice)
@@ -257,7 +248,6 @@ def test_archive_proof_mismatch_is_a_permanent_422() -> None:
         transaction_id="tx_1",
         mode="durable",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
     with pytest.raises(PlatformError) as raised:
         with engine.begin() as connection:
@@ -313,7 +303,6 @@ def test_ack_for_a_suppressed_recipient_is_404() -> None:
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_1",
                 event_type="ingestion_completed",
                 caller_principal="ingestion",
@@ -419,7 +408,6 @@ def test_compaction_same_operation_replay_returns_the_original_receipt() -> None
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
     with engine.begin() as connection:
         mark_account_deletable(engine, alice)
@@ -436,7 +424,6 @@ def test_compaction_same_operation_replay_returns_the_original_receipt() -> None
         retirement_receipt_fingerprint=_command_input_fingerprint(retire),
         transaction_id="tx_2",
         canonical_input_fingerprint="fp_2",
-        capability_token=retention_token(),
     )
     with engine.begin() as connection:
         first = lifecycle.request_eligible_account_event_compaction(compact, connection=connection)

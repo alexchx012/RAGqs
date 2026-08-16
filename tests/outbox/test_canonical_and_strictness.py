@@ -8,15 +8,11 @@ from datetime import UTC, datetime
 
 import pytest
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
-    docs_redaction_token,
     fixed_now,
     make_publisher,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import select, update
 
@@ -48,7 +44,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_Accepting(),
-        capability_secret=CAPABILITY_SECRET,
     )
 
 
@@ -68,7 +63,6 @@ def publish(engine, *, user_ids, event_id="evt_1", doc_id=None, docv_id=None):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         caller_principal="ingestion",
         event_type="ingestion_completed",
@@ -112,7 +106,6 @@ def retire_command(*, user_id: str, operation_id="op_ret_1", **overrides):
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="unused-client-value",
-        capability_token=retention_token(),
     )
     values.update(overrides)
     return AccountNotificationRetirementCommand(**values)
@@ -195,7 +188,6 @@ def test_compaction_same_operation_different_transaction_is_409() -> None:
         retirement_receipt_fingerprint=_command_input_fingerprint(retire_command(user_id=alice)),
         transaction_id="tx_comp_1",
         canonical_input_fingerprint="unused",
-        capability_token=retention_token(),
     )
 
     def request(**overrides):
@@ -262,7 +254,6 @@ def redact_command(
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="unused",
-        capability_token=docs_redaction_token(deletion_id="del_1", transaction_id="tx_1"),
     )
 
 

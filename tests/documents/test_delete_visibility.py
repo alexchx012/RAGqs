@@ -60,7 +60,6 @@ def test_delete_redacts_before_committing_pending_delete(service, principal) -> 
         document_id=item["document_id"],
         expected_version=1,
         idempotency_key="delete-1",
-        capability_token="signed-token",
     )
 
     assert response["state"] == "pending_delete"
@@ -69,16 +68,9 @@ def test_delete_redacts_before_committing_pending_delete(service, principal) -> 
     assert service.list_documents(principal=principal, space_id="space_1")["items"] == []
 
 
-def test_delete_uses_scoped_capability_provider(service, principal) -> None:
+def test_delete_uses_documents_scoped_lifecycle_command(service, principal) -> None:
     lifecycle = _Lifecycle([])
-    issued = []
     service._lifecycle_port = lifecycle
-
-    def issue_token(*, deletion_id: str, transaction_id: str) -> str:
-        issued.append((deletion_id, transaction_id))
-        return "issued-token"
-
-    service._capability_token_provider = issue_token
     item = _accepted(service, principal)
     response = service.delete_document(
         principal=principal,
@@ -87,8 +79,8 @@ def test_delete_uses_scoped_capability_provider(service, principal) -> None:
         idempotency_key="delete-1",
     )
 
-    assert issued == [(response["deletion_id"], lifecycle.commands[0].transaction_id)]
-    assert lifecycle.commands[0].capability_token == "issued-token"
+    assert lifecycle.commands[0].deletion_id == response["deletion_id"]
+    assert lifecycle.commands[0].caller_principal == "documents"
 
 
 def test_delete_fails_closed_without_lifecycle_port(service, principal) -> None:
@@ -99,7 +91,6 @@ def test_delete_fails_closed_without_lifecycle_port(service, principal) -> None:
             document_id=item["document_id"],
             expected_version=1,
             idempotency_key="delete-1",
-            capability_token="signed-token",
         )
     assert error.value.code == "document_lifecycle_unavailable"
 
@@ -122,7 +113,6 @@ def test_delete_discards_every_active_indexing_attempt(service, principal) -> No
         document_id=created["document_id"],
         expected_version=1,
         idempotency_key="delete-discard",
-        capability_token="token",
     )
 
     assert [request.attempt_id for request in handoff.discarded] == [lease.attempt_id]

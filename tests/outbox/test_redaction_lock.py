@@ -5,11 +5,8 @@ insert, so a redaction committed concurrently can never be overwritten."""
 from __future__ import annotations
 
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
-    docs_redaction_token,
     fixed_now,
     make_publisher,
     provision_user,
@@ -28,7 +25,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_Accepting(),
-        capability_secret=CAPABILITY_SECRET,
     )
 
 
@@ -43,7 +39,6 @@ def publish(engine, *, user_ids, event_id="evt_1"):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         caller_principal="ingestion",
         event_type="ingestion_completed",
@@ -89,7 +84,6 @@ def redact_command(*, document_id="doc_evt_1", document_version_ids=("docv_evt_1
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=docs_redaction_token(deletion_id="del_1", transaction_id="tx_1"),
     )
 
 

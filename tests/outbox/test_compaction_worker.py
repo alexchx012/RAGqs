@@ -7,15 +7,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     make_settings,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import select, update
 
@@ -42,7 +39,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_Accepting(),
-        capability_secret=CAPABILITY_SECRET,
     )
 
 
@@ -62,7 +58,6 @@ def publish(engine, *, user_ids, event_id="evt_1"):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         caller_principal="ingestion",
         event_type="ingestion_completed",
@@ -103,7 +98,6 @@ def retire_account(engine, lifecycle, alice: str) -> None:
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
     with engine.begin() as connection:
         lifecycle.retire_account_notification_state(retirement, connection=connection)
@@ -122,7 +116,6 @@ def _retirement_command(alice: str):
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
 
 
@@ -142,7 +135,6 @@ def request_compaction(engine, lifecycle, alice: str, *, operation_id="op_comp_1
                 ),
                 transaction_id="tx_2",
                 canonical_input_fingerprint="fp_2",
-                capability_token=retention_token(),
             ),
             connection=connection,
         )
@@ -157,7 +149,6 @@ def make_compaction_worker(engine, *, now=None):
             "outbox_lifecycle": SqlAlchemyOutboxLifecycle(
                 engine,
                 now=lambda: fixed_now(),
-                capability_secret=None,
             ),
         },
     )
@@ -264,7 +255,6 @@ def _build_runtime_with_worker(engine):
             "outbox_lifecycle": SqlAlchemyOutboxLifecycle(
                 engine,
                 now=lambda: fixed_now(),
-                capability_secret=None,
             ),
         },
     )

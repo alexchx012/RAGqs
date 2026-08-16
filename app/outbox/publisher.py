@@ -27,7 +27,6 @@ from app.identity.schema import identity_user_table
 from app.platform.context import current_context
 from app.platform.errors import PlatformError
 
-from .capabilities import verify_token
 from .ports import (
     NOTIFICATION_EVENT_TYPES,
     OUTBOX_ONLY_EVENT_TYPES,
@@ -348,13 +347,11 @@ class SqlAlchemyOutboxPublisher:
 
     # Calibration events freeze the set of active ops inside this transaction.
     # graph events verify the persisted activated receipt through the injected
-    # port. The producer capabilities come from the assembly-time registry; the
-    # command's caller_principal is only a label, never an authority.
+    # port. Runtime-owned domain integrations use fixed caller identities.
     #
-    # Producer wiring note: ingestion/submission/quota/calibration/graph producers
-    # cross `OutboxPublishPort`. Runtime-owned domain integrations use only narrow
-    # operation-scoped façades; the quota façade below cannot choose a caller,
-    # event family, aggregate family, recipient kind, token, or transaction.
+    # Producer wiring note: runtime-owned domain integrations use only narrow
+    # operation-scoped facades; the quota facade below cannot choose a caller,
+    # event family, aggregate family, recipient kind, or transaction.
     """
 
     def __init__(
@@ -363,9 +360,7 @@ class SqlAlchemyOutboxPublisher:
         *,
         clock: Any = None,
         now: Callable[[], datetime] | None = None,
-        capabilities: Mapping[str, frozenset[str]] | None = None,
         graph_activated_receipt_port: Any = None,
-        capability_secret: bytes | None = None,
         retention_days: int = 30,
     ) -> None:
         self._engine = engine
@@ -373,26 +368,6 @@ class SqlAlchemyOutboxPublisher:
         self._now = now
         self._graph_activated_receipt_port = graph_activated_receipt_port
         self._retention_days = retention_days
-        # Assembly-time registry: caller -> allowed event types. `None` builds
-        # the production matrix; an EXPLICIT empty mapping is deny-all and is
-        # never replaced by the default.
-        self._capabilities = (
-            capabilities if capabilities is not None else self._default_capabilities()
-        )
-        # The signing secret is supplied by the runtime at assembly time. A
-        # direct construction without one has NO signing authority: every
-        # publish fails closed with 403 (there is no implicit development
-        # secret in production code).
-        self._capability_secret = capability_secret
-
-    @staticmethod
-    def _default_capabilities() -> dict[str, frozenset[str]]:
-        registry: dict[str, set[str]] = {}
-        for event_type, (callers, _aggregate) in PRODUCER_MATRIX.items():
-            for caller in callers:
-                registry.setdefault(caller, set()).add(event_type)
-        return {caller: frozenset(types) for caller, types in registry.items()}
-
     def _database_now(self, connection: Connection) -> datetime:
         if self._clock is not None:
             value = self._clock.now_utc(connection)
@@ -401,25 +376,6 @@ class SqlAlchemyOutboxPublisher:
         if self._now is not None:
             return _utc(self._now())
         return _utc(datetime.now(UTC))
-
-    def publish(
-        self,
-        command: OutboxPublishCommand,
-        *,
-        connection: Connection,
-    ) -> OutboxPublishReceipt:
-        # Authority comes ONLY from the signed capability token issued at
-        # assembly time. The caller_principal string is an audit label; a
-        # missing, forged or unverifiable token is fail-closed 403.
-        caller = self._verify_capability(command)
-        if command.event_type not in NOTIFICATION_EVENT_TYPES:
-            raise PlatformError(
-                "unsupported_event_type",
-                f"Event type {command.event_type} is not a notification event",
-                {},
-                422,
-            )
-        return self._publish_authorized(command, connection=connection, caller=caller)
 
     def _publish_authorized(
         self,
@@ -584,74 +540,6 @@ class SqlAlchemyOutboxPublisher:
             reused=False,
         )
 
-    def _verify_capability(self, command: OutboxPublishCommand) -> str:
-        """Verify the signed producer token; returns the trusted principal.
-
-        The token is an opaque capability issued at assembly time with an
-        HMAC signature. The assembly-time registry is the scope of truth on
-        top of the signature: even a validly signed token is cut down to the
-        event types the runtime registered for its principal. Without a
-        configured secret the publisher fails closed.
-        """
-        token = command.capability
-        if not token:
-            raise PlatformError(
-                "producer_not_authorized",
-                "A signed producer capability token is required",
-                {},
-                403,
-            )
-        secret = self._capability_secret
-        if not secret:
-            raise PlatformError(
-                "producer_not_authorized",
-                "Producer capability verification is not configured",
-                {},
-                403,
-            )
-        claims = verify_token(secret, token)
-        if claims is None or claims.get("kind") != "producer":
-            raise PlatformError(
-                "producer_not_authorized",
-                "The producer capability token is invalid or forged",
-                {},
-                403,
-            )
-        caller = str(claims.get("principal") or "").strip()
-        scope = claims.get("scope")
-        event_types = scope.get("event_types") if isinstance(scope, dict) else None
-        if not caller or not isinstance(event_types, list) or not event_types:
-            raise PlatformError(
-                "producer_not_authorized",
-                "The producer capability token claims are invalid",
-                {},
-                403,
-            )
-        audit_label = command.caller_principal.strip()
-        if audit_label and audit_label != caller:
-            raise PlatformError(
-                "producer_not_authorized",
-                "The caller audit label does not match the capability",
-                {},
-                403,
-            )
-        if command.event_type not in event_types:
-            raise PlatformError(
-                "producer_not_authorized",
-                f"Caller {caller} may not publish {command.event_type} events",
-                {"event_type": command.event_type},
-                403,
-            )
-        allowed = self._capabilities.get(caller)
-        if allowed is None or command.event_type not in allowed:
-            raise PlatformError(
-                "producer_not_authorized",
-                f"Caller {caller} has no assembly-time scope for {command.event_type} events",
-                {"event_type": command.event_type},
-                403,
-            )
-        return caller
-
     def _assert_graph_activated_receipt(
         self,
         connection: Connection,
@@ -727,7 +615,6 @@ class SqlAlchemyOutboxPublisher:
             payload=command.payload,
             recipients=recipients,
             trace_id=command.trace_id,
-            capability=command.capability,
         )
 
     def _insert_event_row(
