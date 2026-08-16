@@ -191,7 +191,15 @@ class ProcessingReceiptPreviewRenderer:
                     continue
                 sheet = item.get("sheet")
                 if isinstance(sheet, str) and sheet:
-                    sheets.append({"name": sheet, "row_count": row_counts.get(sheet, 0)})
+                    manifest_row_count = item.get("row_count")
+                    row_count = (
+                        manifest_row_count
+                        if isinstance(manifest_row_count, int)
+                        and not isinstance(manifest_row_count, bool)
+                        and manifest_row_count >= 0
+                        else row_counts.get(sheet, 0)
+                    )
+                    sheets.append({"name": sheet, "row_count": row_count})
         return PreviewMetadata(
             has_text_layer=bool(processing_summary.get("has_text_layer")),
             tree_indexed=tree_indexed,
@@ -217,10 +225,13 @@ class ProcessingReceiptPreviewRenderer:
         if kind == "image":
             media_type = str(version.get("media_kind") or "application/octet-stream")
             return PreviewContent(body=content, media_type=media_type)
-        if kind == "word" and metadata.tree_indexed:
-            sections = self._word_sections(version)
-            if sections is not None:
+        if kind == "word":
+            sections = self._word_sections(version) or []
+            if metadata.tree_indexed:
                 return self._json_content({"sections": sections})
+            return PreviewContent(
+                body=self._word_text(sections).encode("utf-8"), media_type="text/plain"
+            )
         if kind == "csv":
             return self._csv_content(content, sheet)
         if kind == "excel":
@@ -255,6 +266,13 @@ class ProcessingReceiptPreviewRenderer:
                 continue
             sections.append({"path": list(path), "paragraphs": list(paragraphs)})
         return sections
+
+    @staticmethod
+    def _word_text(sections: list[dict[str, list[str]]]) -> str:
+        blocks = [
+            "\n".join([*section["path"], *section["paragraphs"]]).strip() for section in sections
+        ]
+        return "\n\n".join(block for block in blocks if block)
 
     @classmethod
     def _csv_content(cls, content: bytes, sheet: str | None) -> PreviewContent:

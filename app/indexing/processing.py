@@ -8,7 +8,7 @@ import json
 import re
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from xml.etree import ElementTree
 
@@ -279,6 +279,7 @@ class ContentProcessor:
                 request, parsed_text, media_kind, content_manifest_hash
             )
             page_count = int(parsed.get("page_count", page_count or 0))
+            summary["page_count"] = page_count
             parsed_text_layer = parsed.get("has_text_layer")
             has_text_layer = (
                 bool(parsed_text_layer) if parsed_text_layer is not None else bool(has_text_layer)
@@ -309,36 +310,40 @@ class ContentProcessor:
             summary["ocr"] = ocr
             parsed_chunks = parsed.get("chunks", ())
             locations = tuple(parsed_chunks) if isinstance(parsed_chunks, Sequence) else ()
-            chunks = [
-                IndexChunk(
-                    chunk_id=chunk.chunk_id,
-                    generation_id=chunk.generation_id,
-                    publication_id=chunk.publication_id,
-                    document_id=chunk.document_id,
-                    document_version_id=chunk.document_version_id,
-                    space_id=chunk.space_id,
-                    text=chunk.text,
-                    embedding_text=chunk.embedding_text,
-                    sparse_text=chunk.sparse_text,
-                    locator=(
+            if kind in {"application/pdf", "pdf"}:
+                chunks = [
+                    replace(
+                        chunk,
+                        locator=(
+                            {
+                                "page": int(locations[index].get("page", 1)),
+                                **(
+                                    {"span": str(locations[index]["span"])}
+                                    if has_text_layer and locations[index].get("span") is not None
+                                    else {}
+                                ),
+                            }
+                            if index < len(locations) and isinstance(locations[index], Mapping)
+                            else {"page": min(index + 1, max(page_count, 1))}
+                        ),
+                        snippet=chunk.snippet if has_text_layer else None,
+                    )
+                    for index, chunk in enumerate(chunks)
+                ]
+            else:
+                tree = dict(summary.get("tree") or {})
+                sections: list[dict[str, list[str]]] = []
+                for chunk in chunks:
+                    section_path = str(chunk.metadata.get("section_path") or "")
+                    sections.append(
                         {
-                            "page": int(locations[index].get("page", 1)),
-                            **(
-                                {"span": str(locations[index]["span"])}
-                                if has_text_layer and locations[index].get("span") is not None
-                                else {}
-                            ),
+                            "path": [part for part in section_path.split(" / ") if part],
+                            "paragraphs": [chunk.text],
                         }
-                        if index < len(locations) and isinstance(locations[index], Mapping)
-                        else {"page": min(index + 1, max(page_count, 1))}
-                    ),
-                    snippet=chunk.snippet if has_text_layer else None,
-                    media_kind=chunk.media_kind,
-                    manifest_hash=chunk.manifest_hash,
-                    metadata=chunk.metadata,
-                )
-                for index, chunk in enumerate(chunks)
-            ]
+                    )
+                tree["sections"] = sections
+                summary["tree"] = tree
+                chunks = [replace(chunk, snippet=None) for chunk in chunks]
         elif kind.startswith("image/") or kind in {"image", "图片"}:
             context = {
                 "media_kind": media_kind,
@@ -563,7 +568,7 @@ class ContentProcessor:
                 "cr": {"applied": False, "unit": "table_header"},
                 "sheet_count": 1,
                 "headers": headers,
-                "sheet_manifest": [{"sheet": "CSV", "headers": headers}],
+                "sheet_manifest": [{"sheet": "CSV", "headers": headers, "row_count": len(rows)}],
                 "row_groups": [
                     {"sheet": "CSV", "start": start + 2, "end": end + 1} for start, end in ranges
                 ],
@@ -596,6 +601,7 @@ class ContentProcessor:
                     (row_number, ["" if value is None else str(value) for value in row])
                     for row_number, row in enumerate(worksheet.iter_rows(values_only=True), start=1)
                 ]
+                row_count = len(rows)
                 merged_ranges = [str(value) for value in worksheet.merged_cells.ranges]
                 horizontally_merged_rows: set[int] = set()
                 for merged in worksheet.merged_cells.ranges:
@@ -615,7 +621,12 @@ class ContentProcessor:
                     raise PlatformError("table_parse_failed", "Excel sheet has no header", {}, 422)
                 headers = rows[0][1]
                 sheet_manifest.append(
-                    {"sheet": worksheet.title, "headers": headers, "merged_ranges": merged_ranges}
+                    {
+                        "sheet": worksheet.title,
+                        "headers": headers,
+                        "merged_ranges": merged_ranges,
+                        "row_count": row_count,
+                    }
                 )
                 data = rows[1:]
                 for start, end in _split_rows([row for _, row in data], len(headers)):
