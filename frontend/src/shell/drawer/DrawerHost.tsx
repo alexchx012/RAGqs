@@ -44,6 +44,8 @@ const BACK_IN_MS = 150;
 const TOTAL_DRILL_MS = FLIP_MS + BACK_IN_MS;
 /** 内容进入 / 同层切换动画时长（--duration-base = 250ms）。 */
 const SWITCH_MS = 250;
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), input:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface Rect {
   top: number;
@@ -95,6 +97,71 @@ function samePath(a: readonly string[], b: readonly string[]): boolean {
 
 function isPrefix(prefix: readonly string[], path: readonly string[]): boolean {
   return prefix.length <= path.length && prefix.every((segment, index) => segment === path[index]);
+}
+
+function focusableIn(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => element.offsetParent !== null || element === document.activeElement,
+  );
+}
+
+function useDrawerFocusTrap(open: boolean) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
+  const focusedRef = useRef(false);
+
+  useLayoutEffect(() => {
+    if (open === wasOpenRef.current) return;
+    wasOpenRef.current = open;
+    if (open) {
+      restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      focusedRef.current = false;
+      return;
+    }
+    restoreFocusRef.current?.focus();
+    restoreFocusRef.current = null;
+    focusedRef.current = false;
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || focusedRef.current) return;
+    const container = dialogRef.current;
+    if (container === null) return;
+    (focusableIn(container)[0] ?? container).focus();
+    focusedRef.current = true;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const container = dialogRef.current;
+      if (container === null) return;
+      const focusable = focusableIn(container);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        container.focus();
+        return;
+      }
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === first || active === container || !container.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || active === container || !container.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [open]);
+
+  return dialogRef;
 }
 
 export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
@@ -162,6 +229,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
   }, [slide]);
 
   const mounted = slide !== 'closed';
+  const dialogRef = useDrawerFocusTrap(mounted);
   const shown = snapshotRef.current;
   const shownSegment: DrawerSegment = shown.parsed.segment ?? 'personal';
   const shownDrill = shown.parsed.drill;
@@ -598,7 +666,14 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
   const narrowListView = narrow && shownDrill.length === 0 && !transitioning;
 
   return (
-    <div className="fixed inset-0 z-40" role="dialog" aria-modal="true" aria-label={title}>
+    <div
+      ref={dialogRef}
+      tabIndex={-1}
+      className="fixed inset-0 z-40 outline-none"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
       <div
         ref={panelRef}
         data-slide={slide}

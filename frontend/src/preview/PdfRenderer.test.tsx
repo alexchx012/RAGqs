@@ -122,6 +122,50 @@ describe('PdfRenderer 有文本层', () => {
     expect(secondTarget.getAttribute('data-hit-anchor')).toBe('1');
   });
 
+  it('长文档只挂载有界页窗，切换到离屏命中时渲染并定位目标页', async () => {
+    fixtures.numPages = 50;
+    const longHits: readonly PreviewHit[] = [
+      { index: 1, summary: '开头', locator: { page: 1 } },
+      { index: 2, summary: '结尾', locator: { page: 50 } },
+    ];
+    const { container, rerender } = render(
+      <PdfRenderer
+        fileUrl="http://localhost/v1/documents/doc_long/content"
+        token="tok"
+        hasTextLayer={false}
+        hits={longHits}
+        currentHit={0}
+      />,
+    );
+
+    await waitFor(() => expect(container.querySelector('[data-testid="pdf-page-1"]')).not.toBeNull());
+    const initialPageCards = container.querySelectorAll('[data-page-number]');
+    expect(initialPageCards.length).toBeGreaterThan(0);
+    expect(initialPageCards.length).toBeLessThan(50);
+    expect(container.querySelectorAll('.preview-pdf-page')).toHaveLength(initialPageCards.length);
+    expect(container.querySelector('[data-testid="pdf-page-50"]')).toBeNull();
+
+    vi.mocked(scrollToCenter).mockClear();
+    rerender(
+      <PdfRenderer
+        fileUrl="http://localhost/v1/documents/doc_long/content"
+        token="tok"
+        hasTextLayer={false}
+        hits={longHits}
+        currentHit={1}
+      />,
+    );
+
+    await waitFor(() => expect(container.querySelector('[data-testid="pdf-page-50"]')).not.toBeNull());
+    expect(container.querySelectorAll('[data-page-number]').length).toBeLessThan(50);
+    expect(container.querySelectorAll('.preview-pdf-page')).toHaveLength(
+      container.querySelectorAll('[data-page-number]').length,
+    );
+    await waitFor(() => expect(vi.mocked(scrollToCenter)).toHaveBeenCalled());
+    const target = vi.mocked(scrollToCenter).mock.calls.at(-1)?.[0] as HTMLElement;
+    expect(target.getAttribute('data-page-number')).toBe('50');
+  });
+
   it('span 消歧：同页多处重复时高亮 span 所指的一处', async () => {
     fixtures.numPages = 1;
     fixtures.pageItems.set(1, ['repeat alpha repeat alpha repeat']);

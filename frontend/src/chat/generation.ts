@@ -179,6 +179,7 @@ export class GenerationSession {
   private backoffTimer: ReturnType<typeof setTimeout> | undefined;
   private inflightRefresh: Promise<string> | null = null;
   private activeStream: Promise<void> | null = null;
+  private stopRetriedAfterRefresh = false;
   private readonly abortController = new AbortController();
 
   private constructor(deps: GenerationSessionDeps) {
@@ -361,7 +362,10 @@ export class GenerationSession {
     }
     while (!this.disposed) {
       if (this.view.terminal !== null || this.view.authFailed) return;
-      if (this.phase() === 'stopping') return; // 用户已停止：由 driveStop 的监听流收终态
+      if (this.phase() === 'stopping') {
+        this.ensureStopTerminalListener();
+        return;
+      }
       if (!this.withinGrace()) {
         this.failReconnect();
         return;
@@ -377,7 +381,10 @@ export class GenerationSession {
         // 代理或服务端 idle timeout 可能以干净 EOF 关闭且无 done/error/stopped，
         // 此时不能直接 return，否则会卡在 reconnecting 且无后续重试。
         if (this.disposed || this.view.terminal !== null || this.view.authFailed) return;
-        if (this.phase() === 'stopping') return; // 用户已停止：由 driveStop 收终态
+        if (this.phase() === 'stopping') {
+          this.ensureStopTerminalListener();
+          return;
+        }
       } catch (cause) {
         if (this.disposed || this.view.terminal !== null || this.view.authFailed) return;
         if (cause instanceof ApiError && cause.status === 401) {
@@ -427,6 +434,18 @@ export class GenerationSession {
     } catch {
       // 等待失败：留在 reconnect_failed，由 store 读模型刷新收敛
     }
+    if (this.disposed || this.view.terminal !== null || this.phase() !== 'stopping') return;
+    // 停止后的终态流也可能被代理以 EOF 关闭；不能留下没有监听器的 stopping 状态。
+    this.update({
+      phase: 'failed',
+      stopRequested: false,
+      requestError: { code: 'network_error', messageKey: GENERATION_MESSAGE_KEYS.requestError },
+    });
+  }
+
+  private ensureStopTerminalListener(): void {
+    if (this.disposed || this.view.terminal !== null || this.activeStream !== null) return;
+    void this.awaitTerminalOnce();
   }
 
   /* ---------- 停止 ---------- */
@@ -437,9 +456,7 @@ export class GenerationSession {
     try {
       await this.deps.api.stopGeneration(generationId);
       // 202 stop_requested → 等 stopped 终态；若当前无监听流则开一条
-      if (this.view.terminal === null && this.activeStream === null) {
-        await this.openEventsStream();
-      }
+      this.ensureStopTerminalListener();
     } catch (cause) {
       if (this.disposed) return;
       if (cause instanceof ApiError && cause.status === 409) {
@@ -447,6 +464,15 @@ export class GenerationSession {
         return;
       }
       if (cause instanceof ApiError && cause.status === 401) {
+        if (this.stopRetriedAfterRefresh) {
+          this.update({
+            phase: 'failed',
+            stopRequested: false,
+            requestError: { code: cause.code, messageKey: GENERATION_MESSAGE_KEYS.requestError },
+          });
+          return;
+        }
+        this.stopRetriedAfterRefresh = true;
         try {
           await this.refreshToken();
         } catch {

@@ -444,6 +444,72 @@ describe('生成控制器（spec §7）', () => {
     expect(session.getView().answer?.content).toBe('已展示正文'); // 保留已收稳定 answer
   });
 
+  it('重连中的停止在恢复流 EOF 后重新监听 stopped 终态', async () => {
+    const api = makeStubApi();
+    const session = GenerationSession.launchAsk(makeDeps(api), 'c_1', { content: 'q', effort_level: 'quick', overrides: null });
+    const initial = api.streams[0];
+    initial?.push(1, startEvt());
+    initial?.fail(networkError());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const recovery = api.streams[1];
+    expect(recovery?.kind).toBe('events');
+    session.requestStop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.stopGeneration).toHaveBeenCalledTimes(1);
+
+    recovery?.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const terminalStream = api.streams[2];
+    expect(terminalStream?.kind).toBe('events');
+    terminalStream?.push(2, stoppedEvt('manual_request'));
+    expect(session.getView().phase).toBe('stopped');
+    expect(session.getView().terminal?.kind).toBe('stopped');
+  });
+
+  it('停止后的终态监听再次 EOF 时退出 stopping，进入可操作错误状态', async () => {
+    const api = makeStubApi();
+    const session = GenerationSession.launchAsk(makeDeps(api), 'c_1', { content: 'q', effort_level: 'quick', overrides: null });
+    const initial = api.streams[0];
+    initial?.push(1, startEvt());
+    initial?.fail(networkError());
+    await vi.advanceTimersByTimeAsync(0);
+
+    session.requestStop();
+    await vi.advanceTimersByTimeAsync(0);
+    api.streams[1]?.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    api.streams[2]?.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(session.getView()).toMatchObject({
+      phase: 'failed',
+      stopRequested: false,
+      requestError: { code: 'network_error', messageKey: GENERATION_MESSAGE_KEYS.requestError },
+    });
+  });
+
+  it('停止请求持续 401 时只刷新并重试一次，然后回到可操作错误状态', async () => {
+    const api = makeStubApi();
+    api.stopGeneration.mockRejectedValueOnce(httpError(401, 'invalid_token')).mockRejectedValueOnce(httpError(401, 'invalid_token'));
+    const refresh = vi.fn(async () => 'tok_new');
+    const session = GenerationSession.launchAsk(makeDeps(api, { refresh }), 'c_1', { content: 'q', effort_level: 'quick', overrides: null });
+    api.streams[0]?.push(1, startEvt());
+
+    session.requestStop();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(api.stopGeneration).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(session.getView()).toMatchObject({
+      phase: 'failed',
+      stopRequested: false,
+      requestError: { code: 'invalid_token', messageKey: GENERATION_MESSAGE_KEYS.requestError },
+    });
+  });
+
   it('停止：收到 start 前不可停止（不调用 POST stop）', async () => {
     const api = makeStubApi();
     const session = GenerationSession.launchAsk(makeDeps(api), 'c_1', { content: 'q', effort_level: 'quick', overrides: null });

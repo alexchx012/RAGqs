@@ -142,6 +142,9 @@ export function createApiClient(deps: ApiClientDeps): ApiClient {
               if (controller.signal.aborted) {
                 throw timeoutError();
               }
+              if (response.ok) {
+                throw normalizeApiError(null, response.status);
+              }
               return null;
             });
       if (!response.ok) {

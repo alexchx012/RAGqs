@@ -255,6 +255,7 @@ function ChatHomeInner({
               </div>
             )}
             <MessageList
+              conversationId={state.conversationId}
               messages={state.messages}
               onRetry={(messageId) => void store.retry(messageId)}
               onFeedback={(messageId, vote) => void store.submitFeedback(messageId, vote)}

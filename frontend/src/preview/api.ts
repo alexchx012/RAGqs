@@ -64,6 +64,18 @@ function contentPath(documentId: string, options?: PreviewRequestOptions & { she
   return `/documents/${encodeURIComponent(documentId)}/content${query === '' ? '' : `?${query}`}`;
 }
 
+function parseSupportedContentUrl(contentUrl: string): URL {
+  const applicationOrigin = 'https://ragqs.invalid';
+  if (!contentUrl.startsWith('/') || contentUrl.startsWith('//')) {
+    throw new TypeError('Preview content URL must be application-relative.');
+  }
+  const parsed = new URL(contentUrl, applicationOrigin);
+  if (parsed.origin !== applicationOrigin || !parsed.pathname.startsWith('/documents/')) {
+    throw new TypeError('Preview content URL must be an application-relative document endpoint.');
+  }
+  return parsed;
+}
+
 export function createPreviewApi(client: ApiClient): PreviewApi {
   return {
     getPreview(documentId, options) {
@@ -85,13 +97,13 @@ export function createPreviewApi(client: ApiClient): PreviewApi {
       return client.request(contentPath(documentId, options), { responseType: 'blob' });
     },
     buildContentUrl(contentUrl, documentVersionId) {
-      const params = new URLSearchParams();
+      const parsed = parseSupportedContentUrl(contentUrl);
       if (typeof documentVersionId === 'string' && documentVersionId !== '') {
-        params.set('document_version_id', documentVersionId);
+        parsed.searchParams.set('document_version_id', documentVersionId);
       }
-      const query = params.toString();
-      // content_url 为 /v1 相对路径（契约 §4 示例 "/documents/doc_9/content"）
-      return resolveUrl(`/v1${contentUrl}${query === '' ? '' : `?${query}`}`);
+      const query = parsed.searchParams.toString();
+      // content_url 为应用内相对路径（契约 §4 示例 "/documents/doc_9/content"）。
+      return resolveUrl(`/v1${parsed.pathname}${query === '' ? '' : `?${query}`}`);
     },
   };
 }

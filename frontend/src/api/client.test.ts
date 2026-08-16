@@ -70,6 +70,19 @@ describe('API 客户端基座（规格 §2）', () => {
     expect(error.details).toEqual({});
   });
 
+  it('2xx 的非 JSON 响应显式归一化为错误，而不是成功返回 null', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response('<html>proxy error</html>', { status: 200 }),
+    );
+    const client = createApiClient({ getAccessToken: () => null, refresh: vi.fn(), fetchFn: fetchMock });
+
+    const error = (await client.request('/x').catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(200);
+    expect(error.code).toBe('unknown_error');
+  });
+
   it('业务请求 401：自动 refresh 一次后重试原请求（携带新 token）', async () => {
     let token: string | null = 'tok_old';
     const fetchMock = vi
