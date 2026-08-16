@@ -74,6 +74,40 @@ def test_preview_and_content_expose_readable_superseded_version(service, princip
     assert content == b"hello"
 
 
+def test_preview_scopes_message_hits_to_the_selected_version(service, principal) -> None:
+    first = _accepted(service, principal)
+    replacement = service.replace_version(
+        principal=principal,
+        document_id=first["document_id"],
+        expected_version=1,
+        file=_upload(content=b"new content"),
+        idempotency_key="replace-1",
+    )
+    _accept(service, principal, replacement)
+
+    class _Hits:
+        calls: list[tuple[str, str, str]] = []
+
+        def get_hits(self, principal, message_id, document_id, document_version_id):
+            del principal
+            self.calls.append((message_id, document_id, document_version_id))
+            return ()
+
+    hits = _Hits()
+    service._message_citation_preview_port = hits
+
+    service.preview(
+        principal=principal,
+        document_id=first["document_id"],
+        document_version_id=first["document_version_id"],
+        message_id="message_1",
+    )
+
+    assert hits.calls == [
+        ("message_1", first["document_id"], first["document_version_id"]),
+    ]
+
+
 def test_preview_rejects_a_selected_version_without_retained_source_content(service, principal) -> None:
     item = _accepted(service, principal)
     with service._engine.connect() as connection:

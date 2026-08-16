@@ -81,7 +81,7 @@ def _preview_locator(value: Any) -> dict[str, Any]:
         return result
     section_path = value.get("section_path")
     if isinstance(section_path, str) and section_path:
-        path = [section_path]
+        path = [part.strip() for part in section_path.split(" / ") if part.strip()]
     elif isinstance(section_path, (list, tuple)) and section_path:
         path = [str(part) for part in section_path if str(part)]
     else:
