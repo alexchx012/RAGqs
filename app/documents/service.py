@@ -25,6 +25,7 @@ from .domain import (
     canonical_request_fingerprint,
 )
 from .indexing import IndexProcessingReceipt
+from .preview import PreviewContent
 from .schema import (
     document_deletion_cleanup_targets_table,
     document_deletions_table,
@@ -1543,7 +1544,7 @@ class DocumentsService:
         document_id: str,
         document_version_id: str | None = None,
         sheet: str | None = None,
-    ) -> tuple[bytes, ObjectMetadata]:
+    ) -> PreviewContent:
         from .read_models import DocumentReadModels
 
         return DocumentReadModels(self).content(

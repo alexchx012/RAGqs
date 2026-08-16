@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
+from app.documents.preview import PreviewContent, ProcessingReceiptPreviewRenderer
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.schema import document_versions_table, documents_table, publications_table
+from app.documents.service import DocumentUpload
 from app.indexing import IndexChunk
 from app.outbox.ports import DocumentNotificationRedactionReceipt
 from app.platform.errors import PlatformError
@@ -38,14 +41,30 @@ def _accepted(service, principal):
     return item
 
 
+def _set_processing_summary(service, publication_id: str, summary: dict[str, object]) -> None:
+    with service._engine.begin() as connection:
+        manifest = connection.execute(
+            select(publications_table.c.resource_manifest_json).where(
+                publications_table.c.id == publication_id
+            )
+        ).scalar_one()
+        updated_manifest = dict(manifest)
+        updated_manifest["processing_summary"] = summary
+        connection.execute(
+            update(publications_table)
+            .where(publications_table.c.id == publication_id)
+            .values(resource_manifest_json=updated_manifest)
+        )
+
+
 def test_versions_and_content_only_expose_active_projection(service, principal) -> None:
     item = _accepted(service, principal)
     versions = service.list_versions(principal=principal, document_id=item["document_id"])
     assert versions["active_version_id"] == item["document_version_id"]
     assert versions["items"][0]["content_available"] is True
-    body, metadata = service.content(principal=principal, document_id=item["document_id"])
-    assert body == b"hello"
-    assert metadata.size_bytes == 5
+    content = service.content(principal=principal, document_id=item["document_id"])
+    assert isinstance(content, PreviewContent)
+    assert content.body == b"hello"
 
 
 def test_preview_and_content_expose_readable_superseded_version(service, principal) -> None:
@@ -64,14 +83,93 @@ def test_preview_and_content_expose_readable_superseded_version(service, princip
         document_id=first["document_id"],
         document_version_id=first["document_version_id"],
     )
-    content, _ = service.content(
+    content = service.content(
         principal=principal,
         document_id=first["document_id"],
         document_version_id=first["document_version_id"],
     )
 
     assert preview["document_version_id"] == first["document_version_id"]
-    assert content == b"hello"
+    assert isinstance(content, PreviewContent)
+    assert content.body == b"hello"
+
+
+def test_preview_uses_a_version_qualified_content_url(service, principal) -> None:
+    item = _accepted(service, principal)
+
+    preview = service.preview(principal=principal, document_id=item["document_id"])
+
+    assert preview["content_url"].endswith(f"document_version_id={item['document_version_id']}")
+
+
+def test_content_returns_a_persisted_word_tree(service, principal) -> None:
+    service._preview_renderer = ProcessingReceiptPreviewRenderer()
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[
+            DocumentUpload(
+                filename="guide.docx",
+                content=b"original Word source",
+                media_kind="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
+        idempotency_key="word-upload-1",
+    )
+    item = created["items"][0]
+    _accept(service, principal, item)
+    _set_processing_summary(
+        service,
+        item["publication_id"],
+        {
+            "tree": {
+                "tree_indexed": True,
+                "sections": [{"path": ["Policy"], "paragraphs": ["Use the persisted tree only."]}],
+            }
+        },
+    )
+
+    content = service.content(principal=principal, document_id=item["document_id"])
+
+    assert getattr(content, "media_type", None) == "application/json"
+    assert json.loads(content.body) == {
+        "sections": [{"path": ["Policy"], "paragraphs": ["Use the persisted tree only."]}]
+    }
+
+
+def test_content_returns_csv_rows_for_the_requested_sheet(service, principal) -> None:
+    service._preview_renderer = ProcessingReceiptPreviewRenderer()
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[
+            DocumentUpload(filename="people.csv", content=b"name\nAda\n", media_kind="text/csv")
+        ],
+        idempotency_key="csv-upload-1",
+    )
+    item = created["items"][0]
+    _accept(service, principal, item)
+    _set_processing_summary(
+        service,
+        item["publication_id"],
+        {
+            "sheet_manifest": [{"sheet": "CSV"}],
+            "row_groups": [{"sheet": "CSV", "start": 1, "end": 2}],
+        },
+    )
+
+    content = service.content(
+        principal=principal,
+        document_id=item["document_id"],
+        sheet="CSV",
+    )
+
+    assert getattr(content, "media_type", None) == "application/json"
+    assert json.loads(content.body) == {
+        "sheet": "CSV",
+        "row_count": 2,
+        "rows": [["name"], ["Ada"]],
+    }
 
 
 def test_preview_scopes_message_hits_to_the_selected_version(service, principal) -> None:
@@ -108,7 +206,9 @@ def test_preview_scopes_message_hits_to_the_selected_version(service, principal)
     ]
 
 
-def test_preview_rejects_a_selected_version_without_retained_source_content(service, principal) -> None:
+def test_preview_rejects_a_selected_version_without_retained_source_content(
+    service, principal
+) -> None:
     item = _accepted(service, principal)
     with service._engine.connect() as connection:
         object_key = connection.execute(
@@ -156,7 +256,7 @@ def test_active_read_lease_blocks_physical_document_deletion(service, principal)
     item = _accepted(service, principal)
     service._lifecycle_port = _Lifecycle()
 
-    assert service.content(principal=principal, document_id=item["document_id"])[0] == b"hello"
+    assert service.content(principal=principal, document_id=item["document_id"]).body == b"hello"
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],

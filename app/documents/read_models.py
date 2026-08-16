@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any
+from urllib.parse import urlencode
 
 from sqlalchemy import Engine, and_, func, select
 
@@ -9,6 +10,7 @@ from app.platform.errors import PlatformError
 from app.platform.storage import ObjectStorePort, StorageKeyError
 
 from .domain import DocumentLifecycle, DocumentVersionState, PublicationState
+from .preview import PreviewContent, preview_media_kind
 from .schema import (
     document_versions_table,
     documents_table,
@@ -109,10 +111,13 @@ class DocumentReadModels:
             "document_id": document["id"],
             "document_version_id": version["id"],
             "name": document["name"],
-            "media_kind": version["media_kind"],
+            "media_kind": preview_media_kind(version["media_kind"]),
             "size_bytes": version["size_bytes"],
             "content_available": True,
-            "content_url": f"/documents/{document['id']}/content",
+            "content_url": (
+                f"/documents/{document['id']}/content?"
+                f"{urlencode({'document_version_id': str(version['id'])})}"
+            ),
             "hits": [hit.to_mapping() for hit in hits],
         }
         if metadata is not None:
@@ -126,19 +131,33 @@ class DocumentReadModels:
         document_id: str,
         document_version_id: str | None = None,
         sheet: str | None = None,
-    ) -> tuple[bytes, Any]:
-        del sheet
-        _, version, _ = self._visible_version(
+    ) -> PreviewContent:
+        _, version, publication = self._visible_version(
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
         )
         try:
-            return self._service._object_store.get(str(version["original_object_key"]))
+            content, object_metadata = self._service._object_store.get(
+                str(version["original_object_key"])
+            )
         except (StorageKeyError, KeyError) as exc:
             raise PlatformError(
                 "document_content_unavailable", "Document content is unavailable", {}, 410
             ) from exc
+        renderer = self._service._preview_renderer
+        if renderer is None:
+            return PreviewContent(body=content, media_type=object_metadata.content_type)
+        manifest = dict(publication["resource_manifest_json"] or {})
+        summary = manifest.get("processing_summary")
+        processing_summary = dict(summary) if isinstance(summary, Mapping) else {}
+        metadata = renderer.metadata(processing_summary=processing_summary)
+        return renderer.render(
+            version={**version, "processing_summary": processing_summary},
+            content=content,
+            metadata=metadata,
+            sheet=sheet,
+        )
 
     def get_upload_batch(self, *, principal: Any, upload_batch_id: str) -> dict[str, Any]:
         with self._service._engine.connect() as connection:
@@ -264,9 +283,9 @@ class DocumentReadModels:
                 )
             original_object_key = str(row["selected_version_original_object_key"] or "")
             try:
-                content_available = bool(original_object_key) and self._service._object_store.exists(
+                content_available = bool(
                     original_object_key
-                )
+                ) and self._service._object_store.exists(original_object_key)
             except StorageKeyError as exc:
                 raise PlatformError(
                     "document_content_unavailable", "Document content is unavailable", {}, 410
