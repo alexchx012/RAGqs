@@ -64,7 +64,7 @@ interface ParsedUploadFile {
   readonly name: string;
   readonly size: number;
   readonly type: string;
-  /** 内容 hash（FNV-1a over 原始字节；dedupe 依据，review C12）。 */
+  /** 内容 hash（SHA-256 over 原始字节；dedupe 依据）。 */
   readonly contentHash: string;
 }
 
@@ -91,7 +91,7 @@ async function parseNewVersionParts(request: Request): Promise<ParsedNewVersionP
   const boundaryBytes = new TextEncoder().encode(`--${boundary}`);
   const headerEndMark = new TextEncoder().encode('\r\n\r\n');
   const crlf = new TextEncoder().encode('\r\n');
-  const parts = parseMultipartParts(bytes, boundaryBytes, headerEndMark, crlf);
+  const parts = await parseMultipartParts(bytes, boundaryBytes, headerEndMark, crlf);
   const files = parts.filter(
     (part) => part.field === 'file' && part.filename !== null && part.filename !== '',
   );
@@ -124,26 +124,21 @@ interface MultipartPart {
   readonly type: string;
   readonly size: number;
   readonly text: string;
-  /** 原始字节内容 hash（FNV-1a 32-bit hex；二进制安全）。 */
+  /** 原始字节内容 hash（SHA-256 hex；二进制安全）。 */
   readonly contentHash: string;
 }
 
-/** FNV-1a 32-bit：对原始字节计算稳定内容指纹（dedupe 依据）。 */
-function fnv1a(bytes: Uint8Array): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < bytes.length; index += 1) {
-    hash ^= bytes[index]!;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function parseMultipartParts(
+async function parseMultipartParts(
   bytes: Uint8Array,
   boundaryBytes: Uint8Array,
   headerEndMark: Uint8Array,
   crlf: Uint8Array,
-): MultipartPart[] {
+): Promise<MultipartPart[]> {
   const parts: MultipartPart[] = [];
   let searchFrom = 0;
   while (true) {
@@ -173,8 +168,9 @@ function parseMultipartParts(
     if (size >= crlf.length && sequenceEquals(bytes, bodyEnd - crlf.length, crlf)) {
       size -= crlf.length;
     }
-    const text = new TextDecoder('utf-8').decode(bytes.slice(headerEnd + 4, headerEnd + 4 + size));
-    const contentHash = fnv1a(bytes.slice(headerEnd + 4, headerEnd + 4 + size));
+    const content = bytes.slice(headerEnd + 4, headerEnd + 4 + size);
+    const text = new TextDecoder('utf-8').decode(content);
+    const contentHash = await sha256Hex(content);
     parts.push({ field, filename, type, size: Math.max(0, size), text, contentHash });
     searchFrom = nextBoundary === -1 ? bytes.length : nextBoundary;
   }
@@ -199,7 +195,7 @@ async function parseUploadFiles(request: Request): Promise<ParsedUploadFile[]> {
     throw new MockHttpError(422, 'validation_error', { field: 'files' });
   }
   const bytes = new Uint8Array(await request.arrayBuffer());
-  const parts = parseMultipartParts(
+  const parts = await parseMultipartParts(
     bytes,
     new TextEncoder().encode(`--${boundary}`),
     new TextEncoder().encode('\r\n\r\n'),

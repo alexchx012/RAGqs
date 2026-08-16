@@ -218,6 +218,8 @@ function mediaKindOf(type: string, name: string): string {
 
 export class MockKnowledgeController {
   private readonly documents = new Map<string, StoredDocument[]>();
+  /** 初始上传 claim 独立于文档活动版本；新版本激活不得改写它。 */
+  private readonly initialUploadClaims = new Map<string, string>();
   private readonly jobs = new Map<string, StoredJob>();
   /** §10.1 运维任务队列独立任务池：不进上传结果层（listJobs 只迭代 jobs），cancel/replay 双池查找。 */
   private readonly opsJobs = new Map<string, StoredJob>();
@@ -244,6 +246,7 @@ export class MockKnowledgeController {
 
   reset(): void {
     this.documents.clear();
+    this.initialUploadClaims.clear();
     this.jobs.clear();
     this.opsJobs.clear();
     this.batches.clear();
@@ -498,7 +501,7 @@ export class MockKnowledgeController {
     }
 
     const items: UploadItem[] = [];
-    const accepted: { file: UploadFileInput; doc: StoredDocument; job: StoredJob }[] = [];
+    const accepted: { file: UploadFileInput; doc: StoredDocument; job: StoredJob; initialClaimKey: string }[] = [];
 
     // 管理上传在服务端事务中执行；先完成整批校验，避免错误响应留下半批文档或任务。
     for (const file of files) {
@@ -512,7 +515,8 @@ export class MockKnowledgeController {
       // 初始上传仅在规范化文件名和内容 hash 都相同的情况下去重。
       if (permission === 'manage') {
         const hash = file.contentHash ?? this.fallbackHash(file);
-        const existing = this.findInitialUploadDuplicate(spaceId, file.name, hash);
+        const initialClaimKey = this.initialUploadClaimKey(spaceId, file.name, hash);
+        const existing = this.findInitialUploadDuplicate(initialClaimKey);
         if (existing !== undefined) {
           items.push({
             filename: file.name,
@@ -527,9 +531,10 @@ export class MockKnowledgeController {
         }
         const doc = this.createDocument(space, file);
         const job = this.createJob(doc, 'upload');
+        this.initialUploadClaims.set(initialClaimKey, doc.id);
         // 生命周期：初始上传任务 succeeded 前文档不出现在文档列表
         (doc as { initialUploadJobId: string | null }).initialUploadJobId = job.jobId;
-        accepted.push({ file, doc, job });
+        accepted.push({ file, doc, job, initialClaimKey });
         items.push({
           filename: file.name,
           document_id: doc.id,
@@ -562,6 +567,7 @@ export class MockKnowledgeController {
         // 整批拒绝：撤销已创建状态，不预扣不冻结。
         for (const entry of accepted) {
           this.jobs.delete(entry.job.jobId);
+          this.initialUploadClaims.delete(entry.initialClaimKey);
           const list = this.documents.get(spaceId) ?? [];
           this.documents.set(
             spaceId,
@@ -1468,19 +1474,22 @@ export class MockKnowledgeController {
     return (this.documents.get(spaceId) ?? []).find((doc) => doc.name === name);
   }
 
-  private findInitialUploadDuplicate(
-    spaceId: string,
-    filename: string,
-    contentHash: string,
-  ): StoredDocument | undefined {
-    const normalizedFilename = this.normalizeFilename(filename);
-    return (this.documents.get(spaceId) ?? []).find(
-      (doc) => doc.contentHash === contentHash && this.normalizeFilename(doc.name) === normalizedFilename,
-    );
+  private findInitialUploadDuplicate(initialClaimKey: string): StoredDocument | undefined {
+    const documentId = this.initialUploadClaims.get(initialClaimKey);
+    if (documentId === undefined) {
+      return undefined;
+    }
+    return [...this.documents.values()].flat().find((document) => document.id === documentId);
+  }
+
+  private initialUploadClaimKey(spaceId: string, filename: string, contentHash: string): string {
+    return JSON.stringify([spaceId, this.normalizeFilename(filename), contentHash]);
   }
 
   private normalizeFilename(filename: string): string {
-    return filename.trim().replace(/\s+/g, ' ').toLowerCase();
+    // JavaScript has no native Unicode casefold. These mappings cover the backend-reachable
+    // case-fold differences relevant to user-facing filenames without adding a new dependency.
+    return filename.trim().replace(/\s+/g, ' ').toLowerCase().replaceAll('ß', 'ss').replaceAll('ς', 'σ');
   }
 
   /** 缺省 hash：夹具未提供 contentHash 时按 name+size 派生（保持既有测试语义）。 */

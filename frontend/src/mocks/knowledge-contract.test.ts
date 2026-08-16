@@ -340,6 +340,59 @@ describe('knowledge contract mock：上传三分支', () => {
     expect(secondBody.items.map((item) => item.deduplicated)).toEqual([false, false]);
     expect(secondBody.items[1]!.document_id).not.toBe(secondBody.items[0]!.document_id);
   });
+
+  it('初始上传 claim 不随替换版本改写，且文件名按服务端 casefold 归一化', async () => {
+    const token = bearerOf('zhangsan');
+    const initial = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: 'immutable.pdf', type: 'application/pdf', content: '%PDF-original' }],
+      'idem-immutable-initial',
+    );
+    const initialItem = ((await initial.json()) as { items: { document_id: string; job_id: string }[] }).items[0]!;
+    mockKnowledge.advanceJob(token, initialItem.job_id, 'succeeded');
+
+    const replacement = await uploadNewVersionRequest(
+      token,
+      initialItem.document_id,
+      1,
+      { name: 'immutable.pdf', type: 'application/pdf', content: '%PDF-replacement' },
+      'idem-immutable-replacement',
+    );
+    const replacementItem = (await replacement.json()) as { job_id: string };
+    mockKnowledge.advanceJob(token, replacementItem.job_id, 'succeeded');
+
+    const originalAgain = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: ' immutable.pdf ', type: 'application/pdf', content: '%PDF-original' }],
+      'idem-immutable-original-again',
+    );
+    const originalItem = ((await originalAgain.json()) as { items: { document_id: string; deduplicated: boolean }[] }).items[0]!;
+    expect(originalItem).toMatchObject({ document_id: initialItem.document_id, deduplicated: true });
+
+    const replacementAgain = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: 'immutable.pdf', type: 'application/pdf', content: '%PDF-replacement' }],
+      'idem-immutable-replacement-again',
+    );
+    const replacementUploadItem = ((await replacementAgain.json()) as { items: { document_id: string; deduplicated: boolean }[] }).items[0]!;
+    expect(replacementUploadItem).toMatchObject({ deduplicated: false });
+    expect(replacementUploadItem.document_id).not.toBe(initialItem.document_id);
+
+    const casefolded = await uploadRequest(
+      token,
+      'personal:u_user',
+      [
+        { name: 'Straße.pdf', type: 'application/pdf', content: '%PDF-casefold' },
+        { name: 'STRASSE.pdf', type: 'application/pdf', content: '%PDF-casefold' },
+      ],
+      'idem-casefold-upload',
+    );
+    const casefoldItems = (await casefolded.json()) as { items: { deduplicated: boolean }[] };
+    expect(casefoldItems.items.map((item) => item.deduplicated)).toEqual([false, true]);
+  });
 });
 
 describe('knowledge contract mock：任务状态机与批次', () => {
