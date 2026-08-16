@@ -383,28 +383,30 @@ export function DepartmentsLayer() {
           )}
         </div>
       ) : (
-        <div>
+        <div role="table" aria-label={copy.shell.drawer.modules.departments}>
           <div
+            role="row"
             className={
               `grid ${DEPARTMENT_GRID} items-center gap-3 px-4 pb-1 text-[14px] text-ash-gray`
             }
           >
-            <span>{copyDepartments.colName}</span>
-            <span>{copyDepartments.colStatus}</span>
-            <span>{copyDepartments.colMembers}</span>
-            <span>{copyDepartments.colDocuments}</span>
-            <span>{copyDepartments.colTasks}</span>
-            <span>{copyDepartments.colSubmissions}</span>
-            <span>{copyDepartments.colDeactivatedAt}</span>
-            <span>{copyDepartments.colActions}</span>
+            <span role="columnheader">{copyDepartments.colName}</span>
+            <span role="columnheader">{copyDepartments.colStatus}</span>
+            <span role="columnheader">{copyDepartments.colMembers}</span>
+            <span role="columnheader">{copyDepartments.colDocuments}</span>
+            <span role="columnheader">{copyDepartments.colTasks}</span>
+            <span role="columnheader">{copyDepartments.colSubmissions}</span>
+            <span role="columnheader">{copyDepartments.colDeactivatedAt}</span>
+            <span role="columnheader">{copyDepartments.colActions}</span>
           </div>
-          <ul className="divide-y divide-[var(--color-hairline)]">
+          <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
             {items.map((item) => {
               const active = item.status === 'active';
               const actions = rowActions(item);
               return (
                 <li
                   key={item.id}
+                  role="presentation"
                   className={
                     `${enterIds.has(item.id) ? 'ui-row-insert ' : ''}` +
                     `transition-colors duration-[var(--duration-slow)] ` +
@@ -412,6 +414,7 @@ export function DepartmentsLayer() {
                   }
                 >
                   <div
+                    role="row"
                     className={
                       `grid h-14 ${DEPARTMENT_GRID} items-center gap-3 px-4 ` +
                       'transition-colors duration-150 hover:bg-mist-gray'
@@ -419,6 +422,7 @@ export function DepartmentsLayer() {
                   >
                     <span
                       key={item.name}
+                      role="cell"
                       className={
                         `truncate text-[15px] font-medium text-ink-black ` +
                         `${renamedIds.has(item.id) ? 'ui-fade-enter-fast' : ''}`
@@ -426,28 +430,28 @@ export function DepartmentsLayer() {
                     >
                       {item.name}
                     </span>
-                    <span className="flex items-center gap-2 text-[15px] text-slate-gray">
+                    <span role="cell" className="flex items-center gap-2 text-[15px] text-slate-gray">
                       <StatusDot intent={active ? 'success' : 'slate'} />
                       {active ? copyDepartments.statusActive : copyDepartments.statusInactive}
                     </span>
-                    <span className="truncate text-[15px] text-slate-gray">
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
                       {item.member_count}
                     </span>
-                    <span className="truncate text-[15px] text-slate-gray">
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
                       {item.document_count}
                     </span>
-                    <span className="truncate text-[15px] text-slate-gray">
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
                       {item.nonterminal_job_count}
                     </span>
-                    <span className="truncate text-[15px] text-slate-gray">
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
                       {item.pending_submission_count}
                     </span>
-                    <span className="truncate text-[15px] text-slate-gray">
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
                       {item.deactivated_at !== null
                         ? formatDate(item.deactivated_at)
                         : copyDepartments.noActions}
                     </span>
-                    <span className="flex items-center gap-3">
+                    <span role="cell" className="flex items-center gap-3">
                       {actions.length === 0 ? (
                         <span className="text-[15px] text-smoke-gray">
                           {copyDepartments.noActions}
@@ -615,52 +619,56 @@ function DepartmentNameDialog({
 
   return (
     <DialogFrame ariaLabel={title} onClose={onClose}>
-      <h2 className="text-[20px] font-medium text-ink-black">{title}</h2>
-      {topError !== null && (
-        <p role="alert" className="mt-3 text-[15px] text-danger">
-          {topError}
-        </p>
-      )}
-      <div className="mt-4">
-        <label htmlFor="department-name-input" className="mb-2 block text-[15px] text-slate-gray">
-          {copyDepartments.nameLabel}
-        </label>
-        <input
-          id="department-name-input"
-          type="text"
-          autoComplete="off"
-          value={name}
-          aria-invalid={shownFieldError !== null}
-          onChange={(event) => setName(event.target.value)}
-          className={
-            'h-10 w-full rounded-[var(--radius-inputs)] border bg-paper-white px-3 text-[15px] ' +
-            `text-ink-black focus:border-ink-black ${
-              shownFieldError !== null ? 'border-danger' : 'border-[var(--color-hairline)]'
-            }`
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!confirmDisabled) {
+            onSubmit(trimmed);
           }
-        />
-        {shownFieldError !== null && (
-          <p role="alert" className="mt-2 text-[15px] text-danger">
-            {shownFieldError}
+        }}
+      >
+        <h2 className="text-[20px] font-medium text-ink-black">{title}</h2>
+        {topError !== null && (
+          <p role="alert" className="mt-3 text-[15px] text-danger">
+            {topError}
           </p>
         )}
-        {showNameNote && shownFieldError === null && (
-          <p className="mt-2 text-[15px] text-smoke-gray">{copyDepartments.nameNote}</p>
-        )}
-      </div>
-      <div className="mt-6 flex justify-end gap-2">
-        <Pill variant="ghost" size="sm" disabled={submitting} onClick={onClose}>
-          {copy.controls.cancel}
-        </Pill>
-        <Pill
-          size="sm"
-          loading={submitting}
-          disabled={confirmDisabled}
-          onClick={() => onSubmit(trimmed)}
-        >
-          {confirmLabel}
-        </Pill>
-      </div>
+        <div className="mt-4">
+          <label htmlFor="department-name-input" className="mb-2 block text-[15px] text-slate-gray">
+            {copyDepartments.nameLabel}
+          </label>
+          <input
+            id="department-name-input"
+            type="text"
+            autoComplete="off"
+            value={name}
+            aria-invalid={shownFieldError !== null}
+            onChange={(event) => setName(event.target.value)}
+            className={
+              'h-10 w-full rounded-[var(--radius-inputs)] border bg-paper-white px-3 text-[15px] ' +
+              `text-ink-black focus:border-ink-black ${
+                shownFieldError !== null ? 'border-danger' : 'border-[var(--color-hairline)]'
+              }`
+            }
+          />
+          {shownFieldError !== null && (
+            <p role="alert" className="mt-2 text-[15px] text-danger">
+              {shownFieldError}
+            </p>
+          )}
+          {showNameNote && shownFieldError === null && (
+            <p className="mt-2 text-[15px] text-smoke-gray">{copyDepartments.nameNote}</p>
+          )}
+        </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <Pill type="button" variant="ghost" size="sm" disabled={submitting} onClick={onClose}>
+            {copy.controls.cancel}
+          </Pill>
+          <Pill type="submit" size="sm" loading={submitting} disabled={confirmDisabled}>
+            {confirmLabel}
+          </Pill>
+        </div>
+      </form>
     </DialogFrame>
   );
 }

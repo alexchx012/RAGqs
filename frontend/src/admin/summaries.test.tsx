@@ -2,8 +2,7 @@
  * 抽屉左栏项右侧摘要测试（spec §1；验收 A10/A20/A23/A40 部分）。
  * 各摘要组件挂载自加载 + AdminProvider.summariesVersion 变化重取（invalidateSummaries）：
  * >0 渲染徽标/状态点、=0 不渲染、加载失败静默（渲染 null）。
- * 角色差异：ops 审批中心徽标 = quota_pending + submission_pending 合计；
- * admin 侧仅挂载投稿摘要（submission_pending），数字不同来自同一 summary 数据源。
+ * 审批摘要只使用服务端可靠提供的 quota_pending；submission_pending 在后端实现前不展示。
  */
 
 import { act, render, screen, waitFor } from '@testing-library/react';
@@ -18,7 +17,6 @@ import {
   EvaluationWindowDot,
   OperationsStaleBadge,
   QuotaRequestsSummaryBadge,
-  SubmissionsSummaryBadge,
 } from './summaries';
 
 function renderSummary(node: ReactElement, api: AdminApi) {
@@ -60,23 +58,23 @@ function openCalibrationApi(): AdminApi {
 }
 
 describe('审批摘要徽标（GET /approvals/summary）', () => {
-  it('ops 审批中心徽标 = 配额 + 投稿合计；>0 显示 CountBadge', async () => {
+  it('ops 审批中心徽标只显示可靠的配额待审数', async () => {
     const { container } = renderSummary(<ApprovalsSummaryBadge />, apiWithSummary(2, 3));
-    expect(await screen.findByText('5')).toBeInTheDocument();
+    expect(await screen.findByText('2')).toBeInTheDocument();
+    expect(screen.queryByText('5')).toBeNull();
     expect(container.querySelector('.bg-mist-gray')).not.toBeNull();
   });
 
-  it('配额 / 投稿下钻徽标分别取 quota_pending / submission_pending（admin 侧仅投稿摘要数字）', async () => {
-    renderSummary(
+  it('投稿待审数单独非零时不渲染摘要', async () => {
+    const { container } = renderSummary(
       <>
+        <ApprovalsSummaryBadge />
         <QuotaRequestsSummaryBadge />
-        <SubmissionsSummaryBadge />
       </>,
-      apiWithSummary(2, 3),
+      apiWithSummary(0, 3),
     );
-    expect(await screen.findByText('2')).toBeInTheDocument();
-    expect(await screen.findByText('3')).toBeInTheDocument();
-    expect(screen.queryByText('5')).not.toBeInTheDocument();
+    await flushReads();
+    expect(container.childElementCount).toBe(0);
   });
 
   it('合计为 0 时不渲染任何内容', async () => {

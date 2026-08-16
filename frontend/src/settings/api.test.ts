@@ -169,6 +169,19 @@ describe('设置域 API 封装（账户基座）', () => {
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('idem-quota-1');
   });
 
+  it('cancelJob：无请求体且不携带 Idempotency-Key', async () => {
+    const mock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const api = makeApi(mock);
+
+    await api.cancelJob('job id/1');
+
+    const { url, init } = captureFetch(mock);
+    expect(url).toContain('/v1/ingestion-jobs/job%20id%2F1/cancel');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeUndefined();
+  });
+
   it('uploadDocuments：字节级 multipart（真实文件名）多文件 + Idempotency-Key + multipart Content-Type', async () => {
     const mock = vi.fn<typeof fetch>(async () =>
       jsonResponse(200, { upload_batch_id: 'ub_1', items: [] }),
@@ -218,6 +231,19 @@ describe('设置域 API 敏感 mutation 的 authSessionGuard', () => {
     createSettingsApi(client);
 
     expect(captureAuthSessionGuard).not.toHaveBeenCalled();
+  });
+
+  it('cancelJob：只传 POST 与 authSessionGuard，不构造幂等请求头', async () => {
+    const { client, captureAuthSessionGuard, request, authSessionGuard } = createClientDouble();
+    const api = createSettingsApi(client);
+
+    await api.cancelJob('job_1');
+
+    expect(captureAuthSessionGuard).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith('/ingestion-jobs/job_1/cancel', {
+      method: 'POST',
+      authSessionGuard,
+    });
   });
 
   it('updateProfile：保留 method/body，authSessionGuard 与 capture 返回值同一引用，且 capture 先于 request', async () => {

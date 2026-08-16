@@ -149,6 +149,25 @@ describe('KnowledgeModule 知识库首页', () => {
     expect(screen.queryByRole('button', { name: copy.settings.knowledge.quota.requestMore })).not.toBeInTheDocument();
   });
 
+  it('部长管理入口不请求或展示投稿待审计数', async () => {
+    const api = createSettingsApi({
+      listUploadSpaces: vi.fn(async () => ({
+        items: [
+          { id: 'personal:u_1', kind: 'personal' as const, name: '个人库', permission: 'manage' as const, document_count: 3 },
+          { id: 'department:d_finance', kind: 'department' as const, name: '财务部资料库', permission: 'manage' as const, document_count: 4 },
+        ],
+      })),
+      getApprovalSummary: vi.fn(async () => ({ quota_pending: 0, submission_pending: 7 })),
+    });
+    const store = await createAuthedStore(testUser({ role: 'minister' }));
+    await renderKnowledge(store, api);
+
+    const entry = (await screen.findByText(copy.settings.knowledge.manage.title)).closest('button');
+    expect(entry).not.toBeNull();
+    expect(entry).not.toHaveTextContent('7');
+    expect(api.getApprovalSummary).not.toHaveBeenCalled();
+  });
+
   it('配额申请：非法值禁用确认键；201 后淡入 pending 常驻行', async () => {
     const api = createSettingsApi();
     let quotaCalls = 0;

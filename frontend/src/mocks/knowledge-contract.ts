@@ -9,7 +9,7 @@
  *   failure_reason；retry_wait 带 next_attempt_at；allowed_actions 唯一依据；成功时登记
  *   notification_event_ids（ingestion_completed / ocr_low_confidence，均 ackable）。
  * - 版本记录：active / superseded / failed / cancelled / purging / purged；恢复创建新版本
- *   与新任务；409 document_version_purged。
+ *   与新任务；410 document_version_purged。
  * - 投稿五态与 409 系列（version_conflict / submission_state_conflict）；查看内容 404
  *   submission_content_unavailable；审核通过/驳回后投稿人侧状态联动 + 铃铛送达。
  */
@@ -871,14 +871,14 @@ export class MockKnowledgeController {
         throw new MockHttpError(403, 'space_upload_forbidden');
       }
       if (doc.version !== expectedVersion) {
-        throw new MockHttpError(409, 'document_version_purged');
+        throw new MockHttpError(409, 'document_version_conflict');
       }
       const version = doc.versions.find((candidate) => candidate.documentVersionId === versionId);
       if (version === undefined) {
         throw new MockHttpError(404, 'document_version_not_found');
       }
       if (version.status === 'purging' || version.status === 'purged' || !version.contentAvailable) {
-        throw new MockHttpError(409, 'document_version_purged');
+        throw new MockHttpError(410, 'document_version_purged');
       }
       if (version.status === 'failed' || version.status === 'cancelled') {
         throw new MockHttpError(409, 'document_version_not_restorable');

@@ -16,7 +16,6 @@ import {
   EvaluationWindowDot,
   OperationsStaleBadge,
   QuotaRequestsSummaryBadge,
-  SubmissionsSummaryBadge,
 } from '../../admin/summaries';
 import { DepartmentsLayer } from '../../admin/DepartmentsLayer';
 import { UsersModule } from '../../admin/UsersModule';
@@ -99,12 +98,12 @@ export function createPlaceholderModules(): DrawerModule[] {
       segment: 'admin',
       order: 20,
       roles: OPS,
-      // 项右侧摘要：配额 + 投稿待处理合计徽标（§8.1；为 0 不显示）
+      // 项右侧摘要：可靠的配额待处理徽标（§8.1；为 0 不显示）
       renderSummary: () => createElement(ApprovalsSummaryBadge),
       children: [
         // 配额申请（§8.2）与投稿审核（§8.4）为审批中心下钻子界面
         { id: 'quota', title: modules.quotaRequests, roles: OPS, render: () => createElement(QuotaRequestsLayer), renderSummary: () => createElement(QuotaRequestsSummaryBadge) },
-        { id: 'submissions', title: modules.knowledgeApprovals, roles: OPS, render: () => createElement(ApprovalSubmissionsLayer), renderSummary: () => createElement(SubmissionsSummaryBadge) },
+        { id: 'submissions', title: modules.knowledgeApprovals, roles: OPS, render: () => createElement(ApprovalSubmissionsLayer) },
       ],
     },
     {
@@ -118,8 +117,7 @@ export function createPlaceholderModules(): DrawerModule[] {
         // 运维三下钻：公共库 / 用户个人库 / 部门库；超管增加「投稿审核」（spec §4）
         { id: 'personal-libs', title: modules.personalLibs, render: () => createElement(PersonalLibsLayer) },
         { id: 'department-libs', title: modules.departmentLibs, render: () => createElement(DepartmentLibsLayer) },
-        // 超管投稿审核项带待处理计数徽标（《超管端设计.md》§7.3）
-        { id: 'submissions', title: modules.knowledgeApprovals, roles: ADMIN, render: () => createElement(ApprovalSubmissionsLayer), renderSummary: () => createElement(SubmissionsSummaryBadge) },
+        { id: 'submissions', title: modules.knowledgeApprovals, roles: ADMIN, render: () => createElement(ApprovalSubmissionsLayer) },
       ],
     },
     {

@@ -170,6 +170,33 @@ function rowOf(text: string): HTMLElement {
 }
 
 describe('公共库（§7.2 ops / §7.3 admin）', () => {
+  it('空间文档按服务端总数提供下一页', async () => {
+    const token = loginToken('ops-wang');
+    const source = mockKnowledge.listDocuments(token, 'public', undefined, 1, 20).items[0]!;
+    const firstPage = Array.from({ length: 20 }, (_, index) => ({
+      ...source,
+      id: `public-page-one-${index}`,
+      name: `公共文档 ${index + 1}`,
+    }));
+    const secondPage = { ...source, id: 'public-page-two', name: '第二页公共文档' };
+    const listDocuments = vi.fn(async (input: DocumentListQuery) => ({
+      items: input.page === 2 ? [secondPage] : firstPage,
+      total: 21,
+      page: input.page ?? 1,
+      page_size: input.pageSize ?? 20,
+    }));
+    const settingsApi = contractSettingsApi(token, { listDocuments });
+
+    await renderSpaces(<PublicSpaceLayer />, opsUser(), contractAdminApi(token), settingsApi);
+    const user = userEvent.setup();
+    expect(await screen.findByText('公共文档 1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: copy.controls.paginatorNext }));
+
+    expect(await screen.findByText('第二页公共文档')).toBeInTheDocument();
+    expect(listDocuments).toHaveBeenLastCalledWith({ spaceId: 'public', page: 2, pageSize: 20 });
+  });
+
   it('permission=manage（ops）：行操作菜单渲染版本记录 / 重建索引 / 上传新版本 / 删除', async () => {
     const token = loginToken('ops-wang');
     await renderSpaces(
@@ -522,6 +549,41 @@ describe('图谱维护区（§6.12，ops）', () => {
 });
 
 describe('用户个人库（§7.3）', () => {
+  it('个人库用户按服务端总数提供下一页', async () => {
+    const token = loginToken('admin');
+    const source = mockAdmin.listUsers(token, { page: 1, pageSize: 50 }).items[0]!;
+    const firstPage = Array.from({ length: 50 }, (_, index) => ({
+      ...source,
+      id: `personal-page-one-${index}`,
+      display_name: `个人库用户 ${index + 1}`,
+      username: `personal-${index + 1}`,
+    }));
+    const secondPage = {
+      ...source,
+      id: 'personal-page-two',
+      display_name: '第二页个人库用户',
+      username: 'personal-page-two',
+    };
+    const listUsers = vi.fn(async (input: AdminUserListQuery) => ({
+      items: input.page === 2 ? [secondPage] : firstPage,
+      total: 51,
+      page: input.page ?? 1,
+      page_size: input.pageSize ?? 50,
+    }));
+    const adminApi = contractAdminApi(token, { listUsers });
+
+    await renderSpaces(<PersonalLibsLayer />, adminUser(), adminApi, contractSettingsApi(token));
+    const user = userEvent.setup();
+    expect(await screen.findByText('个人库用户 1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: copy.controls.paginatorNext }));
+
+    expect(await screen.findByText('第二页个人库用户')).toBeInTheDocument();
+    // 首次空搜索不应在 300ms 防抖到期后将用户从第 2 页重置回第 1 页。
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+    expect(adminApi.listUsers).toHaveBeenLastCalledWith({ q: undefined, page: 2, pageSize: 50 });
+  });
+
   it('用户列表 + 顶部聚合搜索：防抖传 q，实时过滤（部门名命中）', async () => {
     const token = loginToken('admin');
     const adminApi = contractAdminApi(token);
@@ -580,6 +642,10 @@ describe('用户个人库（§7.3）', () => {
     // 只读文档列表（knowledge 种子 2 篇）：无行操作、无上传入口
     expect(await screen.findByText('入职培训笔记.md')).toBeInTheDocument();
     expect(screen.getByText('人事政策摘编.pdf')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: copyDocs.title });
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(4);
+    const documentRow = within(table).getByRole('row', { name: /入职培训笔记\.md/ });
+    expect(within(documentRow).getAllByRole('cell')).toHaveLength(4);
     expect(
       screen.queryByRole('button', { name: copyDocs.rowMenuAria('入职培训笔记.md') }),
     ).toBeNull();

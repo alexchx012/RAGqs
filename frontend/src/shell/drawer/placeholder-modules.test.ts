@@ -5,7 +5,6 @@ import {
   EvaluationWindowDot,
   OperationsStaleBadge,
   QuotaRequestsSummaryBadge,
-  SubmissionsSummaryBadge,
 } from '../../admin/summaries';
 import { copy } from '../../copy';
 import { AppearanceModule } from '../../settings/AppearanceModule';
@@ -164,7 +163,7 @@ describe('内置占位模块：管理段（按角色渲染）', () => {
     expect(ids(usersAdmin?.children ?? [])).toEqual(['departments']);
   });
 
-  it('左栏摘要接线：审批中心 / 评测 / 系统运维模块与审批、投稿下钻项带 renderSummary', () => {
+  it('左栏摘要接线：审批中心只保留配额摘要，评测与系统运维保留既有摘要', () => {
     const modules2 = createPlaceholderModules();
     const summaryType = (layer: { renderSummary?: () => unknown } | undefined) => {
       const node = layer?.renderSummary?.();
@@ -176,9 +175,7 @@ describe('内置占位模块：管理段（按角色渲染）', () => {
     expect(summaryType(approvals?.children?.find((child) => child.id === 'quota'))).toBe(
       QuotaRequestsSummaryBadge,
     );
-    expect(summaryType(approvals?.children?.find((child) => child.id === 'submissions'))).toBe(
-      SubmissionsSummaryBadge,
-    );
+    expect(approvals?.children?.find((child) => child.id === 'submissions')?.renderSummary).toBeUndefined();
     expect(summaryType(modules2.find((module) => module.id === 'evaluation'))).toBe(
       EvaluationWindowDot,
     );
@@ -188,11 +185,9 @@ describe('内置占位模块：管理段（按角色渲染）', () => {
     expect(summaryType(operations?.children?.find((child) => child.id === 'jobs'))).toBe(
       OperationsStaleBadge,
     );
-    // 超管知识空间「投稿审核」子层带投稿徽标
+    // 超管知识空间「投稿审核」子层没有服务端未实现的投稿待审徽标
     const spaces = modules2.find((module) => module.id === 'spaces');
-    expect(summaryType(spaces?.children?.find((child) => child.id === 'submissions'))).toBe(
-      SubmissionsSummaryBadge,
-    );
+    expect(spaces?.children?.find((child) => child.id === 'submissions')?.renderSummary).toBeUndefined();
     // personal 段不用摘要 slot
     expect(modules2.find((module) => module.id === 'profile')?.renderSummary).toBeUndefined();
     expect(modules2.find((module) => module.id === 'dashboard')?.renderSummary).toBeUndefined();

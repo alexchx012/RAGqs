@@ -222,55 +222,69 @@ export function QuotaRequestsLayer() {
       ) : items.length === 0 ? (
         <EmptyState text={copyApprovals.empty} />
       ) : (
-        <ul className="divide-y divide-[var(--color-hairline)]">
-          {items.map((request) => {
-            const acting = actingId === request.id;
-            return (
-              <li
-                key={request.id}
-                aria-busy={acting || undefined}
-                className={`transition-opacity duration-[var(--duration-base)] ${
-                  fading.has(request.id) ? 'opacity-0' : 'opacity-100'
-                }`}
-              >
-                <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray">
-                  <span className="truncate text-[15px] text-ink-black">
-                    {request.applicant.display_name}
-                  </span>
-                  <span className="truncate text-[15px] text-slate-gray">
-                    {copyApprovals.usageOf(
-                      request.current_usage.used,
-                      request.current_usage.effective_limit,
-                    )}
-                  </span>
-                  <span className="truncate text-[15px] font-medium text-ink-black">
-                    {copyApprovals.pages(request.requested_pages)}
-                  </span>
-                  <span className="truncate text-[15px] text-slate-gray">
-                    {formatDateTime(request.created_at)}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <Pill
-                      size="sm"
-                      disabled={acting}
-                      onClick={() => openAction({ kind: 'approve', request })}
-                    >
-                      {copyApprovals.approve}
-                    </Pill>
-                    <Pill
-                      size="sm"
-                      variant="ghost"
-                      disabled={acting}
-                      onClick={() => openAction({ kind: 'reject', request })}
-                    >
-                      {copyApprovals.reject}
-                    </Pill>
+        <div role="table" aria-label={copyApprovals.quota}>
+          <div role="row" className="sr-only">
+            <span role="columnheader">{copyApprovals.colApplicant}</span>
+            <span role="columnheader">{copyApprovals.colUsage}</span>
+            <span role="columnheader">{copyApprovals.colRequested}</span>
+            <span role="columnheader">{copyApprovals.colRequestedAt}</span>
+            <span role="columnheader">{copyApprovals.colActions}</span>
+          </div>
+          <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
+            {items.map((request) => {
+              const acting = actingId === request.id;
+              return (
+                <li
+                  key={request.id}
+                  role="presentation"
+                  aria-busy={acting || undefined}
+                  className={`transition-opacity duration-[var(--duration-base)] ${
+                    fading.has(request.id) ? 'opacity-0' : 'opacity-100'
+                  }`}
+                >
+                  <div
+                    role="row"
+                    aria-busy={acting || undefined}
+                    className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray"
+                  >
+                    <span role="cell" className="truncate text-[15px] text-ink-black">
+                      {request.applicant.display_name}
+                    </span>
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                      {copyApprovals.usageOf(
+                        request.current_usage.used,
+                        request.current_usage.effective_limit,
+                      )}
+                    </span>
+                    <span role="cell" className="truncate text-[15px] font-medium text-ink-black">
+                      {copyApprovals.pages(request.requested_pages)}
+                    </span>
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                      {formatDateTime(request.created_at)}
+                    </span>
+                    <div role="cell" className="flex items-center gap-2">
+                      <Pill
+                        size="sm"
+                        disabled={acting}
+                        onClick={() => openAction({ kind: 'approve', request })}
+                      >
+                        {copyApprovals.approve}
+                      </Pill>
+                      <Pill
+                        size="sm"
+                        variant="ghost"
+                        disabled={acting}
+                        onClick={() => openAction({ kind: 'reject', request })}
+                      >
+                        {copyApprovals.reject}
+                      </Pill>
+                    </div>
                   </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
 
       <QuotaApproveDialog
@@ -350,7 +364,15 @@ function QuotaApproveDialog({
       aria-label={copy.admin.approvals.approveDialogTitle}
     >
       <div className="fixed inset-0 bg-ink-black/24" onClick={() => onOpenChange(false)} aria-hidden="true" />
-      <div className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+      <form
+        className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!confirming && !valueInvalid) {
+            onConfirm();
+          }
+        }}
+      >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.admin.approvals.approveDialogTitle}</h2>
         <p className="mt-2 text-[15px] text-slate-gray">
           {copy.admin.approvals.approveDialogDescription(action.request.applicant.display_name, requested)}
@@ -389,14 +411,14 @@ function QuotaApproveDialog({
           )}
         </div>
         <div className="mt-6 flex justify-end gap-2">
-          <Pill variant="ghost" size="sm" disabled={confirming} onClick={() => onOpenChange(false)}>
+          <Pill type="button" variant="ghost" size="sm" disabled={confirming} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill size="sm" loading={confirming} disabled={confirming || valueInvalid} onClick={onConfirm}>
+          <Pill type="submit" size="sm" loading={confirming} disabled={confirming || valueInvalid}>
             {copy.controls.confirm}
           </Pill>
         </div>
-      </div>
+      </form>
     </div>
   );
 }
@@ -636,67 +658,84 @@ export function ApprovalSubmissionsLayer() {
       ) : items.length === 0 ? (
         <EmptyState text={copyManage.approvalsEmpty} />
       ) : (
-        <ul className="divide-y divide-[var(--color-hairline)]">
-          {items.map((item) => {
-            const acting = actingId === item.submission_id;
-            return (
-              <li
-                key={item.submission_id}
-                aria-busy={acting || undefined}
-                className={`transition-opacity duration-[var(--duration-base)] ${
-                  fading.has(item.submission_id) ? 'opacity-0' : 'opacity-100'
-                }`}
-              >
-                <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.1fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray">
-                  <div className="min-w-0">
-                    <p className="truncate text-[15px] text-ink-black">{item.name}</p>
-                    <p className="mt-0.5 truncate text-[14px] text-smoke-gray">
-                      {copyManage.fileMeta(item.media_kind, formatBytes(item.size_bytes))}
+        <div role="table" aria-label={copyApprovals.submissions}>
+          <div role="row" className="sr-only">
+            <span role="columnheader">{copyApprovals.colFile}</span>
+            <span role="columnheader">{copyApprovals.colSubmitter}</span>
+            <span role="columnheader">{copyApprovals.colDepartment}</span>
+            <span role="columnheader">{copyApprovals.colTargetSpace}</span>
+            <span role="columnheader">{copyApprovals.colSubmittedAt}</span>
+            <span role="columnheader">{copyApprovals.colActions}</span>
+          </div>
+          <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
+            {items.map((item) => {
+              const acting = actingId === item.submission_id;
+              return (
+                <li
+                  key={item.submission_id}
+                  role="presentation"
+                  aria-busy={acting || undefined}
+                  className={`transition-opacity duration-[var(--duration-base)] ${
+                    fading.has(item.submission_id) ? 'opacity-0' : 'opacity-100'
+                  }`}
+                >
+                  <div
+                    role="row"
+                    aria-busy={acting || undefined}
+                    className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.1fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray"
+                  >
+                    <div role="cell" className="min-w-0">
+                      <p className="truncate text-[15px] text-ink-black">{item.name}</p>
+                      <p className="mt-0.5 truncate text-[14px] text-smoke-gray">
+                        {copyManage.fileMeta(item.media_kind, formatBytes(item.size_bytes))}
+                      </p>
+                    </div>
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                      {item.submitter.display_name}
+                    </span>
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                      {item.submitter.department?.name ?? copy.admin.users.noDepartment}
+                    </span>
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                      {item.target_space_name}
+                    </span>
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                      {formatDateTime(item.created_at)}
+                    </span>
+                    <div role="cell" className="flex items-center gap-2">
+                      <TextLink disabled={acting} onClick={() => void viewContent(item)}>
+                        {copyManage.viewContent}
+                      </TextLink>
+                      <Pill
+                        size="sm"
+                        loading={acting}
+                        onClick={() => void decide(item, true)}
+                      >
+                        {copyManage.approve}
+                      </Pill>
+                      <Pill
+                        size="sm"
+                        variant="ghost"
+                        disabled={acting}
+                        onClick={() => {
+                          setRejectReason('');
+                          setPendingReject(item);
+                        }}
+                      >
+                        {copyManage.reject}
+                      </Pill>
+                    </div>
+                  </div>
+                  {rowErrors.get(item.submission_id) !== undefined && (
+                    <p role="alert" className="px-4 pb-3 text-[15px] text-danger">
+                      {rowErrors.get(item.submission_id)}
                     </p>
-                  </div>
-                  <span className="truncate text-[15px] text-slate-gray">
-                    {item.submitter.display_name}
-                  </span>
-                  <span className="truncate text-[15px] text-slate-gray">
-                    {item.submitter.department?.name ?? copy.admin.users.noDepartment}
-                  </span>
-                  <span className="truncate text-[15px] text-slate-gray">{item.target_space_name}</span>
-                  <span className="truncate text-[15px] text-slate-gray">
-                    {formatDateTime(item.created_at)}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <TextLink disabled={acting} onClick={() => void viewContent(item)}>
-                      {copyManage.viewContent}
-                    </TextLink>
-                    <Pill
-                      size="sm"
-                      loading={acting}
-                      onClick={() => void decide(item, true)}
-                    >
-                      {copyManage.approve}
-                    </Pill>
-                    <Pill
-                      size="sm"
-                      variant="ghost"
-                      disabled={acting}
-                      onClick={() => {
-                        setRejectReason('');
-                        setPendingReject(item);
-                      }}
-                    >
-                      {copyManage.reject}
-                    </Pill>
-                  </div>
-                </div>
-                {rowErrors.get(item.submission_id) !== undefined && (
-                  <p role="alert" className="px-4 pb-3 text-[15px] text-danger">
-                    {rowErrors.get(item.submission_id)}
-                  </p>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
 
       {/* 驳回对话框（400px）：可选填单行原因，填了随铃铛送达投稿人 */}
@@ -754,7 +793,15 @@ function SubmissionRejectDialog({
       aria-label={copyManage.rejectDialogTitle}
     >
       <div className="fixed inset-0 bg-ink-black/24" onClick={() => onOpenChange(false)} aria-hidden="true" />
-      <div className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+      <form
+        className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!pending) {
+            onConfirm();
+          }
+        }}
+      >
         <h2 className="text-[20px] font-medium text-ink-black">{copyManage.rejectDialogTitle}</h2>
         <p className="mt-2 text-[15px] text-slate-gray">{copyManage.rejectDialogDescription}</p>
         <input
@@ -765,14 +812,14 @@ function SubmissionRejectDialog({
           className="mt-4 h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-[15px] text-ink-black placeholder:text-smoke-gray focus:border-ink-black"
         />
         <div className="mt-6 flex justify-end gap-2">
-          <Pill variant="ghost" size="sm" disabled={pending} onClick={() => onOpenChange(false)}>
+          <Pill type="button" variant="ghost" size="sm" disabled={pending} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill size="sm" loading={pending} onClick={onConfirm}>
+          <Pill type="submit" size="sm" loading={pending}>
             {copyManage.reject}
           </Pill>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

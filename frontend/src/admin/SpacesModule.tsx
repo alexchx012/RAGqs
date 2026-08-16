@@ -31,6 +31,7 @@ import {
   HeaderNotice,
   LoadingRows,
   MeatballMenu,
+  Paginator,
   Pill,
   StatusDot,
   TextLink,
@@ -48,6 +49,8 @@ import type {
 } from './types';
 
 /* ---------- 共享：只读 / 可管理文档列表 ---------- */
+
+const DOCUMENT_PAGE_SIZE = 20;
 
 /** 行点击新窗口打开原文预览只读形态（无 message_id，命中导航为空态；审计由后端落库）。 */
 function openDocumentPreview(documentId: string): void {
@@ -69,6 +72,8 @@ interface AdminDocumentListProps {
 function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentListProps) {
   const { api } = useSettings();
   const [documents, setDocuments] = useState<readonly DocumentListItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<DocumentListItem | null>(null);
@@ -85,17 +90,19 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
   const mutationEpochRef = useRef(0);
   const copyDocuments = copy.settings.knowledge.documents;
   const copySpaces = copy.admin.spaces;
+  const totalPages = Math.max(1, Math.ceil(total / DOCUMENT_PAGE_SIZE));
 
   const loadDocuments = useCallback(async (): Promise<void> => {
     const seq = ++seqRef.current;
     setLoading(true);
     setLoadError(false);
     try {
-      const response = await api.listDocuments({ spaceId, page: 1, pageSize: 20 });
+      const response = await api.listDocuments({ spaceId, page, pageSize: DOCUMENT_PAGE_SIZE });
       if (seq !== seqRef.current) {
         return;
       }
       setDocuments(response.items);
+      setTotal(response.total);
     } catch {
       if (seq === seqRef.current) {
         setLoadError(true);
@@ -105,7 +112,11 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
         setLoading(false);
       }
     }
-  }, [api, spaceId]);
+  }, [api, page, spaceId]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [spaceId]);
 
   useEffect(() => {
     void loadDocuments();
@@ -128,6 +139,7 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
       deleteIdem.current.clear();
       // 202 后立即从列表移除（§6.4：不展示 pending_delete 行）
       setDocuments((current) => current.filter((item) => item.id !== doc.id));
+      setTotal((current) => Math.max(0, current - 1));
       setPendingDelete(null);
     } catch (error) {
       if (epoch !== mutationEpochRef.current) {
@@ -203,19 +215,29 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
       ) : documents.length === 0 ? (
         <EmptyState text={copyDocuments.empty} />
       ) : (
-        <ul className="divide-y divide-[var(--color-hairline)]">
+        <div role="table" aria-label={copyDocuments.title}>
+          <div role="row" className="sr-only">
+            <span role="columnheader">{copySpaces.colDocument}</span>
+            <span role="columnheader">{copySpaces.colStatus}</span>
+            <span role="columnheader">{copySpaces.colUploadedAt}</span>
+            <span role="columnheader">{copySpaces.colUsage}</span>
+            {manage && <span role="columnheader">{copySpaces.colActions}</span>}
+          </div>
+          <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
           {documents.map((doc) => (
-            <li key={doc.id} className="group transition-colors duration-150 hover:bg-mist-gray">
-              <div className="flex h-14 items-center gap-3 px-4">
-                <button
-                  type="button"
-                  aria-label={copySpaces.openPreviewAria(doc.name)}
-                  onClick={() => openDocumentPreview(doc.id)}
-                  className="min-w-0 flex-1 truncate text-left text-[15px] text-ink-black underline-offset-2 hover:underline"
-                >
-                  {doc.name}
-                </button>
-                <span className="flex w-28 shrink-0 items-center gap-2 text-[15px] text-slate-gray">
+            <li key={doc.id} role="presentation" className="group transition-colors duration-150 hover:bg-mist-gray">
+              <div role="row" className="flex h-14 items-center gap-3 px-4">
+                <div role="cell" className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    aria-label={copySpaces.openPreviewAria(doc.name)}
+                    onClick={() => openDocumentPreview(doc.id)}
+                    className="w-full truncate text-left text-[15px] text-ink-black underline-offset-2 hover:underline"
+                  >
+                    {doc.name}
+                  </button>
+                </div>
+                <span role="cell" className="flex w-28 shrink-0 items-center gap-2 text-[15px] text-slate-gray">
                   {doc.active_operation !== null ? (
                     <>
                       <StatusDot intent="warning" pulse />
@@ -228,50 +250,58 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
                     </>
                   )}
                 </span>
-                <span className="hidden w-40 shrink-0 truncate text-[15px] text-slate-gray md:inline">
+                <span role="cell" className="hidden w-40 shrink-0 truncate text-[15px] text-slate-gray md:inline">
                   {formatDateTime(doc.uploaded_at)}
                 </span>
-                <span className="hidden w-28 shrink-0 truncate text-[15px] text-slate-gray lg:inline">
+                <span role="cell" className="hidden w-28 shrink-0 truncate text-[15px] text-slate-gray lg:inline">
                   {copyDocuments.usageDetail(doc.usage.pages, doc.usage.images)}
                 </span>
-                {manage && doc.active_operation === null && (
-                  <MeatballMenu
-                    ariaLabel={copyDocuments.rowMenuAria(doc.name)}
-                    alwaysVisible
-                    items={[
-                      {
-                        key: 'versions',
-                        label: copyDocuments.versions,
-                        onSelect: () => onOpenVersions(doc.id),
-                      },
-                      {
-                        key: 'reindex',
-                        label: copyDocuments.reindex,
-                        onSelect: () => setPendingReindex(doc),
-                      },
-                      {
-                        key: 'upload-new-version',
-                        label: copyDocuments.uploadNewVersion,
-                        onSelect: () => setNewVersionTarget(doc),
-                      },
-                      {
-                        key: 'delete',
-                        label: copyDocuments.delete,
-                        danger: true,
-                        onSelect: () => setPendingDelete(doc),
-                      },
-                    ]}
-                  />
+                {manage && (
+                  <div role="cell">
+                    {doc.active_operation === null && (
+                      <MeatballMenu
+                        ariaLabel={copyDocuments.rowMenuAria(doc.name)}
+                        alwaysVisible
+                        items={[
+                          {
+                            key: 'versions',
+                            label: copyDocuments.versions,
+                            onSelect: () => onOpenVersions(doc.id),
+                          },
+                          {
+                            key: 'reindex',
+                            label: copyDocuments.reindex,
+                            onSelect: () => setPendingReindex(doc),
+                          },
+                          {
+                            key: 'upload-new-version',
+                            label: copyDocuments.uploadNewVersion,
+                            onSelect: () => setNewVersionTarget(doc),
+                          },
+                          {
+                            key: 'delete',
+                            label: copyDocuments.delete,
+                            danger: true,
+                            onSelect: () => setPendingDelete(doc),
+                          },
+                        ]}
+                      />
+                    )}
+                  </div>
                 )}
               </div>
             </li>
           ))}
-        </ul>
+          </ul>
+        </div>
       )}
       {actionError !== null && (
         <p role="alert" className="text-[15px] text-danger">
           {actionError}
         </p>
+      )}
+      {!loading && !loadError && totalPages > 1 && (
+        <Paginator page={page} totalPages={totalPages} onChange={setPage} />
       )}
 
       <ConfirmDialog
@@ -781,24 +811,34 @@ export function PublicSpaceLayer() {
 /* ---------- 用户个人库（§7.3：用户列表 → 只读文档列表） ---------- */
 
 const USER_SEARCH_DEBOUNCE_MS = 300;
+const PERSONAL_LIBRARY_PAGE_SIZE = 50;
 
 export function PersonalLibsLayer() {
   const { api } = useAdmin();
   const [searchValue, setSearchValue] = useState('');
   const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
   const [selectedUser, setSelectedUser] = useState<AdminUserItem | null>(null);
   const copySpaces = copy.admin.spaces;
 
   // 实时过滤：前端只防抖传 q（聚合匹配姓名 / 显示名 / 用户名 / 部门名 / 角色名在服务端）
   useEffect(() => {
-    const timer = window.setTimeout(() => setQuery(searchValue.trim()), USER_SEARCH_DEBOUNCE_MS);
+    const nextQuery = searchValue.trim();
+    if (nextQuery === query) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setQuery(nextQuery);
+      setPage(1);
+    }, USER_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [searchValue]);
+  }, [query, searchValue]);
 
   const read = useAdminRead(
-    () => api.listUsers({ q: query === '' ? undefined : query, page: 1, pageSize: 50 }),
-    [api, query],
+    () => api.listUsers({ q: query === '' ? undefined : query, page, pageSize: PERSONAL_LIBRARY_PAGE_SIZE }),
+    [api, page, query],
   );
+  const totalPages = Math.max(1, Math.ceil((read.data?.total ?? 0) / PERSONAL_LIBRARY_PAGE_SIZE));
 
   if (selectedUser !== null) {
     return (
@@ -835,50 +875,53 @@ export function PersonalLibsLayer() {
       ) : read.data !== null && read.data.items.length === 0 ? (
         <EmptyState text={copySpaces.emptyUsers} />
       ) : read.data !== null ? (
-        <ul className="divide-y divide-[var(--color-hairline)]">
-          {read.data.items.map((item) => {
-            const frozen = item.lifecycle_status === 'pending_delete';
-            const rowContent = (
-              <>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[15px] text-ink-black">
-                    {item.display_name}
-                    <span className="ml-2 text-[14px] text-smoke-gray">{item.username}</span>
-                  </p>
-                  <p className="mt-0.5 truncate text-[14px] text-slate-gray">
-                    {item.department?.name ?? copy.admin.users.noDepartment}
-                    {' · '}
-                    {copy.admin.common.roleLabels[item.role]}
-                    {' · '}
-                    {copySpaces.documents(item.document_count)}
-                  </p>
-                </div>
-                {frozen && (
-                  <span className="shrink-0 text-[14px] text-ash-gray">{copy.admin.common.frozenTag}</span>
-                )}
-              </>
-            );
-            // 冻结行保留可见但不可点击：无 hover、无跳转、aria-disabled
-            if (frozen) {
+        <>
+          <ul className="divide-y divide-[var(--color-hairline)]">
+            {read.data.items.map((item) => {
+              const frozen = item.lifecycle_status === 'pending_delete';
+              const rowContent = (
+                <>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[15px] text-ink-black">
+                      {item.display_name}
+                      <span className="ml-2 text-[14px] text-smoke-gray">{item.username}</span>
+                    </p>
+                    <p className="mt-0.5 truncate text-[14px] text-slate-gray">
+                      {item.department?.name ?? copy.admin.users.noDepartment}
+                      {' · '}
+                      {copy.admin.common.roleLabels[item.role]}
+                      {' · '}
+                      {copySpaces.documents(item.document_count)}
+                    </p>
+                  </div>
+                  {frozen && (
+                    <span className="shrink-0 text-[14px] text-ash-gray">{copy.admin.common.frozenTag}</span>
+                  )}
+                </>
+              );
+              // 冻结行保留可见但不可点击：无 hover、无跳转、aria-disabled
+              if (frozen) {
+                return (
+                  <li key={item.id} aria-disabled="true" className="flex items-center gap-3 px-4 py-4">
+                    {rowContent}
+                  </li>
+                );
+              }
               return (
-                <li key={item.id} aria-disabled="true" className="flex items-center gap-3 px-4 py-4">
-                  {rowContent}
+                <li key={item.id} className="transition-colors duration-150 hover:bg-mist-gray">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedUser(item)}
+                    className="flex w-full items-center gap-3 px-4 py-4 text-left"
+                  >
+                    {rowContent}
+                  </button>
                 </li>
               );
-            }
-            return (
-              <li key={item.id} className="transition-colors duration-150 hover:bg-mist-gray">
-                <button
-                  type="button"
-                  onClick={() => setSelectedUser(item)}
-                  className="flex w-full items-center gap-3 px-4 py-4 text-left"
-                >
-                  {rowContent}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+            })}
+          </ul>
+          {totalPages > 1 && <Paginator page={page} totalPages={totalPages} onChange={setPage} />}
+        </>
       ) : null}
     </div>
   );

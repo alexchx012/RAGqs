@@ -30,7 +30,7 @@ import type { ThemeController } from '../theme/theme';
 import { AdminProvider } from './AdminProvider';
 import type { AdminApi } from './api';
 import { ApprovalSubmissionsLayer, QuotaRequestsLayer } from './ApprovalsModule';
-import { QuotaRequestsSummaryBadge, SubmissionsSummaryBadge } from './summaries';
+import { QuotaRequestsSummaryBadge } from './summaries';
 import type { AdminUserListQuery, ApprovalSubmissionFilter, DepartmentStatusFilter, QuotaRequestStatus } from './types';
 
 const copyApprovals = copy.admin.approvals;
@@ -203,6 +203,10 @@ describe('配额申请（§8.2–8.3，ops）', () => {
     expect(screen.getByText(copyApprovals.pages(100))).toBeInTheDocument();
     expect(screen.getByText(copyApprovals.pages(200))).toBeInTheDocument();
     expect(screen.getByText(copyApprovals.pages(50))).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: copyApprovals.quota });
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(5);
+    const semanticRow = within(table).getByRole('row', { name: /zhangsan/ });
+    expect(within(semanticRow).getAllByRole('cell')).toHaveLength(5);
     const row = rowOf('zhangsan');
     expect(within(row).getByRole('button', { name: copyApprovals.approve })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: copyApprovals.reject })).toBeInTheDocument();
@@ -273,6 +277,33 @@ describe('配额申请（§8.2–8.3，ops）', () => {
     await waitFor(() => expect(confirm.disabled).toBe(false));
     expect(within(dialog).queryByText(copyApprovals.approvePagesInvalid(100))).toBeNull();
     await user.click(confirm);
+    await waitFor(() =>
+      expect(adminApi.approveQuotaRequest).toHaveBeenCalledWith(
+        target.id,
+        target.version,
+        50,
+        expect.stringMatching(/^idem_/),
+      ),
+    );
+  });
+
+  it('配额批准框在有效页数后以 Enter 提交', async () => {
+    const token = loginToken('ops-wang');
+    const adminApi = contractAdminApi(token);
+    const target = pendingQuotaRequest(token, 'zhangsan');
+    await renderApprovals(
+      <QuotaRequestsLayer />,
+      opsUser(),
+      adminApi,
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    await user.click(within(rowOf('zhangsan')).getByRole('button', { name: copyApprovals.approve }));
+    const dialog = await screen.findByRole('dialog', { name: copyApprovals.approveDialogTitle });
+    await user.type(within(dialog).getByRole('textbox', { name: copyApprovals.approvePagesLabel }), '50');
+
+    await user.keyboard('{Enter}');
+
     await waitFor(() =>
       expect(adminApi.approveQuotaRequest).toHaveBeenCalledWith(
         target.id,
@@ -426,6 +457,10 @@ describe('投稿审核（§8.4–8.5）', () => {
     expect(screen.getByText('公共制度汇编.pdf')).toBeInTheDocument();
     expect(screen.getByText('跨部门协作指引.pdf')).toBeInTheDocument();
     expect(screen.getByText('历史遗留材料.pdf')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: copyApprovals.submissions });
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
+    const semanticRow = within(table).getByRole('row', { name: /行业研报汇总\.pdf/ });
+    expect(within(semanticRow).getAllByRole('cell')).toHaveLength(6);
     const row = rowOf('行业研报汇总.pdf');
     expect(within(row).getByText(copyManage.fileMeta('pdf', '4.0 KB'))).toBeInTheDocument();
     expect(within(row).getByText('zhangsan')).toBeInTheDocument();
@@ -440,21 +475,17 @@ describe('投稿审核（§8.4–8.5）', () => {
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 
-  it('通过 202：行淡出 + 成功轻提示 + 徽标刷新（invalidateSummaries）', async () => {
+  it('通过 202：行淡出 + 成功轻提示', async () => {
     const token = loginToken('ops-wang');
     const adminApi = contractAdminApi(token);
     const target = pendingSubmission(token, '行业研报汇总.pdf');
     await renderApprovals(
-      <>
-        <SubmissionsSummaryBadge />
-        <ApprovalSubmissionsLayer />
-      </>,
+      <ApprovalSubmissionsLayer />,
       opsUser(),
       adminApi,
       contractSettingsApi(token),
     );
     const user = userEvent.setup();
-    expect(await screen.findByText('4')).toBeInTheDocument();
     await user.click(within(rowOf('行业研报汇总.pdf')).getByRole('button', { name: copyManage.approve }));
 
     await waitFor(() =>
@@ -466,7 +497,6 @@ describe('投稿审核（§8.4–8.5）', () => {
     );
     expect(await screen.findByText(copyManage.approvedNotice)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('行业研报汇总.pdf')).not.toBeInTheDocument());
-    expect(await screen.findByText('3')).toBeInTheDocument();
   });
 
   it('409 duplicate_document：行内提示，行不移除不刷新', async () => {
@@ -577,6 +607,33 @@ describe('投稿审核（§8.4–8.5）', () => {
     );
     expect(await screen.findByText(copyManage.rejectedNotice)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('行业研报汇总.pdf')).not.toBeInTheDocument());
+  });
+
+  it('投稿驳回框在输入原因后以 Enter 提交', async () => {
+    const token = loginToken('ops-wang');
+    const adminApi = contractAdminApi(token);
+    const target = pendingSubmission(token, '行业研报汇总.pdf');
+    await renderApprovals(
+      <ApprovalSubmissionsLayer />,
+      opsUser(),
+      adminApi,
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    await user.click(within(rowOf('行业研报汇总.pdf')).getByRole('button', { name: copyManage.reject }));
+    const dialog = await screen.findByRole('dialog', { name: copyManage.rejectDialogTitle });
+    await user.type(within(dialog).getByRole('textbox'), '回车原因');
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() =>
+      expect(adminApi.rejectSubmission).toHaveBeenCalledWith(
+        target.submission_id,
+        target.version,
+        '回车原因',
+        expect.stringMatching(/^idem_/),
+      ),
+    );
   });
 
   it('查看内容：同步受控窗 → 异步 blob objectURL 导航', async () => {

@@ -20,7 +20,6 @@ import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import { copy } from '../copy';
 import { formatDrawerLocation } from '../router/drawer-params';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
-import { CountBadge } from '../ui/CountBadge';
 import { MeatballMenu } from '../ui/MeatballMenu';
 import { Paginator } from '../ui/Paginator';
 import { Pill } from '../ui/Pill';
@@ -111,7 +110,6 @@ export function KnowledgeModule() {
   }, []);
 
   const [manageSpaces, setManageSpaces] = useState<SpaceItem[]>([]);
-  const [approvalCount, setApprovalCount] = useState(0);
 
   // 个人库与部长部门库空间：都来自服务端 spaces 返回项（Major2：不拼 personal:${user.id}）。
   const [personalSpace, setPersonalSpace] = useState<SpaceItem | null>(null);
@@ -133,10 +131,6 @@ export function KnowledgeModule() {
       if (isMinister) {
         const managed = manageDepartmentSpacesOf(response.items);
         setManageSpaces(managed);
-        const summary = await api.getApprovalSummary().catch(() => null);
-        if (seq === spacesSeqRef.current) {
-          setApprovalCount(summary?.submission_pending ?? 0);
-        }
       }
     } catch {
       // 空间加载失败：列表保持错误态由 listDocuments 呈现
@@ -462,10 +456,7 @@ export function KnowledgeModule() {
           </Pill>
           {isMinister && manageSpaces.length > 0 && (
             <Pill variant="ghost" size="sm" onClick={() => drillManage()}>
-              <span className="flex items-center gap-2">
-                {copy.settings.knowledge.manage.title}
-                <CountBadge count={approvalCount} />
-              </span>
+              {copy.settings.knowledge.manage.title}
             </Pill>
           )}
         </div>

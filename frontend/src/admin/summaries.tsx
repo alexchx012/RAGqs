@@ -43,28 +43,15 @@ function useSummaryValue<T>(fetcher: (api: AdminApi) => Promise<T>): T | null {
 }
 
 /* fetcher 一律模块级定义：引用稳定，不随渲染重复触发请求。 */
-const fetchApprovalsTotal = (api: AdminApi): Promise<number> =>
-  api.getApprovalSummary().then((summary) => summary.quota_pending + summary.submission_pending);
 const fetchQuotaPending = (api: AdminApi): Promise<number> =>
   api.getApprovalSummary().then((summary) => summary.quota_pending);
-const fetchSubmissionPending = (api: AdminApi): Promise<number> =>
-  api.getApprovalSummary().then((summary) => summary.submission_pending);
 const fetchCalibrationStatus = (api: AdminApi) =>
   api.getCalibrationWindow().then((window) => window.status);
 const fetchStaleCount = (api: AdminApi): Promise<number> =>
   api.listOpsJobs('stale').then((response) => response.stale_count);
 
-/** 审批中心模块项：配额 + 投稿待处理合计徽标（仅 ops 挂载；为 0 不显示）。 */
+/** 审批中心模块项：可靠的配额待处理徽标（仅 ops 挂载；为 0 不显示）。 */
 export function ApprovalsSummaryBadge() {
-  const total = useSummaryValue(fetchApprovalsTotal);
-  if (total === null || total <= 0) {
-    return null;
-  }
-  return <CountBadge count={total} />;
-}
-
-/** 「配额申请」下钻项：quota_pending 徽标（为 0 不显示）。 */
-export function QuotaRequestsSummaryBadge() {
   const pending = useSummaryValue(fetchQuotaPending);
   if (pending === null || pending <= 0) {
     return null;
@@ -72,9 +59,9 @@ export function QuotaRequestsSummaryBadge() {
   return <CountBadge count={pending} />;
 }
 
-/** 「投稿审核」下钻项：submission_pending 徽标（ops 审批中心与 admin 知识空间共用；为 0 不显示）。 */
-export function SubmissionsSummaryBadge() {
-  const pending = useSummaryValue(fetchSubmissionPending);
+/** 「配额申请」下钻项：quota_pending 徽标（为 0 不显示）。 */
+export function QuotaRequestsSummaryBadge() {
+  const pending = useSummaryValue(fetchQuotaPending);
   if (pending === null || pending <= 0) {
     return null;
   }

@@ -395,6 +395,11 @@ export const zhCN = {
       colRequested: '申请页数', // 措辞后定
       colRequestedAt: '申请时间', // 措辞后定
       colActions: '操作', // 措辞后定
+      colFile: '文件', // 投稿审核语义表格列头
+      colSubmitter: '投稿人', // 投稿审核语义表格列头
+      colDepartment: '部门', // 投稿审核语义表格列头
+      colTargetSpace: '目标空间', // 投稿审核语义表格列头
+      colSubmittedAt: '投稿时间', // 投稿审核语义表格列头
       usageOf: (used: number, limit: number) => `${used} / ${limit} 页`, // 措辞后定
       pages: (count: number) => `${count} 页`, // 措辞后定
       approve: '批准', // 措辞后定
@@ -425,6 +430,11 @@ export const zhCN = {
       departmentLibs: '部门库', // 措辞后定
       documents: (count: number) => `${count} 篇文档`, // 措辞后定
       members: (count: number) => `${count} 名成员`, // 措辞后定
+      colDocument: '文档', // 文档列表语义表格列头
+      colStatus: '状态', // 文档列表语义表格列头
+      colUploadedAt: '上传时间', // 文档列表语义表格列头
+      colUsage: '用量', // 文档列表语义表格列头
+      colActions: '操作', // 文档列表语义表格列头
       empty: '暂无空间', // 措辞后定
       loadError: '空间加载失败，请稍后重试', // 措辞后定
       // 个人库下钻
@@ -540,6 +550,12 @@ export const zhCN = {
       viewStale: '超时', // 措辞后定
       staleTag: '超时', // 措辞后定：行内 stale 标记
       taskTypeIngestion: '文档入库', // 措辞后定：任务类型列（V1 仅 ingestion）
+      colTask: '任务', // 措辞后定
+      colJobId: '任务 ID', // 措辞后定
+      colQueuedAt: '入队时间', // 措辞后定
+      colWaitDuration: '停留时长', // 措辞后定
+      colStatus: '状态', // 措辞后定
+      colActions: '操作', // 措辞后定
       waitDuration: (totalSeconds: number) => {
         // 停留时长（wait_seconds）：不足 1 分钟显秒，不足 1 小时显分秒，再长显小时分
         const seconds = Math.max(0, Math.floor(totalSeconds));

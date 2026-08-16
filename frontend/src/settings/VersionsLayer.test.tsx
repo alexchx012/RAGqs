@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import { ApiError } from '../api/errors';
 import { AuthProvider } from '../auth/AuthProvider';
 import { createMemoryAuthHub } from '../auth/channel';
 import { AuthSessionStore } from '../auth/session';
@@ -104,6 +105,33 @@ async function renderLayer(api: SettingsApi, path: readonly string[]) {
 }
 
 describe('VersionsLayer documentId 代际（review Medium 2）', () => {
+  it('410 document_version_purged 显示已清除提示并刷新版本列表', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsFor(documentId));
+    const restoreVersion = vi.fn(async () => {
+      throw new ApiError({
+        status: 410,
+        code: 'document_version_purged',
+        message: '',
+        details: {},
+        requestId: null,
+      });
+    });
+    const api = {
+      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
+      listVersions,
+      restoreVersion,
+    } as unknown as SettingsApi;
+    const user = userEvent.setup();
+    await renderLayer(api, ['knowledge', 'versions', 'docA']);
+    expect(await screen.findByText(copy.settings.knowledge.versions.active)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.versions.restore }));
+    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.versions.restore }));
+
+    expect(await screen.findByText(copy.settings.knowledge.versions.versionPurged)).toBeInTheDocument();
+    await waitFor(() => expect(listVersions).toHaveBeenCalledTimes(2));
+  });
+
   it('恢复 A 飞行中 documentId 切到 B：A 迟到 success 不导航 uploads、不关 B 确认框', async () => {
     let resolveRestore!: () => void;
     const restoreVersion = vi.fn(() => new Promise<void>((resolve) => (resolveRestore = resolve)));
