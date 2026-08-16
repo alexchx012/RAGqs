@@ -57,7 +57,12 @@ class SqlAlchemyMessageCitationPreviewAdapter:
                 continue
             locator = _preview_locator(citation.get("locator"))
             snippet = citation.get("snippet")
-            clean_snippet = snippet.strip() if isinstance(snippet, str) and snippet.strip() else None
+            supports_text_highlight = "section_path" not in locator and "sheet" not in locator
+            clean_snippet = (
+                snippet.strip()
+                if supports_text_highlight and isinstance(snippet, str) and snippet.strip()
+                else None
+            )
             hits.append(
                 PreviewHit(
                     index=len(hits) + 1,

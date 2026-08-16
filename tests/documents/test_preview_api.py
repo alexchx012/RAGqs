@@ -15,6 +15,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.v1.dependencies import current_principal
 from app.api.v1.documents import router as documents_router
+from app.chat.preview import SqlAlchemyMessageCitationPreviewAdapter
+from app.chat.schema import chat_conversation_table, chat_message_table, chat_metadata
 from app.documents.indexing import NoopIndexingHandoff
 from app.documents.preview import PreviewHit, ProcessingReceiptPreviewRenderer
 from app.documents.schema import documents_metadata, publications_table
@@ -104,7 +106,7 @@ def _accepted(
 
 
 def _set_processing_summary(
-    service: DocumentsService, item: dict[str, object], summary: dict[str, object]
+    service: DocumentsService, item: dict[str, object], summary: dict[str, object] | None
 ) -> None:
     with service._engine.begin() as connection:
         manifest = connection.execute(
@@ -151,6 +153,126 @@ def test_preview_returns_renderer_metadata_and_message_hits(preview_api) -> None
     assert body["page_count"] == 1
     assert body["hits"][0]["locator"]["page"] == 1
     assert hits.calls == [("message_1", item["document_id"], item["document_version_id"])]
+
+
+def test_preview_without_processing_summary_keeps_the_rich_wire_shape(preview_api) -> None:
+    client, service, principal, _ = preview_api
+    item = _accepted(
+        service,
+        principal,
+        filename="guide.txt",
+        content=b"test",
+        media_kind="text/plain",
+        key="text-upload-1",
+    )
+    _set_processing_summary(service, item, None)
+
+    response = client.get(f"/v1/documents/{item['document_id']}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["has_text_layer"] is False
+    assert body["tree_indexed"] is False
+    assert body["page_count"] is None
+    assert body["sheets"] is None
+    assert body["hits"] == []
+    assert body["content_url"] == (
+        f"/v1/documents/{item['document_id']}/content?"
+        f"document_version_id={item['document_version_id']}"
+    )
+
+
+def test_preview_uses_the_real_owned_message_adapter_and_hides_foreign_messages(
+    preview_api,
+) -> None:
+    client, service, principal, _ = preview_api
+    item = _accepted(
+        service,
+        principal,
+        filename="guide.pdf",
+        content=b"test",
+        media_kind="application/pdf",
+        key="pdf-upload-real-message-1",
+    )
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    chat_metadata.create_all(service._engine)
+    with service._engine.begin() as connection:
+        for owner, conversation_id, message_id in (
+            ("user_1", "conversation_owned", "message_owned"),
+            ("user_2", "conversation_foreign", "message_foreign"),
+        ):
+            connection.execute(
+                chat_conversation_table.insert().values(
+                    id=conversation_id,
+                    owner_user_id=owner,
+                    title="Preview citations",
+                    pinned=False,
+                    group_id=None,
+                    effort_level="quick",
+                    scope_json={},
+                    last_active_at_utc=now,
+                    created_at_utc=now,
+                    updated_at_utc=now,
+                )
+            )
+            connection.execute(
+                chat_message_table.insert().values(
+                    id=message_id,
+                    conversation_id=conversation_id,
+                    owner_user_id=owner,
+                    role="assistant",
+                    content="answer",
+                    answer_mode="grounded",
+                    effort_level="quick",
+                    generation_id=f"generation_{message_id}",
+                    root_generation_id=f"generation_{message_id}",
+                    retry_of_generation_id=None,
+                    attempt_number=1,
+                    status="completed",
+                    stop_reason=None,
+                    notices_json=[],
+                    citations_json=[
+                        {
+                            "document_id": item["document_id"],
+                            "document_version_id": item["document_version_id"],
+                            "locator": {"page": 1, "span": "0:4"},
+                            "snippet": "Selected source",
+                        },
+                        {
+                            "document_id": item["document_id"],
+                            "document_version_id": "version_not_selected",
+                            "locator": {"page": 2},
+                            "snippet": "Wrong version",
+                        },
+                    ],
+                    created_at_utc=now,
+                    updated_at_utc=now,
+                )
+            )
+    service._message_citation_preview_port = SqlAlchemyMessageCitationPreviewAdapter(
+        service._engine
+    )
+
+    owned = client.get(
+        f"/v1/documents/{item['document_id']}/preview",
+        params={"message_id": "message_owned"},
+    )
+    foreign = client.get(
+        f"/v1/documents/{item['document_id']}/preview",
+        params={"message_id": "message_foreign"},
+    )
+
+    assert owned.status_code == 200
+    assert owned.json()["hits"] == [
+        {
+            "index": 1,
+            "summary": "Selected source",
+            "locator": {"page": 1, "span": {"start": 0, "end": 4}},
+            "snippet": "Selected source",
+        }
+    ]
+    assert foreign.status_code == 404
+    assert foreign.json()["error"]["code"] == "message_not_found"
 
 
 def test_pdf_content_honors_single_byte_ranges_and_head(preview_api) -> None:

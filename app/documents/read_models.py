@@ -10,7 +10,7 @@ from app.platform.errors import PlatformError
 from app.platform.storage import ObjectStorePort, StorageKeyError
 
 from .domain import DocumentLifecycle, DocumentVersionState, PublicationState
-from .preview import PreviewContent, preview_media_kind
+from .preview import PreviewContent, PreviewMetadata, preview_media_kind
 from .schema import (
     document_versions_table,
     documents_table,
@@ -98,9 +98,14 @@ class DocumentReadModels:
         summary = manifest.get("processing_summary")
         renderer = self._service._preview_renderer
         metadata = (
-            renderer.metadata(processing_summary=summary)
-            if renderer is not None and isinstance(summary, Mapping)
-            else None
+            renderer.metadata(processing_summary=summary if isinstance(summary, Mapping) else {})
+            if renderer is not None
+            else PreviewMetadata(
+                has_text_layer=False,
+                tree_indexed=False,
+                page_count=None,
+                sheets=None,
+            )
         )
         hits = ()
         if message_id is not None and self._service._message_citation_preview_port is not None:
@@ -115,13 +120,12 @@ class DocumentReadModels:
             "size_bytes": version["size_bytes"],
             "content_available": True,
             "content_url": (
-                f"/documents/{document['id']}/content?"
+                f"/v1/documents/{document['id']}/content?"
                 f"{urlencode({'document_version_id': str(version['id'])})}"
             ),
             "hits": [hit.to_mapping() for hit in hits],
         }
-        if metadata is not None:
-            result.update(metadata.to_mapping())
+        result.update(metadata.to_mapping())
         return result
 
     def content(

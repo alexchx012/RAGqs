@@ -102,4 +102,8 @@ def test_owned_message_projects_only_selected_document_version_hits_in_order() -
         "paragraph": 2,
     }
     assert hits[2].locator == {"sheet": "Q1", "a1_range": "A2:C2"}
+    assert hits[0].snippet == "First matching excerpt"
+    assert hits[1].snippet is None
+    assert hits[2].snippet is None
+    assert hits[1].summary == "Chapter 2 / Attendance"
     assert hits[2].summary == "Sheet Q1, range A2:C2"

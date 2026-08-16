@@ -85,7 +85,7 @@ export function createPreviewApi(client: ApiClient): PreviewApi {
       return client.request(contentPath(documentId, options), { responseType: 'blob' });
     },
     buildContentUrl(contentUrl, documentVersionId) {
-      const url = new URL(resolveUrl(`/v1${contentUrl}`));
+      const url = new URL(resolveUrl(contentUrl));
       if (
         !url.searchParams.has('document_version_id') &&
         typeof documentVersionId === 'string' &&

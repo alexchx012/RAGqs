@@ -14,7 +14,7 @@ describe('PreviewApi content URL', () => {
     const api = createPreviewApi(clientStub());
 
     expect(
-      api.buildContentUrl('/documents/doc_1/content?document_version_id=v_0', 'v_stale'),
+      api.buildContentUrl('/v1/documents/doc_1/content?document_version_id=v_0', 'v_stale'),
     ).toBe(new URL('/v1/documents/doc_1/content?document_version_id=v_0', globalThis.location.origin).toString());
   });
 });

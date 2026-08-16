@@ -43,7 +43,7 @@ describe('GET /documents/{id}/preview：message_id 行为', () => {
     expect(preview.content_available).toBe(true);
     expect(preview.has_text_layer).toBe(true);
     expect(preview.page_count).toBe(2);
-    expect(preview.content_url).toBe('/documents/doc_1/content?document_version_id=v_1');
+    expect(preview.content_url).toBe('/v1/documents/doc_1/content?document_version_id=v_1');
   });
 
   it('携带 message_id：返回该次回答引用本文档的全部 hits（含 span 消歧数据）', () => {
@@ -71,7 +71,7 @@ describe('GET /documents/{id}/preview：message_id 行为', () => {
     );
   });
 
-  it('没有 processing summary 时仅返回基础预览字段', () => {
+  it('没有 processing summary 时仍返回完整 preview wire shape 的默认元数据', () => {
     const preview = mockPreview.getPreview(bearerOf(), 'doc_word_basic', {});
 
     expect(preview).toMatchObject({
@@ -79,12 +79,18 @@ describe('GET /documents/{id}/preview：message_id 行为', () => {
       document_version_id: 'vwb_1',
       size_bytes: 1024,
       content_available: true,
-      content_url: '/documents/doc_word_basic/content?document_version_id=vwb_1',
+      content_url: '/v1/documents/doc_word_basic/content?document_version_id=vwb_1',
+      has_text_layer: false,
+      tree_indexed: false,
+      page_count: null,
+      sheets: null,
     });
-    expect(preview).not.toHaveProperty('has_text_layer');
-    expect(preview).not.toHaveProperty('tree_indexed');
-    expect(preview).not.toHaveProperty('page_count');
-    expect(preview).not.toHaveProperty('sheets');
+  });
+
+  it('已知消息不会为未引用的文档虚构 hits', () => {
+    const preview = mockPreview.getPreview(bearerOf(), 'doc_word', { messageId: 'm_1' });
+
+    expect(preview.hits).toEqual([]);
   });
 
   it('建树 Word 返回原始文件大小，而不是渲染 JSON 的长度', () => {
@@ -102,9 +108,9 @@ describe('document_version_id 透传', () => {
   it('历史版本：preview hits 与 content 均为该版本', () => {
     const preview = mockPreview.getPreview(bearerOf(), 'doc_1', { messageId: 'm_1', documentVersionId: 'v_0' });
     expect(preview.document_version_id).toBe('v_0');
-    expect(preview.content_url).toBe('/documents/doc_1/content?document_version_id=v_0');
+    expect(preview.content_url).toBe('/v1/documents/doc_1/content?document_version_id=v_0');
     expect(preview.hits.length).toBe(1);
-    expect(preview.hits[0]?.summary).toBe('旧版年假规定');
+    expect(preview.hits[0]?.summary).toBe('4 days per year');
     const content = mockPreview.getContent(bearerOf(), 'doc_1', { documentVersionId: 'v_0' });
     const text = new TextDecoder().decode(content.body);
     expect(text).toContain('Legacy handbook text.');

@@ -25,7 +25,7 @@ const MD_PREVIEW: DocumentPreviewResponse = {
   tree_indexed: false,
   page_count: null,
   sheets: null,
-  content_url: '/documents/doc_md/content?document_version_id=v_md_selected',
+  content_url: '/v1/documents/doc_md/content?document_version_id=v_md_selected',
   hits: [
     { index: 1, summary: '年假天数规则', snippet: '满 1 年不满 10 年为 5 天', locator: {} },
     { index: 2, summary: '申请流程', snippet: '申请流程', locator: {} },
@@ -48,7 +48,7 @@ const EXCEL_PREVIEW: DocumentPreviewResponse = {
     { name: 'Q1 报销', row_count: 5 },
     { name: 'Q2 报销', row_count: 3 },
   ],
-  content_url: '/documents/doc_xlsx/content?document_version_id=v_xlsx_selected',
+  content_url: '/v1/documents/doc_xlsx/content?document_version_id=v_xlsx_selected',
   hits: [
     { index: 1, summary: 'Q1 交通费记录', locator: { sheet: 'Q1 报销', a1_range: 'A2:C2' } },
     { index: 2, summary: 'Q2 住宿费记录', locator: { sheet: 'Q2 报销', a1_range: 'A2' } },
@@ -152,20 +152,24 @@ describe('PreviewPage 加载与就绪', () => {
     );
   });
 
-  it('缺少处理元数据时以保守默认值打开内容', async () => {
-    const previewWithoutRendererMetadata = {
+  it('默认处理元数据仍以保守策略打开内容', async () => {
+    const previewWithDefaultRendererMetadata: DocumentPreviewResponse = {
       document_id: 'doc_word_basic',
       document_version_id: 'vwb_1',
       name: '会议纪要.docx',
       media_kind: 'word' as const,
       size_bytes: 512,
       content_available: true,
-      content_url: '/documents/doc_word_basic/content?document_version_id=vwb_1',
+      has_text_layer: false,
+      tree_indexed: false,
+      page_count: null,
+      sheets: null,
+      content_url: '/v1/documents/doc_word_basic/content?document_version_id=vwb_1',
       hits: [],
     };
     const getTextContent = vi.fn(async () => '会议纪要');
     const api = fakeApi({
-      getPreview: vi.fn(async () => previewWithoutRendererMetadata as DocumentPreviewResponse),
+      getPreview: vi.fn(async () => previewWithDefaultRendererMetadata),
       getTextContent,
     });
 

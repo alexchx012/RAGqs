@@ -54,11 +54,10 @@ export interface DocumentPreviewResponse {
   readonly media_kind: PreviewMediaKind;
   readonly size_bytes: number;
   readonly content_available: boolean;
-  /** processing summary 不存在时，服务端不会下发 renderer 元数据。 */
-  readonly has_text_layer?: boolean;
-  readonly tree_indexed?: boolean;
-  readonly page_count?: number | null;
-  readonly sheets?: readonly PreviewSheetMeta[] | null;
+  readonly has_text_layer: boolean;
+  readonly tree_indexed: boolean;
+  readonly page_count: number | null;
+  readonly sheets: readonly PreviewSheetMeta[] | null;
   readonly content_url: string;
   readonly hits: readonly PreviewHit[];
 }

@@ -15,7 +15,7 @@ import { MockChatController } from './chat-contract';
 import { MockKnowledgeController } from './knowledge-contract';
 import { createKnowledgeHandlers } from './knowledge-handlers';
 import { MockNotificationsController } from './notifications-contract';
-import { MockPreviewController } from './preview-contract';
+import { MockPreviewController, type PreviewMessageCitation } from './preview-contract';
 import { createPreviewHandlers } from './preview-handlers';
 import { MockQuotaStore } from './quota-contract';
 import { MockSettingsController } from './settings-contract';
@@ -25,6 +25,18 @@ const PREVIEW_MESSAGE_STORAGE_PREFIX = 'ragqs.mock.preview.message.';
 
 function previewMessageStorageKey(userId: string, messageId: string): string {
   return `${PREVIEW_MESSAGE_STORAGE_PREFIX}${userId}.${messageId}`;
+}
+
+function storedPreviewCitations(value: string | null): readonly PreviewMessageCitation[] | null {
+  if (value === null) {
+    return null;
+  }
+  try {
+    const citations: unknown = JSON.parse(value);
+    return Array.isArray(citations) ? (citations as readonly PreviewMessageCitation[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 const PERSISTENCE_KEY = 'ragqs.mock-auth.v1';
@@ -56,7 +68,9 @@ export async function startMockWorker(): Promise<void> {
   const chatController = new MockChatController((header) => {
     const user = authController.me(header);
     return { userId: user.id, role: user.role, departmentId: user.department?.id ?? null };
-  }, (messageId, ownerUserId) => localStorage.setItem(previewMessageStorageKey(ownerUserId, messageId), '1'));
+  }, (messageId, ownerUserId, citations) =>
+    localStorage.setItem(previewMessageStorageKey(ownerUserId, messageId), JSON.stringify(citations)),
+  );
   const knowledgeController = new MockKnowledgeController(
     (header) => authController.me(header),
     quota,
@@ -68,8 +82,8 @@ export async function startMockWorker(): Promise<void> {
     (header, messageId) => {
       const userId = authController.me(header).id;
       return (
-        chatController.hasMessage(header, messageId) ||
-        localStorage.getItem(previewMessageStorageKey(userId, messageId)) === '1'
+        chatController.getPreviewCitations(header, messageId) ??
+        storedPreviewCitations(localStorage.getItem(previewMessageStorageKey(userId, messageId)))
       );
     },
   );
