@@ -75,12 +75,9 @@ def _preview_locator(value: Any) -> dict[str, Any]:
     page = _positive_int(value.get("page"))
     if page is not None:
         result: dict[str, Any] = {"page": page}
-        span = value.get("span")
-        if isinstance(span, Mapping):
-            start = _nonnegative_int(span.get("start"))
-            end = _nonnegative_int(span.get("end"))
-            if start is not None and end is not None and end > start:
-                result["span"] = {"start": start, "end": end}
+        span = _normalized_span(value.get("span"))
+        if span is not None:
+            result["span"] = span
         return result
     section_path = value.get("section_path")
     if isinstance(section_path, (list, tuple)) and section_path:
@@ -106,6 +103,21 @@ def _summary_from_locator(locator: Mapping[str, Any]) -> str:
     if "sheet" in locator:
         return f"Sheet {locator['sheet']}, range {locator['a1_range']}"
     return "Document citation"
+
+
+def _normalized_span(value: Any) -> dict[str, int] | None:
+    if isinstance(value, Mapping):
+        start = _nonnegative_int(value.get("start"))
+        end = _nonnegative_int(value.get("end"))
+    elif isinstance(value, str) and ":" in value:
+        start_text, end_text = value.split(":", maxsplit=1)
+        start = _nonnegative_int(start_text)
+        end = _nonnegative_int(end_text)
+    else:
+        return None
+    if start is None or end is None or end <= start:
+        return None
+    return {"start": start, "end": end}
 
 
 def _positive_int(value: Any) -> int | None:

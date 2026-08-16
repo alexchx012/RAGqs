@@ -55,7 +55,7 @@ def test_owned_message_projects_only_selected_document_version_hits_in_order() -
                     {
                         "document_id": "document_1",
                         "document_version_id": "version_1",
-                        "locator": {"page": "2", "span": {"start": "4", "end": "9"}},
+                        "locator": {"page": "2", "span": "4:9"},
                         "snippet": "First matching excerpt",
                     },
                     {
