@@ -7,14 +7,11 @@ from datetime import UTC, datetime
 
 import pytest
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import select, text, update
 
@@ -32,7 +29,6 @@ from app.platform.errors import PlatformError
 
 
 def make_lifecycle(engine, **kwargs):
-    kwargs.setdefault("capability_secret", CAPABILITY_SECRET)
     return SqlAlchemyOutboxLifecycle(engine, now=lambda: fixed_now(), **kwargs)
 
 
@@ -55,7 +51,6 @@ def deliver(engine, *, user_ids, event_id="evt_1", event_type="ingestion_complet
     command = OutboxPublishCommand(
         event_id=event_id,
         caller_principal=caller,
-        capability=cap("ingestion" if event_type.startswith("ingestion") else "submissions"),
         event_type=event_type,
         schema_version=1,
         aggregate_type=aggregate,
@@ -101,7 +96,6 @@ def retire_command(
         transaction_id="tx_1",
         mode=mode,
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
 
 
@@ -244,7 +238,6 @@ def test_compaction_writes_receipts_for_suppressions_and_removes_all_full_only_r
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_1",
                 caller_principal="ingestion",
                 event_type="ingestion_completed",

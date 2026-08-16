@@ -255,7 +255,7 @@ def _assert_full_event_identity_guarded(engine) -> None:
     """Publish one event and verify the installed guards reject a trace_id change."""
     import uuid
 
-    from _helpers import build_identity_service, cap, fixed_now, make_publisher, provision_user
+    from _helpers import build_identity_service, fixed_now, make_publisher, provision_user
     from sqlalchemy.exc import ProgrammingError
 
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
@@ -267,7 +267,6 @@ def _assert_full_event_identity_guarded(engine) -> None:
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id=event_id,
                 caller_principal="ingestion",
                 event_type="ingestion_completed",
@@ -397,7 +396,7 @@ def _assert_broken_body_healed(engine) -> None:
     invalid ones."""
     import uuid
 
-    from _helpers import build_identity_service, cap, fixed_now, make_publisher, provision_user
+    from _helpers import build_identity_service, fixed_now, make_publisher, provision_user
     from sqlalchemy.exc import ProgrammingError
 
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
@@ -409,7 +408,6 @@ def _assert_broken_body_healed(engine) -> None:
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id=event_id,
                 caller_principal="ingestion",
                 event_type="ingestion_completed",

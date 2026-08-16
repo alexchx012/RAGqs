@@ -82,7 +82,6 @@ def test_completed_delete_becomes_non_descriptive_tombstone(service, principal) 
         document_id=item["document_id"],
         expected_version=1,
         idempotency_key="delete-1",
-        capability_token="token",
     )
     service.finalize_deletion(document_id=item["document_id"], deletion_id=deletion["deletion_id"])
     assert service.list_documents(principal=principal, space_id="space_1")["items"] == []
@@ -132,7 +131,6 @@ def test_deletion_cleanup_retries_only_failed_targets(service, principal) -> Non
         document_id=item["document_id"],
         expected_version=1,
         idempotency_key="delete-retry-1",
-        capability_token="token",
     )
 
     assert service.finalize_deletion(
@@ -236,7 +234,6 @@ def test_deletion_waits_for_and_retries_failed_derived_cleanup_target(service, p
         document_id=item["document_id"],
         expected_version=1,
         idempotency_key="delete-derived-1",
-        capability_token="token",
     )
 
     assert service.finalize_deletion(
@@ -281,7 +278,6 @@ def test_deletion_cleanup_stops_retrying_a_target_after_three_failures(service, 
         document_id=item["document_id"],
         expected_version=1,
         idempotency_key="delete-derived-retry-limit-1",
-        capability_token="token",
     )
 
     for _ in range(3):

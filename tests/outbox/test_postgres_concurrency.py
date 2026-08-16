@@ -18,16 +18,12 @@ from urllib.parse import quote
 
 import pytest
 from _helpers import (
-    CAPABILITY_SECRET,
     alembic_config,
     build_identity_service,
-    cap,
-    docs_redaction_token,
     fixed_now,
     make_publisher,
     pg_test_schema_names,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import create_engine, text
 
@@ -161,7 +157,6 @@ def make_lifecycle(engine):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=_AcceptingArchiveVerifier(),
-        capability_secret=CAPABILITY_SECRET,
     )
 
 
@@ -170,7 +165,6 @@ def publish(engine, *, user_ids, event_id):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         caller_principal="ingestion",
         event_type="ingestion_completed",
@@ -420,9 +414,6 @@ def test_lifecycle_same_operation_serializes_on_the_reservation_row() -> None:
             transaction_id=transaction_id,
             mode="inline",
             canonical_input_fingerprint="unused",
-            capability_token=docs_redaction_token(
-                deletion_id=deletion_id, transaction_id=transaction_id
-            ),
         )
 
         def winner_fn(holding, release):
@@ -487,9 +478,6 @@ def test_lifecycle_same_operation_different_input_is_409_for_the_loser() -> None
                 transaction_id=transaction_id,
                 mode="inline",
                 canonical_input_fingerprint="unused",
-                capability_token=docs_redaction_token(
-                    deletion_id=deletion_id, transaction_id=transaction_id
-                ),
             )
 
         def winner_fn(holding, release):
@@ -553,7 +541,6 @@ def test_lifecycle_retirement_same_operation_serializes_on_the_reservation_row()
             transaction_id="tx_race",
             mode="inline",
             canonical_input_fingerprint="unused",
-            capability_token=retention_token(),
         )
 
         def winner_fn(holding, release):
@@ -615,7 +602,6 @@ def test_lifecycle_retirement_same_operation_different_input_is_409() -> None:
                 transaction_id="tx_race",
                 mode="inline",
                 canonical_input_fingerprint="unused",
-                capability_token=retention_token(),
             )
 
         def winner_fn(holding, release):
@@ -676,7 +662,6 @@ def test_lifecycle_compaction_same_operation_serializes_on_the_reservation_row()
             transaction_id="tx_comp",
             mode="inline",
             canonical_input_fingerprint="unused",
-            capability_token=retention_token(),
         )
         with engine.begin() as connection:
             lifecycle.retire_account_notification_state(retirement, connection=connection)
@@ -691,7 +676,6 @@ def test_lifecycle_compaction_same_operation_serializes_on_the_reservation_row()
             retirement_receipt_fingerprint=retirement_fingerprint,
             transaction_id="tx_comp_race",
             canonical_input_fingerprint="unused",
-            capability_token=retention_token(),
         )
 
         def winner_fn(holding, release):
@@ -753,9 +737,6 @@ def test_redaction_and_materialization_serialize_on_the_document_lock() -> None:
             transaction_id=transaction_id,
             mode="inline",
             canonical_input_fingerprint="unused",
-            capability_token=docs_redaction_token(
-                deletion_id=deletion_id, transaction_id=transaction_id
-            ),
         )
 
         def winner_fn(holding, release):
@@ -815,7 +796,6 @@ def test_retirement_and_materialization_serialize_on_the_user_lock() -> None:
             transaction_id="tx_race",
             mode="inline",
             canonical_input_fingerprint="unused",
-            capability_token=retention_token(),
         )
 
         def winner_fn(holding, release):

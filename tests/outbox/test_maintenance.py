@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     provision_user,
@@ -42,7 +41,6 @@ def deliver(engine, *, user_ids, event_id, clock_now=None):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         event_type="ingestion_completed",
         caller_principal="ingestion",

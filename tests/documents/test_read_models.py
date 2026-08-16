@@ -262,7 +262,6 @@ def test_active_read_lease_blocks_physical_document_deletion(service, principal)
         document_id=item["document_id"],
         expected_version=1,
         idempotency_key="delete-after-read",
-        capability_token="token",
     )
 
     with pytest.raises(PlatformError) as error:

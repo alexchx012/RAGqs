@@ -158,7 +158,6 @@ class DocumentsService:
         lifecycle_port: Any | None = None,
         indexing_handoff_port: Any | None = None,
         quota_service: Any | None = None,
-        capability_token_provider: Any | None = None,
         submission_notification_port: Any | None = None,
         ingestion_notification_port: Any | None = None,
         public_graph_source_service: Any | None = None,
@@ -180,7 +179,6 @@ class DocumentsService:
         self._lifecycle_port = lifecycle_port
         self._indexing_handoff_port = indexing_handoff_port
         self._quota_service = quota_service
-        self._capability_token_provider = capability_token_provider
         self._submission_notification_port = submission_notification_port
         self._ingestion_notification_port = ingestion_notification_port
         self._public_graph_source_service = public_graph_source_service
@@ -2281,7 +2279,6 @@ class DocumentsService:
         document_id: str,
         expected_version: int,
         idempotency_key: str | None,
-        capability_token: str | None = None,
         transaction_id: str | None = None,
     ) -> dict[str, Any]:
         key = self._required_key(idempotency_key)
@@ -2340,26 +2337,9 @@ class DocumentsService:
             deletion_id = _new_id("deletion")
             operation_id = f"{deletion_id}:document_notification_redaction"
             tx_id = transaction_id or _new_id("tx")
-            token = capability_token or ""
-            if self._capability_token_provider is not None:
-                issuer = self._capability_token_provider
-                issue = (
-                    issuer
-                    if callable(issuer)
-                    else getattr(issuer, "issue_documents_redaction", None)
-                )
-                if not callable(issue):
-                    raise PlatformError(
-                        "document_lifecycle_unavailable",
-                        "Document notification redaction capability is not configured",
-                        {},
-                        503,
-                        retryable=True,
-                    )
-                token = issue(deletion_id=deletion_id, transaction_id=tx_id)
             command = DocumentNotificationRedactionCommand(
                 operation_id=operation_id,
-                caller_principal=actor_id,
+                caller_principal="documents",
                 deletion_id=deletion_id,
                 document_id=document_id,
                 document_version_ids=version_ids,
@@ -2367,7 +2347,6 @@ class DocumentsService:
                 transaction_id=tx_id,
                 mode="inline",
                 canonical_input_fingerprint="pending",
-                capability_token=token,
             )
             command = DocumentNotificationRedactionCommand(
                 operation_id=command.operation_id,
@@ -2379,7 +2358,6 @@ class DocumentsService:
                 transaction_id=command.transaction_id,
                 mode=command.mode,
                 canonical_input_fingerprint=self._outbox_redaction_fingerprint(command),
-                capability_token=command.capability_token,
             )
             receipt = self._lifecycle_port.redact_document_notifications(
                 command,

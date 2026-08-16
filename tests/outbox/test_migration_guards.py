@@ -5,7 +5,7 @@ full-event artifacts (verified when RAGQS_TEST_POSTGRES_URL is configured)."""
 from __future__ import annotations
 
 import pytest
-from _helpers import build_engine, build_identity_service, cap, fixed_now, provision_user
+from _helpers import build_engine, build_identity_service, fixed_now, provision_user
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -145,7 +145,6 @@ def _publish_immutable_event(engine, *, event_id: str, user_id: str) -> None:
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id=event_id,
                 caller_principal="ingestion",
                 event_type="ingestion_completed",

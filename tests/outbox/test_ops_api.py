@@ -5,7 +5,6 @@ from __future__ import annotations
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     make_settings,
@@ -47,7 +46,6 @@ def publish_and_dead_letter(engine, dispatcher, *, user_id):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id="evt_1",
         event_type="ingestion_completed",
         caller_principal="ingestion",

@@ -21,7 +21,6 @@ from sqlalchemy.exc import IntegrityError
 from app.identity.schema import identity_user_table
 from app.platform.errors import PlatformError
 
-from .capabilities import verify_token
 from .compaction import canonical_receipt_fingerprint, compact_event
 from .notifications import DELETED_DOCUMENT_TITLE
 from .ports import (
@@ -62,63 +61,6 @@ class UnauthorizedLifecycleCaller(PlatformError):
             {"caller": caller},
             403,
         )
-
-
-class LifecycleTokenAuthorizer:
-    """Verifies the assembly-time signed lifecycle capability tokens.
-
-    The command's caller_principal is an audit label and NEVER an authority.
-    Documents redaction is authorized either by the documents token (documents
-    service directly) or by a documents-issued inline-transaction token bound
-    to the exact deletion/transaction (retention-ops with delegation).
-    Retirement and compaction require the retention-ops token. Without a
-    configured secret every call fails closed (403).
-    """
-
-    def __init__(self, secret: bytes | None) -> None:
-        self._secret = secret
-
-    @property
-    def has_secret(self) -> bool:
-        """True when a signing secret is configured (external-token authority)."""
-        return self._secret is not None
-
-    def authorize(self, command: object) -> None:
-        principal = str(getattr(command, "caller_principal", "unknown"))
-        if self._secret is None:
-            raise UnauthorizedLifecycleCaller(principal)
-        token = getattr(command, "capability_token", None)
-        if not isinstance(token, str) or not token:
-            raise UnauthorizedLifecycleCaller(principal)
-        claims = verify_token(self._secret, token)
-        if claims is None:
-            raise UnauthorizedLifecycleCaller(principal)
-        kind = claims.get("kind")
-        scope = claims.get("scope")
-        scope = scope if isinstance(scope, dict) else {}
-        if isinstance(command, DocumentNotificationRedactionCommand):
-            if kind not in {"documents_redact", "retention_redact"}:
-                raise UnauthorizedLifecycleCaller(principal)
-            # The token is bound to the exact deletion/transaction; mode is
-            # always inline for redaction.
-            if (
-                str(scope.get("deletion_id")) != command.deletion_id
-                or str(scope.get("transaction_id")) != command.transaction_id
-                or str(scope.get("mode")) != "inline"
-            ):
-                raise UnauthorizedLifecycleCaller(principal)
-            if kind == "documents_redact" and principal != "documents":
-                raise UnauthorizedLifecycleCaller(principal)
-            if kind == "retention_redact" and principal != "retention-ops":
-                raise UnauthorizedLifecycleCaller(principal)
-            return
-        if isinstance(
-            command, (AccountNotificationRetirementCommand, EligibleAccountEventCompactionCommand)
-        ):
-            if kind != "retention" or principal != "retention-ops":
-                raise UnauthorizedLifecycleCaller(principal)
-            return
-        raise UnauthorizedLifecycleCaller(principal)
 
 
 def _utc(value: datetime) -> datetime:
@@ -226,25 +168,11 @@ class SqlAlchemyOutboxLifecycle:
         now: Callable[[], datetime],
         clock: Any = None,
         archive_verifier: Any = None,
-        capability_secret: bytes | None = None,
     ) -> None:
         del engine
         self._now = now
         self._clock = clock
         self._archive_verifier = archive_verifier
-        # Authorization is UNCONDITIONALLY token based: without a signing
-        # secret every call fails closed (403). There is no verifier fallback —
-        # a caller can never authorize by strings or injected verifiers.
-        self._token_authorizer = LifecycleTokenAuthorizer(capability_secret)
-
-    @property
-    def holds_token_signing_secret(self) -> bool:
-        """True when this lifecycle authorizes through an external signing
-        secret. The runtime assembly only accepts capability_secret=None
-        lifecycles as internal no-token scoped inputs, so a secret-bearing
-        lifecycle is rejected before it can make the secret reachable through
-        worker/gateway object graphs."""
-        return self._token_authorizer.has_secret
 
     def _current_time(self, connection: Connection | None = None) -> datetime:
         if self._clock is not None and connection is not None:
@@ -290,16 +218,17 @@ class SqlAlchemyOutboxLifecycle:
                 422,
             )
 
-    def _check_caller_capability(self, command: object) -> None:
-        """Authorize lifecycle callers through the signed capability token.
-
-        The command's caller_principal is a label for audit only and is NEVER
-        an authority. The token authorizer fails closed (403) when no secret
-        is configured, when the token is forged, or when the token scope does
-        not bind the command's deletion/transaction. Runtime-only internal
-        methods instead construct their own fixed-scope commands.
-        """
-        self._token_authorizer.authorize(command)
+    def _check_caller(self, command: object) -> None:
+        """Keep the typed lifecycle ports bound to their owning domain."""
+        principal = str(getattr(command, "caller_principal", ""))
+        if isinstance(command, DocumentNotificationRedactionCommand):
+            if principal == DOCUMENTS_CALLER:
+                return
+        elif isinstance(
+            command, (AccountNotificationRetirementCommand, EligibleAccountEventCompactionCommand)
+        ) and principal == RETENTION_CALLER:
+            return
+        raise UnauthorizedLifecycleCaller(principal)
 
     # ------------------------------------------------------------------
     # RedactDocumentNotifications
@@ -311,10 +240,7 @@ class SqlAlchemyOutboxLifecycle:
         *,
         connection: Connection,
     ) -> DocumentNotificationRedactionReceipt:
-        # Authority comes ONLY from the signed capability token; the caller
-        # principal string is an audit label. The token authorizer rejects
-        # documents tokens presented by other principals and vice versa.
-        self._check_caller_capability(command)
+        self._check_caller(command)
         return self._redact_document_notifications(command, connection=connection)
 
     def redact_document_notifications_for_documents(
@@ -338,7 +264,6 @@ class SqlAlchemyOutboxLifecycle:
             transaction_id=transaction_id,
             mode="inline",
             canonical_input_fingerprint=operation_id,
-            capability_token="",
         )
         return self._redact_document_notifications(command, connection=connection)
 
@@ -540,7 +465,7 @@ class SqlAlchemyOutboxLifecycle:
     ) -> AccountNotificationRetirementReceipt:
         if command.caller_principal != RETENTION_CALLER:
             raise UnauthorizedLifecycleCaller(command.caller_principal)
-        self._check_caller_capability(command)
+        self._check_caller(command)
         if command.mode not in {"durable", "inline"}:
             raise PlatformError("validation_error", "Retirement mode is invalid", {}, 422)
         now = self._current_time(connection)
@@ -647,11 +572,10 @@ class SqlAlchemyOutboxLifecycle:
         """Internal identity-deletion scoped entry: retire exactly the account
         named by the identity deletion workflow.
 
-        This entry requires NO capability token: it can only be reached through
-        the runtime-assembled gateway façade, accepts only a pending-delete
-        account whose archive proof verifies, and the caller principal is
-        fixed (audit only). A caller cannot submit a token or choose another
-        operation type.
+        This entry can only be reached through the runtime-assembled gateway
+        façade, accepts only a pending-delete account whose archive proof
+        verifies, and fixes the caller principal. A caller cannot choose a
+        different operation type.
         """
         command = AccountNotificationRetirementCommand(
             operation_id=operation_id,
@@ -663,7 +587,6 @@ class SqlAlchemyOutboxLifecycle:
             transaction_id=transaction_id,
             mode="inline",
             canonical_input_fingerprint=operation_id,
-            capability_token="",
         )
         return self._retire_inline(command, connection)
 
@@ -826,11 +749,10 @@ class SqlAlchemyOutboxLifecycle:
         """Internal safe entry: apply the durable work for an ALREADY-ACCEPTED
         command row.
 
-        No capability token is required or accepted: the only commands this
-        entry can process are rows that were previously authorized through the
-        token-gated public retirement port. A caller cannot fabricate a
-        command — the operation scope, user, deletion and archive facts all
-        come from the stored accepted row.
+        The only commands this entry can process are rows previously accepted
+        by the retirement port. A caller cannot fabricate a command because
+        the operation scope, user, deletion and archive facts all come from
+        the stored accepted row.
         """
         now = self._current_time(connection)
         stored = (
@@ -859,7 +781,6 @@ class SqlAlchemyOutboxLifecycle:
             transaction_id="",
             mode="durable",
             canonical_input_fingerprint=str(stored["input_fingerprint"]),
-            capability_token="",
         )
         # Re-validate the identity lifecycle and deletion workflow inside the
         # worker transaction: the account must still be pending_delete.
@@ -902,12 +823,10 @@ class SqlAlchemyOutboxLifecycle:
     ) -> AccountNotificationRetirementReceipt:
         """Apply the durable retirement work and advance the command to completed.
 
-        Token-gated public entry: called by explicit retention-ops callers
-        holding a signed capability token. The archive reference is validated
-        against the stored accepted command so a caller cannot substitute an
-        unverified client value.
+        The archive reference is validated against the stored accepted command
+        so a caller cannot substitute an unverified client value.
         """
-        self._check_caller_capability(command)
+        self._check_caller(command)
         now = self._current_time(connection)
         stored = (
             connection.execute(
@@ -1297,7 +1216,7 @@ class SqlAlchemyOutboxLifecycle:
     ) -> EligibleAccountEventCompactionReceipt:
         if command.caller_principal != RETENTION_CALLER:
             raise UnauthorizedLifecycleCaller(command.caller_principal)
-        self._check_caller_capability(command)
+        self._check_caller(command)
         return self._request_compaction(command, connection=connection)
 
     def request_compaction_for_identity_deletion(
@@ -1313,11 +1232,10 @@ class SqlAlchemyOutboxLifecycle:
         compaction for exactly the completed retirement named by the identity
         deletion workflow.
 
-        This entry requires NO capability token: it can only be reached through
-        the runtime-assembled gateway façade, the retirement row is re-read
-        server-side, and the retirement receipt fingerprint is taken from that
-        row instead of any caller input. A caller cannot submit a token or
-        choose another retirement.
+        This entry can only be reached through the runtime-assembled gateway
+        façade. The retirement row is re-read server-side and its receipt
+        fingerprint is taken from that row instead of caller input. A caller
+        cannot choose another retirement.
         """
         retirement = (
             connection.execute(
@@ -1349,7 +1267,6 @@ class SqlAlchemyOutboxLifecycle:
             retirement_receipt_fingerprint=str(retirement["input_fingerprint"] or ""),
             transaction_id=f"retention:{operation_id}",
             canonical_input_fingerprint="",
-            capability_token="",
         )
         return self._request_compaction(command, connection=connection)
 

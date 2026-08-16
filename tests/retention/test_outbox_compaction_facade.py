@@ -42,7 +42,6 @@ def _lifecycle(engine) -> SqlAlchemyOutboxLifecycle:
         now=lambda connection=None: fixed_now(),
         clock=None,
         archive_verifier=None,
-        capability_secret=None,
     )
 
 

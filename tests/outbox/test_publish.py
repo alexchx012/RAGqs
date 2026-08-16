@@ -9,7 +9,6 @@ import pytest
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     create_publish_domain_tables,
     fixed_now,
     make_publisher,
@@ -35,7 +34,6 @@ def make_publish_command(
     return OutboxPublishCommand(
         event_id=event_id,
         caller_principal="ingestion",
-        capability=cap("ingestion"),
         event_type=event_type,
         schema_version=1,
         aggregate_type=aggregate_type,
@@ -264,17 +262,15 @@ def test_publish_rejects_unsupported_event_type_and_malformed_payload() -> None:
     alice = provision_user(identity, username="alice")
     publisher = make_publisher(engine, now=lambda: fixed_now())
 
-    # An unsupported event type is never covered by any issued capability
-    # token scope: the publisher rejects it at the capability check (403),
-    # before payload validation.
+    # Unsupported event types are rejected before payload validation.
     with pytest.raises(PlatformError) as raised_type:
         with engine.begin() as connection:
             publisher.publish(
                 make_publish_command(user_ids=(alice,), event_type="unknown_event"),
                 connection=connection,
             )
-    assert raised_type.value.status_code == 403
-    assert raised_type.value.code == "producer_not_authorized"
+    assert raised_type.value.status_code == 422
+    assert raised_type.value.code == "unsupported_event_type"
 
     with pytest.raises(PlatformError) as raised_payload:
         with engine.begin() as connection:

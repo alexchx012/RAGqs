@@ -5,7 +5,6 @@ from __future__ import annotations
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     make_settings,
@@ -32,7 +31,6 @@ def test_outbox_worker_delivers_pending_events() -> None:
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_1",
                 event_type="ingestion_completed",
                 caller_principal="ingestion",

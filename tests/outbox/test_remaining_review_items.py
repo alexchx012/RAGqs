@@ -7,15 +7,11 @@ from datetime import UTC, datetime
 
 import pytest
 from _helpers import (
-    CAPABILITY_SECRET,
     build_engine,
     build_identity_service,
-    cap,
-    docs_redaction_token,
     fixed_now,
     make_publisher,
     provision_user,
-    retention_token,
 )
 from sqlalchemy import select, update
 
@@ -37,7 +33,6 @@ def make_lifecycle(engine, **kwargs):
         engine,
         now=lambda: fixed_now(),
         archive_verifier=kwargs.pop("archive_verifier", _AcceptingArchiveVerifier()),
-        capability_secret=kwargs.pop("capability_secret", CAPABILITY_SECRET),
         **kwargs,
     )
 
@@ -53,7 +48,6 @@ def deliver(engine, *, user_ids, event_id="evt_1"):
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
     command = OutboxPublishCommand(
-        capability=cap("ingestion"),
         event_id=event_id,
         caller_principal="ingestion",
         event_type="ingestion_completed",
@@ -99,7 +93,6 @@ def redact_command(*, document_id="doc_evt_1", document_version_ids=("docv_evt_1
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=docs_redaction_token(deletion_id="del_1", transaction_id="tx_1"),
     )
 
 
@@ -114,7 +107,6 @@ def test_tombstone_survives_compaction_and_blocks_later_materialization() -> Non
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_1",
                 caller_principal="ingestion",
                 event_type="ingestion_completed",
@@ -179,7 +171,6 @@ def test_eligible_compaction_blocks_pending_and_returns_blocked_count() -> None:
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_2",
                 caller_principal="ingestion",
                 event_type="ingestion_completed",
@@ -221,7 +212,6 @@ def test_eligible_compaction_blocks_pending_and_returns_blocked_count() -> None:
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
     with engine.begin() as connection:
         lifecycle.retire_account_notification_state(retirement, connection=connection)
@@ -238,7 +228,6 @@ def test_eligible_compaction_blocks_pending_and_returns_blocked_count() -> None:
                 retirement_receipt_fingerprint=_command_input_fingerprint(retirement),
                 transaction_id="tx_2",
                 canonical_input_fingerprint="fp_2",
-                capability_token=retention_token(),
             ),
             connection=connection,
         )
@@ -280,7 +269,6 @@ def _dead_letter_helper(engine, alice: str):
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_1",
                 caller_principal="ingestion",
                 event_type="ingestion_completed",
@@ -370,7 +358,6 @@ def test_postgres_integration_hook_runs_production_statements_when_configured() 
         with engine.begin() as connection:
             publisher.publish(
                 OutboxPublishCommand(
-                    capability=cap("ingestion"),
                     event_id=event_id,
                     caller_principal="ingestion",
                     event_type="ingestion_completed",
@@ -418,7 +405,6 @@ def test_eligible_compaction_returns_accepted_when_events_remain_blocked() -> No
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_2",
                 caller_principal="ingestion",
                 event_type="ingestion_completed",
@@ -460,7 +446,6 @@ def test_eligible_compaction_returns_accepted_when_events_remain_blocked() -> No
         transaction_id="tx_1",
         mode="inline",
         canonical_input_fingerprint="fp_1",
-        capability_token=retention_token(),
     )
     with engine.begin() as connection:
         lifecycle.retire_account_notification_state(retirement, connection=connection)
@@ -477,7 +462,6 @@ def test_eligible_compaction_returns_accepted_when_events_remain_blocked() -> No
                 retirement_receipt_fingerprint=_command_input_fingerprint(retirement),
                 transaction_id="tx_2",
                 canonical_input_fingerprint="fp_2",
-                capability_token=retention_token(),
             ),
             connection=connection,
         )
@@ -572,16 +556,15 @@ def test_replay_reserves_before_state_checks_and_rolls_back_on_conflict() -> Non
 def test_runtime_assembles_publisher_dispatcher_lifecycle_and_worker_entries() -> None:
     from _helpers import make_settings
 
-    from app.outbox.publisher import SqlAlchemyOutboxPublisher
     from app.platform.runtime import build_runtime
 
     engine = build_engine()
     runtime = build_runtime(make_settings(), adapters={"database_engine": engine})
 
-    assert isinstance(runtime.resolve("outbox_publisher"), SqlAlchemyOutboxPublisher)
+    assert runtime.resolve("outbox_publisher", None) is None
     assert isinstance(runtime.resolve("outbox_dispatcher"), OutboxDispatcher)
-    # The raw lifecycle is NOT registered as a runtime adapter; only the
-    # operation-scoped façades are.
+    # Raw publisher and lifecycle objects are not registered as runtime
+    # adapters; only operation-scoped facades are.
     assert runtime.resolve("outbox_lifecycle", None) is None
     assert runtime.resolve("account_retirement_gateway") is not None
     assert runtime.resolve("retirement_worker") is not None
@@ -601,28 +584,20 @@ def test_end_to_end_publish_dispatch_notify_read_and_ack() -> None:
     engine = build_engine()
     identity = build_identity_service(engine)
     alice = provision_user(identity, username="alice")
+    publisher = make_publisher(engine, now=lambda: fixed_now())
     runtime = build_runtime(
         configured,
         adapters={
             "database_engine": engine,
             "identity_access": identity,
-            # The runtime publisher is fail-closed by design (no signing
-            # secret in the adapter graph); the e2e path injects a test
-            # publisher signed with the shared test secret.
-            "outbox_publisher": make_publisher(engine, now=lambda: fixed_now()),
+            "outbox_publisher": publisher,
         },
     )
-    publisher = runtime.resolve("outbox_publisher")
     dispatcher = runtime.resolve("outbox_dispatcher")
     service = runtime.resolve("notification_service")
-    # The runtime publisher verifies tokens signed with the injected
-    # capability secret, so the capability token must be signed with the same
-    # secret (the plain `cap` helper defaults to CAPABILITY_SECRET).
-
     with engine.begin() as connection:
         publisher.publish(
             OutboxPublishCommand(
-                capability=cap("ingestion"),
                 event_id="evt_e2e",
                 caller_principal="ingestion",
                 event_type="ingestion_completed",

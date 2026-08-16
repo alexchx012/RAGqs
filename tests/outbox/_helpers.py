@@ -11,16 +11,22 @@ from alembic.config import Config
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import IdentityAccessService
+from app.outbox.publisher import SqlAlchemyOutboxPublisher
 from app.outbox.schema import outbox_metadata
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
 from app.usage.schema import usage_metadata
 
-# The explicit development signing secret. The production runtime derives the
-# capability secret from the configured auth secret key; tests sign tokens
-# with the same explicit fallback secret the publisher/lifecycle use when
-# constructed directly.
-CAPABILITY_SECRET = b"ragqs-development-capability-secret"
+
+class TestOutboxPublisher(SqlAlchemyOutboxPublisher):
+    """Test-only adapter for exercising the raw publisher's trusted assembly path."""
+
+    def publish(self, command, *, connection):
+        return self._publish_authorized(
+            command,
+            connection=connection,
+            caller=command.caller_principal,
+        )
 
 
 def make_settings(**overrides) -> object:
@@ -37,20 +43,14 @@ def make_settings(**overrides) -> object:
 
 
 def make_publisher(engine, **kwargs):
-    """Construct a test publisher with the explicit test signing secret.
+    """Construct a test publisher with the deterministic test clock.
 
-    The production constructor fails closed when no secret is configured; the
-    shared test secret makes direct constructions deterministic. The publisher
-    defaults to the deterministic test clock (`fixed_now`): every dispatcher
-    in the suite claims with that clock, and a publisher stamping real wall
-    time would make freshly published deliveries not-yet-due on hosts whose
-    clock is ahead of `fixed_now` (as real-PostgreSQL runs exposed).
+    Every dispatcher in the suite claims with `fixed_now`; using wall time
+    here could make freshly published deliveries not-yet-due on a host whose
+    clock is ahead of that deterministic value.
     """
-    from app.outbox.publisher import SqlAlchemyOutboxPublisher
-
-    kwargs.setdefault("capability_secret", CAPABILITY_SECRET)
     kwargs.setdefault("now", lambda: fixed_now())
-    return SqlAlchemyOutboxPublisher(engine, **kwargs)
+    return TestOutboxPublisher(engine, **kwargs)
 
 
 def build_engine():
@@ -128,61 +128,6 @@ def build_identity_service(engine) -> IdentityAccessService:
 
 def fixed_now() -> datetime:
     return datetime(2026, 8, 5, 12, 0, 0, tzinfo=UTC)
-
-
-def cap(principal: str, *event_types: str, secret: bytes = CAPABILITY_SECRET) -> str:
-    """Build an assembly-time signed producer capability token for tests.
-
-    The token is opaque and signed; a caller can never construct one without
-    the secret. When no event types are given the full PRODUCER_MATRIX scope
-    for the principal is signed. `secret` defaults to the explicit development
-    secret; pass the runtime-derived secret when publishing through a
-    runtime-constructed publisher.
-    """
-    from app.outbox.capabilities import sign_token
-    from app.outbox.publisher import PRODUCER_MATRIX
-
-    if event_types:
-        types = list(event_types)
-    else:
-        types = [
-            event_type
-            for event_type, (callers, _aggregate) in PRODUCER_MATRIX.items()
-            if principal in callers
-        ]
-    return sign_token(
-        secret,
-        kind="producer",
-        principal=principal,
-        scope={"event_types": types},
-    )
-
-
-def docs_redaction_token(*, deletion_id: str, transaction_id: str) -> str:
-    """Documents service token for an exact deletion/transaction."""
-    from app.outbox.capabilities import LifecycleCapabilityIssuer
-
-    return LifecycleCapabilityIssuer(CAPABILITY_SECRET).issue_documents_redaction(
-        deletion_id=deletion_id,
-        transaction_id=transaction_id,
-    )
-
-
-def retention_redaction_token(*, deletion_id: str, transaction_id: str) -> str:
-    """Retention-ops token delegating an exact documents-issued transaction."""
-    from app.outbox.capabilities import LifecycleCapabilityIssuer
-
-    return LifecycleCapabilityIssuer(CAPABILITY_SECRET).issue_retention_redaction(
-        deletion_id=deletion_id,
-        transaction_id=transaction_id,
-    )
-
-
-def retention_token() -> str:
-    """Retention-ops token for retirement/compaction commands."""
-    from app.outbox.capabilities import LifecycleCapabilityIssuer
-
-    return LifecycleCapabilityIssuer(CAPABILITY_SECRET).issue_retention()
 
 
 def alembic_config(database_url: str) -> Config:

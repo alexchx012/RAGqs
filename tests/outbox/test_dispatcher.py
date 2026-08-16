@@ -8,7 +8,6 @@ import pytest
 from _helpers import (
     build_engine,
     build_identity_service,
-    cap,
     fixed_now,
     make_publisher,
     provision_user,
@@ -49,7 +48,6 @@ def publish(engine, publisher: SqlAlchemyOutboxPublisher, *, user_ids: tuple[str
         event_id=event_id,
         event_type=event_type,
         caller_principal="ingestion",
-        capability=cap("ingestion"),
         schema_version=1,
         aggregate_type="ingestion_job",
         aggregate_id=aggregate_id,

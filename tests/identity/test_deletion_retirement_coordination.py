@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from _helpers import build_engine, cap, fixed_now, make_publisher, make_settings
+from _helpers import build_engine, fixed_now, make_publisher, make_settings
 from sqlalchemy import select, update
 
 from app.identity.schema import (
@@ -57,7 +57,6 @@ def deliver_notification(engine, *, user_id: str) -> None:
             OutboxPublishCommand(
                 event_id="evt_del_1",
                 caller_principal="ingestion",
-                capability=cap("ingestion"),
                 event_type="ingestion_completed",
                 schema_version=1,
                 aggregate_type="ingestion_job",
