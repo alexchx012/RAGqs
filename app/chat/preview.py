@@ -80,14 +80,18 @@ def _preview_locator(value: Any) -> dict[str, Any]:
             result["span"] = span
         return result
     section_path = value.get("section_path")
-    if isinstance(section_path, (list, tuple)) and section_path:
+    if isinstance(section_path, str) and section_path:
+        path = [section_path]
+    elif isinstance(section_path, (list, tuple)) and section_path:
         path = [str(part) for part in section_path if str(part)]
-        if path:
-            result = {"section_path": path}
-            paragraph = _positive_int(value.get("paragraph"))
-            if paragraph is not None:
-                result["paragraph"] = paragraph
-            return result
+    else:
+        path = []
+    if path:
+        result = {"section_path": path}
+        paragraph = _positive_int(value.get("paragraph"))
+        if paragraph is not None:
+            result["paragraph"] = paragraph
+        return result
     sheet = value.get("sheet")
     a1_range = value.get("a1_range")
     if isinstance(sheet, str) and sheet and isinstance(a1_range, str) and a1_range:

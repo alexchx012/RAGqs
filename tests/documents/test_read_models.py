@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.schema import document_versions_table, documents_table, publications_table
@@ -72,6 +72,22 @@ def test_preview_and_content_expose_readable_superseded_version(service, princip
 
     assert preview["document_version_id"] == first["document_version_id"]
     assert content == b"hello"
+
+
+def test_preview_rejects_a_selected_version_without_retained_source_content(service, principal) -> None:
+    item = _accepted(service, principal)
+    with service._engine.connect() as connection:
+        object_key = connection.execute(
+            select(document_versions_table.c.original_object_key).where(
+                document_versions_table.c.id == item["document_version_id"]
+            )
+        ).scalar_one()
+    service._object_store.delete(str(object_key))
+
+    with pytest.raises(PlatformError) as error:
+        service.preview(principal=principal, document_id=item["document_id"])
+
+    assert error.value.code == "document_content_unavailable"
 
 
 def test_pending_document_never_leaks_preview_or_content(service, principal) -> None:

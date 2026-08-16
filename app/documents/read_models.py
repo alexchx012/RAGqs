@@ -262,6 +262,19 @@ class DocumentReadModels:
                 raise PlatformError(
                     "document_version_unavailable", "Document version is not available", {}, 404
                 )
+            original_object_key = str(row["selected_version_original_object_key"] or "")
+            try:
+                content_available = bool(original_object_key) and self._service._object_store.exists(
+                    original_object_key
+                )
+            except StorageKeyError as exc:
+                raise PlatformError(
+                    "document_content_unavailable", "Document content is unavailable", {}, 410
+                ) from exc
+            if not content_available:
+                raise PlatformError(
+                    "document_content_unavailable", "Document content is unavailable", {}, 410
+                )
             self._service._acquire_read_lease(
                 connection,
                 document_id=str(row["document_id"]),

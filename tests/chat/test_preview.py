@@ -73,6 +73,12 @@ def test_owned_message_projects_only_selected_document_version_hits_in_order() -
                     {
                         "document_id": "document_1",
                         "document_version_id": "version_1",
+                        "locator": {"section_path": "Policy", "paragraph": 2},
+                        "snippet": "Word section",
+                    },
+                    {
+                        "document_id": "document_1",
+                        "document_version_id": "version_1",
                         "locator": {"sheet": "Q1", "a1_range": "A2:C2"},
                         "snippet": "",
                     },
@@ -89,7 +95,8 @@ def test_owned_message_projects_only_selected_document_version_hits_in_order() -
         "version_1",
     )
 
-    assert [hit.index for hit in hits] == [1, 2]
+    assert [hit.index for hit in hits] == [1, 2, 3]
     assert hits[0].locator == {"page": 2, "span": {"start": 4, "end": 9}}
-    assert hits[1].locator == {"sheet": "Q1", "a1_range": "A2:C2"}
-    assert hits[1].summary == "Sheet Q1, range A2:C2"
+    assert hits[1].locator == {"section_path": ["Policy"], "paragraph": 2}
+    assert hits[2].locator == {"sheet": "Q1", "a1_range": "A2:C2"}
+    assert hits[2].summary == "Sheet Q1, range A2:C2"
