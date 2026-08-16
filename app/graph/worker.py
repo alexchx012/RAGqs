@@ -66,7 +66,7 @@ class GraphBuildWorker:
             self._fail(run, _failure_class(error), error.message)
             return GraphBuildWorkerStats(builds_processed=1, runs_requeued=requeued, runs_failed=1)
         except Exception as error:  # noqa: BLE001 - terminalize unknown worker faults
-            self._fail(run, "graph_provider_failed", str(error))
+            self._fail(run, "graph_worker_unexpected", str(error))
             return GraphBuildWorkerStats(builds_processed=1, runs_requeued=requeued, runs_failed=1)
 
     def _build(self, run: GraphRunRecord) -> None:
@@ -98,6 +98,7 @@ class GraphBuildWorker:
                 resource_id=resource_id,
                 payload=payload,
             ),
+            heartbeat=lambda: self._service.heartbeat(run=run, owner=self._owner),
             recorder=recorder,
             now=self._now,
             deadline_seconds=self._deadline_seconds,
@@ -134,12 +135,14 @@ class GraphBuildWorker:
         )
 
     def _fail(self, run: GraphRunRecord, failure_class: str, reason: str) -> None:
-        self._service.complete_failed(
+        completed = self._service.complete_failed(
             run=run,
             owner=self._owner,
             failure_class=failure_class,
             reason=reason,
         )
+        if completed.state != "failed" or completed.current_attempt != run.current_attempt:
+            return
         self._service.discard_staging(run=run)
 
 

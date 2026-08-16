@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
 from app.indexing.graph import IndexGenerationComponentInput
@@ -118,7 +118,7 @@ class GraphBuildService:
     ) -> GraphRunView:
         operation_id = f"{CREATE_OP_PREFIX}_{idempotency_key}"
         with self._engine.begin() as connection:
-            reservation, replay = self._repository.reserve_operation(
+            reservation, replay, reservation_created_at = self._repository.reserve_operation(
                 connection=connection,
                 operation_id=operation_id,
                 kind="graph_build_create",
@@ -128,20 +128,24 @@ class GraphBuildService:
                 if "error" in (replay or {}):
                     raise _error_from_response(replay)
                 return _view_from_response(replay)
+        assert reservation_created_at is not None
         try:
             run = self._create_run(
                 initiator_identity_id=initiator_identity_id,
                 expected_source_revision=expected_source_revision,
                 trace_id=trace_id,
+                operation_id=operation_id,
+                reservation_created_at=reservation_created_at,
             )
         except PlatformError as error:
             self._finish_operation(
-                operation_id, {"error": {"code": error.code, "message": error.message}}
+                operation_id,
+                reservation_created_at,
+                {"error": _operation_error_response(error)},
             )
             raise
         view = GraphRunView.from_record(run)
         assert view is not None
-        self._finish_operation(operation_id, {"run": view.to_dict()})
         return view
 
     def _create_run(
@@ -150,6 +154,8 @@ class GraphBuildService:
         initiator_identity_id: str,
         expected_source_revision: int,
         trace_id: str | None,
+        operation_id: str,
+        reservation_created_at: datetime,
     ) -> GraphRunRecord:
         head, snapshot, estimated_calls, active_generation_id, has_active = self._freeze_source(
             expected_source_revision=expected_source_revision
@@ -170,27 +176,35 @@ class GraphBuildService:
             source_head_fence=int(head.source_head_fence),
             operation_id=grant_operation_id,
         )
-        try:
-            grant = self._coordinator.reserve_graph_component_stage(
-                graph_build_id=graph_build_id,
-                expected_source_revision=expected_source_revision,
-                expected_active_generation_id=active_generation_id,
-                operation_id=grant_operation_id,
-                component_input=component_input,
-            )
-        except PlatformError as error:
-            if error.code == "graph_source_changed":
-                raise
-            raise PlatformError(
-                "graph_build_stage_unavailable",
-                "Indexing could not reserve a public graph component stage",
-                {"reason": error.code},
-                409,
-            ) from error
-        # The indexing reserve runs in its own transactions. Persist the run
-        # only after the grant is frozen, and re-validate the source head
-        # inside the run-creation transaction.
         with self._engine.begin() as connection:
+            self._require_operation_reservation(
+                operation_id=operation_id,
+                reservation_created_at=reservation_created_at,
+                connection=connection,
+            )
+            try:
+                grant = self._coordinator.reserve_graph_component_stage(
+                    graph_build_id=graph_build_id,
+                    expected_source_revision=expected_source_revision,
+                    expected_active_generation_id=active_generation_id,
+                    operation_id=grant_operation_id,
+                    component_input=component_input,
+                    reservation_guard=lambda transaction: self._require_operation_reservation(
+                        operation_id=operation_id,
+                        reservation_created_at=reservation_created_at,
+                        connection=transaction,
+                    ),
+                    connection=connection,
+                )
+            except PlatformError as error:
+                if error.code == "graph_source_changed":
+                    raise
+                raise PlatformError(
+                    "graph_build_stage_unavailable",
+                    "Indexing could not reserve a public graph component stage",
+                    {"reason": error.code},
+                    409,
+                ) from error
             self._source.validate_current_head(
                 source_revision=int(head.source_revision),
                 source_manifest_hash=str(head.source_manifest_hash),
@@ -272,7 +286,36 @@ class GraphBuildService:
                     "estimated_primary_model_calls": run.estimated_primary_model_calls,
                 },
             )
+            view = GraphRunView.from_record(run)
+            assert view is not None
+            self._repository.complete_operation(
+                connection=connection,
+                operation_id=operation_id,
+                reservation_created_at=reservation_created_at,
+                response={"run": view.to_dict()},
+            )
         return run
+
+    def _require_operation_reservation(
+        self,
+        *,
+        operation_id: str,
+        reservation_created_at: datetime,
+        connection: Connection | None,
+    ) -> None:
+        if connection is not None:
+            self._repository.require_operation_reservation(
+                connection=connection,
+                operation_id=operation_id,
+                reservation_created_at=reservation_created_at,
+            )
+            return
+        with self._engine.begin() as transaction:
+            self._repository.require_operation_reservation(
+                connection=transaction,
+                operation_id=operation_id,
+                reservation_created_at=reservation_created_at,
+            )
 
     def _freeze_source(self, *, expected_source_revision: int) -> tuple[Any, Any, int, str, bool]:
         """Read and freeze the current public source facts without holding locks."""
@@ -337,7 +380,7 @@ class GraphBuildService:
     ) -> GraphRunView:
         operation_id = f"{CANCEL_OP_PREFIX}_{idempotency_key}"
         with self._engine.begin() as connection:
-            reservation, replay = self._repository.reserve_operation(
+            reservation, replay, reservation_created_at = self._repository.reserve_operation(
                 connection=connection,
                 operation_id=operation_id,
                 kind="graph_build_cancel",
@@ -347,6 +390,7 @@ class GraphBuildService:
                 if "error" in (replay or {}):
                     raise _error_from_response(replay)
                 return _view_from_response(replay)
+        assert reservation_created_at is not None
         try:
             with self._engine.begin() as connection:
                 run = self._cancel_transaction(
@@ -355,15 +399,18 @@ class GraphBuildService:
                     graph_build_id=graph_build_id,
                     expected_version=expected_version,
                     trace_id=trace_id,
+                    operation_id=operation_id,
+                    reservation_created_at=reservation_created_at,
                 )
         except PlatformError as error:
             self._finish_operation(
-                operation_id, {"error": {"code": error.code, "message": error.message}}
+                operation_id,
+                reservation_created_at,
+                {"error": _operation_error_response(error)},
             )
             raise
         view = GraphRunView.from_record(run)
         assert view is not None
-        self._finish_operation(operation_id, {"run": view.to_dict()})
         self._discard_staging(run)
         return view
 
@@ -375,7 +422,14 @@ class GraphBuildService:
         graph_build_id: str,
         expected_version: int,
         trace_id: str | None,
+        operation_id: str,
+        reservation_created_at: datetime,
     ) -> GraphRunRecord:
+        self._require_operation_reservation(
+            operation_id=operation_id,
+            reservation_created_at=reservation_created_at,
+            connection=connection,
+        )
         run = self._repository.get_run(graph_build_id, connection=connection, for_update=True)
         if run is None:
             raise PlatformError("graph_build_not_found", "Graph build run was not found", {}, 404)
@@ -424,8 +478,21 @@ class GraphBuildService:
             recipient_user_id=run.initiator_identity_id,
             connection=connection,
         )
+        self._repository.delete_staging_resources(
+            connection=connection,
+            run_id=graph_build_id,
+            attempt=run.current_attempt,
+        )
         refreshed = self._repository.get_run(graph_build_id, connection=connection)
         assert refreshed is not None
+        view = GraphRunView.from_record(refreshed)
+        assert view is not None
+        self._repository.complete_operation(
+            connection=connection,
+            operation_id=operation_id,
+            reservation_created_at=reservation_created_at,
+            response={"run": view.to_dict()},
+        )
         return refreshed
 
     # ------------------------------------------------------------- current
@@ -508,6 +575,31 @@ class GraphBuildService:
                 now=self._now(),
             )
 
+    def _require_current_lease(
+        self, *, run: GraphRunRecord, connection: Connection | None = None
+    ) -> None:
+        owner = run.lease_owner
+        if owner is None:
+            raise PlatformError(
+                "graph_build_lease_lost", "The graph run lease or fence no longer matches", {}, 409
+            )
+        if connection is None:
+            renewed = self.heartbeat(run=run, owner=owner)
+        else:
+            renewed = self._repository.heartbeat(
+                connection=connection,
+                graph_build_id=run.graph_build_id,
+                attempt=run.current_attempt,
+                owner=owner,
+                fencing_token=run.fencing_token or "",
+                lease_ttl_seconds=int(self._lease_ttl.total_seconds()),
+                now=self._now(),
+            )
+        if not renewed:
+            raise PlatformError(
+                "graph_build_lease_lost", "The graph run lease or fence no longer matches", {}, 409
+            )
+
     def validate_head(self, *, run: GraphRunRecord) -> None:
         """Synchronous current-source-head revalidation before component handoff."""
         self._source.validate_current_head(
@@ -524,15 +616,19 @@ class GraphBuildService:
         resource_id: str,
         payload: Mapping[str, Any],
     ) -> None:
+        self._require_current_lease(run=run)
         with self._engine.begin() as connection:
             self._repository.write_staging_resource(
                 connection=connection,
                 run_id=run.graph_build_id,
                 attempt=run.current_attempt,
+                owner=run.lease_owner or "",
                 fencing_token=run.fencing_token or "",
+                expected_version=run.version,
                 resource_kind=resource_kind,
                 resource_id=resource_id,
                 payload=payload,
+                now=self._now(),
             )
 
     def record_usage(
@@ -542,14 +638,18 @@ class GraphBuildService:
         primary_model_calls: int,
         provider_calls: int,
     ) -> None:
+        self._require_current_lease(run=run)
         with self._engine.begin() as connection:
             self._repository.add_usage(
                 connection=connection,
                 graph_build_id=run.graph_build_id,
                 attempt=run.current_attempt,
+                owner=run.lease_owner or "",
                 fencing_token=run.fencing_token or "",
+                expected_version=run.version,
                 primary_model_calls=primary_model_calls,
                 provider_calls=provider_calls,
+                now=self._now(),
             )
 
     def staging_manifest(self, *, run: GraphRunRecord) -> tuple[tuple[str, ...], str]:
@@ -564,6 +664,7 @@ class GraphBuildService:
         return resource_ids, manifest_hash
 
     def stage_component(self, *, run: GraphRunRecord) -> str:
+        self._require_current_lease(run=run)
         resource_ids, manifest_hash = self.staging_manifest(run=run)
         build_receipt_hash = _canonical_hash(
             {
@@ -578,18 +679,34 @@ class GraphBuildService:
             graph_resource_manifest_hash=manifest_hash,
             graph_resource_ids=resource_ids,
             build_receipt_hash=build_receipt_hash,
+            lease_guard=lambda connection: self._require_current_lease(
+                run=run, connection=connection
+            ),
         )
-        with self._engine.begin() as connection:
-            self._repository.set_stage_receipt(
-                connection=connection,
-                graph_build_id=run.graph_build_id,
-                attempt=run.current_attempt,
-                fencing_token=run.fencing_token or "",
+        try:
+            with self._engine.begin() as connection:
+                self._repository.set_stage_receipt(
+                    connection=connection,
+                    graph_build_id=run.graph_build_id,
+                    attempt=run.current_attempt,
+                    owner=run.lease_owner or "",
+                    fencing_token=run.fencing_token or "",
+                    expected_version=run.version,
+                    component_stage_id=str(receipt.component_stage_id),
+                    now=self._now(),
+                )
+        except PlatformError:
+            self._discard_component_stage(
+                run,
                 component_stage_id=str(receipt.component_stage_id),
+                operation_id=f"{run.graph_build_id}:stage-lease-lost-discard",
+                acknowledge_source=False,
             )
+            raise
         return str(receipt.component_stage_id)
 
     def release_component(self, *, run: GraphRunRecord, component_stage_id: str) -> Any:
+        self._require_current_lease(run=run)
         return self._coordinator.release_graph_component(
             target_generation_id=run.target_generation_id,
             target_generation_fence=run.target_generation_fence,
@@ -598,6 +715,9 @@ class GraphBuildService:
             source_manifest_hash=run.source_manifest_hash,
             source_head_fence=run.source_head_fence,
             operation_id=f"{run.graph_build_id}:release",
+            lease_guard=lambda connection: self._require_current_lease(
+                run=run, connection=connection
+            ),
         )
 
     def complete_succeeded(
@@ -618,18 +738,21 @@ class GraphBuildService:
             locked = self._repository.get_run(
                 run.graph_build_id, connection=connection, for_update=True
             )
+            now = self._now()
             if locked is None or locked.state != "running":
                 raise PlatformError(
                     "graph_build_lease_lost", "The graph run is not running", {}, 409
                 )
             if (
                 locked.current_attempt != run.current_attempt
+                or locked.lease_owner != owner
                 or locked.fencing_token != run.fencing_token
+                or locked.lease_expires_at is None
+                or locked.lease_expires_at <= now
             ):
                 raise PlatformError(
                     "graph_build_lease_lost", "The graph run fence changed", {}, 409
                 )
-            now = self._now()
             self._repository.transition_run(
                 connection=connection,
                 graph_build_id=run.graph_build_id,
@@ -705,14 +828,17 @@ class GraphBuildService:
                 raise PlatformError(
                     "graph_build_not_found", "Graph build run was not found", {}, 404
                 )
-            if locked.state not in {"queued", "running"}:
-                return locked
-            if locked.state == "running" and (
-                locked.current_attempt != run.current_attempt
-                or locked.fencing_token != run.fencing_token
-            ):
+            if locked.state != "running":
                 return locked
             now = self._now()
+            if (
+                locked.current_attempt != run.current_attempt
+                or locked.lease_owner != owner
+                or locked.fencing_token != run.fencing_token
+                or locked.lease_expires_at is None
+                or locked.lease_expires_at <= now
+            ):
+                return locked
             self._repository.transition_run(
                 connection=connection,
                 graph_build_id=run.graph_build_id,
@@ -731,7 +857,7 @@ class GraphBuildService:
             self._repository.write_audit(
                 connection=connection,
                 run_id=run.graph_build_id,
-                attempt=run.current_attempt if locked.state == "running" else None,
+                attempt=run.current_attempt,
                 version=locked.version + 1,
                 event_kind="run_failed",
                 actor=f"worker:{owner}",
@@ -760,18 +886,36 @@ class GraphBuildService:
     def discard_staging(self, *, run: GraphRunRecord) -> None:
         self._discard_staging(run)
 
-    def _discard_staging(self, run: GraphRunRecord) -> None:
-        """Idempotent post-terminal cleanup; never blocks the terminal state."""
+    def _discard_component_stage(
+        self,
+        run: GraphRunRecord,
+        *,
+        component_stage_id: str | None = None,
+        operation_id: str,
+        acknowledge_source: bool,
+        lease_guard: Callable[[Connection | None], None] | None = None,
+    ) -> bool:
         try:
             self._coordinator.discard_public_graph_component(
                 graph_build_id=run.graph_build_id,
                 attempt=run.current_attempt,
                 target_generation_id=run.target_generation_id,
-                component_stage_id=run.component_stage_id or "",
-                operation_id=f"{run.graph_build_id}:discard",
+                component_stage_id=component_stage_id or run.component_stage_id or "",
+                operation_id=operation_id,
+                acknowledge_source=acknowledge_source,
+                lease_guard=lease_guard,
             )
         except PlatformError:
-            pass
+            return False
+        return True
+
+    def _discard_staging(self, run: GraphRunRecord) -> None:
+        """Idempotent post-terminal cleanup; never blocks the terminal state."""
+        self._discard_component_stage(
+            run,
+            operation_id=f"{run.graph_build_id}:discard",
+            acknowledge_source=True,
+        )
         try:
             self._source.acknowledge_consumption(
                 consumer_kind=GRAPH_CONSUMER_ID,
@@ -787,18 +931,59 @@ class GraphBuildService:
 
     def requeue_expired(self) -> int:
         now = self._now()
-        recovered = 0
         with self._engine.begin() as connection:
-            for graph_build_id, attempt in self._repository.list_expired_running(
-                connection=connection, now=now
+            expired_attempts = self._repository.list_expired_running(connection=connection, now=now)
+        recovered = 0
+        for graph_build_id, attempt in expired_attempts:
+            with self._engine.begin() as connection:
+                run = self._repository.get_run(
+                    graph_build_id, connection=connection, for_update=True
+                )
+            if (
+                run is None
+                or run.state != "running"
+                or run.current_attempt != attempt
+                or run.lease_expires_at is None
+                or run.lease_expires_at > now
             ):
-                if self._repository.invalidate_attempt_and_requeue(
-                    connection=connection,
-                    graph_build_id=graph_build_id,
-                    attempt=attempt,
-                    now=now,
-                ):
-                    recovered += 1
+                continue
+
+            def invalidate_expired_attempt(
+                connection: Connection | None,
+                recovery_graph_build_id: str = graph_build_id,
+                recovery_attempt: int = attempt,
+            ) -> None:
+                if connection is None:
+                    with self._engine.begin() as transaction:
+                        invalidated = self._repository.invalidate_attempt_and_requeue(
+                            connection=transaction,
+                            graph_build_id=recovery_graph_build_id,
+                            attempt=recovery_attempt,
+                            now=now,
+                        )
+                else:
+                    invalidated = self._repository.invalidate_attempt_and_requeue(
+                        connection=connection,
+                        graph_build_id=recovery_graph_build_id,
+                        attempt=recovery_attempt,
+                        now=now,
+                    )
+                if not invalidated:
+                    raise PlatformError(
+                        "graph_build_lease_lost",
+                        "The graph run attempt lease no longer matches",
+                        {},
+                        409,
+                    )
+
+            if not self._discard_component_stage(
+                run,
+                operation_id=f"{run.graph_build_id}:lease-recovery-discard",
+                acknowledge_source=False,
+                lease_guard=invalidate_expired_attempt,
+            ):
+                continue
+            recovered += 1
         return recovered
 
     # ------------------------------------------------------------ GC contract
@@ -824,7 +1009,7 @@ class GraphBuildService:
         )
         stored_operation_id = f"{GC_OP_PREFIX}_{operation_id}"
         with self._engine.begin() as connection:
-            reservation, replay = self._repository.reserve_operation(
+            reservation, replay, reservation_created_at = self._repository.reserve_operation(
                 connection=connection,
                 operation_id=stored_operation_id,
                 kind="graph_component_gc",
@@ -832,6 +1017,7 @@ class GraphBuildService:
             )
             if reservation == "replay":
                 return dict((replay or {}).get("receipt", {}))
+        assert reservation_created_at is not None
         indexing = self._coordinator.request_index_generation_gc(
             candidate_generation_id=candidate_generation_id,
             reconciliation_run_id=reconciliation_run_id,
@@ -872,14 +1058,20 @@ class GraphBuildService:
                 "retryable": False,
                 "component_gc_operation_id": operation_id,
             }
-        self._finish_operation(stored_operation_id, {"receipt": receipt})
+        self._finish_operation(stored_operation_id, reservation_created_at, {"receipt": receipt})
         return receipt
 
-    def _finish_operation(self, operation_id: str, response: Mapping[str, Any]) -> None:
+    def _finish_operation(
+        self,
+        operation_id: str,
+        reservation_created_at: datetime,
+        response: Mapping[str, Any],
+    ) -> None:
         with self._engine.begin() as connection:
             self._repository.complete_operation(
                 connection=connection,
                 operation_id=operation_id,
+                reservation_created_at=reservation_created_at,
                 response=response,
             )
 
@@ -917,12 +1109,23 @@ def _iso(value: datetime) -> str:
 
 def _error_from_response(response: Mapping[str, Any]) -> PlatformError:
     error = response.get("error", {})
+    status_code = error.get("status_code", 409)
+    if not isinstance(status_code, int) or isinstance(status_code, bool):
+        status_code = 409
     return PlatformError(
         str(error.get("code", "unknown_error")),
         str(error.get("message", "Operation failed")),
         {},
-        409,
+        status_code,
     )
+
+
+def _operation_error_response(error: PlatformError) -> dict[str, Any]:
+    return {
+        "code": error.code,
+        "message": error.message,
+        "status_code": error.status_code,
+    }
 
 
 def _view_from_response(response: Mapping[str, Any]) -> GraphRunView:

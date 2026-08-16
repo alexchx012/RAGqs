@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -17,6 +17,7 @@ from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
+from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
 from app.usage.schema import usage_metadata
 
@@ -74,7 +75,16 @@ class _NullObjectStore:
         return False
 
 
-def _make_client():
+class _RuntimeProviderFailingExtractor:
+    def estimate_primary_model_calls(self, snapshot: object) -> int:
+        return len(snapshot.publications)
+
+    def extract(self, snapshot: object, session: object) -> None:
+        del snapshot, session
+        raise PlatformError("graph_provider_call_failed", "provider failed", {}, 503)
+
+
+def _make_client(*, graph_build_extractor: object | None = None):
     settings = load_platform_settings(
         {
             "RAG_PLATFORM_PROFILE": "development",
@@ -100,17 +110,17 @@ def _make_client():
     from app.identity.service import IdentityAccessService
 
     identity = IdentityAccessService(engine, settings.auth)
-    runtime = build_runtime(
-        settings,
-        adapters={
-            "database_engine": engine,
-            "database_clock": clock,
-            "identity_access": identity,
-            "object_store": _NullObjectStore(),
-            "retrieval_release_service": _AlwaysReleasedRetrieval(),
-            "graph_usage_submission": _RecordingUsage(),
-        },
-    )
+    adapters = {
+        "database_engine": engine,
+        "database_clock": clock,
+        "identity_access": identity,
+        "object_store": _NullObjectStore(),
+        "retrieval_release_service": _AlwaysReleasedRetrieval(),
+        "graph_usage_submission": _RecordingUsage(),
+    }
+    if graph_build_extractor is not None:
+        adapters["graph_build_extractor"] = graph_build_extractor
+    runtime = build_runtime(settings, adapters=adapters)
     return TestClient(create_platform_app(settings, runtime=runtime)), runtime
 
 
@@ -201,6 +211,13 @@ def test_wrong_revision_and_empty_source_errors() -> None:
     )
     assert wrong.status_code == 422
     assert wrong.json()["error"]["code"] == "graph_source_empty"
+    replay = client.post(
+        "/v1/ops/graph-builds",
+        json={"expected_source_revision": 42},
+        headers={"Authorization": ops_token, "Idempotency-Key": "w1"},
+    )
+    assert replay.status_code == 422
+    assert replay.json()["error"]["code"] == "graph_source_empty"
     _publish(runtime)
     mismatch = client.post(
         "/v1/ops/graph-builds",
@@ -209,6 +226,37 @@ def test_wrong_revision_and_empty_source_errors() -> None:
     )
     assert mismatch.status_code == 409
     assert mismatch.json()["error"]["code"] == "graph_source_changed"
+
+
+def test_graph_routes_reject_idempotency_keys_that_overflow_operation_ids() -> None:
+    client, runtime = _make_client()
+    ops_token = _seed_user(runtime, "ops", "ops-user")
+    _publish(runtime)
+    too_long_key = "k" * 55
+
+    created = client.post(
+        "/v1/ops/graph-builds",
+        json={"expected_source_revision": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": too_long_key},
+    )
+
+    assert created.status_code == 422
+    assert created.json()["error"]["code"] == "validation_error"
+
+    valid_create = client.post(
+        "/v1/ops/graph-builds",
+        json={"expected_source_revision": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": "valid-create"},
+    )
+    assert valid_create.status_code == 202
+    cancelled = client.post(
+        f"/v1/ops/graph-builds/{valid_create.json()['graph_build_id']}/cancel",
+        json={"expected_version": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": too_long_key},
+    )
+
+    assert cancelled.status_code == 422
+    assert cancelled.json()["error"]["code"] == "validation_error"
 
 
 def test_cancel_contract_over_http() -> None:
@@ -249,6 +297,13 @@ def test_cancel_contract_over_http() -> None:
     )
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "graph_build_not_found"
+    missing_replay = client.post(
+        "/v1/ops/graph-builds/unknown_run/cancel",
+        json={"expected_version": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": "c4"},
+    )
+    assert missing_replay.status_code == 404
+    assert missing_replay.json()["error"]["code"] == "graph_build_not_found"
 
 
 def test_worker_full_loop_via_runtime() -> None:
@@ -276,3 +331,176 @@ def test_worker_full_loop_via_runtime() -> None:
     )
     assert payload["latest_run"]["graph_build_id"] == created["graph_build_id"]
     assert payload["latest_run"]["actual_usage"]["primary_model_calls"] == 1
+
+
+def test_runtime_requeues_a_staged_attempt_and_completes_the_next_attempt() -> None:
+    client, runtime = _make_client()
+    ops_token = _seed_user(runtime, "ops", "ops-user")
+    _publish(runtime)
+    client.post(
+        "/v1/ops/graph-builds",
+        json={"expected_source_revision": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": "retry-stage"},
+    )
+    service = runtime.resolve("graph_build_service")
+    clock = runtime.resolve("database_clock")
+    first = service.claim_next(owner="worker-a")
+    assert first is not None
+    service.write_staging_resource(
+        run=first,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    service.stage_component(run=first)
+    coordinator = runtime.resolve("indexing_service").graph
+    coordinator._grants.clear()
+    coordinator._receipts.clear()
+    clock.now += timedelta(seconds=301)
+
+    assert service.requeue_expired() == 1
+    retry = service.claim_next(owner="worker-b")
+    assert retry is not None
+    service.write_staging_resource(
+        run=retry,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    component_stage_id = service.stage_component(run=retry)
+    receipt = service.release_component(run=retry, component_stage_id=component_stage_id)
+    service.complete_succeeded(run=retry, owner="worker-b", release_receipt=receipt)
+
+    current = client.get("/v1/ops/graph-builds/current", headers={"Authorization": ops_token})
+    assert current.status_code == 200
+    assert current.json()["latest_run"]["state"] == "succeeded"
+
+
+def test_runtime_does_not_expose_recovery_retry_before_stale_component_stage_cleanup(
+    monkeypatch,
+) -> None:
+    client, runtime = _make_client()
+    ops_token = _seed_user(runtime, "ops", "ops-user")
+    _publish(runtime)
+    client.post(
+        "/v1/ops/graph-builds",
+        json={"expected_source_revision": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": "recovery-cleanup-order"},
+    )
+    service = runtime.resolve("graph_build_service")
+    clock = runtime.resolve("database_clock")
+    first = service.claim_next(owner="worker-a")
+    assert first is not None
+    service.write_staging_resource(
+        run=first,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    service.stage_component(run=first)
+    clock.now += timedelta(seconds=301)
+
+    original_discard = service._discard_component_stage
+    claimed_during_cleanup = []
+
+    def claim_during_cleanup(*args, **kwargs):
+        claimed_during_cleanup.append(service.claim_next(owner="worker-b"))
+        return original_discard(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_discard_component_stage", claim_during_cleanup)
+
+    assert service.requeue_expired() == 1
+    assert claimed_during_cleanup == [None]
+
+    retry = service.claim_next(owner="worker-b")
+    assert retry is not None
+    service.write_staging_resource(
+        run=retry,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    component_stage_id = service.stage_component(run=retry)
+    receipt = service.release_component(run=retry, component_stage_id=component_stage_id)
+    service.complete_succeeded(run=retry, owner="worker-b", release_receipt=receipt)
+
+    current = client.get("/v1/ops/graph-builds/current", headers={"Authorization": ops_token})
+    assert current.status_code == 200
+    assert current.json()["latest_run"]["state"] == "succeeded"
+
+
+def test_runtime_stale_recovery_cannot_discard_reclaimed_component_stage(
+    monkeypatch,
+) -> None:
+    client, runtime = _make_client()
+    ops_token = _seed_user(runtime, "ops", "ops-user")
+    _publish(runtime)
+    client.post(
+        "/v1/ops/graph-builds",
+        json={"expected_source_revision": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": "recovery-fence"},
+    )
+    service = runtime.resolve("graph_build_service")
+    clock = runtime.resolve("database_clock")
+    first = service.claim_next(owner="worker-a")
+    assert first is not None
+    service.write_staging_resource(
+        run=first,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    clock.now += timedelta(seconds=301)
+
+    original_discard = service._discard_component_stage
+    reclaimed = False
+    retry_stage_ids: list[str] = []
+    retries: list[object] = []
+
+    def discard_after_reclaim(*args, **kwargs):
+        nonlocal reclaimed
+        if not reclaimed:
+            reclaimed = True
+            assert service.requeue_expired() == 1
+            retry = service.claim_next(owner="worker-b")
+            assert retry is not None
+            retries.append(retry)
+            service.write_staging_resource(
+                run=retry,
+                resource_kind="publication_graph",
+                resource_id="pub_1",
+                payload={"graph": {}},
+            )
+            retry_stage_ids.append(service.stage_component(run=retry))
+        return original_discard(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_discard_component_stage", discard_after_reclaim)
+
+    assert service.requeue_expired() == 0
+    assert len(retries) == 1
+    retry = retries[0]
+    generation_manager = runtime.resolve("indexing_generation_manager")
+    component = generation_manager.get_generation(retry.target_generation_id).manifest[
+        "components"
+    ]["public_graph"]
+    assert component["state"] == "staged"
+    assert component["stage_receipt_id"] == retry_stage_ids[0]
+
+
+def test_runtime_provider_failure_publishes_a_failed_graph_terminal_event() -> None:
+    client, runtime = _make_client(graph_build_extractor=_RuntimeProviderFailingExtractor())
+    ops_token = _seed_user(runtime, "ops", "ops-user")
+    _publish(runtime)
+    client.post(
+        "/v1/ops/graph-builds",
+        json={"expected_source_revision": 1},
+        headers={"Authorization": ops_token, "Idempotency-Key": "provider-failure"},
+    )
+
+    stats = runtime.resolve("graph_build_worker").run_once()
+
+    assert stats.runs_failed == 1
+    current = client.get("/v1/ops/graph-builds/current", headers={"Authorization": ops_token})
+    assert current.status_code == 200
+    assert current.json()["latest_run"]["state"] == "failed"
+    assert current.json()["latest_run"]["failure_class"] == "graph_provider_failed"

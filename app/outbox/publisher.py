@@ -260,6 +260,12 @@ def _validate_payload(event_type: str, schema_version: int, payload: Mapping[str
             "staging_error",
             "index_error",
             "cancelled",
+            "graph_source_changed",
+            "graph_stage_grant_expired",
+            "graph_component_stage_failed",
+            "graph_release_failed",
+            "graph_provider_failed",
+            "graph_worker_unexpected",
         }:
             raise PlatformError(
                 "invalid_event_payload",
