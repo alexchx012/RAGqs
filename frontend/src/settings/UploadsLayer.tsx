@@ -65,7 +65,6 @@ export function UploadsLayer() {
     cancelTokenRef.current += 1;
   };
   const [actionError, setActionError] = useState<string | null>(null);
-  const cancelIdem = useRef(createIdempotencyScope());
   const replayIdem = useRef(createIdempotencyScope());
   // 空间 ID → 名称（上传结果显示空间名而非内部 ID）
   const [spaceNames, setSpaceNames] = useState<Map<string, string>>(new Map());
@@ -256,13 +255,11 @@ export function UploadsLayer() {
     const token = cancelTokenRef.current;
     setConfirmingCancel(true);
     setActionError(null);
-    const idempotencyKey = cancelIdem.current.keyFor('cancel-job', job.job_id, 'cancel');
     try {
-      await api.cancelJob(job.job_id, idempotencyKey);
+      await api.cancelJob(job.job_id);
       if (token !== cancelTokenRef.current) {
         return; // 已关闭/打开 B：A completion no-op
       }
-      cancelIdem.current.clear();
       setPendingCancel(null);
       await loadJobs();
     } catch (error) {
@@ -270,15 +267,13 @@ export function UploadsLayer() {
         return;
       }
       if (error instanceof ApiError && (error.status === 409 || error.status === 403)) {
-        cancelIdem.current.businessResponse();
         setPendingCancel(null);
         setActionError(copy.settings.knowledge.uploads.actionConflict);
         await loadJobs();
       } else if (isBusinessResponse(error)) {
-        cancelIdem.current.businessResponse();
         setActionError(copy.settings.knowledge.manage.actionError);
       } else {
-        // 网络未知/超时：复用同键同体重试
+        // 网络未知/超时：保留确认对话框，由用户重试或取消
         setActionError(copy.settings.knowledge.manage.actionError);
       }
     } finally {

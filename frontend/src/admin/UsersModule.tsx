@@ -370,13 +370,13 @@ export function UsersModule() {
     applyUserUpdate(updated);
   }
 
-  /** 新增成功：无筛选冲突时新行直接插到列表顶部；其余按当前筛选重拉第一页。 */
+  /** 新增成功：未满首页可前插；满页或筛选路径按当前筛选重拉首页。 */
   function handleCreated(created: AdminUserItem): void {
     setCreating(false);
     const fitsFilters =
       (roleFilter === null || created.role === roleFilter) &&
       (departmentFilter === null || created.department?.id === departmentFilter);
-    if (page === 1 && query === '' && fitsFilters) {
+    if (page === 1 && query === '' && fitsFilters && items.length < PAGE_SIZE) {
       setItems((current) => [created, ...current]);
       setTotal((current) => current + 1);
       markEnter(created.id);
@@ -518,24 +518,26 @@ export function UsersModule() {
           <TextLink onClick={clearFilters}>{copyUsers.clearFilters}</TextLink>
         </div>
       ) : (
-        <div>
+        <div role="table" aria-label={copy.shell.drawer.modules.usersOps}>
           <div
+            role="row"
             className={`grid ${USER_GRID} items-center gap-3 px-4 pb-1 text-[14px] text-ash-gray`}
           >
-            <span>{copyUsers.colRealName}</span>
-            <span>{copyUsers.colUsername}</span>
-            <span>{copyUsers.colDepartment}</span>
-            <span>{copyUsers.colRole}</span>
-            <span>{copyUsers.colLastActive}</span>
-            <span>{copyUsers.colActions}</span>
+            <span role="columnheader">{copyUsers.colRealName}</span>
+            <span role="columnheader">{copyUsers.colUsername}</span>
+            <span role="columnheader">{copyUsers.colDepartment}</span>
+            <span role="columnheader">{copyUsers.colRole}</span>
+            <span role="columnheader">{copyUsers.colLastActive}</span>
+            <span role="columnheader">{copyUsers.colActions}</span>
           </div>
-          <ul className="divide-y divide-[var(--color-hairline)]">
+          <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
             {items.map((item) => {
               const frozen = item.lifecycle_status === 'pending_delete';
               const manageable = user !== null && canManageUser(user, item);
               return (
                 <li
                   key={item.id}
+                  role="row"
                   className={
                     `${enterIds.has(item.id) ? 'ui-row-insert ' : ''}` +
                     `transition-colors duration-[var(--duration-slow)] ` +
@@ -548,11 +550,12 @@ export function UsersModule() {
                       'transition-colors duration-150 hover:bg-mist-gray'
                     }
                   >
-                    <span className="truncate text-[15px] font-medium text-ink-black">
+                    <span role="cell" className="truncate text-[15px] font-medium text-ink-black">
                       {item.real_name}
                     </span>
-                    <span className="truncate text-[15px] text-slate-gray">{item.username}</span>
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">{item.username}</span>
                     <span
+                      role="cell"
                       className={
                         'truncate text-[15px] ' +
                         (item.department === null ? 'text-smoke-gray' : 'text-slate-gray')
@@ -560,7 +563,7 @@ export function UsersModule() {
                     >
                       {item.department?.name ?? copyUsers.noDepartment}
                     </span>
-                    <span className="flex min-w-0 items-center gap-2 text-[15px] text-slate-gray">
+                    <span role="cell" className="flex min-w-0 items-center gap-2 text-[15px] text-slate-gray">
                       <span className="truncate">{roleLabel(item.role)}</span>
                       {frozen && (
                         <span className="shrink-0 text-[14px] text-ash-gray">
@@ -568,7 +571,7 @@ export function UsersModule() {
                         </span>
                       )}
                     </span>
-                    <span className="truncate text-[15px] text-slate-gray">
+                    <span role="cell" className="truncate text-[15px] text-slate-gray">
                       {frozen
                         ? item.purge_after_at !== null
                           ? copyUsers.purgeAfter(formatDate(item.purge_after_at))
@@ -577,7 +580,7 @@ export function UsersModule() {
                           ? formatDateTime(item.last_active_at)
                           : copyUsers.noDepartment}
                     </span>
-                    <span className="flex items-center gap-3">
+                    <span role="cell" className="flex items-center gap-3">
                       {manageable && (
                         <>
                           <TextLink ink onClick={() => setEditing(item)}>
@@ -811,7 +814,13 @@ function EditUserDialog({
 
   return (
     <DialogFrame ariaLabel={copyUsers.editDialogTitle} onClose={onClose}>
-      <h2 className="text-[20px] font-medium text-ink-black">{copyUsers.editDialogTitle}</h2>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <h2 className="text-[20px] font-medium text-ink-black">{copyUsers.editDialogTitle}</h2>
       <p className="mt-3 text-[17px] text-ink-black">{target.real_name}</p>
       {error !== null && (
         <p role="alert" className="mt-3 text-[15px] text-danger">
@@ -886,14 +895,15 @@ function EditUserDialog({
         )}
         <p className="mt-2 text-[15px] text-smoke-gray">{copyUsers.sessionRevokedNote}</p>
       </div>
-      <div className="mt-6 flex justify-end gap-2">
-        <Pill variant="ghost" size="sm" disabled={saving} onClick={onClose}>
-          {copy.controls.cancel}
-        </Pill>
-        <Pill size="sm" loading={saving} disabled={saving} onClick={() => void save()}>
-          {copyUsers.save}
-        </Pill>
-      </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <Pill type="button" variant="ghost" size="sm" disabled={saving} onClick={onClose}>
+            {copy.controls.cancel}
+          </Pill>
+          <Pill type="submit" size="sm" loading={saving} disabled={saving}>
+            {copyUsers.save}
+          </Pill>
+        </div>
+      </form>
     </DialogFrame>
   );
 }
@@ -1027,7 +1037,13 @@ function CreateUserDialog({ actorRole, onClose, onCreated, onAbort }: CreateUser
 
   return (
     <DialogFrame ariaLabel={copyUsers.addDialogTitle} onClose={onClose}>
-      <h2 className="text-[20px] font-medium text-ink-black">{copyUsers.addDialogTitle}</h2>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <h2 className="text-[20px] font-medium text-ink-black">{copyUsers.addDialogTitle}</h2>
       {error !== null && (
         <p role="alert" className="mt-3 text-[15px] text-danger">
           {error}
@@ -1198,14 +1214,15 @@ function CreateUserDialog({ actorRole, onClose, onCreated, onAbort }: CreateUser
         )}
         <p className="mt-2 text-[15px] text-smoke-gray">{copyUsers.passwordOfflineNote}</p>
       </div>
-      <div className="mt-6 flex justify-end gap-2">
-        <Pill variant="ghost" size="sm" disabled={saving} onClick={onClose}>
-          {copy.controls.cancel}
-        </Pill>
-        <Pill size="sm" loading={saving} disabled={saving} onClick={() => void save()}>
-          {copy.controls.confirm}
-        </Pill>
-      </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <Pill type="button" variant="ghost" size="sm" disabled={saving} onClick={onClose}>
+            {copy.controls.cancel}
+          </Pill>
+          <Pill type="submit" size="sm" loading={saving} disabled={saving}>
+            {copy.controls.confirm}
+          </Pill>
+        </div>
+      </form>
     </DialogFrame>
   );
 }

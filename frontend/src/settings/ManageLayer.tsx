@@ -4,7 +4,7 @@
  *   一处呈现，本层不重复；操作范围：上传新版本（真实 §6.4 链路）/版本记录/重建索引/删除（二次确认）；
  *   初始上传不在本层发起、不提供上传按钮。
  * - 「投稿审核」为部门库管理下的正确子层（/settings/knowledge/manage/approvals）：返回回到部门库
- *   管理并保留空间上下文；待处理计数徽标（GET /approvals/summary，为 0 不显示）。
+ *   管理并保留空间上下文；待处理项以审核列表为准。
  * - 通过：202 后行 250ms 淡出收起 + 页头下轻提示；驳回：对话框可选填单行输入框，填了随铃铛送达。
  * - 失败：duplicate_document 仅行内提示行不移除不刷新；version_conflict 刷新该行 version 后重试；
  *   submission_already_reviewed / submission_scope_changed / 投稿人冻结删除均刷新列表。
@@ -17,7 +17,6 @@ import { ApiError } from '../api/errors';
 import { copy } from '../copy';
 import { formatDrawerLocation } from '../router/drawer-params';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
-import { CountBadge } from '../ui/CountBadge';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { Paginator } from '../ui/Paginator';
 import { Pill } from '../ui/Pill';
@@ -58,7 +57,6 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(() =>
     getManageSpaceSelection(sessionKey),
   );
-  const [approvalCount, setApprovalCount] = useState(0);
   const [newVersionTarget, setNewVersionTarget] = useState<DocumentListItem | null>(null);
   const spacesSeqRef = useRef(0);
   // 当前部门文档列表 reload 句柄（由 ManageDocuments 注册；NewVersionDialog 冲突刷新用，
@@ -92,10 +90,6 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
         }
         return candidate;
       });
-      const summary = await api.getApprovalSummary().catch(() => null);
-      if (seq === spacesSeqRef.current) {
-        setApprovalCount(summary?.submission_pending ?? 0);
-      }
     } catch {
       if (seq === spacesSeqRef.current) {
         setSpacesError(true);
@@ -128,7 +122,6 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
         >
           <span className="flex items-center gap-2">
             {copy.settings.knowledge.manage.approvals}
-            <CountBadge count={approvalCount} />
           </span>
           <ChevronRight size={16} className="text-slate-gray" aria-hidden />
         </button>
@@ -513,7 +506,6 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
   const { api } = useSettings();
   const navigate = useNavigate();
   const [approvals, setApprovals] = useState<readonly ApprovalListItem[]>([]);
-  const [summary, setSummary] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [pendingReject, setPendingReject] = useState<ApprovalListItem | null>(null);
@@ -532,12 +524,11 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
     setLoading(true);
     setLoadError(false);
     try {
-      const [list, summaryResponse] = await Promise.all([api.listApprovals(), api.getApprovalSummary()]);
+      const list = await api.listApprovals();
       if (seq !== approvalsSeqRef.current) {
         return;
       }
       setApprovals(list.items);
-      setSummary(summaryResponse.submission_pending);
       setVersionByRow(new Map(list.items.map((item) => [item.submission_id, item.version])));
     } catch {
       if (seq === approvalsSeqRef.current) {
@@ -612,7 +603,6 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
           return next;
         });
         setApprovals((items) => items.filter((item) => item.submission_id !== approval.submission_id));
-        setSummary((value) => Math.max(0, value - 1));
       }, 250);
     } catch (error) {
       if (isBusinessResponse(error)) {
@@ -676,10 +666,7 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
         <ChevronRight size={14} className="rotate-180" aria-hidden />
         {copy.shell.drawer.modules.manage}
       </button>
-      <div className="flex items-center gap-2">
-        <h2 className="text-subheading font-medium text-ink-black">{copy.settings.knowledge.manage.approvals}</h2>
-        <CountBadge count={summary} />
-      </div>
+      <h2 className="text-subheading font-medium text-ink-black">{copy.settings.knowledge.manage.approvals}</h2>
       {notice !== null && (
         <p role="status" className="mt-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-gray">
           {notice}
@@ -770,32 +757,48 @@ interface RejectDialogProps {
 }
 
 function RejectDialog({ open, onOpenChange, reason, onReasonChange, pending, onConfirm }: RejectDialogProps) {
-  useModalDialog(open, onOpenChange);
+  const dialogRef = useModalDialog(open, onOpenChange);
   if (!open) {
     return null;
   }
   return (
-    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={copy.settings.knowledge.manage.rejectDialogTitle}>
+    <div
+      ref={dialogRef}
+      tabIndex={-1}
+      className="fixed inset-0 z-50 outline-none"
+      role="dialog"
+      aria-modal="true"
+      aria-label={copy.settings.knowledge.manage.rejectDialogTitle}
+    >
       <div className="fixed inset-0 bg-ink-black/24" onClick={() => onOpenChange(false)} aria-hidden="true" />
-      <div className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+      <form
+        className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!pending) {
+            onConfirm();
+          }
+        }}
+      >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.manage.rejectDialogTitle}</h2>
         <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.manage.rejectDialogDescription}</p>
         <input
           type="text"
           value={reason}
           onChange={(event) => onReasonChange(event.target.value)}
+          aria-label={copy.settings.knowledge.manage.rejectReasonPlaceholder}
           placeholder={copy.settings.knowledge.manage.rejectReasonPlaceholder}
           className="mt-4 h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
         />
         <div className="mt-6 flex justify-end gap-2">
-          <Pill variant="ghost" size="sm" disabled={pending} onClick={() => onOpenChange(false)}>
+          <Pill type="button" variant="ghost" size="sm" disabled={pending} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill size="sm" loading={pending} onClick={onConfirm}>
+          <Pill type="submit" size="sm" loading={pending}>
             {copy.settings.knowledge.manage.reject}
           </Pill>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

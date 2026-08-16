@@ -187,35 +187,44 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         : { layers: [] as readonly DrawerLayer[], exact: true },
     [registry, parsed, role],
   );
+  const adminAccessDenied =
+    parsed.open && parsed.segment === 'admin' && !registry.hasAdminModules(role);
+  const drawerOpen = parsed.open && !adminAccessDenied;
+
+  useEffect(() => {
+    if (adminAccessDenied) {
+      navigate('/', { replace: true });
+    }
+  }, [adminAccessDenied, navigate]);
 
   // 管理段顶层缺省选中「总览」（运维 / 超管首屏默认选中，各端 §7.1）
   useEffect(() => {
-    if (parsed.open && parsed.segment === 'admin' && parsed.drill.length === 0) {
+    if (drawerOpen && parsed.segment === 'admin' && parsed.drill.length === 0) {
       const dashboard = registry.resolve('admin', ['dashboard'], role);
       if (dashboard.layers.length > 0) {
         navigate('/admin/dashboard', { replace: true });
       }
     }
-  }, [parsed, registry, role, navigate]);
+  }, [drawerOpen, parsed, registry, role, navigate]);
 
   // ---- 滑上 / 滑下（打开与关闭） ----
   const [slide, setSlide] = useState<'closed' | 'enter' | 'open' | 'closing'>(
-    parsed.open ? 'open' : 'closed',
+    drawerOpen ? 'open' : 'closed',
   );
   // 关闭动画期间保留最后打开的渲染快照
   const snapshotRef = useRef({ parsed, layers: resolved.layers });
-  if (parsed.open) {
+  if (drawerOpen) {
     snapshotRef.current = { parsed, layers: resolved.layers };
   }
   useEffect(() => {
-    if (parsed.open && (slide === 'closed' || slide === 'closing')) {
+    if (drawerOpen && (slide === 'closed' || slide === 'closing')) {
       setSlide('enter');
       return;
     }
-    if (!parsed.open && slide === 'open') {
+    if (!drawerOpen && slide === 'open') {
       setSlide('closing');
     }
-  }, [parsed.open, slide]);
+  }, [drawerOpen, slide]);
   useEffect(() => {
     if (slide === 'enter') {
       // 下一帧切到 open，触发 translateY 100%→0 过渡
@@ -285,7 +294,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
 
   // URL 变化驱动动画：append → drill；pop → back；其余 → 同层切换交叉淡变
   useLayoutEffect(() => {
-    if (!parsed.open) {
+    if (!drawerOpen) {
       lastDrillRef.current = [];
       setTransition(null);
       clearTimers();
@@ -355,7 +364,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       }, TOTAL_DRILL_MS),
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parsed, resolved, narrow, reducedMotion, registry, role, measure, clearTimers]);
+  }, [drawerOpen, parsed, resolved, narrow, reducedMotion, registry, role, measure, clearTimers]);
 
   // ---- Esc 逐层向上：下钻层先返回上一层，顶层关闭抽屉 ----
   // esc-stack 监听是原生 DOM 监听，回调可能在下一次 React 提交前触发（快速连按 Esc
@@ -381,7 +390,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         : '/';
     escPathRef.current = next;
     navigate(next);
-  }, parsed.open);
+  }, drawerOpen);
 
   // ---- 下滑手势：跟手位移，超过 25% 关闭，否则回弹 250ms ----
   const [dragOffset, setDragOffset] = useState<number | null>(null);

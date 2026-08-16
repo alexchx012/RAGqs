@@ -204,7 +204,7 @@ export function OpsJobsLayer() {
     setNotice(null);
     try {
       // §6.7：cancel 无 body 无 Idempotency-Key
-      await settingsApi.cancelJob(job.job_id, '');
+      await settingsApi.cancelJob(job.job_id);
       if (token !== cancelTokenRef.current) {
         return;
       }
@@ -309,26 +309,39 @@ export function OpsJobsLayer() {
           {visibleItems.length === 0 ? (
             <EmptyState text={copyOperations.emptyJobs} />
           ) : (
-            <ul className="flex flex-col rounded-[var(--radius-cards)] border border-[var(--color-hairline)] bg-paper-white px-0 py-1">
+            <div role="table" aria-label={copyOperations.jobs}>
+              <div role="row" className={`sr-only grid ${gridColumns}`}>
+                <span role="columnheader">{copyOperations.colTask}</span>
+                <span role="columnheader">{copyOperations.colJobId}</span>
+                <span role="columnheader">{copyOperations.colQueuedAt}</span>
+                <span role="columnheader">{copyOperations.colWaitDuration}</span>
+                <span role="columnheader">{copyOperations.colStatus}</span>
+                {showActions && <span role="columnheader">{copyOperations.colActions}</span>}
+              </div>
+              <ul
+                role="rowgroup"
+                className="flex flex-col rounded-[var(--radius-cards)] border border-[var(--color-hairline)] bg-paper-white px-0 py-1"
+              >
               {visibleItems.map((job) => (
                 <li
                   key={job.job_id}
+                  role="row"
                   className={
                     `${leavingIds.has(job.job_id) ? 'ui-row-exit' : 'ui-row-enter'} grid items-center gap-x-4 border-t border-[var(--color-hairline)] ` +
                     `px-4 py-3 first:border-t-0 ${gridColumns} ${job.stale ? 'bg-fog-white' : ''}`
                   }
                 >
-                  <span className="min-w-0 truncate text-[15px] text-ink-black">
+                  <span role="cell" className="min-w-0 truncate text-[15px] text-ink-black">
                     {copyOperations.taskTypeIngestion} · {job.document_name}
                   </span>
-                  <span className="font-mono text-[15px] text-ash-gray">{job.job_id}</span>
-                  <span className="text-[15px] text-slate-gray">
+                  <span role="cell" className="font-mono text-[15px] text-ash-gray">{job.job_id}</span>
+                  <span role="cell" className="text-[15px] text-slate-gray">
                     {formatDateTime(job.enqueued_at)}
                   </span>
-                  <span className={`text-[15px] ${job.stale ? 'text-warning' : 'text-slate-gray'}`}>
+                  <span role="cell" className={`text-[15px] ${job.stale ? 'text-warning' : 'text-slate-gray'}`}>
                     {copyOperations.waitDuration(job.wait_seconds)}
                   </span>
-                  <span className="flex items-center gap-1.5">
+                  <span role="cell" className="flex items-center gap-1.5">
                     {/* stale 是派生标记：琥珀点 + 停留时长琥珀，状态标签仍显示原 state */}
                     {job.stale && <StatusDot intent="warning" />}
                     <span className="rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-1 text-caption text-ink-black">
@@ -341,7 +354,7 @@ export function OpsJobsLayer() {
                     )}
                   </span>
                   {showActions && (
-                    <span className="flex items-center justify-end gap-2">
+                    <span role="cell" className="flex items-center justify-end gap-2">
                       {job.allowed_actions.includes('cancel') && (
                         <Pill
                           variant="ghost"
@@ -366,7 +379,8 @@ export function OpsJobsLayer() {
                   )}
                 </li>
               ))}
-            </ul>
+              </ul>
+            </div>
           )}
         </>
       )}

@@ -53,7 +53,7 @@ export interface SettingsApi {
   ): Promise<NewVersionResponse>;
   listJobs(input: JobListQuery): Promise<JobListResponse>;
   getUploadBatch(batchId: string): Promise<UploadBatch>;
-  cancelJob(jobId: string, idempotencyKey: string): Promise<void>;
+  cancelJob(jobId: string): Promise<void>;
   replayJob(jobId: string, idempotencyKey: string): Promise<ReplayJobResponse>;
   ackNotification(eventId: string): Promise<void>;
   listVersions(documentId: string): Promise<DocumentVersionsResponse>;
@@ -277,11 +277,10 @@ export function createSettingsApi(client: ApiClient): SettingsApi {
       });
     },
 
-    async cancelJob(jobId, idempotencyKey) {
+    async cancelJob(jobId) {
       const authSessionGuard = guard();
       await client.request<void>(`/ingestion-jobs/${encodeURIComponent(jobId)}/cancel`, {
         method: 'POST',
-        headers: idempotencyHeaders(idempotencyKey),
         authSessionGuard,
       });
     },

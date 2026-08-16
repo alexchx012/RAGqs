@@ -472,7 +472,7 @@ describe('knowledge contract mock：任务状态机与批次', () => {
 });
 
 describe('knowledge contract mock：版本记录', () => {
-  it('恢复创建新版本与新任务；409 document_version_purged 后内容不可用', async () => {
+  it('恢复创建新版本与新任务；陈旧 expected_version 返回 409 document_version_conflict', async () => {
     const token = bearerOf('zhangsan');
     const docs = (await (await listDocuments(token, 'personal:u_user')).json()) as {
       items: { id: string; document_version_id: string; version: number }[];
@@ -497,14 +497,14 @@ describe('knowledge contract mock：版本记录', () => {
     expect(restored.job_id).toBeTruthy();
     expect(restored.document_version_id).not.toBe(target.document_version_id);
 
-    // 行版本已推进 → 旧 expected_version 触发 409
+    // 行版本已推进 → 旧 expected_version 触发乐观并发冲突。
     const conflict = await fetch(resolveUrl(`/v1/documents/${target.id}/versions/${target.document_version_id}/restore`), {
       method: 'POST',
       headers: { Authorization: token, 'Content-Type': 'application/json', 'Idempotency-Key': 'idem-restore-2' },
       body: JSON.stringify({ expected_version: versions.version }),
     });
     expect(conflict.status).toBe(409);
-    expect(((await conflict.json()) as { error: { code: string } }).error.code).toBe('document_version_purged');
+    expect(((await conflict.json()) as { error: { code: string } }).error.code).toBe('document_version_conflict');
   });
 
   it('重建索引与删除：expected_version 冲突 409；202 后立即移除', async () => {

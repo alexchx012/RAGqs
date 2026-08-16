@@ -87,6 +87,20 @@ describe('抽屉开合与 URL 同步', () => {
     expect(dialog).toBeInTheDocument();
     await waitFor(() => expect(probe.textContent).toBe('/admin/dashboard'));
   });
+
+  it('普通用户访问 /admin 时回到可访问路径且不保留抽屉', async () => {
+    const probe = await renderApp('/admin');
+
+    await waitFor(() => expect(probe.textContent).toBe('/'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('普通用户访问 /admin/* 深链时回到可访问路径且不保留抽屉', async () => {
+    const probe = await renderApp('/admin/users');
+
+    await waitFor(() => expect(probe.textContent).toBe('/'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
 });
 
 describe('左栏按角色渲染与跨段切换', () => {
@@ -315,7 +329,7 @@ describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => 
     closed_by: null,
   };
 
-  it('管理段模块按钮：审批中心合计徽标 / 评测开窗状态点 / 系统运维超时琥珀徽标', async () => {
+  it('管理段模块按钮：仅可靠的配额待审徽标 / 评测开窗状态点 / 系统运维超时琥珀徽标', async () => {
     const adminApi = fakeAdminApi({
       getApprovalSummary: vi.fn(async () => ({ quota_pending: 2, submission_pending: 1 })),
       getCalibrationWindow: vi.fn(async () => openWindow),
@@ -323,9 +337,10 @@ describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => 
     });
     await renderApp('/admin', 'ops', adminApi);
     const dialog = await screen.findByRole('dialog', { name: modules.dashboard });
-    // 审批中心：配额 2 + 投稿 1 合计徽标 3
+    // 审批中心：仅后端真实提供的配额待审数 2
     const approvalsButton = within(dialog).getByRole('button', { name: /审批中心/ });
-    expect(await within(approvalsButton).findByText('3')).toBeInTheDocument();
+    expect(await within(approvalsButton).findByText('2')).toBeInTheDocument();
+    expect(within(approvalsButton).queryByText('3')).toBeNull();
     // 评测与校准：开窗中成功绿状态点
     const evaluationButton = within(dialog).getByRole('button', { name: new RegExp(modules.evaluation) });
     await waitFor(() => expect(evaluationButton.querySelector('.bg-success')).not.toBeNull());
@@ -337,7 +352,7 @@ describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => 
     expect(dashboardButton.querySelector('.bg-mist-gray')).toBeNull();
   });
 
-  it('审批中心下钻行：配额申请 / 投稿审核分项徽标与 › 同行右置', async () => {
+  it('审批中心下钻行：仅配额申请显示可靠待审徽标', async () => {
     const adminApi = fakeAdminApi({
       getApprovalSummary: vi.fn(async () => ({ quota_pending: 2, submission_pending: 1 })),
     });
@@ -348,7 +363,21 @@ describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => 
     const submissionsRow = within(dialog).getByRole('button', {
       name: new RegExp(modules.knowledgeApprovals),
     });
-    expect(await within(submissionsRow).findByText('1')).toBeInTheDocument();
+    await waitFor(() => expect(adminApi.getApprovalSummary).toHaveBeenCalled());
+    expect(within(submissionsRow).queryByText('1')).toBeNull();
+  });
+
+  it('超管投稿审核项不展示不可靠的投稿待审数', async () => {
+    const adminApi = fakeAdminApi({
+      getApprovalSummary: vi.fn(async () => ({ quota_pending: 2, submission_pending: 1 })),
+    });
+    await renderApp('/admin/spaces', 'admin', adminApi);
+    const dialog = await screen.findByRole('dialog', { name: modules.spaces });
+    const submissionsRow = within(dialog).getByRole('button', {
+      name: new RegExp(modules.knowledgeApprovals),
+    });
+    expect(adminApi.getApprovalSummary).not.toHaveBeenCalled();
+    expect(within(submissionsRow).queryByText('1')).toBeNull();
   });
 
   it('摘要为 0 不渲染：模块按钮保持原标题与布局', async () => {

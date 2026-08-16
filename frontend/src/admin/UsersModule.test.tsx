@@ -8,7 +8,7 @@
  * 入口与权限矩阵；admin 只读矩阵；部门管理下钻入口与深链回落（registry）。
  */
 
-import { act, render, screen, waitFor, within, type RenderResult } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within, type RenderResult } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -173,6 +173,15 @@ async function waitDepartmentSelect(dialog: HTMLElement): Promise<HTMLElement> {
 }
 
 describe('工具行：搜索防抖与筛选叠加', () => {
+  it('用户列表向辅助技术公开列头与单元格关系', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('张三');
+
+    const table = screen.getByRole('table', { name: copy.shell.drawer.modules.usersOps });
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
+    expect(within(rowOf('张三')).getAllByRole('cell')).toHaveLength(6);
+  });
+
   it('初次拉取第一页；键入 300ms 防抖后带 q 重查第一页', async () => {
     const { api } = await renderModule(adminUser());
     await screen.findByText('张三');
@@ -471,6 +480,19 @@ describe('编辑用户对话框', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(rowOf('张三').className).toContain('bg-fog-white');
   });
+
+  it('编辑用户表单响应原生 submit 一次', async () => {
+    const { api } = await renderModule(adminUser());
+    await screen.findByText('张三');
+    const dialog = await openEdit('张三');
+    await waitDepartmentSelect(dialog);
+    const form = dialog.querySelector('form');
+    expect(form).not.toBeNull();
+
+    fireEvent.submit(form!);
+
+    await waitFor(() => expect(api.patchUser).toHaveBeenCalledTimes(1));
+  });
 });
 
 describe('新增用户对话框', () => {
@@ -532,6 +554,65 @@ describe('新增用户对话框', () => {
     });
     await screen.findByText('小新');
     expect(rowOf('小新').className).toContain('ui-row-insert');
+  });
+
+  it('有效新增用户表单按 Enter 提交一次', async () => {
+    const { api } = await renderModule(adminUser());
+    await screen.findByText('张三');
+    const dialog = await openCreate();
+    await userEvent.type(within(dialog).getByLabelText(copyUsers.colUsername), 'enter-user');
+    await userEvent.type(within(dialog).getByLabelText(copyUsers.colRealName), '回车用户');
+    await userEvent.type(within(dialog).getByLabelText(copyUsers.passwordLabel), 'passw0rd1');
+
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(api.createUser).toHaveBeenCalledTimes(1));
+  });
+
+  it('首页满页时创建用户重载首页，且不会在下一页重复', async () => {
+    const token = loginToken('admin');
+    const source = mockAdmin.listUsers(token, { page: 1, pageSize: 20 }).items[0]!;
+    const firstPage = Array.from({ length: 20 }, (_, index) => ({
+      ...source,
+      id: `full-page-user-${index}`,
+      username: `full-page-${index}`,
+      real_name: `满页用户 ${index + 1}`,
+    }));
+    const created = { ...source, id: 'created-user', username: 'newbie', real_name: '小新' };
+    const secondPage = { ...source, id: 'second-page-user', username: 'second-page', real_name: '第二页用户' };
+    let createdOnServer = false;
+    const listUsers = vi.fn(async (query: AdminUserListQuery) => ({
+      items:
+        query.page === 2
+          ? [secondPage]
+          : createdOnServer
+            ? [created, ...firstPage.slice(0, 19)]
+            : firstPage,
+      total: 21,
+      page: query.page ?? 1,
+      page_size: query.pageSize ?? 20,
+    }));
+    const createUser = vi.fn(async () => {
+      createdOnServer = true;
+      return created;
+    });
+    const { api } = await renderModule(adminUser(), { listUsers, createUser });
+    await screen.findByText('满页用户 1');
+    const dialog = await openCreate();
+    await userEvent.type(within(dialog).getByLabelText(copyUsers.colUsername), 'newbie');
+    await userEvent.type(within(dialog).getByLabelText(copyUsers.colRealName), '小新');
+    await userEvent.type(within(dialog).getByLabelText(copyUsers.passwordLabel), 'passw0rd1');
+    await userEvent.click(within(dialog).getByRole('button', { name: copyControls.confirm }));
+
+    await waitFor(() => expect(vi.mocked(api.listUsers)).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('小新')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('table', { name: copy.shell.drawer.modules.usersOps })).getAllByRole('row'),
+    ).toHaveLength(21);
+
+    await userEvent.click(screen.getByRole('button', { name: copyControls.paginatorNext }));
+    expect(await screen.findByText('第二页用户')).toBeInTheDocument();
+    expect(screen.queryByText('小新')).toBeNull();
   });
 });
 

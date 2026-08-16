@@ -110,7 +110,7 @@ function contractAdminApi(
 function contractSettingsApi(token: string, overrides: Partial<SettingsApi> = {}): SettingsApi {
   return {
     getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
-    cancelJob: vi.fn((jobId: string, key: string) => call(() => mockKnowledge.cancelJob(token, jobId, key))),
+    cancelJob: vi.fn((jobId: string) => call(() => mockKnowledge.cancelJob(token, jobId))),
     replayJob: vi.fn((jobId: string, key: string) => call(() => mockKnowledge.replayJob(token, jobId, key))),
     ...overrides,
   } as unknown as SettingsApi;
@@ -197,6 +197,23 @@ describe('任务队列：四档分段与行渲染（§10.1，A41）', () => {
     expect(screen.queryByText(nameCell('月度归档.pdf'))).toBeNull();
   });
 
+  it('任务队列向辅助技术暴露列头和行单元格', async () => {
+    const token = loginToken('ops-wang');
+    await renderLayer(<OpsJobsLayer />, opsUser(), contractAdminApi(token), contractSettingsApi(token));
+
+    const table = await screen.findByRole('table', { name: copyOperations.jobs });
+    expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      '任务',
+      '任务 ID',
+      '入队时间',
+      '停留时长',
+      '状态',
+      '操作',
+    ]);
+    const row = within(table).getByRole('row', { name: /事故报告\.pdf/ });
+    expect(within(row).getAllByRole('cell')).toHaveLength(6);
+  });
+
   it('行各列：任务类型 + 文档名、等宽任务 ID、进入时间、停留时长格式化、状态标签', async () => {
     const token = loginToken('ops-wang');
     const captured: OpsJobsResponse[] = [];
@@ -266,8 +283,8 @@ describe('任务队列：行操作（§10.2 / §6.7，A42）', () => {
     const dialog = await screen.findByRole('dialog', { name: copyUploads.cancelConfirmTitle });
     await user.click(within(dialog).getByRole('button', { name: copyUploads.cancel }));
 
-    // §6.7：cancel 无 body 无 Idempotency-Key（空键透传）
-    await waitFor(() => expect(settingsApi.cancelJob).toHaveBeenCalledWith(jobId, ''));
+    // §6.7：cancel 无 body 无 Idempotency-Key
+    await waitFor(() => expect(settingsApi.cancelJob).toHaveBeenCalledWith(jobId));
     expect(
       await within(rowOf('月度归档.pdf')).findByText(copyUploads.stateLabel('cancelled')),
     ).toBeInTheDocument();

@@ -159,6 +159,15 @@ async function openDeactivate(name: string): Promise<HTMLElement> {
 }
 
 describe('工具行：状态筛选、刷新与无分页无搜索', () => {
+  it('部门目录向辅助技术公开列头与单元格关系', async () => {
+    await renderLayer();
+
+    const table = await screen.findByRole('table', { name: copy.shell.drawer.modules.departments });
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(8);
+    const row = within(table).getByRole('row', { name: /财务部/ });
+    expect(within(row).getAllByRole('cell')).toHaveLength(8);
+  });
+
   it('默认「在用」；切换分段与点击刷新按当前 status 传参', async () => {
     const { api } = await renderLayer();
     await screen.findByText('财务部');
@@ -262,6 +271,17 @@ describe('新增部门与幂等键语义', () => {
     expect(api.createDepartment).toHaveBeenCalledWith('战略部', expect.any(String));
     await screen.findByText('战略部');
     expect(rowOf('战略部').className).toContain('ui-row-insert');
+  });
+
+  it('名称对话框在有效输入后以 Enter 提交', async () => {
+    const { api } = await renderLayer();
+    await screen.findByText('财务部');
+    const dialog = await openCreate();
+    await userEvent.type(within(dialog).getByLabelText(copyDepartments.nameLabel), '回车部门');
+
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(api.createDepartment).toHaveBeenCalledWith('回车部门', expect.any(String)));
   });
 
   it('网络结果未知：同键同体保留，用户显式重试复用同一键', async () => {

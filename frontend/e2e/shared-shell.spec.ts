@@ -141,3 +141,14 @@ test('ops login lands with the admin drawer auto-expanded to the dashboard, and 
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
+
+test('regular users cannot retain admin deep links', async ({ page }) => {
+  await login(page, 'zhangsan');
+
+  for (const adminPath of ['/admin', '/admin/users']) {
+    await page.goto(adminPath);
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByLabel(copy.chat.composer.inputPlaceholder)).toBeVisible();
+  }
+});
