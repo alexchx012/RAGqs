@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 GraphBuildState = Literal["queued", "running", "succeeded", "failed", "cancelled"]
@@ -15,6 +15,7 @@ GraphFailureClass = Literal[
     "graph_component_stage_failed",
     "graph_release_failed",
     "graph_provider_failed",
+    "graph_worker_unexpected",
 ]
 
 
@@ -181,7 +182,7 @@ class GraphActivationReceipt:
 def _iso(value: datetime) -> str:
     if value.tzinfo is None:
         return value.isoformat() + "Z"
-    return value.astimezone().isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 __all__ = [

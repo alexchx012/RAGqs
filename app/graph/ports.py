@@ -60,6 +60,8 @@ class GraphComponentCoordinatorPort(Protocol):
         expected_active_generation_id: str,
         operation_id: str,
         component_input: Any,
+        reservation_guard: Callable[[Connection | None], None] | None = None,
+        connection: Connection | None = None,
     ) -> Any: ...
     def stage_public_graph_component(
         self,
@@ -68,6 +70,7 @@ class GraphComponentCoordinatorPort(Protocol):
         graph_resource_manifest_hash: str,
         graph_resource_ids: Sequence[str],
         build_receipt_hash: str,
+        lease_guard: Callable[[Connection | None], None] | None = None,
     ) -> Any: ...
     def release_graph_component(
         self,
@@ -79,6 +82,7 @@ class GraphComponentCoordinatorPort(Protocol):
         source_manifest_hash: str,
         source_head_fence: int,
         operation_id: str,
+        lease_guard: Callable[[Connection | None], None] | None = None,
     ) -> Any: ...
     def discard_public_graph_component(
         self,
@@ -88,6 +92,8 @@ class GraphComponentCoordinatorPort(Protocol):
         target_generation_id: str,
         component_stage_id: str,
         operation_id: str,
+        acknowledge_source: bool = True,
+        lease_guard: Callable[[Connection | None], None] | None = None,
     ) -> Mapping[str, Any]: ...
 
 
@@ -122,6 +128,10 @@ class GraphExtractionSession(Protocol):
         request_fingerprint: str,
         send: Callable[[], Any],
     ) -> Any: ...
+
+    def heartbeat(self) -> None: ...
+
+    def deadline_expired(self) -> bool: ...
 
 
 class GraphStagingWriter(Protocol):

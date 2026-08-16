@@ -13,8 +13,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, literal, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 
 from app.platform.errors import PlatformError
 
@@ -29,6 +32,7 @@ from .schema import (
 
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
 ACTIVE_STATES = frozenset({"queued", "running"})
+_OPERATION_RESERVATION_TTL = timedelta(minutes=5)
 
 
 def _new_id(prefix: str) -> str:
@@ -41,6 +45,47 @@ def _utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value
+
+
+def _insert_operation_if_absent(
+    connection: Connection,
+    *,
+    operation_id: str,
+    kind: str,
+    request_hash: str,
+    created_at: datetime,
+) -> bool:
+    values = {
+        "operation_id": operation_id,
+        "kind": kind,
+        "request_hash": request_hash,
+        "status": "reserved",
+        "response_json": None,
+        "created_at_utc": created_at,
+    }
+    if connection.dialect.name == "postgresql":
+        statement = (
+            pg_insert(graph_build_operations_table)
+            .values(**values)
+            .on_conflict_do_nothing()
+            .returning(graph_build_operations_table.c.operation_id)
+        )
+        return connection.execute(statement).scalar_one_or_none() is not None
+    if connection.dialect.name == "sqlite":
+        return (
+            connection.execute(
+                sqlite_insert(graph_build_operations_table)
+                .values(**values)
+                .on_conflict_do_nothing()
+            ).rowcount
+            == 1
+        )
+    try:
+        with connection.begin_nested():
+            connection.execute(graph_build_operations_table.insert().values(**values))
+        return True
+    except IntegrityError:
+        return False
 
 
 class SqlAlchemyGraphRepository:
@@ -223,8 +268,11 @@ class SqlAlchemyGraphRepository:
         connection: Connection,
         graph_build_id: str,
         attempt: int,
+        owner: str,
         fencing_token: str,
+        expected_version: int,
         component_stage_id: str,
+        now: datetime,
     ) -> None:
         result = connection.execute(
             update(graph_build_runs_table)
@@ -232,8 +280,11 @@ class SqlAlchemyGraphRepository:
                 and_(
                     graph_build_runs_table.c.id == graph_build_id,
                     graph_build_runs_table.c.current_attempt == attempt,
+                    graph_build_runs_table.c.lease_owner == owner,
                     graph_build_runs_table.c.fencing_token == fencing_token,
+                    graph_build_runs_table.c.version == expected_version,
                     graph_build_runs_table.c.state == "running",
+                    graph_build_runs_table.c.lease_expires_at_utc > now,
                 )
             )
             .values(component_stage_id=component_stage_id)
@@ -341,11 +392,38 @@ class SqlAlchemyGraphRepository:
                     graph_build_runs_table.c.current_attempt == attempt,
                     graph_build_runs_table.c.lease_owner == owner,
                     graph_build_runs_table.c.fencing_token == fencing_token,
+                    graph_build_runs_table.c.lease_expires_at_utc > now,
                 )
             )
-            .values(heartbeat_at_utc=now)
+            .values(
+                heartbeat_at_utc=now,
+                lease_expires_at_utc=now + timedelta(seconds=lease_ttl_seconds),
+            )
         )
-        return result.rowcount == 1
+        if result.rowcount != 1:
+            return False
+        attempt_result = connection.execute(
+            update(graph_build_attempts_table)
+            .where(
+                and_(
+                    graph_build_attempts_table.c.run_id == graph_build_id,
+                    graph_build_attempts_table.c.attempt == attempt,
+                    graph_build_attempts_table.c.lease_owner == owner,
+                    graph_build_attempts_table.c.fencing_token == fencing_token,
+                    graph_build_attempts_table.c.outcome == "running",
+                    graph_build_attempts_table.c.lease_expires_at_utc > now,
+                )
+            )
+            .values(
+                heartbeat_at_utc=now,
+                lease_expires_at_utc=now + timedelta(seconds=lease_ttl_seconds),
+            )
+        )
+        if attempt_result.rowcount != 1:
+            raise PlatformError(
+                "graph_build_lease_lost", "The graph run attempt lease no longer matches", {}, 409
+            )
+        return True
 
     def invalidate_attempt_and_requeue(
         self,
@@ -362,6 +440,7 @@ class SqlAlchemyGraphRepository:
                     graph_build_runs_table.c.id == graph_build_id,
                     graph_build_runs_table.c.state == "running",
                     graph_build_runs_table.c.current_attempt == attempt,
+                    graph_build_runs_table.c.lease_expires_at_utc <= now,
                 )
             )
             .values(
@@ -386,6 +465,7 @@ class SqlAlchemyGraphRepository:
             )
             .values(outcome="invalidated", completed_at_utc=now)
         )
+        self.delete_staging_resources(connection=connection, run_id=graph_build_id, attempt=attempt)
         self.write_audit(
             connection=connection,
             run_id=graph_build_id,
@@ -427,43 +507,52 @@ class SqlAlchemyGraphRepository:
         connection: Connection,
         run_id: str,
         attempt: int,
+        owner: str,
         fencing_token: str,
+        expected_version: int,
         resource_kind: str,
         resource_id: str,
         payload: Mapping[str, Any],
+        now: datetime,
     ) -> None:
-        row = (
-            connection.execute(
+        result = connection.execute(
+            graph_staging_resources_table.insert().from_select(
+                [
+                    graph_staging_resources_table.c.id,
+                    graph_staging_resources_table.c.run_id,
+                    graph_staging_resources_table.c.attempt,
+                    graph_staging_resources_table.c.fencing_token,
+                    graph_staging_resources_table.c.resource_kind,
+                    graph_staging_resources_table.c.resource_id,
+                    graph_staging_resources_table.c.payload_json,
+                    graph_staging_resources_table.c.created_at_utc,
+                ],
                 select(
-                    graph_build_runs_table.c.state,
-                    graph_build_runs_table.c.current_attempt,
-                    graph_build_runs_table.c.fencing_token,
-                ).where(graph_build_runs_table.c.id == run_id)
+                    literal(_new_id("graph_stage_resource")),
+                    literal(run_id),
+                    literal(attempt),
+                    literal(fencing_token),
+                    literal(resource_kind),
+                    literal(resource_id),
+                    literal(dict(payload), type_=graph_staging_resources_table.c.payload_json.type),
+                    literal(now),
+                ).where(
+                    and_(
+                        graph_build_runs_table.c.id == run_id,
+                        graph_build_runs_table.c.state == "running",
+                        graph_build_runs_table.c.current_attempt == attempt,
+                        graph_build_runs_table.c.lease_owner == owner,
+                        graph_build_runs_table.c.fencing_token == fencing_token,
+                        graph_build_runs_table.c.version == expected_version,
+                        graph_build_runs_table.c.lease_expires_at_utc > now,
+                    )
+                ),
             )
-            .mappings()
-            .one_or_none()
         )
-        if (
-            row is None
-            or row["state"] != "running"
-            or int(row["current_attempt"]) != attempt
-            or str(row["fencing_token"]) != fencing_token
-        ):
+        if result.rowcount != 1:
             raise PlatformError(
-                "graph_build_lease_lost", "The graph run fence no longer matches", {}, 409
+                "graph_build_lease_lost", "The graph run lease or fence no longer matches", {}, 409
             )
-        connection.execute(
-            graph_staging_resources_table.insert().values(
-                id=_new_id("graph_stage_resource"),
-                run_id=run_id,
-                attempt=attempt,
-                fencing_token=fencing_token,
-                resource_kind=resource_kind,
-                resource_id=resource_id,
-                payload_json=dict(payload),
-                created_at_utc=self._now(),
-            )
-        )
 
     def list_staging_resources(
         self, *, connection: Connection, run_id: str, attempt: int
@@ -526,9 +615,12 @@ class SqlAlchemyGraphRepository:
         connection: Connection,
         graph_build_id: str,
         attempt: int,
+        owner: str,
         fencing_token: str,
+        expected_version: int,
         primary_model_calls: int,
         provider_calls: int,
+        now: datetime,
     ) -> None:
         result = connection.execute(
             update(graph_build_runs_table)
@@ -537,7 +629,10 @@ class SqlAlchemyGraphRepository:
                     graph_build_runs_table.c.id == graph_build_id,
                     graph_build_runs_table.c.state == "running",
                     graph_build_runs_table.c.current_attempt == attempt,
+                    graph_build_runs_table.c.lease_owner == owner,
                     graph_build_runs_table.c.fencing_token == fencing_token,
+                    graph_build_runs_table.c.version == expected_version,
+                    graph_build_runs_table.c.lease_expires_at_utc > now,
                 )
             )
             .values(
@@ -591,52 +686,129 @@ class SqlAlchemyGraphRepository:
         operation_id: str,
         kind: str,
         request_hash: str,
-    ) -> tuple[str, Mapping[str, Any] | None]:
-        """Returns ("created", None), ("replay", response) or raises 409."""
-        existing = (
+    ) -> tuple[str, Mapping[str, Any] | None, datetime | None]:
+        """Returns a reservation/replay state, response and reservation generation."""
+        now = self._now()
+        existing = self._operation_row(connection=connection, operation_id=operation_id)
+        if existing is not None:
+            return self._resolve_operation(
+                connection=connection,
+                operation_id=operation_id,
+                kind=kind,
+                request_hash=request_hash,
+                now=now,
+                existing=existing,
+                allow_reclaim=True,
+            )
+        if _insert_operation_if_absent(
+            connection,
+            operation_id=operation_id,
+            kind=kind,
+            request_hash=request_hash,
+            created_at=now,
+        ):
+            return "created", None, now
+        concurrent = self._operation_row(connection=connection, operation_id=operation_id)
+        if concurrent is None:
+            raise PlatformError(
+                "idempotency_key_conflict",
+                "The idempotency operation could not be reserved",
+                {},
+                409,
+            )
+        return self._resolve_operation(
+            connection=connection,
+            operation_id=operation_id,
+            kind=kind,
+            request_hash=request_hash,
+            now=now,
+            existing=concurrent,
+            allow_reclaim=True,
+        )
+
+    @staticmethod
+    def _operation_row(*, connection: Connection, operation_id: str) -> Mapping[str, Any] | None:
+        row = (
             connection.execute(
                 select(
                     graph_build_operations_table.c.request_hash,
                     graph_build_operations_table.c.status,
                     graph_build_operations_table.c.response_json,
+                    graph_build_operations_table.c.created_at_utc,
                 ).where(graph_build_operations_table.c.operation_id == operation_id)
             )
             .mappings()
             .one_or_none()
         )
-        if existing is not None:
-            if str(existing["request_hash"]) != request_hash:
-                raise PlatformError(
-                    "idempotency_key_conflict",
-                    "The idempotency key was already used for a different request",
-                    {},
-                    409,
-                )
-            if existing["status"] == "completed" and existing["response_json"] is not None:
-                return "replay", dict(existing["response_json"])
+        return dict(row) if row is not None else None
+
+    def _resolve_operation(
+        self,
+        *,
+        connection: Connection,
+        operation_id: str,
+        kind: str,
+        request_hash: str,
+        now: datetime,
+        existing: Mapping[str, Any],
+        allow_reclaim: bool,
+    ) -> tuple[str, Mapping[str, Any] | None, datetime | None]:
+        if str(existing["request_hash"]) != request_hash:
             raise PlatformError(
                 "idempotency_key_conflict",
-                "The idempotency key is already being processed",
+                "The idempotency key was already used for a different request",
                 {},
                 409,
             )
-        connection.execute(
-            graph_build_operations_table.insert().values(
-                operation_id=operation_id,
-                kind=kind,
-                request_hash=request_hash,
-                status="reserved",
-                response_json=None,
-                created_at_utc=self._now(),
+        if existing["status"] == "completed" and existing["response_json"] is not None:
+            return "replay", dict(existing["response_json"]), None
+        created_at = _utc(existing["created_at_utc"])
+        if (
+            allow_reclaim
+            and existing["status"] == "reserved"
+            and created_at is not None
+            and created_at <= now - _OPERATION_RESERVATION_TTL
+        ):
+            reclaimed = connection.execute(
+                update(graph_build_operations_table)
+                .where(
+                    and_(
+                        graph_build_operations_table.c.operation_id == operation_id,
+                        graph_build_operations_table.c.kind == kind,
+                        graph_build_operations_table.c.request_hash == request_hash,
+                        graph_build_operations_table.c.status == "reserved",
+                        graph_build_operations_table.c.created_at_utc
+                        <= now - _OPERATION_RESERVATION_TTL,
+                    )
+                )
+                .values(created_at_utc=now)
             )
+            if reclaimed.rowcount == 1:
+                return "created", None, now
+            refreshed = self._operation_row(connection=connection, operation_id=operation_id)
+            if refreshed is not None:
+                return self._resolve_operation(
+                    connection=connection,
+                    operation_id=operation_id,
+                    kind=kind,
+                    request_hash=request_hash,
+                    now=now,
+                    existing=refreshed,
+                    allow_reclaim=False,
+                )
+        raise PlatformError(
+            "idempotency_key_conflict",
+            "The idempotency key is already being processed",
+            {},
+            409,
         )
-        return "created", None
 
     def complete_operation(
         self,
         *,
         connection: Connection,
         operation_id: str,
+        reservation_created_at: datetime,
         response: Mapping[str, Any],
     ) -> None:
         result = connection.execute(
@@ -645,6 +817,7 @@ class SqlAlchemyGraphRepository:
                 and_(
                     graph_build_operations_table.c.operation_id == operation_id,
                     graph_build_operations_table.c.status == "reserved",
+                    graph_build_operations_table.c.created_at_utc == reservation_created_at,
                 )
             )
             .values(status="completed", response_json=dict(response))
@@ -653,6 +826,34 @@ class SqlAlchemyGraphRepository:
             raise PlatformError(
                 "idempotency_key_conflict",
                 "The idempotency operation could not be completed",
+                {},
+                409,
+            )
+
+    def require_operation_reservation(
+        self,
+        *,
+        connection: Connection,
+        operation_id: str,
+        reservation_created_at: datetime,
+    ) -> None:
+        row = (
+            connection.execute(
+                select(
+                    graph_build_operations_table.c.status,
+                    graph_build_operations_table.c.created_at_utc,
+                )
+                .where(graph_build_operations_table.c.operation_id == operation_id)
+                .with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        created_at = _utc(row["created_at_utc"]) if row is not None else None
+        if row is None or row["status"] != "reserved" or created_at != reservation_created_at:
+            raise PlatformError(
+                "idempotency_key_conflict",
+                "The idempotency operation is no longer reserved",
                 {},
                 409,
             )

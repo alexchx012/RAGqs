@@ -23,6 +23,7 @@ from .dependencies import current_principal
 from .ops import _validated_idempotency_key, require_ops
 
 router = APIRouter(prefix="/ops/graph-builds", tags=["ops"])
+_GRAPH_IDEMPOTENCY_KEY_MAX_LENGTH = 54
 
 
 def graph_service(request: Request):
@@ -56,6 +57,18 @@ def _request_hash(payload: dict[str, object], idempotency_key: str) -> str:
     return hashlib.sha256(b"graph-build-v1\0" + encoded.encode("utf-8")).hexdigest()
 
 
+def _validated_graph_idempotency_key(value: str | None) -> str:
+    key = _validated_idempotency_key(value)
+    if len(key) > _GRAPH_IDEMPOTENCY_KEY_MAX_LENGTH:
+        raise PlatformError(
+            "validation_error",
+            "Idempotency-Key is too long for graph builds",
+            {"max_length": _GRAPH_IDEMPOTENCY_KEY_MAX_LENGTH},
+            422,
+        )
+    return key
+
+
 @router.get("/current")
 def graph_build_current(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
@@ -73,7 +86,7 @@ def graph_build_create(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = _validated_idempotency_key(idempotency_key)
+    key = _validated_graph_idempotency_key(idempotency_key)
     view = graph_service(request).create(
         initiator_identity_id=principal.user_id,
         expected_source_revision=body.expected_source_revision,
@@ -94,7 +107,7 @@ def graph_build_cancel(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = _validated_idempotency_key(idempotency_key)
+    key = _validated_graph_idempotency_key(idempotency_key)
     view = graph_service(request).cancel(
         actor_identity_id=principal.user_id,
         graph_build_id=graph_build_id,

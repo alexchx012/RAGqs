@@ -28,12 +28,14 @@ class DbGraphExtractionSession:
         *,
         run: GraphRunRecord,
         write_staging: Callable[[str, str, Mapping[str, Any]], None],
+        heartbeat: Callable[[], bool],
         recorder: GraphUsageRecorder,
         now: Callable[[], datetime],
         deadline_seconds: int = 60,
     ) -> None:
         self._run = run
         self._write_staging = write_staging
+        self._heartbeat = heartbeat
         self._recorder = recorder
         self._now = now
         self._deadline_seconds = deadline_seconds
@@ -57,6 +59,18 @@ class DbGraphExtractionSession:
         )
         self.primary_calls += 1
         return result
+
+    def heartbeat(self) -> None:
+        if not self._heartbeat():
+            raise PlatformError(
+                "graph_build_lease_lost",
+                "The graph run lease or fence no longer matches",
+                {},
+                409,
+            )
+
+    def deadline_expired(self) -> bool:
+        return self._now() >= self._recorder.deadline_utc
 
 
 class _FencedStagingWriter:
@@ -112,7 +126,17 @@ class DeterministicPublicGraphExtractor:
     ) -> Any:
         last_error: PlatformError | None = None
         for _ in range(self.MAX_ATTEMPTS):
+            if session.deadline_expired():
+                if last_error is not None:
+                    raise last_error
+                raise PlatformError(
+                    "graph_provider_dispatch_failed",
+                    "The graph build deadline expired before a provider call",
+                    {},
+                    503,
+                )
             try:
+                session.heartbeat()
                 return session.primary_call(
                     operation="graph_extraction",
                     resource_id=resource_id,
@@ -121,6 +145,8 @@ class DeterministicPublicGraphExtractor:
                 )
             except PlatformError as error:
                 last_error = error
+                if error.code == "graph_build_lease_lost" or session.deadline_expired():
+                    break
         assert last_error is not None
         raise last_error
 

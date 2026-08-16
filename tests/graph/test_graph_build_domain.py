@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+from threading import Event, Thread, current_thread
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, update
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.pool import StaticPool
 
 from app.documents.public_graph import PublicGraphSourceService
@@ -19,7 +22,15 @@ from app.graph import (
     RepositoryActivatedReceiptVerifier,
     SqlAlchemyGraphRepository,
 )
-from app.graph.schema import graph_build_runs_table, graph_metadata
+from app.graph.models import GraphRunView
+from app.graph.models import _iso as graph_iso
+from app.graph.schema import (
+    graph_build_attempts_table,
+    graph_build_operations_table,
+    graph_build_runs_table,
+    graph_metadata,
+    graph_staging_resources_table,
+)
 from app.indexing import GenerationManager, GraphComponentCoordinator
 from app.platform.errors import PlatformError
 
@@ -98,6 +109,40 @@ class _SourceChangingExtractor(DeterministicPublicGraphExtractor):
             publications=[_publication(9)],
         )
         super().extract(snapshot, session)  # type: ignore[arg-type]
+
+
+class _UnexpectedExtractor:
+    def estimate_primary_model_calls(self, snapshot: Any) -> int:
+        return len(snapshot.publications)
+
+    def extract(self, snapshot: object, session: object) -> None:
+        del snapshot, session
+        raise RuntimeError("unexpected graph worker fault")
+
+
+class _ProviderFailingExtractor:
+    def estimate_primary_model_calls(self, snapshot: object) -> int:
+        del snapshot
+        return 1
+
+    def extract(self, snapshot: object, session: object) -> None:
+        del snapshot, session
+        raise PlatformError("graph_provider_call_failed", "provider failed", {}, 503)
+
+
+class _DeadlineAfterFirstFailure:
+    def __init__(self) -> None:
+        self.primary_calls = 0
+
+    def heartbeat(self) -> None:
+        return None
+
+    def deadline_expired(self) -> bool:
+        return self.primary_calls > 0
+
+    def primary_call(self, **_kwargs: object) -> object:
+        self.primary_calls += 1
+        raise PlatformError("graph_provider_dispatch_failed", "dispatch failed", {}, 503)
 
 
 def _publication(number: int) -> dict[str, str]:
@@ -325,6 +370,64 @@ def test_cancel_queued_run_contract() -> None:
     assert error.value.code == "graph_build_not_cancellable"
 
 
+def test_cancel_running_run_deletes_current_attempt_staging_before_replay() -> None:
+    engine, source, _, _, outbox, service, _, _ = _build_env()
+    _publish(source)
+    created = _create(service, key="create-running-cancel")
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    service.write_staging_resource(
+        run=run,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+
+    cancelled = service.cancel(
+        actor_identity_id="user_ops_1",
+        graph_build_id=created["graph_build_id"],
+        expected_version=run.version,
+        idempotency_key="cancel-running",
+        request_hash="hash-cancel-running",
+    )
+
+    with engine.connect() as connection:
+        staged_after_cancel = (
+            connection.execute(
+                select(graph_staging_resources_table.c.id).where(
+                    graph_staging_resources_table.c.run_id == run.graph_build_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    replay = service.cancel(
+        actor_identity_id="user_ops_1",
+        graph_build_id=created["graph_build_id"],
+        expected_version=run.version,
+        idempotency_key="cancel-running",
+        request_hash="hash-cancel-running",
+    )
+
+    with engine.connect() as connection:
+        staged_after_replay = (
+            connection.execute(
+                select(graph_staging_resources_table.c.id).where(
+                    graph_staging_resources_table.c.run_id == run.graph_build_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert cancelled.state == "cancelled"
+    assert replay.version == cancelled.version
+    assert staged_after_cancel == []
+    assert staged_after_replay == []
+    assert len(outbox.events) == 1
+
+
 def test_cancel_version_conflict() -> None:
     _, source, _, _, _, service, _, _ = _build_env()
     _publish(source)
@@ -364,6 +467,742 @@ def test_lease_loss_requeues_same_run_without_terminal_event() -> None:
             .values(lease_expires_at_utc=clock.now + timedelta(minutes=30))
         )
         assert row.rowcount == 1
+
+
+def test_heartbeat_renews_run_and_attempt_leases() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    engine, source, _, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+
+    clock.tick(60)
+    assert service.heartbeat(run=run, owner="worker-a") is True
+
+    with engine.connect() as connection:
+        run_lease = connection.execute(
+            select(graph_build_runs_table.c.lease_expires_at_utc).where(
+                graph_build_runs_table.c.id == run.graph_build_id
+            )
+        ).scalar_one()
+        attempt_lease = connection.execute(
+            select(graph_build_attempts_table.c.lease_expires_at_utc).where(
+                graph_build_attempts_table.c.run_id == run.graph_build_id,
+                graph_build_attempts_table.c.attempt == run.current_attempt,
+            )
+        ).scalar_one()
+    expected = clock.now + timedelta(minutes=5)
+    assert _as_utc(run_lease) == expected
+    assert _as_utc(attempt_lease) == expected
+
+
+def test_expired_heartbeat_cannot_revive_a_lease() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, _, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+
+    clock.tick(301)
+
+    assert service.heartbeat(run=run, owner="worker-a") is False
+
+
+def test_expired_attempt_requeue_discards_its_staging_resources() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    engine, source, _, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    service.write_staging_resource(
+        run=run,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+
+    clock.tick(301)
+
+    assert service.requeue_expired() == 1
+    with engine.connect() as connection:
+        remaining = connection.execute(
+            select(graph_staging_resources_table.c.id).where(
+                graph_staging_resources_table.c.run_id == run.graph_build_id,
+                graph_staging_resources_table.c.attempt == run.current_attempt,
+            )
+        ).all()
+    assert remaining == []
+
+
+def test_recovery_skips_an_attempt_that_renewed_after_the_expiry_scan() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    engine, source, _, _, _, service, _, _ = _build_env(now=clock)
+    repository = SqlAlchemyGraphRepository(engine, now=clock)
+    _publish(source)
+    created = _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    service.write_staging_resource(
+        run=run,
+        resource_kind="publication_graph",
+        resource_id="staged-before-renewal",
+        payload={"graph": {}},
+    )
+    stale_recovery_time = clock.now + timedelta(seconds=301)
+
+    clock.tick(60)
+    assert service.heartbeat(run=run, owner="worker-a") is True
+
+    with engine.begin() as connection:
+        requeued = repository.invalidate_attempt_and_requeue(
+            connection=connection,
+            graph_build_id=str(created["graph_build_id"]),
+            attempt=run.current_attempt,
+            now=stale_recovery_time,
+        )
+    with engine.connect() as connection:
+        state = connection.execute(
+            select(graph_build_runs_table.c.state).where(
+                graph_build_runs_table.c.id == created["graph_build_id"]
+            )
+        ).scalar_one()
+        staging = (
+            connection.execute(
+                select(graph_staging_resources_table.c.id).where(
+                    graph_staging_resources_table.c.run_id == created["graph_build_id"]
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert requeued is False
+    assert state == "running"
+    assert staging != []
+
+
+def test_stale_expiry_recovery_cannot_discard_reclaimed_attempt_component_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, coordinator, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    first = service.claim_next(owner="worker-a")
+    assert first is not None
+    service.write_staging_resource(
+        run=first,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    clock.tick(301)
+
+    stale_cleanup_waiting = Event()
+    allow_stale_cleanup = Event()
+    stale_results: list[int] = []
+    original_discard = service._discard_component_stage
+
+    def pause_stale_cleanup(*args: object, **kwargs: object) -> bool:
+        if current_thread().name == "stale-recovery":
+            stale_cleanup_waiting.set()
+            assert allow_stale_cleanup.wait(timeout=2)
+        return original_discard(*args, **kwargs)
+
+    def requeue_stale_attempt() -> None:
+        stale_results.append(service.requeue_expired())
+
+    monkeypatch.setattr(service, "_discard_component_stage", pause_stale_cleanup)
+    stale_recovery = Thread(target=requeue_stale_attempt, name="stale-recovery")
+    try:
+        stale_recovery.start()
+        assert stale_cleanup_waiting.wait(timeout=2)
+
+        assert service.requeue_expired() == 1
+        retry = service.claim_next(owner="worker-b")
+        assert retry is not None
+        service.write_staging_resource(
+            run=retry,
+            resource_kind="publication_graph",
+            resource_id="pub_1",
+            payload={"graph": {}},
+        )
+        retry_stage_id = service.stage_component(run=retry)
+
+        allow_stale_cleanup.set()
+        stale_recovery.join(timeout=2)
+        assert not stale_recovery.is_alive()
+    finally:
+        allow_stale_cleanup.set()
+        stale_recovery.join(timeout=2)
+
+    assert stale_results == [0]
+    component = coordinator._generation.get_generation(retry.target_generation_id).manifest[
+        "components"
+    ]["public_graph"]
+    assert component["state"] == "staged"
+    assert component["stage_receipt_id"] == retry_stage_id
+
+
+def test_expired_reserved_operation_can_be_reclaimed() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    engine, _, _, _, _, _, _, _ = _build_env(now=clock)
+    repository = SqlAlchemyGraphRepository(engine, now=clock)
+    operation_id = "gb_create_recoverable"
+
+    with engine.begin() as connection:
+        reservation, response, _ = repository.reserve_operation(
+            connection=connection,
+            operation_id=operation_id,
+            kind="graph_build_create",
+            request_hash="request-hash",
+        )
+    assert reservation == "created"
+    assert response is None
+
+    clock.tick(301)
+
+    with engine.begin() as connection:
+        reservation, response, _ = repository.reserve_operation(
+            connection=connection,
+            operation_id=operation_id,
+            kind="graph_build_create",
+            request_hash="request-hash",
+        )
+        created_at = connection.execute(
+            select(graph_build_operations_table.c.created_at_utc).where(
+                graph_build_operations_table.c.operation_id == operation_id
+            )
+        ).scalar_one()
+    assert reservation == "created"
+    assert response is None
+    assert _as_utc(created_at) == clock.now
+
+
+def test_reclaimed_operation_cannot_be_completed_by_the_old_reservation() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    engine, _, _, _, _, _, _, _ = _build_env(now=clock)
+    repository = SqlAlchemyGraphRepository(engine, now=clock)
+    operation_id = "gb_create_fenced_reclaim"
+
+    with engine.begin() as connection:
+        reservation, response, original_reservation = repository.reserve_operation(
+            connection=connection,
+            operation_id=operation_id,
+            kind="graph_build_create",
+            request_hash="request-hash",
+        )
+    assert reservation == "created"
+    assert response is None
+    assert original_reservation is not None
+
+    clock.tick(301)
+
+    with engine.begin() as connection:
+        reservation, response, reclaimed_reservation = repository.reserve_operation(
+            connection=connection,
+            operation_id=operation_id,
+            kind="graph_build_create",
+            request_hash="request-hash",
+        )
+    assert reservation == "created"
+    assert response is None
+    assert reclaimed_reservation is not None
+    assert reclaimed_reservation != original_reservation
+
+    with engine.begin() as connection:
+        with pytest.raises(PlatformError) as error:
+            repository.complete_operation(
+                connection=connection,
+                operation_id=operation_id,
+                reservation_created_at=original_reservation,
+                response={"run": {"graph_build_id": "old"}},
+            )
+    assert error.value.code == "idempotency_key_conflict"
+
+    with engine.begin() as connection:
+        repository.complete_operation(
+            connection=connection,
+            operation_id=operation_id,
+            reservation_created_at=reclaimed_reservation,
+            response={"run": {"graph_build_id": "reclaimed"}},
+        )
+    with engine.begin() as connection:
+        reservation, replay, replay_reservation = repository.reserve_operation(
+            connection=connection,
+            operation_id=operation_id,
+            kind="graph_build_create",
+            request_hash="request-hash",
+        )
+
+    assert reservation == "replay"
+    assert replay == {"run": {"graph_build_id": "reclaimed"}}
+    assert replay_reservation is None
+
+
+def test_reclaimed_create_reservation_fences_the_old_run_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    engine, source, coordinator, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    original_reserve = coordinator.reserve_graph_component_stage
+    old_waiting = Event()
+    new_waiting = Event()
+    allow_old = Event()
+    allow_new = Event()
+    old_result: list[object] = []
+    new_result: list[object] = []
+
+    def pause_before_stage_grant(*args: object, **kwargs: object) -> object:
+        if current_thread().name == "old-create":
+            old_waiting.set()
+            assert allow_old.wait(timeout=2)
+        elif current_thread().name == "new-create":
+            new_waiting.set()
+            assert allow_new.wait(timeout=2)
+        return original_reserve(*args, **kwargs)
+
+    def create_into(result: list[object]) -> None:
+        try:
+            result.append(_create(service, key="reclaimed-create"))
+        except PlatformError as error:
+            result.append(error)
+
+    monkeypatch.setattr(coordinator, "reserve_graph_component_stage", pause_before_stage_grant)
+    old = Thread(target=create_into, args=(old_result,), name="old-create")
+    new = Thread(target=create_into, args=(new_result,), name="new-create")
+    try:
+        old.start()
+        assert old_waiting.wait(timeout=2)
+        clock.tick(301)
+        new.start()
+        assert new_waiting.wait(timeout=2)
+        allow_old.set()
+        old.join(timeout=2)
+        assert not old.is_alive()
+        allow_new.set()
+        new.join(timeout=2)
+        assert not new.is_alive()
+    finally:
+        allow_old.set()
+        allow_new.set()
+        old.join(timeout=2)
+        new.join(timeout=2)
+
+    assert len(old_result) == 1
+    assert isinstance(old_result[0], PlatformError)
+    assert old_result[0].code == "idempotency_key_conflict"
+    assert len(new_result) == 1
+    assert isinstance(new_result[0], dict)
+    with engine.begin() as connection:
+        runs = connection.execute(select(graph_build_runs_table.c.id)).scalars().all()
+    assert runs == [new_result[0]["graph_build_id"]]
+
+
+def test_reclaimed_cancel_reservation_fences_the_old_state_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, _, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    created = _create(service)
+    original_cancel = service._cancel_transaction
+    old_waiting = Event()
+    new_waiting = Event()
+    allow_old = Event()
+    allow_new = Event()
+    old_result: list[object] = []
+    new_result: list[object] = []
+
+    def pause_before_cancel_transaction(*args: object, **kwargs: object) -> object:
+        if current_thread().name == "old-cancel":
+            old_waiting.set()
+            assert allow_old.wait(timeout=2)
+        elif current_thread().name == "new-cancel":
+            new_waiting.set()
+            assert allow_new.wait(timeout=2)
+        return original_cancel(*args, **kwargs)
+
+    def cancel_into(result: list[object]) -> None:
+        try:
+            result.append(
+                service.cancel(
+                    actor_identity_id="user_ops_1",
+                    graph_build_id=str(created["graph_build_id"]),
+                    expected_version=int(created["version"]),
+                    idempotency_key="reclaimed-cancel",
+                    request_hash="cancel-hash",
+                )
+            )
+        except PlatformError as error:
+            result.append(error)
+
+    monkeypatch.setattr(service, "_cancel_transaction", pause_before_cancel_transaction)
+    old = Thread(target=cancel_into, args=(old_result,), name="old-cancel")
+    new = Thread(target=cancel_into, args=(new_result,), name="new-cancel")
+    try:
+        old.start()
+        assert old_waiting.wait(timeout=2)
+        clock.tick(301)
+        new.start()
+        assert new_waiting.wait(timeout=2)
+        allow_old.set()
+        old.join(timeout=2)
+        assert not old.is_alive()
+        allow_new.set()
+        new.join(timeout=2)
+        assert not new.is_alive()
+    finally:
+        allow_old.set()
+        allow_new.set()
+        old.join(timeout=2)
+        new.join(timeout=2)
+
+    assert len(old_result) == 1
+    assert isinstance(old_result[0], PlatformError)
+    assert old_result[0].code == "idempotency_key_conflict"
+    assert len(new_result) == 1
+    assert isinstance(new_result[0], GraphRunView)
+    assert new_result[0].state == "cancelled"
+
+
+def test_expired_attempt_cannot_release_a_graph_component(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, _, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    releases: list[dict[str, object]] = []
+
+    def record_release(**kwargs: object) -> object:
+        releases.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(service._coordinator, "release_graph_component", record_release)
+    clock.tick(301)
+
+    with pytest.raises(PlatformError) as error:
+        service.release_component(run=run, component_stage_id="component-stage")
+
+    assert error.value.code == "graph_build_lease_lost"
+    assert releases == []
+
+
+def test_expired_attempt_cannot_write_staging_or_usage() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    engine, source, _, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    clock.tick(301)
+
+    with pytest.raises(PlatformError) as staging_error:
+        service.write_staging_resource(
+            run=run,
+            resource_kind="publication_graph",
+            resource_id="pub_1",
+            payload={"graph": {}},
+        )
+    with pytest.raises(PlatformError) as usage_error:
+        service.record_usage(run=run, primary_model_calls=1, provider_calls=1)
+
+    with engine.connect() as connection:
+        staged = (
+            connection.execute(
+                select(graph_staging_resources_table.c.id).where(
+                    graph_staging_resources_table.c.run_id == run.graph_build_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        actual_usage = connection.execute(
+            select(
+                graph_build_runs_table.c.actual_primary_model_calls,
+                graph_build_runs_table.c.actual_provider_calls,
+            ).where(graph_build_runs_table.c.id == run.graph_build_id)
+        ).one()
+
+    assert staging_error.value.code == "graph_build_lease_lost"
+    assert usage_error.value.code == "graph_build_lease_lost"
+    assert staged == []
+    assert tuple(actual_usage) == (0, 0)
+
+
+def test_stage_discards_component_when_lease_expires_before_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, coordinator, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    service.write_staging_resource(
+        run=run,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    original_stage = coordinator.stage_public_graph_component
+
+    def expire_after_stage(*args: object, **kwargs: object) -> object:
+        receipt = original_stage(*args, **kwargs)
+        clock.tick(301)
+        return receipt
+
+    monkeypatch.setattr(coordinator, "stage_public_graph_component", expire_after_stage)
+
+    with pytest.raises(PlatformError) as error:
+        service.stage_component(run=run)
+
+    component = coordinator._generation.get_generation(run.target_generation_id).manifest[
+        "components"
+    ]["public_graph"]
+    assert error.value.code == "graph_build_lease_lost"
+    assert component["state"] == "disabled"
+    assert component["graph_resource_ids"] == []
+
+
+def test_stale_stage_conflict_cannot_discard_the_reclaimed_component_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, coordinator, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    first = service.claim_next(owner="worker-a")
+    assert first is not None
+    service.write_staging_resource(
+        run=first,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    original_stage = coordinator.stage_public_graph_component
+    retries: list[object] = []
+    retry_stage_ids: list[str] = []
+    recovered = False
+
+    def stage_after_reclaim(*args: object, **kwargs: object) -> object:
+        nonlocal recovered
+        if not recovered:
+            recovered = True
+            clock.tick(301)
+            assert service.requeue_expired() == 1
+            retry = service.claim_next(owner="worker-b")
+            assert retry is not None
+            retries.append(retry)
+            service.write_staging_resource(
+                run=retry,
+                resource_kind="publication_graph",
+                resource_id="pub_1",
+                payload={"graph": {}},
+            )
+            retry_stage_ids.append(service.stage_component(run=retry))
+        return original_stage(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "stage_public_graph_component", stage_after_reclaim)
+
+    with pytest.raises(PlatformError) as error:
+        service.stage_component(run=first)
+
+    assert error.value.code == "graph_build_lease_lost"
+    assert len(retries) == 1
+    component = coordinator._generation.get_generation(first.target_generation_id).manifest[
+        "components"
+    ]["public_graph"]
+    assert component["state"] == "staged"
+    assert component["stage_receipt_id"] == retry_stage_ids[0]
+
+
+def test_release_rejects_lease_expiry_inside_the_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, coordinator, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    service.write_staging_resource(
+        run=run,
+        resource_kind="publication_graph",
+        resource_id="pub_1",
+        payload={"graph": {}},
+    )
+    component_stage_id = service.stage_component(run=run)
+    original_release = coordinator.release_graph_component
+
+    def expire_before_activation(*args: object, **kwargs: object) -> object:
+        clock.tick(301)
+        return original_release(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "release_graph_component", expire_before_activation)
+
+    with pytest.raises(PlatformError) as error:
+        service.release_component(run=run, component_stage_id=component_stage_id)
+
+    assert error.value.code == "graph_build_lease_lost"
+    assert coordinator._generation.active_generation_id == "generation_initial"
+
+
+def test_expired_attempt_cannot_complete_successfully() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, _, _, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    clock.tick(301)
+    receipt = SimpleNamespace(
+        state="activated",
+        graph_generation_id="graph-generation",
+        active_generation_id="index-generation",
+        activation_receipt_id="receipt",
+    )
+
+    with pytest.raises(PlatformError) as error:
+        service.complete_succeeded(run=run, owner="worker-a", release_receipt=receipt)
+
+    assert error.value.code == "graph_build_lease_lost"
+    assert service.current()["latest_run"]["state"] == "running"
+
+
+def test_requeued_attempt_cannot_write_a_failed_terminal_state() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, _, _, outbox, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+    run = service.claim_next(owner="worker-a")
+    assert run is not None
+    clock.tick(301)
+    assert service.requeue_expired() == 1
+
+    result = service.complete_failed(
+        run=run,
+        owner="worker-a",
+        failure_class="graph_worker_unexpected",
+        reason="old worker resumed",
+    )
+
+    assert result.state == "queued"
+    assert service.current()["latest_run"]["state"] == "queued"
+    assert outbox.events == []
+
+
+def test_stale_worker_fault_does_not_discard_reclaimed_attempt_component_stage() -> None:
+    clock = FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
+    _, source, _, usage, _, service, _, _ = _build_env(now=clock)
+    _publish(source)
+    _create(service)
+
+    class _StaleWorkerFaultExtractor:
+        retry = None
+        component_stage_id = ""
+
+        def estimate_primary_model_calls(self, snapshot: object) -> int:
+            return len(snapshot.publications)
+
+        def extract(self, snapshot: object, session: object) -> None:
+            del snapshot, session
+            clock.tick(301)
+            assert service.requeue_expired() == 1
+            retry = service.claim_next(owner="worker-b")
+            assert retry is not None
+            service.write_staging_resource(
+                run=retry,
+                resource_kind="publication_graph",
+                resource_id="pub_1",
+                payload={"graph": {}},
+            )
+            self.retry = retry
+            self.component_stage_id = service.stage_component(run=retry)
+            raise RuntimeError("worker-a resumed after lease recovery")
+
+    extractor = _StaleWorkerFaultExtractor()
+    worker = GraphBuildWorker(service, extractor, usage, owner="worker-a", now=clock)
+
+    stats = worker.run_once()
+
+    assert stats.runs_failed == 1
+    assert extractor.retry is not None
+    receipt = service.release_component(
+        run=extractor.retry,
+        component_stage_id=extractor.component_stage_id,
+    )
+    service.complete_succeeded(run=extractor.retry, owner="worker-b", release_receipt=receipt)
+    assert service.current()["latest_run"]["state"] == "succeeded"
+
+
+def test_worker_heartbeats_while_extracting_publications(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, source, _, _, _, service, worker, _ = _build_env()
+    _publish(source, count=2)
+    _create(service)
+    calls = 0
+    original_heartbeat = service.heartbeat
+
+    def record_heartbeat(*, run, owner: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return original_heartbeat(run=run, owner=owner)
+
+    monkeypatch.setattr(service, "heartbeat", record_heartbeat)
+
+    worker.run_once()
+
+    assert calls >= 2
+
+
+def test_extractor_stops_retrying_after_the_session_deadline() -> None:
+    session = _DeadlineAfterFirstFailure()
+
+    with pytest.raises(PlatformError) as error:
+        DeterministicPublicGraphExtractor()._call_with_retries(
+            session,  # type: ignore[arg-type]
+            resource_id="manifest_1",
+            request_fingerprint="fingerprint",
+            send=lambda: {},
+        )
+
+    assert error.value.code == "graph_provider_dispatch_failed"
+    assert session.primary_calls == 1
+
+
+def test_worker_distinguishes_unknown_faults_from_provider_failures() -> None:
+    _, source, _, _, _, service, worker, _ = _build_env(extractor=_UnexpectedExtractor())
+    _publish(source)
+    _create(service)
+
+    stats = worker.run_once()
+
+    assert stats.runs_failed == 1
+    assert service.current()["latest_run"]["failure_class"] == "graph_worker_unexpected"
+
+
+def test_worker_preserves_provider_failure_class() -> None:
+    _, source, _, _, _, service, worker, _ = _build_env(extractor=_ProviderFailingExtractor())
+    _publish(source)
+    _create(service)
+
+    stats = worker.run_once()
+
+    assert stats.runs_failed == 1
+    assert service.current()["latest_run"]["failure_class"] == "graph_provider_failed"
+
+
+def test_graph_timestamps_are_serialized_as_utc() -> None:
+    local_time = datetime(2026, 8, 5, 12, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    assert graph_iso(local_time) == "2026-08-05T04:00:00Z"
 
 
 def test_source_change_during_build_fails_and_discards() -> None:
@@ -450,3 +1289,7 @@ def test_gc_request_contract() -> None:
             operation_id="gc_1",
         )
     assert error.value.code == "idempotency_key_conflict"
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

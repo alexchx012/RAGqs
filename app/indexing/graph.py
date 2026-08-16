@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -222,7 +222,10 @@ class GraphComponentCoordinator:
         return getattr(self._generation, "_repository", None)
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self, connection: Any | None = None):
+        if connection is not None:
+            yield connection
+            return
         repository = self._repository
         if repository is None:
             yield None
@@ -391,7 +394,9 @@ class GraphComponentCoordinator:
             manifest={
                 "graph_resource_manifest_hash": "",
                 "graph_resource_ids": [],
-                "component_stage_id": receipt.component_stage_id,
+                "stage_receipt_id": None,
+                "component_stage_id": None,
+                "build_receipt_hash": None,
             },
             **({"connection": connection} if connection is not None else {}),
         )
@@ -461,6 +466,8 @@ class GraphComponentCoordinator:
         expected_active_generation_id: str,
         operation_id: str,
         component_input: IndexGenerationComponentInput,
+        reservation_guard: Callable[[Any | None], None] | None = None,
+        connection: Any | None = None,
     ) -> GraphComponentStageGrant:
         if not graph_build_id or not operation_id:
             raise PlatformError("validation_error", "graph stage request is invalid", {}, 422)
@@ -486,8 +493,10 @@ class GraphComponentCoordinator:
                     "operation_id": component_input.operation_id,
                 },
             }
-            with self._transaction() as connection:
-                existing = self._stored_grant(operation_id, connection=connection)
+            with self._transaction(connection) as transaction:
+                if reservation_guard is not None:
+                    reservation_guard(transaction)
+                existing = self._stored_grant(operation_id, connection=transaction)
                 if existing is not None:
                     if self._repository is None and self._grant_inputs[operation_id] != input_key:
                         raise PlatformError(
@@ -501,10 +510,10 @@ class GraphComponentCoordinator:
                         operation_id,
                         "graph_stage_grant",
                         request_identity,
-                        connection=connection,
+                        connection=transaction,
                     )
                 snapshot, head = self._current_source(
-                    expected_source_revision, connection=connection
+                    expected_source_revision, connection=transaction
                 )
                 if (
                     int(component_input.source_snapshot.source_revision)
@@ -516,7 +525,7 @@ class GraphComponentCoordinator:
                         "processing_receipt_conflict", "graph component input is invalid", {}, 409
                     )
                 active_generation_id = (
-                    self._repository.active_generation_id(connection=connection)
+                    self._repository.active_generation_id(connection=transaction)
                     if self._repository is not None
                     else self._generation.active_generation_id
                 )
@@ -535,7 +544,7 @@ class GraphComponentCoordinator:
                     source_head_fence=int(head.source_head_fence),
                     purpose="stage",
                     operation_id=f"{operation_id}:source-hold",
-                    connection=connection,
+                    connection=transaction,
                 )
                 staging_kwargs = {
                     "expected_active_generation_id": expected_active_generation_id,
@@ -544,7 +553,7 @@ class GraphComponentCoordinator:
                 }
                 if self._repository is not None:
                     staging = self._repository.create_staging(
-                        connection=connection,
+                        connection=transaction,
                         **staging_kwargs,
                     )
                 else:
@@ -573,7 +582,11 @@ class GraphComponentCoordinator:
                         "source_head_fence": int(head.source_head_fence),
                         "graph_build_id": graph_build_id,
                     },
-                    **({"connection": connection} if connection is not None else {}),
+                    **(
+                        {"connection": transaction}
+                        if self._repository is not None and transaction is not None
+                        else {}
+                    ),
                 )
                 grant = GraphComponentStageGrant(
                     graph_build_id=graph_build_id,
@@ -592,7 +605,7 @@ class GraphComponentCoordinator:
                     self._repository.complete_operation(
                         operation_id,
                         {"kind": "graph_stage_grant", "grant": _grant_to_mapping(grant)},
-                        connection=connection,
+                        connection=transaction,
                     )
                 return grant
 
@@ -605,6 +618,7 @@ class GraphComponentCoordinator:
         graph_resource_manifest_hash: str,
         graph_resource_ids: Sequence[str],
         build_receipt_hash: str,
+        lease_guard: Callable[[Any | None], None] | None = None,
     ) -> GraphComponentStageReceipt:
         if grant.expires_at <= self._now():
             raise PlatformError(
@@ -678,6 +692,8 @@ class GraphComponentCoordinator:
                             build_receipt_hash=build_receipt_hash,
                             component_stage_id=_new_id("graph_component_stage"),
                         )
+                        if lease_guard is not None:
+                            lease_guard(connection)
                         self._generation.set_component_state(
                             grant.target_generation_id,
                             "public_graph",
@@ -692,7 +708,9 @@ class GraphComponentCoordinator:
                         )
                         repository = self._repository
                         if repository is not None:
-                            stage_operation_id = f"{grant.operation_id}:component-stage"
+                            stage_operation_id = (
+                                f"{grant.operation_id}:component-stage:{build_receipt_hash}"
+                            )
                             repository.reserve_operation(
                                 stage_operation_id,
                                 "graph_component_stage",
@@ -738,6 +756,8 @@ class GraphComponentCoordinator:
                         )
                 raise
             if conflicting_receipt is not None:
+                if lease_guard is not None:
+                    lease_guard(None)
                 self._discard_graph_resources(
                     conflicting_receipt,
                     operation_id=f"{grant.operation_id}:conflicting-receipt-discard",
@@ -760,6 +780,7 @@ class GraphComponentCoordinator:
         source_manifest_hash: str,
         source_head_fence: int,
         operation_id: str,
+        lease_guard: Callable[[Any | None], None] | None = None,
     ) -> GraphComponentReleaseReceipt:
         with self._lock:
             repository = self._repository
@@ -812,6 +833,8 @@ class GraphComponentCoordinator:
             }
             try:
                 with self._transaction() as connection:
+                    if lease_guard is not None:
+                        lease_guard(connection)
                     if repository is not None:
                         repository.reserve_operation(
                             release_operation_id,
@@ -825,6 +848,8 @@ class GraphComponentCoordinator:
                         source_head_fence=source_head_fence,
                         **({"connection": connection} if connection is not None else {}),
                     )
+                    if lease_guard is not None:
+                        lease_guard(connection)
                     self._acknowledge(
                         source_revision=source_revision,
                         source_manifest_hash=source_manifest_hash,
@@ -840,6 +865,8 @@ class GraphComponentCoordinator:
                         manifest={"component_stage_id": component_stage_id},
                         **({"connection": connection} if connection is not None else {}),
                     )
+                    if lease_guard is not None:
+                        lease_guard(connection)
                     active = self._generation.release(
                         target_generation_id,
                         **({"connection": connection} if connection is not None else {}),
@@ -1144,20 +1171,42 @@ class GraphComponentCoordinator:
         target_generation_id: str,
         component_stage_id: str,
         operation_id: str,
+        acknowledge_source: bool = True,
+        lease_guard: Callable[[Any | None], None] | None = None,
     ) -> Mapping[str, Any]:
         del graph_build_id, attempt
-        receipt = next(
-            (
-                value
-                for value in self._receipts.values()
-                if value.component_stage_id == component_stage_id
-            ),
-            None,
-        )
-        if receipt is None or receipt.target_generation_id != target_generation_id:
-            return {"state": "discarded"}
-        self._discard_graph_resources(receipt, operation_id=operation_id)
-        return {"state": "discarded", "component_stage_id": component_stage_id}
+        with self._lock:
+            with self._transaction() as connection:
+                if lease_guard is not None:
+                    lease_guard(connection)
+                receipt = next(
+                    (
+                        value
+                        for value in self._receipts.values()
+                        if component_stage_id and value.component_stage_id == component_stage_id
+                    ),
+                    None,
+                )
+                if receipt is None and component_stage_id:
+                    receipt = self._stored_stage_receipt(
+                        target_generation_id, component_stage_id, connection=connection
+                    )
+                if receipt is None and not component_stage_id:
+                    receipt = self._authoritative_stage_receipt(
+                        target_generation_id, connection=connection
+                    )
+                if receipt is None or receipt.target_generation_id != target_generation_id:
+                    return {"state": "discarded"}
+                self._discard_graph_resources(
+                    receipt,
+                    operation_id=operation_id,
+                    connection=connection,
+                    acknowledge_source=acknowledge_source,
+                )
+                for operation_id_key, value in tuple(self._receipts.items()):
+                    if value == receipt:
+                        del self._receipts[operation_id_key]
+                return {"state": "discarded", "component_stage_id": receipt.component_stage_id}
 
 
 __all__ = [
