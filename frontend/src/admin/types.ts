@@ -167,12 +167,6 @@ export interface QuotaRejectResponse {
   readonly status: 'rejected';
 }
 
-/** §8.4 投稿审核列表筛选（target_kind / target_space_id 仅超管传）。 */
-export interface ApprovalSubmissionFilter {
-  readonly targetKind?: 'public' | 'department';
-  readonly targetSpaceId?: string;
-}
-
 /* ---------- §6.12 公共库图谱维护（仅 ops；后端设计 §2.6.1） ---------- */
 
 export type GraphAvailability = 'disabled' | 'ready' | 'stale';
@@ -197,13 +191,13 @@ export interface GraphBuildRun {
   readonly graph_build_id: string;
   /** 从 1 开始并随每次状态转换递增。 */
   readonly version: number;
-  readonly status: GraphBuildStatus;
+  readonly state: GraphBuildStatus;
   readonly source_revision: number;
   readonly estimated_primary_model_calls: number;
   readonly actual_usage: GraphBuildUsage | null;
   readonly created_at: string;
   readonly started_at: string | null;
-  readonly finished_at: string | null;
+  readonly completed_at: string | null;
   readonly failure_class: string | null;
   readonly allowed_actions: readonly GraphBuildAction[];
 }
@@ -221,7 +215,7 @@ export interface GraphBuildCurrent {
 export interface GraphBuildCancelResponse {
   readonly graph_build_id: string;
   readonly version: number;
-  readonly status: GraphBuildStatus;
+  readonly state: GraphBuildStatus;
 }
 
 /* ---------- §10.1 任务队列（运维操作 / 超管只读） ---------- */

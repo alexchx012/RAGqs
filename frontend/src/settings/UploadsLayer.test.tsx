@@ -141,8 +141,24 @@ describe('UploadsLayer 上传结果层（Major7 ack 时序 + Major3 历史）', 
       response: {
         upload_batch_id: 'ub_1',
         items: [
-          { name: '历史文档.pdf', accepted: true, space_id: 'personal:u_user', document_id: 'doc_1', job_id: 'job_1' },
-          { name: '坏文件.pdf', accepted: false, error: { code: 'malware_detected', message: '', details: {} } },
+          {
+            filename: '历史文档.pdf',
+            document_id: 'doc_1',
+            document_version_id: 'ver_1',
+            job_id: 'job_1',
+            publication_id: 'pub_1',
+            deduplicated: false,
+            status: 'pending',
+          },
+          {
+            filename: '已存在文档.pdf',
+            document_id: 'doc_2',
+            document_version_id: 'ver_2',
+            job_id: null,
+            publication_id: null,
+            deduplicated: true,
+            status: 'deduplicated',
+          },
         ],
       },
       target: { id: 'personal:u_user', kind: 'personal', name: '个人库', permission: 'manage', document_count: 3 },
@@ -153,7 +169,7 @@ describe('UploadsLayer 上传结果层（Major7 ack 时序 + Major3 历史）', 
 
     expect(await screen.findByText(copy.settings.knowledge.uploads.historyTitle)).toBeInTheDocument();
     expect(screen.getByText(/历史文档\.pdf/)).toBeInTheDocument();
-    expect(screen.getByText(/检测到恶意内容/)).toBeInTheDocument();
+    expect(screen.getByText(/已存在文档\.pdf/)).toBeInTheDocument();
   });
 });
 

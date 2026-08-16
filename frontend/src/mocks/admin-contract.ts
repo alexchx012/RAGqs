@@ -662,20 +662,20 @@ export class MockAdminController {
     return {
       graph_build_id: run.graphBuildId,
       version: run.version,
-      status: run.status,
+      state: run.status,
       source_revision: run.sourceRevision,
       estimated_primary_model_calls: run.estimatedPrimaryModelCalls,
       actual_usage: run.actualUsage,
       created_at: run.createdAt,
       started_at: run.startedAt,
-      finished_at: run.finishedAt,
+      completed_at: run.finishedAt,
       failure_class: run.failureClass,
       allowed_actions: run.status === 'queued' || run.status === 'running' ? ['cancel'] : [],
     };
   }
 
   private toGraphCancelResponse(run: StoredGraphRun): GraphBuildCancelResponse {
-    return { graph_build_id: run.graphBuildId, version: run.version, status: run.status };
+    return { graph_build_id: run.graphBuildId, version: run.version, state: run.status };
   }
 
   /* ---------- §11.1 排行榜 ---------- */

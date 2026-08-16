@@ -25,7 +25,6 @@ import type {
   AdminUserListQuery,
   AdminUserListResponse,
   AdminUserPatchInput,
-  ApprovalSubmissionFilter,
   CalibrationWindow,
   CalibrationWindowAction,
   CalibrationWindowKind,
@@ -67,8 +66,8 @@ export interface AdminApi {
     expectedVersion: number,
     idempotencyKey: string,
   ): Promise<QuotaRejectResponse>;
-  /** §8.4：target_kind / target_space_id 仅超管传，其余角色由后端按范围固定。 */
-  listApprovalSubmissions(filter?: ApprovalSubmissionFilter): Promise<ApprovalListResponse>;
+  /** §8.4：后端根据当前审核者范围返回待审投稿。 */
+  listApprovalSubmissions(): Promise<ApprovalListResponse>;
   approveSubmission(
     submissionId: string,
     expectedVersion: number,
@@ -196,14 +195,9 @@ export function createAdminApi(client: ApiClient): AdminApi {
       );
     },
 
-    listApprovalSubmissions(filter) {
+    listApprovalSubmissions() {
       const authSessionGuard = guard();
-      const params = new URLSearchParams();
-      if (filter?.targetKind !== undefined) params.set('target_kind', filter.targetKind);
-      if (filter?.targetSpaceId !== undefined) params.set('target_space_id', filter.targetSpaceId);
-      const query = params.toString();
-      const suffix = query === '' ? '' : `?${query}`;
-      return client.request<ApprovalListResponse>(`/approvals/submissions${suffix}`, {
+      return client.request<ApprovalListResponse>('/approvals/submissions', {
         authSessionGuard,
       });
     },

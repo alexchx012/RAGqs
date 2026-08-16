@@ -74,18 +74,18 @@ interface ParsedNewVersionParts {
 }
 
 /**
- * 解析上传新版本的 multipart：同时包含 `files`（单文件）与 `expected_version` 表单字段。
+ * 解析上传新版本的 multipart：同时包含 `file`（单文件）与 `expected_version` 表单字段。
  * 字节级解析与 parseUploadFiles 一致（undici 会抹掉 jsdom File 名）。
  */
 async function parseNewVersionParts(request: Request): Promise<ParsedNewVersionParts> {
   const contentType = request.headers.get('Content-Type') ?? '';
   const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
   if (boundaryMatch === null) {
-    throw new MockHttpError(422, 'validation_error', { field: 'files' });
+    throw new MockHttpError(422, 'validation_error', { field: 'file' });
   }
   const boundary = (boundaryMatch[1] ?? boundaryMatch[2] ?? '').trim();
   if (boundary === '') {
-    throw new MockHttpError(422, 'validation_error', { field: 'files' });
+    throw new MockHttpError(422, 'validation_error', { field: 'file' });
   }
   const bytes = new Uint8Array(await request.arrayBuffer());
   const boundaryBytes = new TextEncoder().encode(`--${boundary}`);
@@ -93,10 +93,10 @@ async function parseNewVersionParts(request: Request): Promise<ParsedNewVersionP
   const crlf = new TextEncoder().encode('\r\n');
   const parts = parseMultipartParts(bytes, boundaryBytes, headerEndMark, crlf);
   const files = parts.filter(
-    (part) => part.field === 'files' && part.filename !== null && part.filename !== '',
+    (part) => part.field === 'file' && part.filename !== null && part.filename !== '',
   );
   if (files.length !== 1) {
-    throw new MockHttpError(422, 'validation_error', { field: 'files' });
+    throw new MockHttpError(422, 'validation_error', { field: 'file' });
   }
   const expectedVersionPart = parts.find((part) => part.field === 'expected_version');
   if (expectedVersionPart === undefined) {
@@ -497,16 +497,7 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
 
     http.get('/v1/approvals/submissions', ({ request }) => {
       try {
-        // §8.4：target_kind / target_space_id 仅超管筛选用；其余角色由控制器按范围固定。
-        const url = new URL(request.url);
-        const targetKind = url.searchParams.get('target_kind') ?? undefined;
-        const targetSpaceId = url.searchParams.get('target_space_id') ?? undefined;
-        return HttpResponse.json(
-          controller.listApprovals(request.headers.get('Authorization'), {
-            targetKind: targetKind as 'public' | 'department' | undefined,
-            targetSpaceId,
-          }),
-        );
+        return HttpResponse.json(controller.listApprovals(request.headers.get('Authorization')));
       } catch (error) {
         return errorResponse(error);
       }

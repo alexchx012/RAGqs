@@ -5,9 +5,9 @@
  * 配额：四列 / 批准对话框（approved_pages 校验与缺省）/ 驳回无输入框浮层 / 成功淡出 +
  * 成功轻提示 + invalidateSummaries 徽标刷新 / 409 系列（version_conflict 对话框内重确认、
  * already_processed、quota_request_not_approvable）/ 处理中禁用。
- * 投稿：五列 / 查看内容受控窗 / 驳回原因随请求 / approve 202 淡出 / duplicate_document
- * 行内不移除 / version_conflict 行内 + 刷新 / scope_changed·submitter_pending_delete 刷新 /
- * admin 范围分段（target_kind 随请求）。
+ * 投稿：最小列表字段 / 查看内容受控窗 / 驳回原因随请求 / approve 202 淡出 /
+ * duplicate_document 行内不移除 / version_conflict 行内 + 刷新 /
+ * scope_changed·submitter_pending_delete 刷新。
  */
 
 import { act, render, screen, waitFor, within, type RenderResult } from '@testing-library/react';
@@ -31,7 +31,7 @@ import { AdminProvider } from './AdminProvider';
 import type { AdminApi } from './api';
 import { ApprovalSubmissionsLayer, QuotaRequestsLayer } from './ApprovalsModule';
 import { QuotaRequestsSummaryBadge, SubmissionsSummaryBadge } from './summaries';
-import type { AdminUserListQuery, ApprovalSubmissionFilter, DepartmentStatusFilter, QuotaRequestStatus } from './types';
+import type { AdminUserListQuery, DepartmentStatusFilter, QuotaRequestStatus } from './types';
 
 const copyApprovals = copy.admin.approvals;
 const copyManage = copy.settings.knowledge.manage;
@@ -98,9 +98,7 @@ function contractAdminApi(token: string, overrides: Partial<AdminApi> = {}): Adm
     rejectQuotaRequest: vi.fn((id: string, version: number, key: string) =>
       call(() => mockAdmin.rejectQuotaRequest(token, id, version, key)),
     ),
-    listApprovalSubmissions: vi.fn((filter?: ApprovalSubmissionFilter) =>
-      call(() => mockKnowledge.listApprovals(token, filter ?? {})),
-    ),
+    listApprovalSubmissions: vi.fn(() => call(() => mockKnowledge.listApprovals(token))),
     approveSubmission: vi.fn((id: string, version: number, key: string) =>
       call(() => mockKnowledge.approveSubmission(token, id, version, key)),
     ),
@@ -177,7 +175,7 @@ function pendingQuotaRequest(token: string, applicantName: string) {
 }
 
 function pendingSubmission(token: string, name: string) {
-  const item = mockKnowledge.listApprovals(token).items.find((submission) => submission.name === name);
+  const item = mockKnowledge.listApprovals(token).items.find((submission) => submission.file_name === name);
   if (item === undefined) {
     throw new Error(`pending submission not found: ${name}`);
   }
@@ -413,7 +411,7 @@ describe('配额申请（§8.2–8.3，ops）', () => {
 });
 
 describe('投稿审核（§8.4–8.5）', () => {
-  it('五列渲染（ops 仅公共库范围，无范围分段控件）', async () => {
+  it('最小审批行渲染（ops 仅公共库范围，无范围分段控件）', async () => {
     const token = loginToken('ops-wang');
     await renderApprovals(
       <ApprovalSubmissionsLayer />,
@@ -427,16 +425,11 @@ describe('投稿审核（§8.4–8.5）', () => {
     expect(screen.getByText('跨部门协作指引.pdf')).toBeInTheDocument();
     expect(screen.getByText('历史遗留材料.pdf')).toBeInTheDocument();
     const row = rowOf('行业研报汇总.pdf');
-    expect(within(row).getByText(copyManage.fileMeta('pdf', '4.0 KB'))).toBeInTheDocument();
-    expect(within(row).getByText('zhangsan')).toBeInTheDocument();
-    expect(within(row).getByText('财务部')).toBeInTheDocument();
-    expect(within(row).getByText('公共库')).toBeInTheDocument();
+    expect(within(row).getByText('pdf')).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: copyManage.viewContent })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: copyManage.approve })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: copyManage.reject })).toBeInTheDocument();
-    // 冻结投稿人无部门 → 缺省列展示
-    expect(within(rowOf('历史遗留材料.pdf')).getByText(copy.admin.users.noDepartment)).toBeInTheDocument();
-    // ops 不渲染范围分段
+    // 后端按角色范围决定可见项，前端不叠加范围筛选。
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 
@@ -652,7 +645,7 @@ describe('投稿审核（§8.4–8.5）', () => {
     }
   });
 
-  it('admin 范围分段：全部 / 公共库 / 部门库，切换传 target_kind 重新请求', async () => {
+  it('admin 展示后端范围内的全部待审投稿，不附加前端范围筛选', async () => {
     const token = loginToken('admin');
     const adminApi = contractAdminApi(token);
     await renderApprovals(
@@ -661,26 +654,11 @@ describe('投稿审核（§8.4–8.5）', () => {
       adminApi,
       contractSettingsApi(token),
     );
-    const user = userEvent.setup();
-    // 全部：公共库 4 条 + 部门库 3 条
+    // 后端范围：公共库 4 条 + 部门库 3 条
     expect(await screen.findByText('行业研报汇总.pdf')).toBeInTheDocument();
     expect(screen.getByText('招聘流程优化.docx')).toBeInTheDocument();
     expect(screen.getByText('第三季度预算说明.pdf')).toBeInTheDocument();
-
-    const group = screen.getByRole('radiogroup');
-    await user.click(within(group).getByRole('radio', { name: copyApprovals.scopeDepartment }));
-    await waitFor(() =>
-      expect(adminApi.listApprovalSubmissions).toHaveBeenCalledWith({ targetKind: 'department' }),
-    );
-    await waitFor(() => expect(screen.queryByText('行业研报汇总.pdf')).not.toBeInTheDocument());
-    expect(screen.getByText('招聘流程优化.docx')).toBeInTheDocument();
-    expect(screen.getByText('第三季度预算说明.pdf')).toBeInTheDocument();
-
-    await user.click(within(group).getByRole('radio', { name: copyApprovals.scopePublic }));
-    await waitFor(() =>
-      expect(adminApi.listApprovalSubmissions).toHaveBeenCalledWith({ targetKind: 'public' }),
-    );
-    expect(await screen.findByText('行业研报汇总.pdf')).toBeInTheDocument();
-    expect(screen.queryByText('招聘流程优化.docx')).toBeNull();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(adminApi.listApprovalSubmissions).toHaveBeenCalledWith();
   });
 });

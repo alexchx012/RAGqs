@@ -41,17 +41,6 @@ function formatDateTime(value: string): string {
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString('zh-CN');
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  const kb = bytes / 1024;
-  if (kb < 1024) {
-    return `${kb.toFixed(1)} KB`;
-  }
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
-
 const PAGE_SIZE = 10;
 
 /** 部长部门库入口：严格为 kind=department && permission=manage 的服务端返回项。 */
@@ -760,10 +749,9 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="truncate text-body text-ink-black">{approval.name}</p>
+                    <p className="truncate text-body text-ink-black">{approval.file_name}</p>
                     <p className="mt-1 text-caption text-smoke-gray">
-                      {copy.settings.knowledge.manage.submitter(approval.submitter.display_name)} ·{' '}
-                      {copy.settings.knowledge.manage.fileMeta(approval.media_kind, formatBytes(approval.size_bytes))} ·{' '}
+                      {approval.media_kind} ·{' '}
                       {copy.settings.knowledge.manage.submittedAt(formatDateTime(approval.created_at))}
                     </p>
                     {rowErrors.get(approval.submission_id) !== undefined && (

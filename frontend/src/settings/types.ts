@@ -88,37 +88,33 @@ export interface DocumentListResponse {
   readonly page_size: number;
 }
 
-/** §6.3 上传响应。 */
-export interface UploadErrorObject {
-  readonly code: string;
-  readonly message: string;
-  readonly details: Record<string, unknown>;
-}
-
-export interface UploadItemAccepted {
-  readonly name: string;
-  readonly accepted: true;
-  readonly space_id: string;
-  readonly document_id: string | null;
-  readonly document_version_id?: string | null;
+/** §6.3 管理上传响应。 */
+export interface ManageUploadItem {
+  readonly filename: string;
+  readonly document_id: string;
+  readonly document_version_id: string | null;
   readonly job_id: string | null;
-  readonly deduplicated?: boolean;
-  readonly submission_id?: string;
-  readonly version?: number;
-  readonly status?: string;
-  readonly quota_exempt?: boolean;
+  readonly publication_id: string | null;
+  readonly deduplicated: boolean;
+  readonly status: string;
 }
 
-export interface UploadItemRejected {
-  readonly name: string;
-  readonly accepted: false;
-  readonly error: UploadErrorObject;
+/** §6.10 投稿创建响应（contribute 空间上传）。 */
+export interface SubmissionUploadItem {
+  readonly submission_id: string;
+  readonly version: number;
+  readonly status: SubmissionStatus;
+  readonly space_id: string;
+  readonly quota_exempt: boolean;
+  readonly document_id: null;
+  readonly document_version_id: null;
+  readonly job_id: null;
 }
 
-export type UploadItem = UploadItemAccepted | UploadItemRejected;
+export type UploadItem = ManageUploadItem | SubmissionUploadItem;
 
 export interface UploadResponse {
-  readonly upload_batch_id: string | null;
+  readonly upload_batch_id?: string | null;
   readonly items: readonly UploadItem[];
 }
 
@@ -240,19 +236,13 @@ export interface WithdrawSubmissionResponse {
 
 export interface Submission {
   readonly submission_id: string;
+  readonly space_id: string;
   readonly version: number;
-  readonly target_space_id: string;
-  readonly target_space_name: string;
-  readonly name: string;
-  readonly media_kind: string;
-  readonly size_bytes: number;
   readonly status: SubmissionStatus;
+  readonly file_name: string;
+  readonly media_kind: string;
   readonly created_at: string;
   readonly reviewed_at: string | null;
-  readonly reject_reason: string | null;
-  readonly invalidated_reason: string | null;
-  readonly document_id: string | null;
-  readonly job_id: string | null;
 }
 
 export interface SubmissionListResponse {
@@ -285,22 +275,15 @@ export interface ApprovalSummary {
   readonly submission_pending: number;
 }
 
-export interface ApprovalSubmitter {
-  readonly id: string;
-  readonly display_name: string;
-  readonly department: { readonly id: string; readonly name: string } | null;
-}
-
 export interface ApprovalListItem {
   readonly submission_id: string;
+  readonly space_id: string;
   readonly version: number;
-  readonly submitter: ApprovalSubmitter;
-  readonly name: string;
+  readonly status: SubmissionStatus;
+  readonly file_name: string;
   readonly media_kind: string;
-  readonly size_bytes: number;
-  readonly target_space_id: string;
-  readonly target_space_name: string;
   readonly created_at: string;
+  readonly reviewed_at: string | null;
 }
 
 export interface ApprovalListResponse {

@@ -127,7 +127,7 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     expect(screen.getByText(/内容重复，未新增任务/)).toBeInTheDocument();
   });
 
-  it('失败项按服务端错误对象呈现；quota_exceeded 整批拒绝提示', async () => {
+  it('上传校验失败显示请求级错误', async () => {
     const api = createContractApi();
     mockKnowledge.setNextUploadFailure('bad', 'malware_detected');
     const user = userEvent.setup();
@@ -138,7 +138,9 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     await user.upload(input, [file]);
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
 
-    await waitFor(() => expect(screen.getByText(/检测到恶意内容/)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(copy.settings.knowledge.upload.itemError('upload_error'))).toBeInTheDocument(),
+    );
   });
 });
 
