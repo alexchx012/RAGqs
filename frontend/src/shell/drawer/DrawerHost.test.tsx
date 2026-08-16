@@ -179,6 +179,49 @@ describe('下钻、返回与 Esc 逐层', () => {
     expect(screen.getByLabelText(copy.chat.composer.inputPlaceholder)).toBeInTheDocument();
   });
 
+  it('全屏抽屉圈定键盘焦点，并在关闭后恢复到打开控件', async () => {
+    const originalOffsetParent = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent');
+    Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+      configurable: true,
+      get: () => document.body,
+    });
+
+    try {
+      await renderApp('/');
+      const user = userEvent.setup();
+      const opener = screen.getByRole('button', { name: copy.shell.home.openDrawerAria });
+      opener.focus();
+      await user.click(opener);
+
+      const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+      const closeButton = within(dialog).getByRole('button', { name: drawerCopy.closeAria });
+      const focusable = within(dialog).getAllByRole('button');
+      const last = focusable[focusable.length - 1]!;
+      expect(closeButton).toHaveFocus();
+
+      last.focus();
+      await user.keyboard('{Tab}');
+      expect(closeButton).toHaveFocus();
+
+      closeButton.focus();
+      await user.keyboard('{Shift>}{Tab}{/Shift}');
+      expect(last).toHaveFocus();
+
+      await user.click(closeButton);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {
+        timeout: 2000,
+      });
+      await waitFor(() => expect(opener).toHaveFocus());
+    } finally {
+      if (originalOffsetParent === undefined) {
+        delete (HTMLElement.prototype as { offsetParent?: HTMLElement | null }).offsetParent;
+      } else {
+        Object.defineProperty(HTMLElement.prototype, 'offsetParent', originalOffsetParent);
+      }
+    }
+  });
+
   it('下滑手势：跟手位移超过阈值即关闭（规格 §1）', async () => {
     const probe = await renderApp('/settings');
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });

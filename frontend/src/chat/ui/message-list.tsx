@@ -6,13 +6,14 @@
  */
 
 import { ArrowDown } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode, type UIEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type UIEvent } from 'react';
 import { copy } from '../../copy';
 import { formatRelativeTime } from '../../notifications/relative-time';
 import type { AbChoice, FeedbackVoteRequest } from '../types';
 import { AssistantMessage } from './assistant-message';
 
 export interface MessageListProps {
+  readonly conversationId: string | null;
   readonly messages: readonly import('../store').ChatMessageView[];
   readonly onRetry: (messageId: string) => void;
   readonly onFeedback: (messageId: string, vote: FeedbackVoteRequest) => void;
@@ -24,6 +25,7 @@ export interface MessageListProps {
 }
 
 export function MessageList({
+  conversationId,
   messages,
   onRetry,
   onFeedback,
@@ -45,6 +47,13 @@ export function MessageList({
     setGreetingHidden(false);
     return undefined;
   }, [isEmpty]);
+
+  useLayoutEffect(() => {
+    const target = scrollRef.current;
+    if (target === null || isEmpty) return;
+    target.scrollTop = target.scrollHeight;
+    setShowScrollBottom(false);
+  }, [conversationId, isEmpty]);
 
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;

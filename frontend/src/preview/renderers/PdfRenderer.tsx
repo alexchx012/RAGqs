@@ -18,6 +18,8 @@ import '../pdf-worker';
 
 /** 预览区内容限宽（共用基座 §6：880px 居中）。 */
 const PDF_PAGE_WIDTH = 880;
+const PDF_PAGE_WINDOW_RADIUS = 2;
+const PDF_PAGE_PLACEHOLDER_HEIGHT = 664;
 
 /**
  * pdfjs 文本项（只消费 str；坐标由组件按拼接序推导）。
@@ -59,8 +61,11 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+  const [windowCenter, setWindowCenter] = useState(1);
+  const [pendingTargetPage, setPendingTargetPage] = useState<number | null>(null);
   /** pageNumber → 文本层 items（onGetTextSuccess 捕获）。 */
   const [pageItems, setPageItems] = useState<ReadonlyMap<number, readonly PdfTextItem[]>>(new Map());
+  const pageNodesRef = useRef(new Map<number, HTMLDivElement>());
 
   const file = useMemo(
     () => ({
@@ -79,6 +84,65 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
   const onDocumentLoadError = useCallback(() => {
     setLoadFailed(true);
   }, []);
+
+  const currentHitPage = useMemo(() => {
+    if (currentHit === null) return null;
+    const hit = hits[currentHit];
+    return hit !== undefined && 'page' in hit.locator ? hit.locator.page : null;
+  }, [currentHit, hits]);
+
+  useEffect(() => {
+    if (currentHitPage === null) return;
+    setWindowCenter(currentHitPage);
+    setPendingTargetPage(currentHitPage);
+  }, [currentHitPage]);
+
+  const renderedPages = useMemo(() => {
+    const pages = new Set<number>();
+    if (numPages === null) return pages;
+    const center = Math.min(Math.max(pendingTargetPage ?? windowCenter, 1), numPages);
+    const first = Math.max(1, center - PDF_PAGE_WINDOW_RADIUS);
+    const last = Math.min(numPages, center + PDF_PAGE_WINDOW_RADIUS);
+    for (let pageNumber = first; pageNumber <= last; pageNumber += 1) {
+      pages.add(pageNumber);
+    }
+    return pages;
+  }, [numPages, pendingTargetPage, windowCenter]);
+
+  const renderedPageNumbers = useMemo(
+    () => Array.from(renderedPages).sort((left, right) => left - right),
+    [renderedPages],
+  );
+  const firstRenderedPage = renderedPageNumbers[0] ?? 1;
+  const lastRenderedPage = renderedPageNumbers[renderedPageNumbers.length - 1] ?? 0;
+  const beforeWindowHeight = (firstRenderedPage - 1) * PDF_PAGE_PLACEHOLDER_HEIGHT;
+  const afterWindowHeight =
+    numPages === null ? 0 : Math.max(0, numPages - lastRenderedPage) * PDF_PAGE_PLACEHOLDER_HEIGHT;
+
+  const setPageNode = useCallback((pageNumber: number, node: HTMLDivElement | null) => {
+    if (node === null) {
+      pageNodesRef.current.delete(pageNumber);
+      return;
+    }
+    pageNodesRef.current.set(pageNumber, node);
+  }, []);
+
+  useEffect(() => {
+    if (numPages === null || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries.find((candidate) => candidate.isIntersecting);
+        if (entry === undefined) return;
+        const pageNumber = Number((entry.target as HTMLElement).dataset.pageNumber);
+        if (Number.isInteger(pageNumber)) {
+          setWindowCenter(pageNumber);
+        }
+      },
+      { rootMargin: '960px 0px', threshold: 0.01 },
+    );
+    pageNodesRef.current.forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [numPages, renderedPages]);
 
   /** 页文本（items 拼接序坐标；与 customTextRenderer 的 itemIndex 偏移一致）。 */
   const pageText = useCallback(
@@ -156,7 +220,10 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
   }, []);
 
   // 打开 / 切换命中滚动：优先片段锚点（文本层），缺省回退命中页容器（扫描件唯一形态）
-  const scrollReady = numPages !== null && (!hasTextLayer || pageItems.size > 0);
+  const scrollReady =
+    numPages !== null &&
+    (currentHitPage === null || renderedPages.has(currentHitPage)) &&
+    (!hasTextLayer || currentHitPage === null || pageItems.has(currentHitPage));
   useEffect(() => {
     if (!scrollReady || currentHit === null) {
       return;
@@ -166,10 +233,12 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
     if (root === null || hit === undefined || !('page' in hit.locator)) {
       return;
     }
+    const pageNumber = hit.locator.page;
     const anchor =
       root.querySelector(`[data-hit-anchor="${currentHit}"]`) ??
-      root.querySelector(`[data-page-number="${hit.locator.page}"]`);
+      root.querySelector(`[data-page-number="${pageNumber}"]`);
     scrollToCenter(anchor);
+    setPendingTargetPage((pendingPage) => (pendingPage === pageNumber ? null : pendingPage));
   }, [scrollReady, currentHit, hits, pageItems]);
 
   if (loadFailed) {
@@ -183,8 +252,6 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
     );
   }
 
-  const pages = numPages === null ? [] : Array.from({ length: numPages }, (_unused, index) => index + 1);
-
   return (
     <div ref={rootRef} className="preview-pdf">
       <Document
@@ -195,9 +262,11 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
         loading={<PdfSkeleton />}
         error={<PdfSkeleton />}
       >
-        {pages.map((pageNumber) => (
+        {beforeWindowHeight > 0 ? <div aria-hidden="true" style={{ height: beforeWindowHeight }} /> : null}
+        {renderedPageNumbers.map((pageNumber) => (
           <div
             key={pageNumber}
+            ref={(node) => setPageNode(pageNumber, node)}
             data-page-number={pageNumber}
             className="preview-pdf-page mb-6 overflow-hidden rounded-[var(--radius-images)] bg-paper-white shadow-[var(--shadow-subtle)]"
           >
@@ -212,6 +281,7 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
             />
           </div>
         ))}
+        {afterWindowHeight > 0 ? <div aria-hidden="true" style={{ height: afterWindowHeight }} /> : null}
       </Document>
     </div>
   );
