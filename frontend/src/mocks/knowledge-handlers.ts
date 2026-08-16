@@ -280,6 +280,7 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
             files,
             idempotencyKey,
           ),
+          { status: 202 },
         );
       } catch (error) {
         return errorResponse(error);
@@ -292,15 +293,14 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
       try {
         const parts = await parseNewVersionParts(request);
         const idempotencyKey = requireIdempotencyKey(request);
-        return HttpResponse.json(
-          controller.uploadNewVersion(
+        const result = controller.uploadNewVersion(
             request.headers.get('Authorization'),
             String(params['id']),
             parts.file,
             parts.expectedVersion,
             idempotencyKey,
-          ),
-        );
+          );
+        return HttpResponse.json(result, { status: result.deduplicated ? 200 : 202 });
       } catch (error) {
         return errorResponse(error);
       }

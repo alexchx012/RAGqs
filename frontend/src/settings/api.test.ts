@@ -207,7 +207,7 @@ describe('设置域 API 封装（账户基座）', () => {
     );
     const api = makeApi(mock);
 
-    await api.uploadNewVersion(
+    const result = await api.uploadNewVersion(
       'doc_1',
       new File(['replacement'], 'replacement.pdf', { type: 'application/pdf' }),
       1,
@@ -219,6 +219,14 @@ describe('设置域 API 封装（账户基座）', () => {
     expect(text).toContain('name="file"; filename="replacement.pdf"');
     expect(text).not.toContain('name="files";');
     expect(text).toContain('name="expected_version"');
+    expect(result).toMatchObject({
+      document_id: 'doc_1',
+      document_version_id: 'version_2',
+      job_id: 'job_2',
+      publication_id: 'publication_2',
+      deduplicated: false,
+      status: 'pending',
+    });
   });
 
   it('getSubmissionContent：请求 Blob 内容并保留 bytes 和 MIME type', async () => {

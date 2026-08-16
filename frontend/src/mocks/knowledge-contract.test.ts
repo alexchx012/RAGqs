@@ -66,6 +66,45 @@ async function uploadRequest(
   });
 }
 
+async function uploadNewVersionRequest(
+  token: string,
+  documentId: string,
+  expectedVersion: number,
+  file: { name: string; type: string; content: string },
+  idempotencyKey: string,
+): Promise<Response> {
+  const boundary = '----RAGqsNewVersionBoundary7MA4YWxk';
+  const encoder = new TextEncoder();
+  const chunks = [
+    encoder.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\n` +
+        `Content-Type: ${file.type}\r\n\r\n`,
+    ),
+    encoder.encode(file.content),
+    encoder.encode('\r\n'),
+    encoder.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="expected_version"\r\n\r\n${expectedVersion}\r\n`,
+    ),
+    encoder.encode(`--${boundary}--\r\n`),
+  ];
+  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return fetch(resolveUrl(`/v1/documents/${encodeURIComponent(documentId)}/versions`), {
+    method: 'POST',
+    headers: {
+      Authorization: token,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Idempotency-Key': idempotencyKey,
+    },
+    body,
+  });
+}
+
 async function listDocuments(token: string, spaceId: string, q?: string, page = 1, pageSize = 10): Promise<Response> {
   const params = new URLSearchParams();
   if (q !== undefined) params.set('q', q);
@@ -118,19 +157,19 @@ describe('knowledge contract mock：文档列表与分页', () => {
 });
 
 describe('knowledge contract mock：上传三分支', () => {
-  it('manage 目标多文件：返回真实上传结果字段、批次与任务卡；dedupe 基于内容 hash（review C12）', async () => {
+  it('manage 目标多文件：返回 202、真实上传结果字段、批次与任务卡；dedupe 需要规范化文件名和内容 hash 都相同', async () => {
     const token = bearerOf('zhangsan');
     const response = await uploadRequest(
       token,
       'personal:u_user',
       [
-        { name: '季度总结.pdf', type: 'application/pdf', content: '%PDF-1.4' },
-        // 内容与上一文件相同（hash 相同）→ deduplicated；文件名不同不影响判定
-        { name: '员工手册-副本.pdf', type: 'application/pdf', content: '%PDF-1.4' },
+        { name: '季度  总结.pdf', type: 'application/pdf', content: '%PDF-1.4' },
+        // 规范化后同名且内容相同 → deduplicated。
+        { name: ' 季度 总结.PDF ', type: 'application/pdf', content: '%PDF-1.4' },
       ],
       'idem-upload-1',
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     const body = (await response.json()) as {
       upload_batch_id: string;
       items: {
@@ -146,7 +185,7 @@ describe('knowledge contract mock：上传三分支', () => {
     expect(body.upload_batch_id).toBeTruthy();
     expect(body.items).toHaveLength(2);
     expect(body.items[0]).toMatchObject({
-      filename: '季度总结.pdf',
+      filename: '季度  总结.pdf',
       deduplicated: false,
       status: 'pending',
     });
@@ -161,7 +200,7 @@ describe('knowledge contract mock：上传三分支', () => {
     ]);
     expect(body.items[0].job_id).toBeTruthy();
     expect(body.items[1]).toMatchObject({
-      filename: '员工手册-副本.pdf',
+      filename: ' 季度 总结.PDF ',
       deduplicated: true,
       status: 'deduplicated',
     });
@@ -177,7 +216,7 @@ describe('knowledge contract mock：上传三分支', () => {
     expect(body.items[1].job_id).toBeNull();
 
     const jobs = (await (await listJobs(token)).json()) as { items: { job_id: string; state: string; name: string }[] };
-    expect(jobs.items.some((job) => job.name === '季度总结.pdf')).toBe(true);
+    expect(jobs.items.some((job) => job.name === '季度  总结.pdf')).toBe(true);
     // 批次统计：rejected=0、deduplicated=1（全部文件结果保留在 items）
     const batch = (await (await fetch(resolveUrl(`/v1/upload-batches/${body.upload_batch_id}`), { headers: { Authorization: token } })).json()) as {
       summary: { rejected: number; deduplicated: number; total_files: number };
@@ -235,7 +274,7 @@ describe('knowledge contract mock：上传三分支', () => {
       [{ name: '公共建议稿.md', type: 'text/markdown', content: '# 建议' }],
       'idem-upload-4',
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     const body = (await response.json()) as {
       items: {
         submission_id: string;
@@ -265,6 +304,41 @@ describe('knowledge contract mock：上传三分支', () => {
       items: { file_name: string; status: string }[];
     };
     expect(submissions.items.some((item) => item.file_name === '公共建议稿.md')).toBe(true);
+  });
+
+  it('初始管理上传：同一内容换文件名和同名换内容都创建新文档', async () => {
+    const token = bearerOf('zhangsan');
+    const sameBytesDifferentName = await uploadRequest(
+      token,
+      'personal:u_user',
+      [
+        { name: '原文件.pdf', type: 'application/pdf', content: '%PDF-identical' },
+        { name: '另一文件.pdf', type: 'application/pdf', content: '%PDF-identical' },
+      ],
+      'idem-filename-aware-1',
+    );
+    expect(sameBytesDifferentName.status).toBe(202);
+    const firstBody = (await sameBytesDifferentName.json()) as {
+      items: { document_id: string; deduplicated: boolean }[];
+    };
+    expect(firstBody.items.map((item) => item.deduplicated)).toEqual([false, false]);
+    expect(firstBody.items[1]!.document_id).not.toBe(firstBody.items[0]!.document_id);
+
+    const sameNameDifferentBytes = await uploadRequest(
+      token,
+      'personal:u_user',
+      [
+        { name: '同名文件.pdf', type: 'application/pdf', content: '%PDF-one' },
+        { name: ' 同名  文件.PDF ', type: 'application/pdf', content: '%PDF-two' },
+      ],
+      'idem-filename-aware-2',
+    );
+    expect(sameNameDifferentBytes.status).toBe(202);
+    const secondBody = (await sameNameDifferentBytes.json()) as {
+      items: { document_id: string; deduplicated: boolean }[];
+    };
+    expect(secondBody.items.map((item) => item.deduplicated)).toEqual([false, false]);
+    expect(secondBody.items[1]!.document_id).not.toBe(secondBody.items[0]!.document_id);
   });
 });
 
@@ -666,11 +740,30 @@ describe('knowledge contract mock：上传新版本（§6.4）与幂等回放', 
       },
       body,
     });
-    expect(response.status).toBe(200);
-    const created = (await response.json()) as { document_id: string; document_version_id: string; job_id: string; version: number };
+    expect(response.status).toBe(202);
+    const created = (await response.json()) as {
+      document_id: string;
+      document_version_id: string;
+      job_id: string;
+      publication_id: string;
+      deduplicated: boolean;
+      status: string;
+      version: number;
+    };
+    expect(sortedKeys(created)).toEqual([
+      'deduplicated',
+      'document_id',
+      'document_version_id',
+      'job_id',
+      'publication_id',
+      'status',
+      'version',
+    ]);
     expect(created.document_id).toBe(target.id);
     expect(created.version).toBe(target.version + 1);
     expect(created.job_id).toBeTruthy();
+    expect(created.publication_id).toBeTruthy();
+    expect(created).toMatchObject({ deduplicated: false, status: 'pending' });
 
     // 任务 succeeded 前：旧 active 继续服务（active_version_id 未变）
     const pending = (await (await fetch(resolveUrl(`/v1/documents/${target.id}/versions`), { headers: { Authorization: token } })).json()) as {
@@ -688,6 +781,45 @@ describe('knowledge contract mock：上传新版本（§6.4）与幂等回放', 
     };
     expect(after.active_version_id).toBe(created.document_version_id);
     expect(after.items.find((item) => item.document_version_id === target.document_version_id)?.status).toBe('superseded');
+  });
+
+  it('重复的新版本返回 200，并包含完整的去重替换响应', async () => {
+    const token = bearerOf('zhangsan');
+    const initial = await uploadRequest(
+      token,
+      'personal:u_user',
+      [{ name: '替换去重.pdf', type: 'application/pdf', content: '%PDF-same-content' }],
+      'idem-replacement-source',
+    );
+    const initialBody = (await initial.json()) as {
+      items: { document_id: string; version?: number }[];
+    };
+    const documentId = initialBody.items[0]!.document_id;
+    const duplicate = await uploadNewVersionRequest(
+      token,
+      documentId,
+      1,
+      { name: '替换去重.pdf', type: 'application/pdf', content: '%PDF-same-content' },
+      'idem-replacement-dedupe',
+    );
+    expect(duplicate.status).toBe(200);
+    const result = (await duplicate.json()) as Record<string, unknown>;
+    expect(sortedKeys(result)).toEqual([
+      'deduplicated',
+      'document_id',
+      'document_version_id',
+      'job_id',
+      'publication_id',
+      'status',
+      'version',
+    ]);
+    expect(result).toMatchObject({
+      document_id: documentId,
+      job_id: null,
+      publication_id: null,
+      deduplicated: true,
+      status: 'deduplicated',
+    });
   });
 
   it('同 Idempotency-Key 同 payload 回放同一结果；不同 payload 409 idempotency_key_conflict', async () => {

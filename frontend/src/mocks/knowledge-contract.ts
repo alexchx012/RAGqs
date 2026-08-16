@@ -509,10 +509,10 @@ export class MockKnowledgeController {
     }
 
     for (const file of files) {
-      // dedupe 基于内容 hash（不能只按文件名）：同名不同内容 → 新文档；不同名同内容 → deduplicated
+      // 初始上传仅在规范化文件名和内容 hash 都相同的情况下去重。
       if (permission === 'manage') {
         const hash = file.contentHash ?? this.fallbackHash(file);
-        const existing = this.findByContentHash(spaceId, hash);
+        const existing = this.findInitialUploadDuplicate(spaceId, file.name, hash);
         if (existing !== undefined) {
           items.push({
             filename: file.name,
@@ -631,8 +631,10 @@ export class MockKnowledgeController {
           document_id: doc.id,
           document_version_id: activeVersion.documentVersionId,
           job_id: null,
+          publication_id: null,
           version: doc.version,
           deduplicated: true,
+          status: 'deduplicated',
         };
       }
       const processing = this.addProcessingVersion(doc, newHash);
@@ -642,7 +644,10 @@ export class MockKnowledgeController {
           document_id: doc.id,
           document_version_id: processing.documentVersionId,
           job_id: job.jobId,
+          publication_id: this.nextId('publication'),
           version: doc.version,
+          deduplicated: false,
+          status: 'pending',
         };
       },
       user.id,
@@ -1463,8 +1468,19 @@ export class MockKnowledgeController {
     return (this.documents.get(spaceId) ?? []).find((doc) => doc.name === name);
   }
 
-  private findByContentHash(spaceId: string, hash: string): StoredDocument | undefined {
-    return (this.documents.get(spaceId) ?? []).find((doc) => doc.contentHash === hash);
+  private findInitialUploadDuplicate(
+    spaceId: string,
+    filename: string,
+    contentHash: string,
+  ): StoredDocument | undefined {
+    const normalizedFilename = this.normalizeFilename(filename);
+    return (this.documents.get(spaceId) ?? []).find(
+      (doc) => doc.contentHash === contentHash && this.normalizeFilename(doc.name) === normalizedFilename,
+    );
+  }
+
+  private normalizeFilename(filename: string): string {
+    return filename.trim().replace(/\s+/g, ' ').toLowerCase();
   }
 
   /** 缺省 hash：夹具未提供 contentHash 时按 name+size 派生（保持既有测试语义）。 */
@@ -1473,10 +1489,6 @@ export class MockKnowledgeController {
   }
 
   private createDocument(space: SpaceDef, file: UploadFileInput): StoredDocument {
-    const existing = this.findByName(space.id, file.name);
-    if (existing !== undefined) {
-      return existing;
-    }
     const now = new Date().toISOString();
     const seq = (this.documentSeq.get(space.id) ?? 0) + 1;
     this.documentSeq.set(space.id, seq);

@@ -220,8 +220,10 @@ export interface NewVersionResponse {
   readonly document_version_id: string;
   /** null 表示内容与当前版本重复（deduplicated），未创建任务。 */
   readonly job_id: string | null;
+  readonly publication_id: string | null;
   readonly version: number;
-  readonly deduplicated?: boolean;
+  readonly deduplicated: boolean;
+  readonly status: string;
 }
 
 /** §6.10 投稿。 */

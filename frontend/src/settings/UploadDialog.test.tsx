@@ -112,7 +112,7 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     expect(await screen.findByText(copy.settings.knowledge.upload.manageTargetHint)).toBeInTheDocument();
     expect(screen.getByText(copy.settings.knowledge.upload.contributeTargetHint)).toBeInTheDocument();
 
-    // 选择文件（用户事件 File 选择）：两个文件内容相同（内容 hash dedupe），不同文件名
+    // 初始上传去重键包含规范化文件名；同内容不同文件名均应被接收。
     const file1 = new File(['%PDF-1.4'], '新文档.pdf', { type: 'application/pdf' });
     const file2 = new File(['%PDF-1.4'], '新文档-副本.pdf', { type: 'application/pdf' });
     const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles) as HTMLInputElement;
@@ -120,11 +120,12 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
 
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
 
-    // 逐文件结果：accepted + deduplicated（基于内容 hash，与文件名无关）
+    // 逐文件结果：两个不同文件名均 accepted。
     await waitFor(() =>
       expect(screen.getAllByText(/新文档\.pdf/).length).toBeGreaterThan(0),
     );
-    expect(screen.getByText(/内容重复，未新增任务/)).toBeInTheDocument();
+    expect(screen.getAllByText(/已接收/)).toHaveLength(2);
+    expect(screen.queryByText(/内容重复，未新增任务/)).not.toBeInTheDocument();
   });
 
   it('上传校验失败显示请求级错误', async () => {
