@@ -161,6 +161,8 @@ class DocumentsService:
         submission_notification_port: Any | None = None,
         ingestion_notification_port: Any | None = None,
         public_graph_source_service: Any | None = None,
+        preview_renderer: Any | None = None,
+        message_citation_preview_port: Any | None = None,
         version_retention_days: int = 30,
         read_lease_ttl: timedelta = timedelta(minutes=5),
     ) -> None:
@@ -175,6 +177,8 @@ class DocumentsService:
         self._submission_notification_port = submission_notification_port
         self._ingestion_notification_port = ingestion_notification_port
         self._public_graph_source_service = public_graph_source_service
+        self._preview_renderer = preview_renderer
+        self._message_citation_preview_port = message_citation_preview_port
         self._version_retention_days = version_retention_days
         self._read_lease_ttl = read_lease_ttl
 
@@ -1521,6 +1525,7 @@ class DocumentsService:
         principal: Any,
         document_id: str,
         document_version_id: str | None = None,
+        message_id: str | None = None,
     ) -> dict[str, Any]:
         from .read_models import DocumentReadModels
 
@@ -1528,6 +1533,7 @@ class DocumentsService:
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
+            message_id=message_id,
         )
 
     def content(
@@ -1536,6 +1542,7 @@ class DocumentsService:
         principal: Any,
         document_id: str,
         document_version_id: str | None = None,
+        sheet: str | None = None,
     ) -> tuple[bytes, ObjectMetadata]:
         from .read_models import DocumentReadModels
 
@@ -1543,6 +1550,7 @@ class DocumentsService:
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
+            sheet=sheet,
         )
 
     def get_upload_batch(self, *, principal: Any, upload_batch_id: str) -> dict[str, Any]:

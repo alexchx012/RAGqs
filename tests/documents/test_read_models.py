@@ -48,6 +48,32 @@ def test_versions_and_content_only_expose_active_projection(service, principal) 
     assert metadata.size_bytes == 5
 
 
+def test_preview_and_content_expose_readable_superseded_version(service, principal) -> None:
+    first = _accepted(service, principal)
+    replacement = service.replace_version(
+        principal=principal,
+        document_id=first["document_id"],
+        expected_version=1,
+        file=_upload(content=b"new content"),
+        idempotency_key="replace-1",
+    )
+    _accept(service, principal, replacement)
+
+    preview = service.preview(
+        principal=principal,
+        document_id=first["document_id"],
+        document_version_id=first["document_version_id"],
+    )
+    content, _ = service.content(
+        principal=principal,
+        document_id=first["document_id"],
+        document_version_id=first["document_version_id"],
+    )
+
+    assert preview["document_version_id"] == first["document_version_id"]
+    assert content == b"hello"
+
+
 def test_pending_document_never_leaks_preview_or_content(service, principal) -> None:
     created = service.create_initial_upload(
         principal=principal,

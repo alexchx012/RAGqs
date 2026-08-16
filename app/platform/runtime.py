@@ -17,8 +17,10 @@ from app.chat.ports import (
     SqlAlchemyChatPairExpiry,
     UnavailableChatProviderPort,
 )
+from app.chat.preview import SqlAlchemyMessageCitationPreviewAdapter
 from app.chat.streaming import GenerationStreamService
 from app.chat.worker import ChatGenerationWorker
+from app.documents.preview import ProcessingReceiptPreviewRenderer
 from app.documents.public_graph import PublicGraphSourceService
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
@@ -228,6 +230,12 @@ def build_runtime(
     )
     configured.setdefault("identity_access", identity_access)
     documents_service = configured.get("documents_service")
+    preview_renderer = configured.get("document_preview_renderer") or ProcessingReceiptPreviewRenderer()
+    configured.setdefault("document_preview_renderer", preview_renderer)
+    message_citation_preview_port = configured.get("message_citation_preview_port") or (
+        SqlAlchemyMessageCitationPreviewAdapter(engine)
+    )
+    configured.setdefault("message_citation_preview_port", message_citation_preview_port)
     notification_materializer = configured.get("notification_materializer") or (
         NotificationMaterializer(
             engine,
@@ -494,6 +502,8 @@ def build_runtime(
             submission_notification_port=submission_outbox_port,
             ingestion_notification_port=ingestion_outbox_port,
             public_graph_source_service=public_graph_source_service,
+            preview_renderer=preview_renderer,
+            message_citation_preview_port=message_citation_preview_port,
         )
     elif isinstance(documents_service, DocumentsService):
         if documents_service._quota_service is None:
@@ -506,6 +516,10 @@ def build_runtime(
             documents_service._ingestion_notification_port = ingestion_outbox_port
         if documents_service._public_graph_source_service is None:
             documents_service._public_graph_source_service = public_graph_source_service
+        if documents_service._preview_renderer is None:
+            documents_service._preview_renderer = preview_renderer
+        if documents_service._message_citation_preview_port is None:
+            documents_service._message_citation_preview_port = message_citation_preview_port
     configured.setdefault("documents_service", documents_service)
     graph_build_outbox_port = configured.get("graph_build_outbox_port") or (
         SqlAlchemyGraphBuildOutboxAdapter(outbox_publisher)
