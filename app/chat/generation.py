@@ -110,7 +110,7 @@ class GenerationService:
     def _now(self, connection: Connection) -> datetime:
         value = self._clock.now_utc(connection)
         if value.tzinfo is None:
-            value = value.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            value = value.replace(tzinfo=UTC)
         return value
 
     # ------------------------------------------------------------------ ask

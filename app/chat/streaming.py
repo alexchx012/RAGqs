@@ -53,27 +53,9 @@ class GenerationStreamService:
         last_seq = last_event_id
         last_heartbeat = time.monotonic()
         try:
-            with self._engine.begin() as connection:
-                self._authorization.verify_active(connection, principal)
-                generation = (
-                    connection.execute(select_generation_statement(generation_id))
-                    .mappings()
-                    .one_or_none()
-                )
-                if generation is None or str(generation["owner_user_id"]) != str(principal.user_id):
-                    raise PlatformError("generation_not_found", "Generation was not found", {}, 404)
-                now = self._now(connection)
-                lease = create_lease(
-                    connection,
-                    generation_id=generation_id,
-                    auth_session_id=str(principal.auth_session_id),
-                    now=now,
-                    lease_seconds=self._lease_seconds,
-                )
-                lease_token = str(lease["lease_token"])
-                replay = list_events_after(
-                    connection, generation_id=generation_id, after_seq=last_seq
-                )
+            replay, lease_token = await asyncio.to_thread(
+                self._open, principal, generation_id, last_seq
+            )
             for event in replay:
                 last_seq = max(last_seq, event.seq)
                 yield sse_frame(event.event_type, event.data, event.seq)
@@ -81,20 +63,43 @@ class GenerationStreamService:
                 return
             while True:
                 await asyncio.sleep(self._poll_seconds)
-                events = self._read_events(generation_id, last_seq)
+                events = await asyncio.to_thread(self._read_events, generation_id, last_seq)
                 for event in events:
                     last_seq = max(last_seq, event.seq)
                     yield sse_frame(event.event_type, event.data, event.seq)
                 if events and terminal_event_type(events[-1].event_type):
                     return
                 if time.monotonic() - last_heartbeat >= self._heartbeat_seconds:
-                    if not self._renew_lease(lease_token):
+                    if not await asyncio.to_thread(self._renew_lease, lease_token):
                         return
                     yield sse_comment("keep-alive")
                     last_heartbeat = time.monotonic()
         finally:
             if lease_token:
-                self._release_lease(lease_token)
+                await asyncio.to_thread(self._release_lease, lease_token)
+
+    def _open(
+        self, principal: Any, generation_id: str, last_seq: int
+    ) -> tuple[list[StoredEvent], str]:
+        with self._engine.begin() as connection:
+            self._authorization.verify_active(connection, principal)
+            generation = (
+                connection.execute(select_generation_statement(generation_id))
+                .mappings()
+                .one_or_none()
+            )
+            if generation is None or str(generation["owner_user_id"]) != str(principal.user_id):
+                raise PlatformError("generation_not_found", "Generation was not found", {}, 404)
+            now = self._now(connection)
+            lease = create_lease(
+                connection,
+                generation_id=generation_id,
+                auth_session_id=str(principal.auth_session_id),
+                now=now,
+                lease_seconds=self._lease_seconds,
+            )
+            replay = list_events_after(connection, generation_id=generation_id, after_seq=last_seq)
+            return replay, str(lease["lease_token"])
 
     def _read_events(self, generation_id: str, after_seq: int) -> list[StoredEvent]:
         with self._engine.connect() as connection:
