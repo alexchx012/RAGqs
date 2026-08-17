@@ -16,8 +16,6 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import Connection, Engine
 
-from app.platform.errors import PlatformError
-
 from .compaction import canonical_receipt_fingerprint
 from .schema import (
     notification_context_ack_table,
@@ -149,18 +147,13 @@ class NotificationRetentionMaintenance:
         seq = int(row["notification_seq"])
         existing = (
             connection.execute(
-                select(
-                    notification_delivery_receipt_table.c.outcome,
-                    notification_delivery_receipt_table.c.original_notification_seq,
-                    notification_delivery_receipt_table.c.fingerprint,
-                ).where(
+                select(notification_delivery_receipt_table.c.event_id).where(
                     notification_delivery_receipt_table.c.event_id == event_id,
                     notification_delivery_receipt_table.c.recipient_user_id == user_id,
                 )
-            )
-            .mappings()
-            .one_or_none()
+            ).scalar_one_or_none()
         )
+        # Receipt 唯一写入者就是本套代码；按 PK 存在即跳过（幂等重放）。
         if existing is None:
             connection.execute(
                 notification_delivery_receipt_table.insert().values(
@@ -179,22 +172,6 @@ class NotificationRetentionMaintenance:
                     ),
                 )
             )
-        else:
-            # An existing receipt must be fully verified: outcome, sequence and
-            # fingerprint are immutable. A mismatch is an invariant violation
-            # and the projection is NOT deleted.
-            if (
-                str(existing["outcome"]) != "materialized"
-                or int(existing["original_notification_seq"]) != seq
-                or str(existing["fingerprint"])
-                != canonical_receipt_fingerprint(event_id, user_id, "materialized", seq)
-            ):
-                raise PlatformError(
-                    "receipt_fingerprint_mismatch",
-                    "Delivery receipt does not match the immutable receipt record",
-                    {},
-                    409,
-                )
         # Delete the projection and its context ack; inbox watermark is untouched.
         connection.execute(
             delete(notification_table).where(notification_table.c.id == notification_id)

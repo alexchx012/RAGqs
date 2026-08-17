@@ -205,15 +205,14 @@ class NotificationService:
             )
         ).rowcount
         if updated != 1:
-            # The inbox moved concurrently: retry within the same transaction
-            # so the committed watermark reflects the newest state.
-            connection.execute(
-                update(notification_inbox_table)
-                .where(notification_inbox_table.c.recipient_user_id == user_id)
-                .values(
-                    read_through_seq=max(target, highest),
-                    read_all_at_utc=now,
-                )
+            # 不可达防御分支已删除：PostgreSQL 路径持有 per-user advisory
+            # xact lock，SQLite 路径串行写；CAS 失败没有真实的并发来源。
+            # 若未来出现真实并发写者，rowcount=0 会让事务以乐观并发语义失败。
+            raise PlatformError(
+                "inbox_version_conflict",
+                "Notification inbox changed concurrently",
+                {},
+                409,
             )
 
     def ack_event(self, user_id: str, event_id: str, *, event_type: str | None = None) -> None:

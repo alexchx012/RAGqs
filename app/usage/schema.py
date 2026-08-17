@@ -192,6 +192,8 @@ provider_call_table = Table(
         " OR not_sent_at_utc IS NOT NULL))",
         name="ck_provider_call_unknown_at",
     ),
+    # reconcile/ledger 的 stale 扫描按 (status, dispatching_at_utc) 过滤。
+    Index("ix_provider_call_reconcile", "status", "dispatching_at_utc"),
 )
 
 # 4) usage_event：不可变账本事实（触发器拒绝 UPDATE/DELETE）
@@ -368,6 +370,10 @@ quota_debit_table = Table(
         " OR adjustment_source_namespace != 'quota_request' OR adjustment_source_id IS NULL))",
         name="ck_quota_debit_credit_shape",
     ),
+    # rebuild 按 (subject, period) 全量重放；reversal/supplement 按 (entry_kind,
+    # referenced_debit_id) 累计——追加式账本缺二级索引会随数据线性全表扫描。
+    Index("ix_quota_debit_subject_period", "quota_subject_user_id", "quota_period"),
+    Index("ix_quota_debit_kind_reference", "entry_kind", "referenced_debit_id"),
 )
 
 # 6) 投影（派生，可重建）

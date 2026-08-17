@@ -361,12 +361,39 @@ class OutboxDispatcher:
                 delivered_at = now
                 recipients = self._recipients_for(connection, claim.event_id)
                 if claim.consumer_name == V1_CONSUMER:
+                    # event 与 tombstone 只依赖 claim，对同一 event 的全部
+                    # 收件人只读取一次；per-document redaction 锁同样只取一次。
+                    if claim.document_id is not None and connection.dialect.name == "postgresql":
+                        connection.execute(
+                            text("SELECT pg_advisory_xact_lock(hashtext(:lock))"),
+                            {"lock": f"ragqs:documents:redact:{claim.document_id}"},
+                        )
+                    event = (
+                        connection.execute(
+                            select(outbox_event_table).where(
+                                outbox_event_table.c.event_id == claim.event_id
+                            )
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    redacted = self._event_redacted(connection, claim)
+                    title = (
+                        claim.redacted_title
+                        if redacted
+                        else (claim.title if claim.title is not None else claim.redacted_title)
+                    )
                     for recipient in recipients:
-                        self._materialize_one(
+                        consumer.materialize(
                             connection,
-                            claim=claim,
+                            event=dict(event),
                             recipient=recipient,
-                            consumer=consumer,
+                            notification_id=_new_notification_id(),
+                            notification_type=claim.notification_type or "unknown",
+                            title=title,
+                            document_id=claim.document_id,
+                            document_version_id=claim.document_version_id,
+                            redacted=redacted,
                             now=now,
                         )
                 delivered = connection.execute(
@@ -428,50 +455,6 @@ class OutboxDispatcher:
             # FenceViolation above is the only exception that aborts.
             return self._handle_materialization_error(claim, owner=owner, exc=exc)
 
-    def _materialize_one(
-        self,
-        connection: Connection,
-        *,
-        claim: DeliveryClaim,
-        recipient: dict[str, object],
-        consumer: DeliveryConsumer,
-        now: datetime,
-    ) -> None:
-        # Serialize with document redaction on the per-document advisory lock,
-        # then re-check the tombstone INSIDE the lock right before insert: a
-        # redaction committed concurrently can never be overwritten by an
-        # unredacted projection.
-        if claim.document_id is not None and connection.dialect.name == "postgresql":
-            connection.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:lock))"),
-                {"lock": f"ragqs:documents:redact:{claim.document_id}"},
-            )
-        event = (
-            connection.execute(
-                select(outbox_event_table).where(outbox_event_table.c.event_id == claim.event_id)
-            )
-            .mappings()
-            .one()
-        )
-        redacted = self._event_redacted(connection, claim)
-        title = (
-            claim.redacted_title
-            if redacted
-            else (claim.title if claim.title is not None else claim.redacted_title)
-        )
-        consumer.materialize(
-            connection,
-            event=dict(event),
-            recipient=recipient,
-            notification_id=_new_notification_id(),
-            notification_type=claim.notification_type or "unknown",
-            title=title,
-            document_id=claim.document_id,
-            document_version_id=claim.document_version_id,
-            redacted=redacted,
-            now=now,
-        )
-
     @staticmethod
     def _event_redacted(connection: Connection, claim: DeliveryClaim) -> bool:
         """A permanent (document, version) tombstone marks the projection deleted.
@@ -524,7 +507,7 @@ class OutboxDispatcher:
                 category = "permanent" if permanent else "retryable"
             else:
                 next_status = "retry_wait"
-                next_at = now + _jittered_delay(delay, now)
+                next_at = now + _jittered_delay(delay)
                 category = error_category
             updated = connection.execute(
                 update(outbox_delivery_table)
@@ -649,7 +632,7 @@ class OutboxDispatcher:
                     next_at = None
                 else:
                     next_status = "retry_wait"
-                    next_at = now + _jittered_delay(delay, now)
+                    next_at = now + _jittered_delay(delay)
                 updated = connection.execute(
                     update(outbox_delivery_table)
                     .where(
@@ -1130,7 +1113,7 @@ def _document_version_id_for(event_type: str, payload: dict[str, object]) -> str
     return None
 
 
-def _jittered_delay(delay_seconds: int, now: datetime) -> timedelta:
+def _jittered_delay(delay_seconds: int) -> timedelta:
     import random
 
     factor = 1.0 + random.uniform(-0.2, 0.2)

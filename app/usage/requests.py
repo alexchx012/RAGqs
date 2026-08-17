@@ -724,27 +724,33 @@ class QuotaRequestService:
                 .mappings()
                 .all()
             )
-            items: list[dict] = []
-            for row in rows:
-                user_row = (
-                    connection.execute(
-                        select(identity_user_table).where(
-                            identity_user_table.c.id == row["applicant_user_id"]
-                        )
+            # 批量预取申请人显示名与 quota 快照，避免列表页逐行
+            # identity/snapshot 查询。
+            user_ids = {str(row["applicant_user_id"]) for row in rows}
+            display_names = (
+                {
+                    str(user_row["id"]): str(user_row["display_name"])
+                    for user_row in connection.execute(
+                        select(
+                            identity_user_table.c.id, identity_user_table.c.display_name
+                        ).where(identity_user_table.c.id.in_(user_ids))
                     )
                     .mappings()
-                    .one_or_none()
-                )
-                display_name = (
-                    str(user_row["display_name"])
-                    if user_row is not None
-                    else str(row["applicant_user_id"])
-                )
-                snapshot = self._quota.read_snapshot(
-                    connection,
-                    quota_subject_user_id=str(row["applicant_user_id"]),
-                    role=str(row["applicant_role_snapshot"]),
-                )
+                    .all()
+                }
+                if user_ids
+                else {}
+            )
+            snapshot_entries = {
+                (str(row["applicant_user_id"]), str(row["applicant_role_snapshot"]))
+                for row in rows
+            }
+            snapshots = self._quota.read_snapshots(connection, entries=list(snapshot_entries))
+            items: list[dict] = []
+            for row in rows:
+                applicant_id = str(row["applicant_user_id"])
+                display_name = display_names.get(applicant_id, applicant_id)
+                snapshot = snapshots[(applicant_id, str(row["applicant_role_snapshot"]))]
                 items.append(
                     {
                         "id": str(row["quota_request_id"]),

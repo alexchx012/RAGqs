@@ -60,12 +60,13 @@ from __future__ import annotations
 
 import re
 import secrets
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
 from sqlalchemy import Engine, and_, func, select, update
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, RowMapping
 
 from app.platform.errors import PlatformError
 
@@ -1023,6 +1024,81 @@ class QuotaService:
         now = self._clock.now_utc(connection)
         period = self.calendar.period_for(lock, now)
         reset_at = self.calendar.next_month_start_utc(lock, now)
+        row = None
+        if not self.unlimited_role(role):
+            row = (
+                connection.execute(
+                    select(quota_projection_table).where(
+                        and_(
+                            quota_projection_table.c.quota_subject_user_id == quota_subject_user_id,
+                            quota_projection_table.c.quota_period == period,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return self._snapshot(lock=lock, period=period, reset_at=reset_at, role=role, row=row)
+
+    def read_snapshots(
+        self,
+        connection: Connection,
+        *,
+        entries: Sequence[tuple[str, str]],
+    ) -> dict[tuple[str, str], QuotaSnapshot]:
+        """批量读取多个 (subject, role) 的当前业务月快照。
+
+        与逐个 read_snapshot 结果一致：共享一次 calendar 校验/时钟/期间，
+        投影一次 in_ 预取，供 ops 列表页避免逐行 snapshot 查询。
+        """
+        normalized = [
+            (_require_text(quota_subject_user_id, "quota_subject_user_id", 64), role)
+            for quota_subject_user_id, role in entries
+        ]
+        lock = self.calendar.lock_or_verify(connection)
+        now = self._clock.now_utc(connection)
+        period = self.calendar.period_for(lock, now)
+        reset_at = self.calendar.next_month_start_utc(lock, now)
+        subjects = {
+            quota_subject_user_id
+            for quota_subject_user_id, role in normalized
+            if not self.unlimited_role(role)
+        }
+        projections: dict[str, RowMapping] = {}
+        if subjects:
+            rows = (
+                connection.execute(
+                    select(quota_projection_table).where(
+                        and_(
+                            quota_projection_table.c.quota_subject_user_id.in_(subjects),
+                            quota_projection_table.c.quota_period == period,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            projections = {str(row["quota_subject_user_id"]): row for row in rows}
+        return {
+            (quota_subject_user_id, role): self._snapshot(
+                lock=lock,
+                period=period,
+                reset_at=reset_at,
+                role=role,
+                row=projections.get(quota_subject_user_id),
+            )
+            for quota_subject_user_id, role in normalized
+        }
+
+    def _snapshot(
+        self,
+        *,
+        lock: CalendarLock,
+        period: str,
+        reset_at: datetime,
+        role: str,
+        row: RowMapping | None,
+    ) -> QuotaSnapshot:
         if self.unlimited_role(role):
             return QuotaSnapshot(
                 used=0,
@@ -1036,20 +1112,8 @@ class QuotaService:
                 business_calendar_version_id=lock.version_id,
                 pending_request=None,
             )
-        row = (
-            connection.execute(
-                select(quota_projection_table).where(
-                    and_(
-                        quota_projection_table.c.quota_subject_user_id == quota_subject_user_id,
-                        quota_projection_table.c.quota_period == period,
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        used = int(row["used"]) if row is not None else 0
-        extra = int(row["extra_granted"]) if row is not None else 0
+        used = int(cast(Any, row["used"])) if row is not None else 0
+        extra = int(cast(Any, row["extra_granted"])) if row is not None else 0
         return QuotaSnapshot(
             used=used,
             base_limit=self._base_limit,

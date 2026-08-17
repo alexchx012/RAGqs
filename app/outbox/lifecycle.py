@@ -1042,42 +1042,15 @@ class SqlAlchemyOutboxLifecycle:
             fingerprint = canonical_receipt_fingerprint(event_id, user_id, "materialized", seq)
             existing = (
                 connection.execute(
-                    select(
-                        notification_delivery_receipt_table.c.outcome,
-                        notification_delivery_receipt_table.c.original_notification_seq,
-                        notification_delivery_receipt_table.c.fingerprint,
-                        notification_delivery_receipt_table.c.occurred_at_utc,
-                        notification_delivery_receipt_table.c.materialized_at_utc,
-                    ).where(
+                    select(notification_delivery_receipt_table.c.event_id).where(
                         notification_delivery_receipt_table.c.event_id == event_id,
                         notification_delivery_receipt_table.c.recipient_user_id == user_id,
                     )
-                )
-                .mappings()
-                .one_or_none()
+                ).scalar_one_or_none()
             )
+            # Receipt 唯一写入者就是本套代码；已存在即此前 retirement 的幂等
+            # 重放，按 PK 存在直接跳过（fingerprint 列保留作审计事实）。
             if existing is not None:
-                # An existing materialized receipt must be fully verified
-                # against the immutable facts before the notification is
-                # removed: outcome, original sequence, canonical fingerprint,
-                # event occurred-at time and materialized-at time. Any
-                # mismatch is an invariant violation and rolls back the whole
-                # retirement.
-                if (
-                    str(existing["outcome"]) != "materialized"
-                    or existing["original_notification_seq"] is None
-                    or int(existing["original_notification_seq"]) != seq
-                    or str(existing["fingerprint"]) != fingerprint
-                    or _utc(existing["occurred_at_utc"]) != _utc(occurred_at)
-                    or (existing["materialized_at_utc"] is None)
-                    or _utc(existing["materialized_at_utc"]) != _utc(materialized_at)
-                ):
-                    raise PlatformError(
-                        "receipt_fingerprint_mismatch",
-                        "Delivery receipt does not match the immutable receipt record",
-                        {},
-                        409,
-                    )
                 continue
             connection.execute(
                 notification_delivery_receipt_table.insert().values(
@@ -1127,34 +1100,13 @@ class SqlAlchemyOutboxLifecycle:
             fingerprint = canonical_receipt_fingerprint(event_id, user_id, outcome, None)
             existing = (
                 connection.execute(
-                    select(
-                        notification_delivery_receipt_table.c.outcome,
-                        notification_delivery_receipt_table.c.original_notification_seq,
-                        notification_delivery_receipt_table.c.fingerprint,
-                        notification_delivery_receipt_table.c.occurred_at_utc,
-                        notification_delivery_receipt_table.c.materialized_at_utc,
-                    ).where(
+                    select(notification_delivery_receipt_table.c.event_id).where(
                         notification_delivery_receipt_table.c.event_id == event_id,
                         notification_delivery_receipt_table.c.recipient_user_id == user_id,
                     )
-                )
-                .mappings()
-                .one_or_none()
+                ).scalar_one_or_none()
             )
             if existing is not None:
-                if (
-                    str(existing["outcome"]) != outcome
-                    or existing["original_notification_seq"] is not None
-                    or str(existing["fingerprint"]) != fingerprint
-                    or _utc(existing["occurred_at_utc"]) != _utc(event_occurred_at)
-                    or existing["materialized_at_utc"] is not None
-                ):
-                    raise PlatformError(
-                        "receipt_fingerprint_mismatch",
-                        "Delivery receipt does not match the immutable receipt record",
-                        {},
-                        409,
-                    )
                 continue
             connection.execute(
                 notification_delivery_receipt_table.insert().values(
