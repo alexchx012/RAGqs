@@ -229,18 +229,16 @@ _ENV_KEYS = {
     "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME",
     "RAG_DEBUG",
 }
-_INDEXING_ENV_KEYS = {
-    "SPARSE_INDEX_PROVIDER",
-    "RERANKER_PROVIDER",
-    "IMAGE_VLM_PROVIDER",
-    "INDEX_GENERATION_ROLLBACK_DAYS",
-}
 _LEGACY_OR_FORBIDDEN_KEYS = {
     "DATABASE_URL",
     "TENANT_ID",
     "ENTERPRISE_ID",
     "RAG_TENANT_ID",
     "RAG_ENTERPRISE_ID",
+    "SPARSE_INDEX_PROVIDER",
+    "RERANKER_PROVIDER",
+    "IMAGE_VLM_PROVIDER",
+    "INDEX_GENERATION_ROLLBACK_DAYS",
 }
 
 
@@ -297,7 +295,7 @@ def load_platform_settings(
     relevant = {
         key: value
         for key, value in env.items()
-        if key.startswith("RAG_") or key in _LEGACY_OR_FORBIDDEN_KEYS or key in _INDEXING_ENV_KEYS
+        if key.startswith("RAG_") or key in _LEGACY_OR_FORBIDDEN_KEYS
     }
     unknown = sorted(key for key in relevant if key not in _ENV_KEYS)
     if unknown:
@@ -341,20 +339,14 @@ def load_platform_settings(
             key: value
             for key, value in {
                 "namespace": _optional(env, "RAG_INDEX_NAMESPACE") or "default",
-                "sparse_provider": _optional(env, "RAG_INDEX_SPARSE_PROVIDER")
-                or _optional(env, "SPARSE_INDEX_PROVIDER")
-                or "meilisearch",
+                "sparse_provider": _optional(env, "RAG_INDEX_SPARSE_PROVIDER") or "meilisearch",
                 "reranker_provider": _optional(env, "RAG_INDEX_RERANKER_PROVIDER")
-                or _optional(env, "RERANKER_PROVIDER")
                 or "configured",
                 "image_vlm_provider": _optional(env, "RAG_INDEX_IMAGE_VLM_PROVIDER")
-                or _optional(env, "IMAGE_VLM_PROVIDER")
                 or "configured",
                 "image_vlm_credential_ref": _optional(env, "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF")
                 or "image-vlm",
-                "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS")
-                or _int(env, "INDEX_GENERATION_ROLLBACK_DAYS")
-                or 7,
+                "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS") or 7,
             }.items()
             if value is not None
         },

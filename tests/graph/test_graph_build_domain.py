@@ -19,7 +19,8 @@ from app.graph import (
     RepositoryActivatedReceiptVerifier,
     SqlAlchemyGraphRepository,
 )
-from app.graph.schema import graph_build_runs_table, graph_metadata
+from app.graph.schema import graph_build_operations_table, graph_build_runs_table, graph_metadata
+from app.graph.service import CANCEL_OP_PREFIX, CREATE_OP_PREFIX
 from app.indexing import GenerationManager, GraphComponentCoordinator
 from app.platform.errors import PlatformError
 
@@ -187,6 +188,36 @@ def test_create_idempotent_same_key_replays_first_result() -> None:
     second = _create(service, key="idem", revision=1)
     assert second["graph_build_id"] == first["graph_build_id"]
     assert second["version"] == first["version"]
+
+
+def test_graph_operations_support_the_maximum_idempotency_key() -> None:
+    key = "x" * 256
+    operation_id_capacity = graph_build_operations_table.c.operation_id.type.length
+
+    assert operation_id_capacity is not None
+    assert operation_id_capacity >= max(len(CREATE_OP_PREFIX), len(CANCEL_OP_PREFIX)) + 1 + len(key)
+
+    _, source, _, _, _, service, _, _ = _build_env()
+    _publish(source)
+    created = _create(service, key=key)
+    assert _create(service, key=key)["graph_build_id"] == created["graph_build_id"]
+
+    cancelled = service.cancel(
+        actor_identity_id="user_ops_1",
+        graph_build_id=created["graph_build_id"],
+        expected_version=1,
+        idempotency_key=key,
+        request_hash="hash-cancel-max-key",
+    ).to_dict()
+    replay = service.cancel(
+        actor_identity_id="user_ops_1",
+        graph_build_id=created["graph_build_id"],
+        expected_version=1,
+        idempotency_key=key,
+        request_hash="hash-cancel-max-key",
+    ).to_dict()
+
+    assert replay["version"] == cancelled["version"]
 
 
 def test_create_same_key_different_request_conflicts() -> None:

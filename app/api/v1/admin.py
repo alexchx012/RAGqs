@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.identity.service import AuthPrincipal, IdentityAccessService
+from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal, identity_access_service
 
@@ -86,7 +87,7 @@ def create_user(
         display_name=body.display_name or body.real_name,
         role=body.role,
         department_id=body.department_id,
-        idempotency_key=request.headers.get("Idempotency-Key"),
+        idempotency_key=validate_idempotency_key(request.headers.get("Idempotency-Key")),
     )
     return JSONResponse(response, status_code=201)
 
@@ -106,7 +107,7 @@ def update_user(
         role=body.role,
         department_id=body.department_id,
         department_provided="department_id" in body.model_fields_set,
-        idempotency_key=request.headers.get("Idempotency-Key"),
+        idempotency_key=validate_idempotency_key(request.headers.get("Idempotency-Key")),
     )
 
 
@@ -122,7 +123,7 @@ def delete_user(
         actor=principal,
         user_id=user_id,
         expected_version=body.expected_version,
-        idempotency_key=request.headers.get("Idempotency-Key"),
+        idempotency_key=validate_idempotency_key(request.headers.get("Idempotency-Key")),
     )
     return JSONResponse(response, status_code=202)
 
@@ -146,7 +147,7 @@ def create_department(
     response = service.create_department(
         actor=principal,
         name=body.name,
-        idempotency_key=request.headers.get("Idempotency-Key"),
+        idempotency_key=validate_idempotency_key(request.headers.get("Idempotency-Key")),
     )
     return JSONResponse(response, status_code=201)
 
@@ -164,7 +165,7 @@ def update_department(
         department_id=department_id,
         expected_version=body.expected_version,
         name=body.name,
-        idempotency_key=request.headers.get("Idempotency-Key"),
+        idempotency_key=validate_idempotency_key(request.headers.get("Idempotency-Key")),
     )
 
 
@@ -180,7 +181,7 @@ def deactivate_department(
         actor=principal,
         department_id=department_id,
         expected_version=body.expected_version,
-        idempotency_key=request.headers.get("Idempotency-Key"),
+        idempotency_key=validate_idempotency_key(request.headers.get("Idempotency-Key")),
     )
 
 

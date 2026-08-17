@@ -12,13 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
+from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
 
 router = APIRouter(prefix="/ops", tags=["ops"])
-
-IDEMPOTENCY_KEY_MAX_LENGTH = 256
-
 
 def dispatcher(request: Request):
     from app.outbox.dispatcher import OutboxDispatcher
@@ -32,20 +30,6 @@ def dispatcher(request: Request):
 def require_ops(principal: AuthPrincipal) -> None:
     if principal.role != "ops":
         raise PlatformError("forbidden", "Ops access is required", {}, 403)
-
-
-def _validated_idempotency_key(value: str | None) -> str:
-    if not value or not value.strip():
-        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
-    normalized = value.strip()
-    if len(normalized) > IDEMPOTENCY_KEY_MAX_LENGTH:
-        raise PlatformError(
-            "validation_error",
-            "Idempotency-Key is too long",
-            {"max_length": IDEMPOTENCY_KEY_MAX_LENGTH},
-            422,
-        )
-    return normalized
 
 
 class DeliveryReplayRequest(BaseModel):
@@ -110,7 +94,7 @@ def outbox_delivery_replay(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = _validated_idempotency_key(idempotency_key)
+    key = validate_idempotency_key(idempotency_key)
     receipt = dispatcher(request).replay(
         event_id,
         consumer_name=body.consumer_name,

@@ -15,6 +15,7 @@ from app.chat.read_models import conversation_detail
 from app.chat.streaming import GenerationStreamService
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
+from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
 
@@ -82,22 +83,7 @@ def _require_streaming(accept: str | None) -> None:
 
 
 def _idempotency_key(request: Request) -> str:
-    key = request.headers.get("Idempotency-Key")
-    if not key or not key.strip():
-        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
-    return key.strip()
-
-
-def _last_event_id(request: Request) -> int:
-    value = request.headers.get("Last-Event-ID")
-    if value is None or value == "":
-        return 0
-    try:
-        return max(0, int(value))
-    except ValueError as error:
-        raise PlatformError(
-            "validation_error", "Last-Event-ID must be an integer", {}, 422
-        ) from error
+    return validate_idempotency_key(request.headers.get("Idempotency-Key"))
 
 
 @router.get("/conversations")

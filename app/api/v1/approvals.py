@@ -3,7 +3,7 @@
 
 使用项目当前 AuthPrincipal/request-state service DI（request.app.state.
 platform_runtime.resolve）与 PlatformError 映射（register_exception_handlers）；
-Header `Idempotency-Key` 在路由层校验非空（服务层再校验限长）；Pydantic 严格校验
+Header `Idempotency-Key` 在路由层统一校验非空和限长；Pydantic 严格校验
 （extra="forbid" + strict int——JSON true/false、字符串"1"、1.0、null 均标准 422
 validation_error；expected_version ge=1；approved_pages 可选 ge=1 le=500，缺省由
 服务层取申请量；reject 不接受自由文本 reason，extra="forbid" 拒绝任何多余字段）。
@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.identity.service import AuthPrincipal
-from app.platform.errors import PlatformError
+from app.platform.http_contract import validate_idempotency_key
 from app.usage.requests import QuotaRequestService
 
 from .dependencies import current_principal
@@ -49,10 +49,7 @@ def _quota_request_service(request: Request) -> QuotaRequestService:
 
 
 def _idempotency_key(request: Request) -> str:
-    key = request.headers.get("Idempotency-Key")
-    if not key or not key.strip():
-        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
-    return key
+    return validate_idempotency_key(request.headers.get("Idempotency-Key"))
 
 
 @router.get("/approvals/summary")

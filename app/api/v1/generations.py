@@ -13,6 +13,7 @@ from app.chat.models import AbVoteRequest, FeedbackRequest
 from app.chat.streaming import GenerationStreamService
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
+from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
 
@@ -46,10 +47,7 @@ def _stream_service(request: Request) -> GenerationStreamService:
 
 
 def _key(request: Request) -> str:
-    key = request.headers.get("Idempotency-Key")
-    if not key or not key.strip():
-        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
-    return key.strip()
+    return validate_idempotency_key(request.headers.get("Idempotency-Key"))
 
 
 def _last_event_id(request: Request) -> int:

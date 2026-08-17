@@ -1,5 +1,5 @@
-"""Add the compacted-fields-on-full-events CHECK constraint and refresh the
-immutability triggers.
+"""Add the compacted-fields-on-full-events CHECK constraint and re-run the
+final immutability trigger.
 
 Full `outbox_event` rows must never carry compacted facts: `compacted_at_utc`
 and `compacted_delivery_summary_json` stay NULL until the single
@@ -7,12 +7,12 @@ full -> compacted transition. This revision:
 
 - adds the database CHECK constraint `ck_outbox_event_compacted_fields_full_null`
   on already-upgraded PostgreSQL databases (fresh schemas get it from 0003);
-- re-runs the corrected event trigger body (loaded from the 0005 helpers) so
+- re-runs the final event trigger body (loaded from the 0005 helpers) so
   the full -> full branch explicitly rejects non-NULL compacted fields with a
   clear error even before the constraint fires.
 
 Revision ID: 0010_compacted_fields_check
-Revises: 0009_refresh_immutable_triggers
+Revises: 0006_outbox_retirement_tombstone
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from pathlib import Path
 from alembic import op
 
 revision: str = "0010_compacted_fields_check"
-down_revision: str | None = "0009_refresh_immutable_triggers"
+down_revision: str | None = "0006_outbox_retirement_tombstone"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

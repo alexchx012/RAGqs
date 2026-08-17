@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from app.documents.service import DocumentsService, DocumentUpload
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
+from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH, validate_idempotency_key
 
 from .dependencies import current_principal
 from .document_models import ExpectedVersionRequest, SubmissionRejectRequest
@@ -25,9 +26,7 @@ def document_service(request: Request) -> DocumentsService:
 
 
 def _key(value: str | None) -> str:
-    if not value or not value.strip():
-        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
-    return value.strip()
+    return validate_idempotency_key(value)
 
 
 async def _upload(file: UploadFile) -> DocumentUpload:
@@ -62,15 +61,22 @@ async def upload_documents(
                 principal=principal, space_id=space_id, action="contribute"
             )
     if permission == "contribute":
-        items = [
-            service.create_submission(
-                principal=principal,
-                space_id=space_id,
-                file=file,
-                idempotency_key=f"{key}:{index}",
+        items = []
+        for index, file in enumerate(uploads):
+            submission_key = f"{key}:{index}"
+            item_index = None
+            if len(submission_key) > IDEMPOTENCY_KEY_MAX_LENGTH:
+                submission_key = key
+                item_index = index
+            items.append(
+                service.create_submission(
+                    principal=principal,
+                    space_id=space_id,
+                    file=file,
+                    idempotency_key=submission_key,
+                    idempotency_item_index=item_index,
+                )
             )
-            for index, file in enumerate(uploads)
-        ]
         return {"items": items}
     return service.create_initial_upload(
         principal=principal, space_id=space_id, files=uploads, idempotency_key=key

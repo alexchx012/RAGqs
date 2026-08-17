@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import inspect
+from pathlib import Path
+
 import pytest
 
 from app.platform.config import (
+    _ENV_KEYS,
     PlatformConfigurationError,
     load_platform_settings,
     validate_startup_settings,
@@ -125,6 +129,34 @@ def test_unprefixed_legacy_alias_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="unknown|tenant|legacy"):
         load_platform_settings(values)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["SPARSE_INDEX_PROVIDER", "RERANKER_PROVIDER", "IMAGE_VLM_PROVIDER", "INDEX_GENERATION_ROLLBACK_DAYS"],
+)
+def test_legacy_indexing_aliases_are_rejected(key: str) -> None:
+    with pytest.raises(ValueError, match="unknown|legacy"):
+        load_platform_settings(development_environment(**{key: "unexpected"}))
+
+
+def test_legacy_indexing_keys_have_no_fallback_parsers() -> None:
+    parser_source = inspect.getsource(load_platform_settings)
+
+    for legacy_parser in (
+        '_optional(env, "SPARSE_INDEX_PROVIDER")',
+        '_optional(env, "RERANKER_PROVIDER")',
+        '_optional(env, "IMAGE_VLM_PROVIDER")',
+        '_int(env, "INDEX_GENERATION_ROLLBACK_DAYS")',
+    ):
+        assert legacy_parser not in parser_source
+
+
+def test_env_example_documents_every_supported_environment_key() -> None:
+    example = Path(".env.example").read_text(encoding="utf-8")
+    missing = sorted(key for key in _ENV_KEYS if key not in example)
+
+    assert missing == []
 
 
 def test_ambient_strict_runtime_prefix_rejects_unknown_test_variables(monkeypatch) -> None:

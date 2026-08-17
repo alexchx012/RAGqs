@@ -18,9 +18,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
+from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
-from .ops import _validated_idempotency_key, require_ops
+from .ops import require_ops
 
 router = APIRouter(prefix="/ops/graph-builds", tags=["ops"])
 
@@ -73,7 +74,7 @@ def graph_build_create(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = _validated_idempotency_key(idempotency_key)
+    key = validate_idempotency_key(idempotency_key)
     view = graph_service(request).create(
         initiator_identity_id=principal.user_id,
         expected_source_revision=body.expected_source_revision,
@@ -94,7 +95,7 @@ def graph_build_cancel(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = _validated_idempotency_key(idempotency_key)
+    key = validate_idempotency_key(idempotency_key)
     view = graph_service(request).cancel(
         actor_identity_id=principal.user_id,
         graph_build_id=graph_build_id,

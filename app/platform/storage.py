@@ -111,7 +111,9 @@ class S3ObjectStore:
         self._validate(key)
         try:
             response = self._active_client().get_object(Bucket=self._bucket, Key=key)
-            content = bytes(response["Body"].read())
+            content = b"".join(
+                chunk for chunk in response["Body"].iter_chunks(chunk_size=64 * 1024) if chunk
+            )
             custom_metadata = response.get("Metadata", {})
             metadata = ObjectMetadata(
                 content_type=str(response.get("ContentType") or "application/octet-stream"),

@@ -3308,7 +3308,13 @@ class DocumentsService:
         )
 
     def create_submission(
-        self, *, principal: Any, space_id: str, file: DocumentUpload, idempotency_key: str | None
+        self,
+        *,
+        principal: Any,
+        space_id: str,
+        file: DocumentUpload,
+        idempotency_key: str | None,
+        idempotency_item_index: int | None = None,
     ) -> dict[str, Any]:
         from .submissions import SubmissionService
 
@@ -3317,6 +3323,7 @@ class DocumentsService:
             space_id=space_id,
             file=file,
             idempotency_key=idempotency_key,
+            idempotency_item_index=idempotency_item_index,
         )
 
     def list_submissions(self, *, principal: Any, status: str | None = None) -> dict[str, Any]:
