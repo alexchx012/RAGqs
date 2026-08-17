@@ -379,11 +379,15 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
     expect(Object.keys(opsList.items[0] ?? {}).sort()).toEqual([
       'created_at',
       'file_name',
+      'file_size',
       'media_kind',
       'reviewed_at',
       'space_id',
+      'space_name',
       'status',
       'submission_id',
+      'submitter_department',
+      'submitter_name',
       'version',
     ]);
     expect(opsList.items.every((item) => item.space_id === 'public')).toBe(true);

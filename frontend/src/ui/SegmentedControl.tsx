@@ -6,7 +6,7 @@
  * 键盘左右方向键切换（roving tabindex，radiogroup 语义）。
  */
 
-import { useRef, type KeyboardEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 
 export interface SegmentedOption {
   value: string;
@@ -29,6 +29,25 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
   );
   const selected = options[selectedIndex];
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [thumb, setThumb] = useState<{ left: number; width: number } | null>(null);
+
+  // 滑块按选中段实测定位：段宽随标签内容伸缩（如「深度研究」四字段更宽），不能按等分计算
+  const measure = () => {
+    const element = itemRefs.current[selectedIndex];
+    if (element !== null && element !== undefined) {
+      setThumb((current) =>
+        current !== null && current.left === element.offsetLeft && current.width === element.offsetWidth
+          ? current
+          : { left: element.offsetLeft, width: element.offsetWidth },
+      );
+    }
+  };
+  useLayoutEffect(measure, [selectedIndex]);
+  useLayoutEffect(() => {
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIndex]);
 
   function move(delta: number): void {
     const next = (selectedIndex + delta + options.length) % options.length;
@@ -57,17 +76,18 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
         aria-hidden="true"
         data-accent={selected?.accent === true || undefined}
         className={
-          'absolute top-1 bottom-1 left-1 rounded-[var(--radius-buttons)] transition-transform ' +
+          'absolute top-1 bottom-1 left-1 rounded-[var(--radius-buttons)] transition-[left,width] ' +
           `duration-[var(--duration-base)] ease-[var(--ease-in-out)] ${
             selected?.accent === true
               ? 'bg-blush-peach'
               : 'bg-paper-white shadow-[var(--shadow-subtle)]'
           }`
         }
-        style={{
-          width: `calc((100% - 8px) / ${options.length})`,
-          transform: `translateX(calc(${selectedIndex} * 100%))`,
-        }}
+        style={
+          thumb === null
+            ? undefined
+            : { left: `${thumb.left}px`, width: `${thumb.width}px`, transform: 'none' }
+        }
       />
       {options.map((option, index) => {
         const active = index === selectedIndex;
@@ -83,8 +103,8 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(option.value)}
             className={
-              'relative z-10 flex-1 rounded-[var(--radius-buttons)] text-[14px] ' +
-              `transition-colors duration-[var(--duration-base)] ${
+              'relative z-10 flex-1 rounded-[var(--radius-buttons)] px-2 text-[14px] ' +
+              `whitespace-nowrap transition-colors duration-[var(--duration-base)] ${
                 active
                   ? option.accent === true
                     ? 'text-sienna-brown'

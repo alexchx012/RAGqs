@@ -78,7 +78,7 @@ body {
 /* 内联加载点（沿用「保存」键加载态；认证等待与提交中共用）。 */
 .loading-dots {
   display: inline-flex;
-  gap: var(--spacing-4);
+  gap: var(--spacing-unit);
 }
 
 .loading-dots > span {

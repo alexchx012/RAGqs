@@ -302,7 +302,7 @@ describe('AssistantMessage', () => {
     await user.hover(badge);
     expect(await screen.findByText(copy.chat.message.citeFrom('员工手册.pdf'))).toBeInTheDocument();
     expect(
-      await screen.findByText(copy.chat.message.citePageSpan(12, 345, 412)),
+      await screen.findByText(copy.chat.message.citePage(12)),
     ).toBeInTheDocument();
   });
 

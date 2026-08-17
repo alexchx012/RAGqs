@@ -22,9 +22,7 @@ export interface CitationBadgeProps {
 function locatorLine(citation: Citation): string | null {
   const locator = citation.locator;
   if ('page' in locator) {
-    if (locator.span !== undefined) {
-      return copy.chat.message.citePageSpan(locator.page, locator.span.start, locator.span.end);
-    }
+    // 定位行只展示载体固有单位（PDF = 第 X 页）；span 是预览页内部的消歧数据，不进用户文案
     return copy.chat.message.citePage(locator.page);
   }
   if ('section_path' in locator) {

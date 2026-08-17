@@ -115,7 +115,9 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     // 初始上传去重键包含规范化文件名；同内容不同文件名均应被接收。
     const file1 = new File(['%PDF-1.4'], '新文档.pdf', { type: 'application/pdf' });
     const file2 = new File(['%PDF-1.4'], '新文档-副本.pdf', { type: 'application/pdf' });
-    const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles) as HTMLInputElement;
+    const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
+      selector: 'input',
+    }) as HTMLInputElement;
     await user.upload(input, [file1, file2]);
 
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
@@ -135,7 +137,9 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     await renderUpload(api);
 
     const file = new File(['x'], 'bad-name.pdf', { type: 'application/pdf' });
-    const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles) as HTMLInputElement;
+    const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
+      selector: 'input',
+    }) as HTMLInputElement;
     await user.upload(input, [file]);
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
 
@@ -195,7 +199,10 @@ describe('UploadDialog operation token（review A2：A 迟到 completion 不污�
 
     // 选择文件并上传（挂起）
     const file = new File(['%PDF-1.4'], 'A文档.pdf', { type: 'application/pdf' });
-    await user.upload(screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles), file);
+    await user.upload(
+      screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, { selector: 'input' }),
+      file,
+    );
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
     await waitFor(() => expect(uploadDocuments).toHaveBeenCalledTimes(1));
 
@@ -262,14 +269,19 @@ describe('UploadDialog 上传中控件禁用与 token 隔离（review Medium 1�
 
     // 选择文件并上传（挂起）
     const file = new File(['%PDF-1.4'], 'A文档.pdf', { type: 'application/pdf' });
-    await user.upload(screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles), file);
+    await user.upload(
+      screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, { selector: 'input' }),
+      file,
+    );
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
     await waitFor(() => expect(uploadDocuments).toHaveBeenCalledTimes(1));
 
     // 上传飞行中：目标 radio 与文件选择禁用
     const radio = screen.getByRole('radio', { name: /个人库/ }) as HTMLInputElement;
     await waitFor(() => expect(radio.disabled).toBe(true));
-    const fileInput = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles) as HTMLInputElement;
+    const fileInput = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
+      selector: 'input',
+    }) as HTMLInputElement;
     expect(fileInput.disabled).toBe(true);
 
     // Esc 关闭（真实 React rerender 应用 open=false）→ 重开（新 operation token）

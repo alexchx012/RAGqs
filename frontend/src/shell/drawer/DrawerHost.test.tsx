@@ -140,7 +140,7 @@ describe('下钻、返回与 Esc 逐层', () => {
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
     await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
     // 知识库层：渲染真实模块内容（配额计数器 + 我的投稿入口）
-    expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
+    expect(await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge');
     await user.click(within(dialog).getByRole('button', { name: modules.submissions }));
     expect(await within(dialog).findByText(copy.settings.knowledge.submissions.title)).toBeInTheDocument();
@@ -149,14 +149,14 @@ describe('下钻、返回与 Esc 逐层', () => {
     await user.click(
       within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
     );
-    expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
+    expect(await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge');
   });
 
   it('运维在知识库层不渲染「我的投稿」（无权限模块不渲染）', async () => {
     await renderApp('/settings/knowledge', 'ops');
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
-    expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
+    expect(await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
     expect(
       within(dialog).queryByRole('button', { name: modules.submissions }),
     ).not.toBeInTheDocument();
@@ -278,7 +278,7 @@ describe('抽屉页头铃铛与窄屏单栏化', () => {
       expect(dialog.querySelector('[data-nav-variant="modules"]')).not.toBeNull();
       const user = userEvent.setup();
       await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
-      expect(await within(dialog).findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
+      expect(await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
       expect(probe.textContent).toBe('/settings/knowledge');
     } finally {
       window.matchMedia = original;
@@ -305,7 +305,7 @@ describe('prefers-reduced-motion 降级', () => {
       const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
       await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
       // 直出：点击后的提交里内容已切换，无需等待动画时序
-      expect(within(dialog).getByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
+      expect(within(dialog).getByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
       expect(probe.textContent).toBe('/settings/knowledge');
       expect(document.querySelector('.drill-flip-clone')).toBeNull();
     } finally {

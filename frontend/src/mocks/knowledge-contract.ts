@@ -1287,6 +1287,24 @@ export class MockKnowledgeController {
     this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '第三季度预算说明.pdf', 'pdf', 2048, '2026-07-25T02:00:00Z', { submitterDepartment: finance });
     this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '费用报销细则修订.docx', 'word', 1024, '2026-07-26T03:00:00Z', { submitterDepartment: finance });
 
+    // 「我的投稿」五态展示种子（u_user）：approved / rejected（含原因）/ withdrawn / invalidated
+    this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '入职指引图文版.pdf', 'pdf', 2560, '2026-07-20T01:00:00Z', { submitterDepartment: finance, status: 'approved' });
+    this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '部门团建方案.docx', 'word', 900, '2026-07-18T02:00:00Z', { submitterDepartment: finance, status: 'rejected', rejectReason: '内容与公共库现有文档重复' });
+    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '废弃的预算草稿.xlsx', 'excel', 700, '2026-07-15T03:00:00Z', { submitterDepartment: finance, status: 'withdrawn' });
+    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '过期报销模板.docx', 'word', 600, '2026-07-10T04:00:00Z', { submitterDepartment: finance, status: 'invalidated', invalidatedReason: 'submission_scope_changed' });
+
+    // 上传结果层任务卡种子（u_user 个人库）：解析中 / 已入库（含低置信标记）/ 失败，覆盖卡状态呈现
+    this.seedUploadJob({ name: '扫描合同副本.pdf', spaceId: 'personal:u_user', state: 'running', stage: 'parsing', minutesAgo: 12 });
+    this.seedUploadJob({
+      name: '历史培训材料.pdf',
+      spaceId: 'personal:u_user',
+      state: 'succeeded',
+      usage: { pages: 18, images: 4 },
+      ocrLowConfidence: true,
+      minutesAgo: 90,
+    });
+    this.seedUploadJob({ name: '损坏的演示文稿.pptx', spaceId: 'personal:u_user', state: 'failed', failureReason: '文件格式不受支持', minutesAgo: 240 });
+
     // 运维 / 超管审核范围种子（§8.4：ops=公共库；admin=公共库+全部 active 部门）。
     // 时间正序先投先审；各错误路径各一条种子（duplicate / scope_changed / 冻结投稿人）。
     this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '行业研报汇总.pdf', 'pdf', 4096, '2026-07-27T01:00:00Z', { submitterDepartment: finance });
@@ -1387,6 +1405,39 @@ export class MockKnowledgeController {
     return doc;
   }
 
+  /** §6.6 上传结果层任务卡种子（jobs 池，区别于 §10.1 运维任务队列的 opsJobs 池）。 */
+  private seedUploadJob(input: {
+    readonly name: string;
+    readonly spaceId: string;
+    readonly state: JobState;
+    readonly stage?: JobStage;
+    readonly usage?: { pages: number; images: number } | null;
+    readonly failureReason?: string | null;
+    readonly ocrLowConfidence?: boolean;
+    readonly minutesAgo?: number;
+  }): StoredJob {
+    const job: StoredJob = {
+      jobId: this.nextId('job'),
+      documentId: null,
+      name: input.name,
+      spaceId: input.spaceId,
+      uploadBatchId: null,
+      kind: 'upload',
+      state: input.state,
+      replayGeneration: 0,
+      stage: input.stage ?? null,
+      nextAttemptAt: null,
+      usage: input.usage ?? null,
+      failureReason: input.failureReason ?? null,
+      ocrLowConfidence: input.ocrLowConfidence ?? false,
+      notificationEventIds: [],
+      createdAt: new Date(Date.now() - (input.minutesAgo ?? 0) * 60_000).toISOString(),
+      stale: false,
+    };
+    this.jobs.set(job.jobId, job);
+    return job;
+  }
+
   private seedSubmission(
     submitterUserId: string,
     submitterName: string,
@@ -1400,6 +1451,10 @@ export class MockKnowledgeController {
       readonly submitterDepartment?: { id: string; name: string } | null;
       readonly scopeChanged?: boolean;
       readonly submitterFrozen?: boolean;
+      /** 初始状态（默认 pending）；非 pending 用于「我的投稿」五态展示种子。 */
+      readonly status?: SubmissionStatus;
+      readonly rejectReason?: string;
+      readonly invalidatedReason?: string;
     } = {},
   ): StoredSubmission {
     const submission: StoredSubmission = {
@@ -1413,11 +1468,11 @@ export class MockKnowledgeController {
       name,
       mediaKind,
       sizeBytes,
-      status: 'pending',
+      status: options.status ?? 'pending',
       createdAt,
-      reviewedAt: null,
-      rejectReason: null,
-      invalidatedReason: null,
+      reviewedAt: options.status !== undefined && options.status !== 'pending' ? createdAt : null,
+      rejectReason: options.rejectReason ?? null,
+      invalidatedReason: options.invalidatedReason ?? null,
       documentId: null,
       jobId: null,
       scopeChanged: options.scopeChanged ?? false,
@@ -1782,6 +1837,10 @@ export class MockKnowledgeController {
       status: submission.status,
       file_name: submission.name,
       media_kind: submission.mediaKind,
+      submitter_name: submission.submitterName,
+      submitter_department: submission.submitterDepartment,
+      file_size: submission.sizeBytes,
+      space_name: submission.targetSpaceName,
       created_at: submission.createdAt,
       reviewed_at: submission.reviewedAt,
     };

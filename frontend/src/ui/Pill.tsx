@@ -57,7 +57,7 @@ export const Pill = forwardRef<HTMLButtonElement, PillProps>(function Pill(
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       className={
-        `inline-flex items-center justify-center gap-2 rounded-[var(--radius-buttons)] ` +
+        `inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-buttons)] ` +
         `disabled:bg-mist-gray disabled:text-smoke-gray disabled:opacity-100 ` +
         `${SIZE_CLASS[size]} ${variant === 'filled' ? filledClass : ghostClass} ${className}`
       }

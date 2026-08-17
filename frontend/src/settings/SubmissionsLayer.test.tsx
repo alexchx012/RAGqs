@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { ApiError } from '../api/errors';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -139,7 +139,11 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
 
     await renderLayer(api);
 
-    await user.click(await screen.findByRole('button', { name: copy.settings.knowledge.submissions.delete }));
+    // 五态种子引入多个可删除行：按目标文件名定位其所在行的「删除」
+    const targetRow = (await screen.findByText(target.file_name)).closest('li') as HTMLElement;
+    await user.click(
+      within(targetRow).getByRole('button', { name: copy.settings.knowledge.submissions.delete }),
+    );
     expect(screen.getByText(copy.settings.knowledge.submissions.deleteConfirmDescription(target.file_name))).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.delete }));
 

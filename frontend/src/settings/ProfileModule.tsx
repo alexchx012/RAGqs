@@ -27,6 +27,7 @@ export function ProfileModule() {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
 
   useEffect(() => {
     setDisplayName(user?.display_name ?? '');
@@ -60,6 +61,7 @@ export function ProfileModule() {
     setAvatarError(null);
     try {
       const updated = await api.uploadAvatar(file);
+      setAvatarFailed(false);
       sync.commit({ avatar_url: updated.avatar_url });
     } catch {
       setAvatarError(copy.settings.profile.avatarError);
@@ -71,13 +73,26 @@ export function ProfileModule() {
   return (
     <section aria-label={copy.settings.profile.sectionLabel} className="pb-10">
       <div className="flex items-center gap-4">
-        <img
-          src={user?.avatar_url ?? ''}
-          alt={copy.settings.profile.avatarAlt}
-          className="h-16 w-16 rounded-[var(--radius-images)] bg-mist-gray object-cover"
-        />
+        {avatarFailed || (user?.avatar_url ?? '') === '' ? (
+          <span
+            aria-label={copy.settings.profile.avatarAlt}
+            className="flex h-16 w-16 items-center justify-center rounded-full bg-mist-gray text-body-lg font-w500 text-ink-black"
+          >
+            {(user?.display_name ?? '').slice(0, 2)}
+          </span>
+        ) : (
+          <img
+            src={user?.avatar_url ?? ''}
+            alt={copy.settings.profile.avatarAlt}
+            onError={() => setAvatarFailed(true)}
+            className="h-16 w-16 rounded-full bg-mist-gray object-cover"
+          />
+        )}
         <div>
-          <label htmlFor="settings-avatar" className="text-caption text-slate-gray">
+          <label
+            htmlFor="settings-avatar"
+            className="inline-flex h-8 cursor-pointer items-center rounded-[var(--radius-buttons)] border border-ink-black px-3 text-[14px] text-ink-black transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
+          >
             {copy.settings.profile.avatarInputLabel}
           </label>
           <input
@@ -86,7 +101,7 @@ export function ProfileModule() {
             accept="image/*"
             onChange={(event) => void uploadAvatar(event)}
             disabled={uploadingAvatar}
-            className="mt-2 block text-caption text-ink-black"
+            className="mt-2 hidden"
           />
           {avatarError !== null && (
             <p role="alert" className="mt-2 text-caption text-danger">

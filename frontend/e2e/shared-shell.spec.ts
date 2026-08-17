@@ -35,7 +35,7 @@ test('drawer opens from the avatar row, drills down, restores the same layer on 
   await dialog.getByRole('button', { name: copy.shell.drawer.modules.knowledge }).click();
   await expect(page).toHaveURL(/\/settings\/knowledge$/);
   await expect(
-    dialog.getByText(copy.settings.knowledge.quota.title),
+    dialog.getByRole('button', { name: copy.settings.knowledge.uploads.historyEntry }),
   ).toBeVisible();
   // 上传结果层：经铃铛深链跳转（模块内不提供独立上传按钮；上传对话框为唯一上传入口）
   await page.goto('/settings/knowledge/uploads');

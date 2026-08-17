@@ -69,6 +69,7 @@ async function enterPasswordChange(
 ): Promise<void> {
   await user.type(screen.getByLabelText(copy.settings.security.oldPasswordLabel), oldPassword);
   await user.type(screen.getByLabelText(copy.settings.security.newPasswordLabel), newPassword);
+  await user.type(screen.getByLabelText(copy.settings.security.confirmPasswordLabel), newPassword);
   await user.click(screen.getByRole('button', { name: copy.settings.security.changePassword }));
 }
 
