@@ -400,7 +400,9 @@ def test_stop_rechecks_session_authorization_in_transaction() -> None:
 
 
 class _PartiallyVisibleRetrieval(RecordingChatRetrievalPort):
-    def __init__(self, *, before_first_partial_resolution: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self, *, before_first_partial_resolution: Callable[[], None] | None = None
+    ) -> None:
         super().__init__()
         self._resolution_count = 0
         self._before_first_partial_resolution = before_first_partial_resolution
@@ -524,7 +526,7 @@ def test_stale_execution_cannot_persist_effort_upgrade_after_fence_then_lease_re
                 update(chat_generation_execution_table)
                 .where(chat_generation_execution_table.c.generation_id == result.generation_id)
                 .values(lease_expires_at_utc=NOW - timedelta(seconds=1))
-        )
+            )
         assert worker.run_maintenance()["executions_recovered"] == 1
 
     def recover_after_current_fence(
@@ -657,7 +659,9 @@ def test_stale_publish_converges_a_stop_requested_generation_without_publishing_
         generation_after = connection.execute(select(chat_generation_table)).mappings().one()
         message = (
             connection.execute(
-                select(chat_message_table).where(chat_message_table.c.generation_id == result.generation_id)
+                select(chat_message_table).where(
+                    chat_message_table.c.generation_id == result.generation_id
+                )
             )
             .mappings()
             .one()
