@@ -121,7 +121,6 @@ class MilvusClient(Protocol):
         offset: int = 0,
     ) -> tuple[Mapping[str, Any], ...]: ...
 
-    @_invalidates_collection_cache
     def search(
         self,
         name: str,
@@ -363,7 +362,6 @@ class HttpMilvusClient:
     ) -> tuple[Mapping[str, Any], ...]:
         return self._v1_query(name, expr, output_fields, limit=limit, offset=offset)
 
-    @_invalidates_collection_cache
     def search(
         self,
         name: str,
@@ -715,6 +713,7 @@ class MilvusIndexWriter:
             expr += f" && generation_id == {_quote(generation_id)}"
         return self._client.delete(self.collection_name, expr)
 
+    @_invalidates_collection_cache
     def delete_document(self, document_id: str, *, generation_id: str | None = None) -> int:
         self.ensure_collection()
         expr = f"document_id == {_quote(document_id)}"

@@ -290,7 +290,7 @@ def test_retrieval_resolver_ignores_caller_profile_overrides() -> None:
     service = RetrievalService(
         manager,
         [provider],
-        profile_resolver=lambda profile, generation_id: (seen.append(profile) or released),
+        profile_resolver=lambda profile, generation_id: seen.append(profile) or released,
     )
 
     result = service.search("text", profile=requested)

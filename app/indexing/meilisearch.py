@@ -95,7 +95,6 @@ class MeilisearchClient(Protocol):
         self, name: str, *, filters: str, limit: int = 1000, offset: int = 0
     ) -> tuple[Mapping[str, Any], ...]: ...
 
-    @_invalidates_index_cache
     def search(
         self,
         name: str,
@@ -236,7 +235,6 @@ class HttpMeilisearchClient:
         rows = body.get("results") or []
         return tuple(item for item in rows if isinstance(item, Mapping))
 
-    @_invalidates_index_cache
     def search(
         self,
         name: str,
@@ -535,6 +533,7 @@ class MeilisearchSparseIndexProvider:
         self._client.delete_documents(self._index, tuple(str(item["id"]) for item in docs))
         return len(docs)
 
+    @_invalidates_index_cache
     def delete_document(self, document_id: str, *, generation_id: str | None = None) -> int:
         self.ensure_index()
         filters = f"document_id = {_quote(document_id)}"
