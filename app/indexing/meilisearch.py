@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import time
 from collections.abc import Mapping, Sequence
@@ -25,6 +26,27 @@ _FILTERABLE = (
     "attempt_id",
 )
 _SEARCHABLE = ("jieba_tokens", "text")
+
+# Server-side fetch page size; stage/publish reads loop until a short page.
+_FETCH_PAGE_SIZE = 1000
+
+
+def _invalidates_index_cache(method):
+    """Reset the ensure_index existence flag when a backend call fails.
+
+    The flag only mirrors "the index exists on the server"; any backend error
+    may mean it was dropped externally, so the next call re-probes.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except PlatformError:
+            self._index_ready = False
+            raise
+
+    return wrapper
 
 
 def pretokens(text: str) -> str:
@@ -70,9 +92,10 @@ class MeilisearchClient(Protocol):
     def delete_documents(self, name: str, document_ids: Sequence[str]) -> None: ...
 
     def get_documents(
-        self, name: str, *, filters: str, limit: int = 1000
+        self, name: str, *, filters: str, limit: int = 1000, offset: int = 0
     ) -> tuple[Mapping[str, Any], ...]: ...
 
+    @_invalidates_index_cache
     def search(
         self,
         name: str,
@@ -201,18 +224,19 @@ class HttpMeilisearchClient:
         )
 
     def get_documents(
-        self, name: str, *, filters: str, limit: int = 1000
+        self, name: str, *, filters: str, limit: int = 1000, offset: int = 0
     ) -> tuple[Mapping[str, Any], ...]:
         body = self._request(
             "POST",
             f"/indexes/{name}/documents/fetch",
-            {"filter": filters, "limit": limit},
+            {"filter": filters, "limit": limit, "offset": offset},
         )
         if not isinstance(body, Mapping):
             return ()
         rows = body.get("results") or []
         return tuple(item for item in rows if isinstance(item, Mapping))
 
+    @_invalidates_index_cache
     def search(
         self,
         name: str,
@@ -287,6 +311,7 @@ class MeilisearchSparseIndexProvider:
         self._data_path = data_path
         self._allow_create = allow_create_index
         self._tokenize = tokenize
+        self._index_ready = False
 
     def probe(self) -> None:
         probe_meilisearch_volume(self._data_path)
@@ -299,9 +324,13 @@ class MeilisearchSparseIndexProvider:
                 {"index": self._index},
                 503,
             )
+        self._index_ready = self._client.has_index(self._index)
 
     def ensure_index(self) -> None:
+        if self._index_ready:
+            return
         if self._client.has_index(self._index):
+            self._index_ready = True
             return
         if not self._allow_create:
             raise PlatformError(
@@ -311,7 +340,21 @@ class MeilisearchSparseIndexProvider:
                 503,
             )
         self._client.ensure_index(self._index)
+        self._index_ready = True
 
+    def _fetch_all(self, filters: str) -> tuple[Mapping[str, Any], ...]:
+        collected: list[Mapping[str, Any]] = []
+        offset = 0
+        while True:
+            page = self._client.get_documents(
+                self._index, filters=filters, limit=_FETCH_PAGE_SIZE, offset=offset
+            )
+            collected.extend(page)
+            if len(page) < _FETCH_PAGE_SIZE:
+                return tuple(collected)
+            offset += _FETCH_PAGE_SIZE
+
+    @_invalidates_index_cache
     def stage_chunks(
         self,
         attempt_id: str,
@@ -384,6 +427,7 @@ class MeilisearchSparseIndexProvider:
             fencing_token,
         )
 
+    @_invalidates_index_cache
     def publish_staged(
         self,
         attempt_id: str,
@@ -438,6 +482,7 @@ class MeilisearchSparseIndexProvider:
             result.fencing_token,
         )
 
+    @_invalidates_index_cache
     def discard_staged(
         self,
         attempt_id: str,
@@ -475,6 +520,7 @@ class MeilisearchSparseIndexProvider:
             )
         return StageResult("discarded", attempt_id, publication_id, "", (), "", 1)
 
+    @_invalidates_index_cache
     def delete_document_version(
         self, document_id: str, document_version_id: str, *, generation_id: str | None = None
     ) -> int:
@@ -485,7 +531,7 @@ class MeilisearchSparseIndexProvider:
         )
         if generation_id:
             filters += f" AND generation_id = {_quote(generation_id)}"
-        docs = self._client.get_documents(self._index, filters=filters)
+        docs = self._fetch_all(filters)
         self._client.delete_documents(self._index, tuple(str(item["id"]) for item in docs))
         return len(docs)
 
@@ -494,10 +540,11 @@ class MeilisearchSparseIndexProvider:
         filters = f"document_id = {_quote(document_id)}"
         if generation_id:
             filters += f" AND generation_id = {_quote(generation_id)}"
-        docs = self._client.get_documents(self._index, filters=filters)
+        docs = self._fetch_all(filters)
         self._client.delete_documents(self._index, tuple(str(item["id"]) for item in docs))
         return len(docs)
 
+    @_invalidates_index_cache
     def search(
         self,
         query: str,
@@ -539,12 +586,9 @@ class MeilisearchSparseIndexProvider:
     def _load(
         self, attempt_id: str, publication_id: str, status: str
     ) -> tuple[Mapping[str, Any], ...]:
-        return self._client.get_documents(
-            self._index,
-            filters=(
-                f"attempt_id = {_quote(attempt_id)} AND publication_id = {_quote(publication_id)} "
-                f"AND status = {_quote(status)}"
-            ),
+        return self._fetch_all(
+            f"attempt_id = {_quote(attempt_id)} AND publication_id = {_quote(publication_id)} "
+            f"AND status = {_quote(status)}"
         )
 
 

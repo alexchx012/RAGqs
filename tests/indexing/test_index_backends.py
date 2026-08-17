@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+import app.indexing.meilisearch as meilisearch_module
+import app.indexing.milvus as milvus_module
 from app.indexing.embedding import EmbeddingConfig, InMemoryEmbeddingProvider
 from app.indexing.meilisearch import (
     HttpMeilisearchClient,
@@ -75,10 +77,17 @@ class FakeMilvus:
         return len(before) - len(kept)
 
     def query(
-        self, name: str, expr: str, output_fields: Sequence[str]
+        self,
+        name: str,
+        expr: str,
+        output_fields: Sequence[str],
+        *,
+        limit: int = 16384,
+        offset: int = 0,
     ) -> tuple[Mapping[str, Any], ...]:
         del output_fields
-        return tuple(row for row in self.rows.get(name, []) if _milvus_match(row, expr))
+        matched = [row for row in self.rows.get(name, []) if _milvus_match(row, expr)]
+        return tuple(matched[offset : offset + limit])
 
     def search(
         self,
@@ -94,7 +103,10 @@ class FakeMilvus:
         del vector, metric, output_fields
         matched = [row for row in self.rows.get(name, []) if _milvus_match(row, expr)]
         page = matched[offset : offset + limit]
-        return tuple((row, 1.0 - index * 0.01) for index, row in enumerate(page))
+        return tuple(
+            ({**row, "distance": 0.95 - index * 0.05}, max(0.0, 0.95 - index * 0.05))
+            for index, row in enumerate(page)
+        )
 
 
 def _milvus_match(row: Mapping[str, Any], expr: str) -> bool:
@@ -143,10 +155,10 @@ class FakeMeili:
         ]
 
     def get_documents(
-        self, name: str, *, filters: str, limit: int = 1000
+        self, name: str, *, filters: str, limit: int = 1000, offset: int = 0
     ) -> tuple[Mapping[str, Any], ...]:
         matched = [item for item in self.indexes.get(name, []) if _meili_match(item, filters)]
-        return tuple(matched[:limit])
+        return tuple(matched[offset : offset + limit])
 
     def search(
         self,
@@ -159,7 +171,7 @@ class FakeMeili:
     ) -> tuple[tuple[Mapping[str, Any], float], ...]:
         matched = [item for item in self.indexes.get(name, []) if _meili_match(item, filters)]
         if query:
-            matched.sort(key=lambda item: (0 if query in str(item.get("jieba_tokens", "")) else 1))
+            matched.sort(key=lambda item: 0 if query in str(item.get("jieba_tokens", "")) else 1)
         page = matched[offset : offset + limit]
         return tuple((item, 0.9 - index * 0.1) for index, item in enumerate(page))
 
@@ -284,6 +296,141 @@ def test_pretokens_uses_jieba_when_available() -> None:
     pytest.importorskip("jieba")
     tokens = pretokens("中文文本")
     assert "中文" in tokens or "文本" in tokens
+
+
+class CountingMilvus(FakeMilvus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.has_collection_calls = 0
+
+    def has_collection(self, name: str) -> bool:
+        self.has_collection_calls += 1
+        return super().has_collection(name)
+
+
+class CountingMeili(FakeMeili):
+    def __init__(self) -> None:
+        super().__init__()
+        self.has_index_calls = 0
+
+    def has_index(self, name: str) -> bool:
+        self.has_index_calls += 1
+        return super().has_index(name)
+
+
+def test_meilisearch_publish_reads_stages_across_fetch_pages(monkeypatch) -> None:
+    monkeypatch.setattr(meilisearch_module, "_FETCH_PAGE_SIZE", 3)
+    client = FakeMeili()
+    provider = MeilisearchSparseIndexProvider(
+        client, index_name="ragqs_chunks", allow_create_index=True, tokenize=lambda text: text
+    )
+    chunks = [_chunk(f"chunk_{index}") for index in range(10)]
+    provider.stage_chunks("attempt_1", "publication_1", "document_1", "version_1", chunks)
+    published = provider.publish_staged("attempt_1", "publication_1")
+    assert len(published.resource_ids) == 10
+    staged_leftover = client.get_documents(
+        "ragqs_chunks",
+        filters='attempt_id = "attempt_1" AND publication_id = "publication_1" AND status = "staged"',
+    )
+    assert staged_leftover == ()
+    published_rows = client.get_documents(
+        "ragqs_chunks",
+        filters='attempt_id = "attempt_1" AND publication_id = "publication_1" AND status = "published"',
+    )
+    assert len(published_rows) == 10
+
+
+def test_milvus_publish_reads_stages_across_query_pages(monkeypatch) -> None:
+    monkeypatch.setattr(milvus_module, "_QUERY_PAGE_SIZE", 3)
+    client = FakeMilvus()
+    writer = _writer(client)
+    chunks = [_chunk(f"chunk_{index}") for index in range(10)]
+    writer.stage_chunks("attempt_1", "publication_1", "document_1", "version_1", chunks)
+    published = writer.publish_staged("attempt_1", "publication_1")
+    assert len(published.resource_ids) == 10
+    staged_leftover = client.query(
+        writer.collection_name,
+        'attempt_id == "attempt_1" && publication_id == "publication_1" && status == "staged"',
+        ("id",),
+    )
+    assert staged_leftover == ()
+    published_rows = client.query(
+        writer.collection_name,
+        'attempt_id == "attempt_1" && publication_id == "publication_1" && status == "published"',
+        ("id",),
+    )
+    assert len(published_rows) == 10
+
+
+def test_milvus_search_scores_use_distance_and_stay_non_negative() -> None:
+    client = FakeMilvus()
+    writer = _writer(client)
+    writer.stage_chunks(
+        "attempt_1",
+        "publication_1",
+        "document_1",
+        "version_1",
+        [_chunk(f"chunk_{index}") for index in range(3)],
+    )
+    writer.publish_staged("attempt_1", "publication_1")
+    page = writer.search("中文", ["space_1"], 3, None, generation_id="generation_1")
+    scores = [float(item["score"]) for item in page.items]
+    assert len(scores) == 3
+    assert all(score >= 0.0 for score in scores)
+    assert scores == sorted(scores, reverse=True)
+    assert scores[0] == pytest.approx(0.95)
+
+
+def test_milvus_ensure_collection_cached_until_backend_failure(monkeypatch) -> None:
+    client = CountingMilvus()
+    writer = _writer(client)
+    writer.stage_chunks("attempt_1", "publication_1", "document_1", "version_1", [_chunk()])
+    assert client.has_collection_calls == 1
+    writer.search("中文", ["space_1"], 5, None, generation_id="generation_1")
+    assert client.has_collection_calls == 1
+
+    failed = False
+
+    def flaky_search(*args: Any, **kwargs: Any) -> Any:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise PlatformError("milvus_unavailable", "index dropped externally", {}, 503)
+        return FakeMilvus.search(client, *args, **kwargs)
+
+    monkeypatch.setattr(client, "search", flaky_search)
+    with pytest.raises(PlatformError):
+        writer.search("中文", ["space_1"], 5, None, generation_id="generation_1")
+    assert writer._collection_ready is False
+    writer.search("中文", ["space_1"], 5, None, generation_id="generation_1")
+    assert client.has_collection_calls == 2
+
+
+def test_meilisearch_ensure_index_cached_until_backend_failure(monkeypatch) -> None:
+    client = CountingMeili()
+    provider = MeilisearchSparseIndexProvider(
+        client, index_name="ragqs_chunks", allow_create_index=True, tokenize=lambda text: text
+    )
+    provider.stage_chunks("attempt_1", "publication_1", "document_1", "version_1", [_chunk()])
+    assert client.has_index_calls == 1
+    provider.search("中文", ["space_1"], 5, None, generation_id="generation_1")
+    assert client.has_index_calls == 1
+
+    failed = False
+
+    def flaky_search(*args: Any, **kwargs: Any) -> Any:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise PlatformError("meilisearch_unavailable", "index dropped externally", {}, 503)
+        return FakeMeili.search(client, *args, **kwargs)
+
+    monkeypatch.setattr(client, "search", flaky_search)
+    with pytest.raises(PlatformError):
+        provider.search("中文", ["space_1"], 5, None, generation_id="generation_1")
+    assert provider._index_ready is False
+    provider.search("中文", ["space_1"], 5, None, generation_id="generation_1")
+    assert client.has_index_calls == 2
 
 
 def _meili_ready(url: str, api_key: str) -> bool:
