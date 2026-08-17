@@ -165,7 +165,12 @@ def create_engine_for_settings(settings: PlatformSettings) -> Engine:
         options["connect_args"] = {
             "connect_timeout": settings.database.connect_timeout_seconds,
         }
-    elif settings.database.url in {"sqlite://", "sqlite+pysqlite:///:memory:"}:
+    elif settings.database.url in {
+        "sqlite://",
+        "sqlite:///:memory:",
+        "sqlite+pysqlite://",
+        "sqlite+pysqlite:///:memory:",
+    }:
         options["connect_args"] = {"check_same_thread": False}
         options["poolclass"] = StaticPool
     return create_engine(settings.database.url, **options)

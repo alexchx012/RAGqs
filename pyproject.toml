@@ -43,6 +43,7 @@ ragqs-usage-maintenance = "app.usage.maintenance:main"
 ragqs-evaluation-maintenance = "app.evaluation.maintenance:main"
 ragqs-graph-maintenance = "app.graph.maintenance:main"
 ragqs-retention-maintenance = "app.retention.worker:main"
+ragqs-chat-maintenance = "app.chat.maintenance:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

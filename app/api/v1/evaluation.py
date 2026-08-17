@@ -10,33 +10,17 @@ from pydantic import BaseModel, ConfigDict
 
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
+from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
 
 router = APIRouter(tags=["evaluation"])
-
-IDEMPOTENCY_KEY_MAX_LENGTH = 256
-
 
 def evaluation_service(request: Request):
     service = request.app.state.platform_runtime.resolve("evaluation_service")
     if service is None:
         raise RuntimeError("evaluation service is not configured")
     return service
-
-
-def _validated_idempotency_key(value: str | None) -> str:
-    if not value or not value.strip():
-        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
-    normalized = value.strip()
-    if len(normalized) > IDEMPOTENCY_KEY_MAX_LENGTH:
-        raise PlatformError(
-            "validation_error",
-            "Idempotency-Key is too long",
-            {"max_length": IDEMPOTENCY_KEY_MAX_LENGTH},
-            422,
-        )
-    return normalized
 
 
 def require_ops(principal: AuthPrincipal) -> None:
@@ -73,7 +57,7 @@ def create_shadow_run(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = _validated_idempotency_key(idempotency_key)
+    key = validate_idempotency_key(idempotency_key)
     response = evaluation_service(request).create_shadow_run(
         actor=principal,
         space_id=body.space_id,
@@ -134,7 +118,7 @@ def write_window(
             {},
             403,
         )
-    key = _validated_idempotency_key(idempotency_key)
+    key = validate_idempotency_key(idempotency_key)
     service = evaluation_service(request)
     if body.action == "open":
         response, status = service.open_window(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -179,11 +180,17 @@ def test_metadata_declares_core_tables_and_no_domain_ownership() -> None:
     assert all(name.startswith("platform_") for name in core_metadata.tables)
 
 
-def test_explicit_sqlite_development_provider_uses_compatible_engine_options() -> None:
+@pytest.mark.parametrize(
+    "database_url",
+    ["sqlite://", "sqlite:///:memory:", "sqlite+pysqlite://", "sqlite+pysqlite:///:memory:"],
+)
+def test_explicit_sqlite_development_provider_shares_initialized_state_across_threads(
+    database_url: str,
+) -> None:
     settings = load_platform_settings(
         {
             "RAG_PLATFORM_PROFILE": "development",
-            "RAG_DATABASE_URL": "sqlite:///:memory:",
+            "RAG_DATABASE_URL": database_url,
             "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
             "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
             "RAG_PROVIDER_NAME": "fake",
@@ -191,6 +198,25 @@ def test_explicit_sqlite_development_provider_uses_compatible_engine_options() -
     )
 
     engine = create_engine_for_settings(settings)
-    with engine.connect() as connection:
-        assert connection.execute(text("SELECT 1")).scalar_one() == 1
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE shared_state (value INTEGER NOT NULL)"))
+        connection.execute(text("INSERT INTO shared_state (value) VALUES (1)"))
+
+    def read_shared_value() -> int:
+        with engine.connect() as connection:
+            return connection.execute(text("SELECT value FROM shared_state")).scalar_one()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        value = executor.submit(read_shared_value).result()
     engine.dispose()
+
+    assert value == 1
+
+
+def test_immutable_trigger_history_has_no_unpublished_refresh_revisions() -> None:
+    versions = Path("alembic/versions")
+
+    assert not list(versions.glob("000[789]_refresh_immutable_triggers.py"))
+    assert 'down_revision: str | None = "0006_outbox_retirement_tombstone"' in (
+        versions / "0010_compacted_fields_check.py"
+    ).read_text(encoding="utf-8")

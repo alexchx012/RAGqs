@@ -113,7 +113,7 @@ graph_build_audit_table = Table(
 graph_build_operations_table = Table(
     "graph_build_operations",
     graph_metadata,
-    Column("operation_id", String(64), primary_key=True),
+    Column("operation_id", String(266), primary_key=True),
     Column("kind", String(32), nullable=False),
     Column("request_hash", String(64), nullable=False),
     Column("status", String(16), nullable=False),

@@ -284,12 +284,15 @@ class SubmissionService:
         space_id: str,
         file: DocumentUpload,
         idempotency_key: str | None,
+        idempotency_item_index: int | None = None,
     ) -> dict[str, Any]:
         key = self._service._required_key(idempotency_key)
         self._service._authorize(principal, space_id, "contribute")
         info = self._service._file_fingerprint(file)
         actor_id = str(principal.user_id)
         endpoint = "documents.submission_create"
+        if idempotency_item_index is not None:
+            endpoint = f"{endpoint}:{idempotency_item_index}"
         fingerprint = self._service._idempotency_fingerprint({"space_id": space_id, "file": info})
         with self._service._engine.begin() as connection:
             replay = self._service._idempotency_replay(

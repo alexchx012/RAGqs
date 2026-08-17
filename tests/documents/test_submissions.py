@@ -58,6 +58,27 @@ def test_contribute_upload_creates_private_pending_submission(service, principal
     )
 
 
+def test_contribute_upload_accepts_maximum_key_for_distinct_request_items(service, principal) -> None:
+    key = "x" * 256
+
+    first = service.create_submission(
+        principal=principal,
+        space_id="space_1",
+        file=_upload(),
+        idempotency_key=key,
+        idempotency_item_index=0,
+    )
+    second = service.create_submission(
+        principal=principal,
+        space_id="space_1",
+        file=type(_upload())("second.txt", b"second", "text/plain"),
+        idempotency_key=key,
+        idempotency_item_index=1,
+    )
+
+    assert first["submission_id"] != second["submission_id"]
+
+
 def test_approval_creates_immutable_grant_and_initial_job(service, principal) -> None:
     submission = service.create_submission(
         principal=principal,

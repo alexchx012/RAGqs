@@ -12,6 +12,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .context import current_context
 from .errors import PlatformError, map_exception
 
+IDEMPOTENCY_KEY_MAX_LENGTH = 256
+
 
 def _request_id() -> str:
     context = current_context()
@@ -52,8 +54,22 @@ def parse_idempotency_key(headers: Mapping[str, str]) -> str | None:
     for key, value in headers.items():
         if key.casefold() == "idempotency-key":
             normalized = value.strip()
-            return normalized or None
+            return validate_idempotency_key(normalized) if normalized else None
     return None
+
+
+def validate_idempotency_key(value: str | None) -> str:
+    if not value or not value.strip():
+        raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
+    normalized = value.strip()
+    if len(normalized) > IDEMPOTENCY_KEY_MAX_LENGTH:
+        raise PlatformError(
+            "validation_error",
+            "Idempotency-Key is too long",
+            {"max_length": IDEMPOTENCY_KEY_MAX_LENGTH},
+            422,
+        )
+    return normalized
 
 
 def parse_if_match(headers: Mapping[str, str]) -> str | None:
