@@ -32,6 +32,11 @@ class MaintenanceRuntime:
         run_retention = getattr(retention_worker, "run_once", None) if retention_worker else None
         if callable(run_retention):
             run_retention(owner="maintenance-retention")
+        backfill = getattr(
+            self.runtime.resolve("identity_access"), "backfill_directory_search_text", None
+        )
+        if callable(backfill):
+            backfill()
 
     def close(self) -> None:
         if self.owns_runtime:

@@ -212,9 +212,12 @@ def test_maintenance_runtime_uses_the_same_platform_runtime() -> None:
     runtime = build_runtime(settings())
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
-    # Outbox-owned tables are required by the notification retention scan.
+    # Outbox-owned tables are required by the notification retention scan; identity-owned
+    # tables are required by the directory search backfill.
+    from app.identity.schema import identity_metadata
     from app.outbox.schema import outbox_metadata
 
+    identity_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
     maintenance = create_maintenance_runtime(settings(), runtime=runtime)
 

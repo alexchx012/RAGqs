@@ -51,7 +51,7 @@ def test_replay_payload_uses_aead_envelope_and_rejects_tampering() -> None:
     assert decrypt_replay_payload(b"another-test-secret", encrypted) is None
 
 
-def test_replay_payload_decrypts_an_authenticated_legacy_envelope_during_rollout() -> None:
+def test_replay_payload_rejects_the_removed_legacy_envelope() -> None:
     secret = b"test-secret-that-is-long-enough"
     payload = {
         "access_token": "access",
@@ -60,8 +60,5 @@ def test_replay_payload_decrypts_an_authenticated_legacy_envelope_during_rollout
     }
 
     legacy = _legacy_replay_payload(secret, payload)
-    nonce, ciphertext, tag = legacy.split(".")
 
-    assert decrypt_replay_payload(secret, legacy) == payload
-    replacement = "A" if tag[-1] != "A" else "B"
-    assert decrypt_replay_payload(secret, f"{nonce}.{ciphertext}.{tag[:-1]}{replacement}") is None
+    assert decrypt_replay_payload(secret, legacy) is None
