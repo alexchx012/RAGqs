@@ -206,8 +206,8 @@ describe('UploadsLayer ack 终态（review：404/409 终止重试）', () => {
     });
 
     await renderLayer(api, notifications);
-    // 渲染用量
-    await waitFor(() => expect(screen.getByText(/已入库/)).toBeInTheDocument(), { timeout: 5000 });
+    // 渲染用量（种子夹具已含其他「已入库」卡，断言存在即可）
+    await waitFor(() => expect(screen.getAllByText(/已入库/).length).toBeGreaterThan(0), { timeout: 5000 });
     // 第一次 ack 404
     await waitFor(() => expect(ackNotification).toHaveBeenCalled(), { timeout: 5000 });
     const firstCalls = ackNotification.mock.calls.length;

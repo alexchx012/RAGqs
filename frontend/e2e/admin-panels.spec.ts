@@ -76,7 +76,7 @@ test('ops approves a quota request with adjusted pages: row fades out, notice sh
   const quotaSection = approvalsDialog.getByRole('region', { name: copyApprovals.quota });
   await expect(quotaSection).toBeVisible();
   await waitDrillSettled(approvalsDialog);
-  const zhangsanRow = quotaSection.getByRole('listitem').filter({ hasText: 'zhangsan' });
+  const zhangsanRow = quotaSection.getByRole('row').filter({ hasText: 'zhangsan' });
   await expect(zhangsanRow).toHaveCount(1);
   await expect(zhangsanRow.getByText(copyApprovals.pages(100), { exact: true })).toBeVisible();
 
@@ -94,9 +94,9 @@ test('ops approves a quota request with adjusted pages: row fades out, notice sh
   await expect(
     quotaSection.getByRole('status').filter({ hasText: copyApprovals.approvedNotice }),
   ).toBeVisible();
-  await expect(quotaSection.getByRole('listitem').filter({ hasText: 'zhangsan' })).toHaveCount(0);
+  await expect(quotaSection.getByRole('row').filter({ hasText: 'zhangsan' })).toHaveCount(0);
   await expect(
-    quotaSection.getByRole('listitem').filter({ hasText: 'minister-li' }),
+    quotaSection.getByRole('row').filter({ hasText: 'minister-li' }),
   ).toHaveCount(1);
 
   // 徽标计数 -1：回审批中心层，「配额申请」下钻项徽标 3 → 2（invalidateSummaries 重取）
@@ -168,7 +168,7 @@ test('admin edits a minister user (422 on no-department, then saves) and disable
 
   // 用户表渲染（种子 9 行）；自己（admin）行与冻结行无任何操作入口
   const usersSection = usersDialog.getByRole('region', { name: modules.usersOps });
-  const rows = usersSection.getByRole('listitem');
+  const rows = usersSection.getByRole('row');
   await expect(rows.filter({ hasText: ADMIN_SEED_NAMES.zhangsan })).toHaveCount(1);
   const selfRow = rows.filter({ hasText: ADMIN_SEED_NAMES.systemAdmin });
   await expect(selfRow).toHaveCount(1);
@@ -235,7 +235,7 @@ test('admin is blocked deactivating a department with members, then deactivates 
   const deptSection = usersDialog.getByRole('region', { name: modules.departments });
   await expect(deptSection).toBeVisible();
   await waitDrillSettled(usersDialog);
-  const rows = deptSection.getByRole('listitem');
+  const rows = deptSection.locator('[role="rowgroup"] [role="row"]');
   await expect(rows).toHaveCount(3);
 
   // 有成员的部门（种子 d_finance 财务部：成员 3 · 任务 0 · 待审 2）点「停用」→ 确认

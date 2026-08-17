@@ -33,6 +33,8 @@ import {
 } from '../ui';
 import { useAdmin } from './AdminProvider';
 import { formatDateTime } from './format';
+import { formatFileSize } from '../settings/UploadDialog';
+import { SegmentedControl } from '../ui/SegmentedControl';
 import type { QuotaRequestItem } from './types';
 
 /* ---------- 配额申请（§8.2–8.3） ---------- */
@@ -219,12 +221,15 @@ export function QuotaRequestsLayer() {
         <EmptyState text={copyApprovals.empty} />
       ) : (
         <div role="table" aria-label={copyApprovals.quota}>
-          <div role="row" className="sr-only">
-            <span role="columnheader">{copyApprovals.colApplicant}</span>
-            <span role="columnheader">{copyApprovals.colUsage}</span>
-            <span role="columnheader">{copyApprovals.colRequested}</span>
-            <span role="columnheader">{copyApprovals.colRequestedAt}</span>
-            <span role="columnheader">{copyApprovals.colActions}</span>
+          <div
+            role="row"
+            className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] items-center gap-3 px-4 py-2"
+          >
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colApplicant}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colUsage}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colRequested}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colRequestedAt}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colActions}</span>
           </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
             {items.map((request) => {
@@ -437,8 +442,23 @@ export function ApprovalSubmissionsLayer() {
   const [rowErrors, setRowErrors] = useState<ReadonlyMap<string, string>>(new Map());
   const idem = useRef(createIdempotencyScope());
   const seqRef = useRef(0);
+  // 目标空间筛选（超管端 §7.3）：ops 待审恒为公共库时不渲染筛选控件
+  const [spaceFilter, setSpaceFilter] = useState<'all' | 'public' | 'department'>('all');
+  const [departmentFilter, setDepartmentFilter] = useState<string>('all');
   const copyManage = copy.settings.knowledge.manage;
   const copyApprovals = copy.admin.approvals;
+
+  const departmentItems = items.filter((item) => item.space_id !== 'public');
+  const departmentNames = [...new Set(departmentItems.map((item) => item.space_name))];
+  const visibleItems = items.filter((item) => {
+    if (spaceFilter === 'public') {
+      return item.space_id === 'public';
+    }
+    if (spaceFilter === 'department') {
+      return item.space_id !== 'public' && (departmentFilter === 'all' || item.space_name === departmentFilter);
+    }
+    return true;
+  });
 
   const loadSubmissions = useCallback(async (): Promise<void> => {
     const seq = ++seqRef.current;
@@ -577,6 +597,39 @@ export function ApprovalSubmissionsLayer() {
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-[20px] font-medium text-ink-black">{copyApprovals.submissions}</h2>
       </div>
+      {/* 目标空间筛选（超管端 §7.3）：仅当待审里存在部门库投稿时渲染；选中「部门库」出现部门下拉 */}
+      {departmentItems.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <SegmentedControl
+            options={[
+              { value: 'all', label: copyApprovals.filterAll },
+              { value: 'public', label: copyApprovals.filterPublic },
+              { value: 'department', label: copyApprovals.filterDepartment },
+            ]}
+            value={spaceFilter}
+            onChange={(value) => {
+              setSpaceFilter(value as 'all' | 'public' | 'department');
+              setDepartmentFilter('all');
+            }}
+            ariaLabel={copyApprovals.filterSpaceAria}
+          />
+          {spaceFilter === 'department' && (
+            <select
+              value={departmentFilter}
+              onChange={(event) => setDepartmentFilter(event.target.value)}
+              aria-label={copyApprovals.filterDepartmentAria}
+              className="h-8 rounded-[var(--radius-buttons)] border border-[var(--color-hairline)] bg-paper-white px-3 text-[14px] text-ink-black focus:border-ink-black"
+            >
+              <option value="all">{copyApprovals.filterAll}</option>
+              {departmentNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
       {notice !== null && (
         <HeaderNotice intent="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
@@ -589,17 +642,23 @@ export function ApprovalSubmissionsLayer() {
         <LoadingRows count={4} />
       ) : loadError ? (
         <ErrorState text={copyManage.approvalsError} onRetry={() => void loadSubmissions()} />
-      ) : items.length === 0 ? (
+      ) : visibleItems.length === 0 ? (
         <EmptyState text={copyManage.approvalsEmpty} />
       ) : (
         <div role="table" aria-label={copyApprovals.submissions}>
-          <div role="row" className="sr-only">
-            <span role="columnheader">{copyApprovals.colFile}</span>
-            <span role="columnheader">{copyApprovals.colSubmittedAt}</span>
-            <span role="columnheader">{copyApprovals.colActions}</span>
+          <div
+            role="row"
+            className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto] items-center gap-3 px-4 py-2"
+          >
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colFile}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colSubmitter}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colKindSize}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colTargetSpace}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colSubmittedAt}</span>
+            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colActions}</span>
           </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
-            {items.map((item) => {
+            {visibleItems.map((item) => {
               const acting = actingId === item.submission_id;
               return (
                 <li
@@ -613,7 +672,7 @@ export function ApprovalSubmissionsLayer() {
                   <div
                     role="row"
                     aria-busy={acting || undefined}
-                    className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray"
+                    className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray"
                   >
                     <div role="cell" className="min-w-0">
                       <p className="truncate text-[15px] text-ink-black">{item.file_name}</p>
@@ -621,7 +680,17 @@ export function ApprovalSubmissionsLayer() {
                         {item.media_kind}
                       </p>
                     </div>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                    <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
+                      {item.submitter_name}
+                      {item.submitter_department !== null ? ` · ${item.submitter_department.name}` : ''}
+                    </span>
+                    <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
+                      {formatFileSize(item.file_size)}
+                    </span>
+                    <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
+                      {item.space_name}
+                    </span>
+                    <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
                       {formatDateTime(item.created_at)}
                     </span>
                     <div role="cell" className="flex items-center gap-2">

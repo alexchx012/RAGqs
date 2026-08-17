@@ -251,6 +251,14 @@ export interface Submission {
   readonly status: SubmissionStatus;
   readonly file_name: string;
   readonly media_kind: string;
+  /** 审核列表列：投稿人显示名（接口需求 §8.4）。 */
+  readonly submitter_name: string;
+  /** 审核列表列：投稿人部门（接口需求 §8.4；无部门为 null）。 */
+  readonly submitter_department: { readonly id: string; readonly name: string } | null;
+  /** 审核列表列：文件字节数（接口需求 §8.4）。 */
+  readonly file_size: number;
+  /** 目标空间名（我的投稿/审核列表的目标空间展示）。 */
+  readonly space_name: string;
   readonly created_at: string;
   readonly reviewed_at: string | null;
 }
@@ -292,6 +300,14 @@ export interface ApprovalListItem {
   readonly status: SubmissionStatus;
   readonly file_name: string;
   readonly media_kind: string;
+  /** 审核列表列：投稿人显示名（接口需求 §8.4）。 */
+  readonly submitter_name: string;
+  /** 审核列表列：投稿人部门（接口需求 §8.4；无部门为 null）。 */
+  readonly submitter_department: { readonly id: string; readonly name: string } | null;
+  /** 审核列表列：文件字节数（接口需求 §8.4）。 */
+  readonly file_size: number;
+  /** 审核列表列：目标空间名（超管端 §7.3 行列与筛选）。 */
+  readonly space_name: string;
   readonly created_at: string;
   readonly reviewed_at: string | null;
 }

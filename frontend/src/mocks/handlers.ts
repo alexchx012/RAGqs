@@ -28,8 +28,35 @@ function errorResponse(error: unknown) {
   );
 }
 
+/** 会话列表的设备摘要（共用基座 §5.4「设备/浏览器」）：UA 解析为「浏览器 · 系统」，解析不出回退通用名。 */
 function deviceOf(request: Request): string {
-  return (request.headers.get('User-Agent') ?? 'unknown').slice(0, 64);
+  const ua = request.headers.get('User-Agent') ?? '';
+  if (ua === '') {
+    return '未知设备';
+  }
+  const browser = /Edg\//.test(ua)
+    ? 'Edge'
+    : /OPR\//.test(ua)
+      ? 'Opera'
+      : /Chrome\//.test(ua)
+        ? 'Chrome'
+        : /Firefox\//.test(ua)
+          ? 'Firefox'
+          : /Safari\//.test(ua)
+            ? 'Safari'
+            : '浏览器';
+  const os = /Windows/.test(ua)
+    ? 'Windows'
+    : /Mac OS X/.test(ua)
+      ? 'macOS'
+      : /Android/.test(ua)
+        ? 'Android'
+        : /iPhone|iPad/.test(ua)
+          ? 'iOS'
+          : /Linux/.test(ua)
+            ? 'Linux'
+            : '';
+  return os === '' ? browser : `${browser} · ${os}`;
 }
 
 export function createAuthHandlers(controller: MockAuthController) {

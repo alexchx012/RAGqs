@@ -187,8 +187,13 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         : { layers: [] as readonly DrawerLayer[], exact: true },
     [registry, parsed, role],
   );
+  // 拒绝判定仅在认证就绪后生效：整页加载深链时 user 短暂为空、role 回退 'user'，
+  // 此时误判「无管理段权限」会把 /admin/* 深链弹回主页（违反共用基座 §5.1 粘贴链接恢复）
   const adminAccessDenied =
-    parsed.open && parsed.segment === 'admin' && !registry.hasAdminModules(role);
+    parsed.open &&
+    parsed.segment === 'admin' &&
+    authState.user !== null &&
+    !registry.hasAdminModules(role);
   const drawerOpen = parsed.open && !adminAccessDenied;
 
   useEffect(() => {
@@ -626,8 +631,9 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
 
   const navArea = (() => {
     if (!transitioning) {
-      // 空闲：drilled 显示 返回 + 层名；否则模块清单（窄屏 level 0 即全宽列表）
-      return drilled ? renderDrilledNav(deepest, 'idle') : renderModuleList('idle');
+      // 空闲：drilled 显示 返回 + 层名；否则模块清单（窄屏 level 0 即全宽列表）。
+      // 认证未就绪的瞬态（role 回退 user）下深钻路径解析为空层：回退模块清单占位，待就绪后自然切回
+      return drilled && deepest !== undefined ? renderDrilledNav(deepest, 'idle') : renderModuleList('idle');
     }
     const toDrilled = transition.to.length >= 2;
     const toLayer = shownLayers[shownLayers.length - 1];

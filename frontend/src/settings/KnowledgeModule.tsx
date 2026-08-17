@@ -1,19 +1,21 @@
 /*
- * 知识库模块首页（settings-personal §4）。
- * - 顶行统一配额计数器（GET /quota/me；只显示「页」单位；unlimited 显示「不限」；
- *   reset_at 倒计时 + business_timezone 说明，不按浏览器时区重算月界；pending_request 常驻行）。
+ * 知识库模块首页（settings-personal §4；共用基座 §5.6）。
+ * - 顶行：无边框「上传结果」（进行中任务带数量徽标）+「我的投稿」（user/minister）；
+ *   右侧配额计数器一行小字（未满 slate / 耗尽整行危险红，仅耗尽时出现「申请增加页数」；
+ *   unlimited 显示「不限」；pending_request 常驻行）。
  * - 配额申请对话框（仅 user/minister）：1–500 整数校验，保留原始非法输入（-1/1.5 不静默改写），
  *   非法值即时显示危险红边 + 15px 提示，空/非法禁用确认键；201 后关闭并淡入常驻行；
  *   409 pending_request_exists 提示；写操作携带 Idempotency-Key（网络未知重试同键，
  *   明确业务响应清键不自动重发，含 idempotency_key_conflict）。
  * - 文档列表：消费服务端 spaces 返回的实际 space_id（个人库 = kind=personal && permission=manage；
- *   不拼 personal:${user.id}）；工具行仅搜索框（q）+ 页码器；manage 行操作：
+ *   不拼 personal:${user.id}）；工具行=搜索框 + 上传按钮；manage 行操作：
  *   上传新版本（真实 §6.4 链路）/版本记录/重建索引/删除；active_operation 非空时隐藏全部冲突入口。
- * - 部长入口严格为 kind=department && permission=manage；上传结果历史入口全角色可访问（按会话隔离）。
+ * - 部长入口严格为 kind=department && permission=manage（右栏 48px 下钻项）。
  * - 异步读取带 request sequence fence：旧响应不得覆盖新 query/space 结果。
  */
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { ApiError } from '../api/errors';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
@@ -23,6 +25,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { MeatballMenu } from '../ui/MeatballMenu';
 import { Paginator } from '../ui/Paginator';
 import { Pill } from '../ui/Pill';
+import { StatusDot } from '../ui/StatusDot';
 import { TextLink } from '../ui/TextLink';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { useSettings } from './SettingsProvider';
@@ -30,7 +33,7 @@ import { createIdempotencyScope, isBusinessResponse } from './idempotency';
 import { useModalDialog } from './use-modal-dialog';
 import type { DocumentListItem, QuotaSnapshot, SpaceItem } from './types';
 import { UploadDialog } from './UploadDialog';
-import { UploadHistorySection } from './UploadHistory';
+import { readUploadHistory, subscribeUploadHistory } from './upload-history';
 import { NewVersionDialog } from './NewVersionDialog';
 
 const PAGE_SIZE = 10;
@@ -40,16 +43,13 @@ function formatDateTime(value: string): string {
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString('zh-CN');
 }
 
-function quotaCountdown(resetAt: string): string {
-  const parsed = new Date(resetAt);
-  if (Number.isNaN(parsed.valueOf())) {
-    return resetAt;
+/** 顶行「上传结果」按钮的进行中数量徽标：会话内存档里最近一批仍在 pending 的入库任务数。 */
+function pendingUploadCount(sessionKey: string | null): number {
+  const entry = readUploadHistory(sessionKey);
+  if (entry === null) {
+    return 0;
   }
-  const days = Math.ceil((parsed.valueOf() - Date.now()) / 86_400_000);
-  if (days > 0) {
-    return copy.settings.knowledge.quota.resetsAt(copy.settings.knowledge.quota.days(days));
-  }
-  return copy.settings.knowledge.quota.resetsAt(copy.states.empty);
+  return entry.response.items.filter((item) => 'filename' in item && item.status === 'pending').length;
 }
 
 /** 个人库 = kind=personal && permission=manage（消费服务端返回项，不拼 id）。 */
@@ -74,7 +74,7 @@ export function KnowledgeModule() {
   const sessionKey = user !== null && authSessionId !== null ? `${authSessionId}:${user.id}` : null;
 
   const [quota, setQuota] = useState<QuotaSnapshot | null>(null);
-  const [quotaLoading, setQuotaLoading] = useState(true);
+  const [, setQuotaLoading] = useState(true);
   const [quotaError, setQuotaError] = useState(false);
 
   const [documents, setDocuments] = useState<readonly DocumentListItem[]>([]);
@@ -97,6 +97,13 @@ export function KnowledgeModule() {
 
   const [pendingDeleteDoc, setPendingDeleteDoc] = useState<DocumentListItem | null>(null);
   const [pendingReindexDoc, setPendingReindexDoc] = useState<DocumentListItem | null>(null);
+
+  const [uploadPendingCount, setUploadPendingCount] = useState(() => pendingUploadCount(sessionKey));
+  useEffect(() => {
+    const recount = () => setUploadPendingCount(pendingUploadCount(sessionKey));
+    recount();
+    return subscribeUploadHistory(recount);
+  }, [sessionKey]);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingReindex, setConfirmingReindex] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -397,46 +404,84 @@ export function KnowledgeModule() {
 
   return (
     <section aria-label={copy.settings.knowledge.sectionLabel} className="pb-10">
-      {/* 配额计数器（仅本模块首页呈现；只显示「页」单位） */}
-      <div className="flex items-center justify-between gap-4 rounded-[var(--radius-elevatedcards)] bg-mist-gray/60 p-5">
-        <div>
-          <h2 className="text-subheading font-medium text-ink-black">{copy.settings.knowledge.quota.title}</h2>
-          {quotaLoading ? (
-            <p className="mt-2 text-caption text-smoke-gray">{copy.settings.knowledge.upload.uploading}</p>
-          ) : quotaError ? (
-            <div className="mt-2 flex items-center gap-3">
-              <p className="text-caption text-danger">{copy.states.error}</p>
+      {/* 顶行（共用基座 §5.6）：左=无边框「上传结果」（进行中任务带数量徽标）+「我的投稿」（user/minister）；
+          右=配额计数器一行小字（未满 slate / 耗尽整行危险红；运维与超管显示「不限」） */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => drillUploads()}
+            className="inline-flex items-center gap-1.5 text-[15px] text-ink-black underline-offset-2 hover:underline"
+          >
+            {copy.settings.knowledge.uploads.historyEntry}
+            {uploadPendingCount > 0 && (
+              <span className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black">
+                {uploadPendingCount}
+              </span>
+            )}
+          </button>
+          {isMember && (
+            <button
+              type="button"
+              onClick={() => drillSubmissions()}
+              className="text-[15px] text-ink-black underline-offset-2 hover:underline"
+            >
+              {copy.settings.knowledge.submissions.entry}
+            </button>
+          )}
+        </div>
+        <div className="flex flex-col items-end">
+          {quotaError ? (
+            <div className="flex items-center gap-2">
+              <p className="text-[15px] text-danger">{copy.states.error}</p>
               <TextLink onClick={() => void loadQuota()}>{copy.states.retry}</TextLink>
             </div>
           ) : quota !== null ? (
-            <>
-              <p className="mt-2 text-body-lg font-medium text-ink-black">
-                {quota.unlimited
-                  ? copy.settings.knowledge.quota.unlimited
-                  : copy.settings.knowledge.quota.usedOfLimit(quota.used, quota.effective_limit)}
+            quota.unlimited ? (
+              <p className="text-[15px] text-slate-gray">{copy.settings.knowledge.quota.unlimited}</p>
+            ) : (
+              <p
+                className={
+                  quota.used >= quota.effective_limit
+                    ? 'text-[15px] text-danger'
+                    : 'text-[15px] text-slate-gray'
+                }
+              >
+                {copy.settings.knowledge.quota.usedOfLimit(quota.used, quota.effective_limit)}
               </p>
-              <p className="mt-1 text-caption text-smoke-gray">
-                {quota.unlimited
-                  ? copy.settings.knowledge.quota.unlimitedHint
-                  : `${quotaCountdown(quota.reset_at)} · ${copy.settings.knowledge.quota.timezone(quota.business_timezone)}`}
-              </p>
-            </>
+            )
           ) : null}
+          {isMember && quota !== null && !quota.unlimited && quota.used >= quota.effective_limit && (
+            <Pill
+              variant="ghost"
+              ghostBorder="ink"
+              size="xs"
+              className="mt-2"
+              onClick={() => setRequestDialogOpen(true)}
+            >
+              {copy.settings.knowledge.quota.requestMore}
+            </Pill>
+          )}
           {quota !== null && quota.pending_request !== null && (
-            <p className="mt-2 inline-block rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-1 text-caption text-slate-gray">
-              {copy.settings.knowledge.quota.pendingRequest}
-            </p>
+            <p className="mt-2 text-caption text-slate-gray">{copy.settings.knowledge.quota.pendingRequest}</p>
           )}
         </div>
-        {isMember && quota !== null && !quota.unlimited && (
-          <Pill variant="ghost" ghostBorder="ink" size="sm" onClick={() => setRequestDialogOpen(true)}>
-            {copy.settings.knowledge.quota.requestMore}
-          </Pill>
-        )}
       </div>
 
-      {/* 工具行：仅搜索框 + 页码器；上传按钮为全角色唯一上传入口；上传结果历史入口 */}
-      <div className="mt-8 flex items-center justify-between gap-4">
+      {/* 部长：部门库管理下钻项（右栏带下级菜单的项，整行 48px + ›；无 manage 空间不渲染） */}
+      {isMinister && manageSpaces.length > 0 && (
+        <button
+          type="button"
+          onClick={() => drillManage()}
+          className="mt-6 flex h-12 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
+        >
+          <span className="text-body text-ink-black">{copy.settings.knowledge.manage.title}</span>
+          <ChevronRight aria-hidden="true" className="h-4 w-4 text-slate-gray" />
+        </button>
+      )}
+
+      {/* 工具行（共用基座 §5.6）：搜索框占满剩余宽度 + 右侧上传按钮（全角色唯一上传入口） */}
+      <div className="mt-4 flex items-center justify-between gap-4">
         <form className="flex min-w-0 flex-1 items-center gap-3" onSubmit={submitSearch} role="search">
           <input
             type="search"
@@ -444,41 +489,13 @@ export function KnowledgeModule() {
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder={copy.settings.knowledge.documents.searchPlaceholder}
             aria-label={copy.settings.knowledge.documents.searchAria}
-            className="h-9 w-full max-w-[280px] rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
+            className="h-9 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
           />
         </form>
-        <div className="flex items-center gap-3">
-          <Pill variant="ghost" size="sm" onClick={() => drillUploads()}>
-            {copy.settings.knowledge.uploads.historyEntry}
-          </Pill>
-          <Pill size="sm" onClick={openUpload}>
-            {copy.settings.knowledge.upload.button}
-          </Pill>
-          {isMinister && manageSpaces.length > 0 && (
-            <Pill variant="ghost" size="sm" onClick={() => drillManage()}>
-              {copy.settings.knowledge.manage.title}
-            </Pill>
-          )}
-        </div>
+        <Pill size="sm" onClick={openUpload}>
+          {copy.settings.knowledge.upload.button}
+        </Pill>
       </div>
-
-      {/* 最近一次上传结果（按会话隔离的内存档；不随上传对话框卸载丢失） */}
-      <div className="mt-4">
-        <UploadHistorySection sessionKey={sessionKey} />
-      </div>
-
-      {/* 我的投稿入口（仅 user/minister；无边框按钮） */}
-      {isMember && (
-        <div className="mt-4">
-          <button
-            type="button"
-            onClick={() => drillSubmissions()}
-            className="text-body text-ink-black underline-offset-2 hover:underline"
-          >
-            {copy.settings.knowledge.submissions.entry}
-          </button>
-        </div>
-      )}
 
       {/* 文档列表 */}
       <div className="mt-6">
@@ -628,26 +645,33 @@ interface DocumentRowProps {
 }
 
 export function KnowledgeDocumentRow({ doc, manage, onUploadNewVersion, onVersions, onReindex, onDelete }: DocumentRowProps) {
+  const updating = doc.active_operation !== null;
+  const statusText = updating
+    ? copy.settings.knowledge.documents.updating
+    : copy.settings.knowledge.documents.stored;
   return (
-    <li className="group flex items-center justify-between gap-4 py-4">
-      <div className="min-w-0">
-        <p className="truncate text-body text-ink-black">{doc.name}</p>
-        <p className="mt-1 text-caption text-smoke-gray">
-          {`${doc.media_kind} · ${copy.settings.knowledge.documents.uploadedAt(formatDateTime(doc.uploaded_at))}`}
-        </p>
-        <p className="mt-0.5 text-caption text-slate-gray">
+    // 共用基座 §5.6 行形态：桌面=行高 56px 四列（文档名｜状态｜上传时间｜用量）+ hover 底 mist；
+    // 窄屏单栏化：文档名整行 + 元信息第二行，避免固定列把文件名挤没
+    <li className="group flex flex-col gap-1.5 rounded-[var(--radius-images)] px-3 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray md:h-14 md:flex-row md:items-center md:gap-4 md:py-0">
+      <p className="min-w-0 truncate text-[15px] font-w480 text-ink-black md:flex-1">{doc.name}</p>
+      <div className="flex min-w-0 items-center gap-3 md:contents">
+        <span className="flex shrink-0 items-center gap-2">
+          {updating ? <StatusDot intent="slate" pulse /> : <StatusDot intent="success" />}
+          <span className="text-[15px] text-slate-gray">{statusText}</span>
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[15px] text-slate-gray md:w-40 md:flex-none">
+          {formatDateTime(doc.uploaded_at)}
+        </span>
+        <span
+          title={copy.settings.knowledge.documents.usageDetail(doc.usage.pages, doc.usage.images)}
+          className="min-w-0 shrink-0 truncate text-[15px] text-slate-gray md:w-44 md:flex-none"
+        >
           {copy.settings.knowledge.documents.usageDetail(doc.usage.pages, doc.usage.images)}
-        </p>
-        {doc.active_operation !== null && (
-          <p className="mt-1 text-caption text-warning">
-            {copy.settings.knowledge.documents.updating}
-          </p>
-        )}
+        </span>
       </div>
-      {manage && doc.active_operation === null && (
+      {manage && !updating && (
         <MeatballMenu
           ariaLabel={copy.settings.knowledge.documents.rowMenuAria(doc.name)}
-          alwaysVisible
           items={[
             { key: 'upload-new-version', label: copy.settings.knowledge.documents.uploadNewVersion, onSelect: onUploadNewVersion },
             { key: 'versions', label: copy.settings.knowledge.documents.versions, onSelect: onVersions },

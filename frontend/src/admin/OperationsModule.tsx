@@ -259,11 +259,12 @@ export function OpsJobsLayer() {
     }
   }
 
-  // 操作列整列不渲染：数据驱动（全部行 allowed_actions 为空，如超管只读视图），非角色分支
+  // 操作列整列不渲染：数据驱动（全部行 allowed_actions 为空，如超管只读视图），非角色分支。
+  // 轨道全部用 minmax(0,Xfr)：表头与各行是独立 grid，auto 轨道会各自按内容求宽导致表头错列
   const showActions = data !== null && data.items.some((job) => job.allowed_actions.length > 0);
   const gridColumns = showActions
-    ? 'grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto]'
-    : 'grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]';
+    ? 'grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,0.9fr)]'
+    : 'grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,1fr)]';
   // 渲染列表 = 当前数据 + 离开中的行（250ms 淡出收起后由定时器卸载）
   const leavingIds = new Set(leavingItems.map((job) => job.job_id));
   const visibleItems = [...(data?.items ?? []), ...leavingItems];
@@ -310,13 +311,13 @@ export function OpsJobsLayer() {
             <EmptyState text={copyOperations.emptyJobs} />
           ) : (
             <div role="table" aria-label={copyOperations.jobs}>
-              <div role="row" className={`sr-only grid ${gridColumns}`}>
-                <span role="columnheader">{copyOperations.colTask}</span>
-                <span role="columnheader">{copyOperations.colJobId}</span>
-                <span role="columnheader">{copyOperations.colQueuedAt}</span>
-                <span role="columnheader">{copyOperations.colWaitDuration}</span>
-                <span role="columnheader">{copyOperations.colStatus}</span>
-                {showActions && <span role="columnheader">{copyOperations.colActions}</span>}
+              <div role="row" className={`grid ${gridColumns} items-center gap-x-4 px-4 py-2`}>
+                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colTask}</span>
+                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colJobId}</span>
+                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colQueuedAt}</span>
+                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colWaitDuration}</span>
+                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colStatus}</span>
+                {showActions && <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colActions}</span>}
               </div>
               <ul
                 role="rowgroup"

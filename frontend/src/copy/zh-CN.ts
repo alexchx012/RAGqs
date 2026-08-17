@@ -103,6 +103,8 @@ export const zhCN = {
       passwordTitle: '修改密码', // 措辞后定
       oldPasswordLabel: '当前密码', // 措辞后定
       newPasswordLabel: '新密码', // 措辞后定
+      confirmPasswordLabel: '再次输入新密码', // 措辞后定
+      passwordMismatch: '两次输入的新密码不一致', // 措辞后定
       changePassword: '修改密码', // 措辞后定
       passwordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
       invalidPasswordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
@@ -165,6 +167,7 @@ export const zhCN = {
         empty: '暂无文档', // 措辞后定
         loadError: '文档加载失败，请稍后重试', // 措辞后定
         updating: '更新处理中', // 措辞后定：active_operation 非空
+        stored: '已入库', // 措辞后定：常态状态列文字
         usageDetail: (pages: number, images: number) => `${pages} 页正文${images > 0 ? ` + ${images} 张图` : ''}`, // 措辞后定
         fileSize: (bytes: number) => `${bytes} B`, // 措辞后定：保留简单字节呈现
         uploadedAt: (value: string) => `上传于 ${value}`, // 措辞后定
@@ -187,6 +190,8 @@ export const zhCN = {
         manageTargetHint: '上传后直接写入该空间', // 措辞后定
         contributeTargetHint: '需审核后才能发布，先进入「我的投稿」', // 措辞后定：contribute 分支提示
         chooseFiles: '选择文件', // 措辞后定
+        dropHint: '拖拽文件到此处，或点击选择', // 措辞后定：拖拽区说明
+        removeFile: '移除文件', // 措辞后定：已选文件行尾 × 的 aria
         noFiles: '尚未选择文件', // 措辞后定
         fileListAria: '已选文件', // 措辞后定
         upload: '上传', // 措辞后定
@@ -397,6 +402,14 @@ export const zhCN = {
       colActions: '操作', // 措辞后定
       colFile: '文件', // 投稿审核语义表格列头
       colSubmittedAt: '投稿时间', // 投稿审核语义表格列头
+      colSubmitter: '投稿人', // 投稿审核语义表格列头（超管端 §7.3）
+      colKindSize: '类型 / 大小', // 投稿审核语义表格列头（超管端 §7.3）
+      colTargetSpace: '目标空间', // 投稿审核语义表格列头（超管端 §7.3）
+      filterAll: '全部', // 目标空间筛选（超管端 §7.3）
+      filterPublic: '公共库', // 目标空间筛选
+      filterDepartment: '部门库', // 目标空间筛选
+      filterSpaceAria: '目标空间筛选', // 目标空间筛选分段控件 aria
+      filterDepartmentAria: '部门筛选', // 部门下拉 aria（选中「部门库」时出现）
       usageOf: (used: number, limit: number) => `${used} / ${limit} 页`, // 措辞后定
       pages: (count: number) => `${count} 页`, // 措辞后定
       approve: '批准', // 措辞后定
@@ -804,8 +817,7 @@ export const zhCN = {
       scrollToBottom: '回到底部', // 措辞后定
       citeFrom: (name: string) => `引自《${name}》`, // 措辞后定：文档名（Citation.document_name）
       citeFromFallback: '引自文档', // 措辞后定：document_name 缺失时的通用措辞（不显示不透明 ID）
-      citePage: (page: number) => `第 ${page} 页`, // 措辞后定
-      citePageSpan: (page: number, start: number, end: number) => `第 ${page} 页 第 ${start}–${end} 字符`, // 措辞后定
+      citePage: (page: number) => `第 ${page} 页`, // 措辞后定（span 是预览页内部消歧数据，不进用户文案）
       citeSection: (path: readonly string[], paragraph?: number) =>
         `${path.join(' / ')}${paragraph !== undefined ? ` 第 ${paragraph} 段` : ''}`, // 措辞后定
       citeSheet: (sheet: string, range: string) => `${sheet} ${range}`, // 措辞后定

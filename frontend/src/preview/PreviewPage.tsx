@@ -310,7 +310,13 @@ export function PreviewPage({ api }: PreviewPageProps) {
           <div className="min-w-0">
             {state.status === 'ready' && (
               <>
-                <h1 className="truncate font-signifier text-[44px] font-normal leading-[1.3] tracking-[-0.66px]">
+                <h1
+                  className={
+                    isNarrow
+                      ? 'truncate text-[26px] font-medium leading-[1.3]'
+                      : 'truncate font-signifier text-[44px] font-normal leading-[1.3] tracking-[-0.66px]'
+                  }
+                >
                   {state.preview.name}
                 </h1>
                 <p className="mt-1 text-[14px] text-ash-gray">{mediaKindLabel(state.preview.media_kind)}</p>

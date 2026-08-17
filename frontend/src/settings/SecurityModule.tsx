@@ -10,9 +10,10 @@ import { useSettings } from './SettingsProvider';
 type PasswordErrors = {
   readonly oldPassword: string | null;
   readonly newPassword: string | null;
+  readonly confirmPassword: string | null;
 };
 
-const EMPTY_PASSWORD_ERRORS: PasswordErrors = { oldPassword: null, newPassword: null };
+const EMPTY_PASSWORD_ERRORS: PasswordErrors = { oldPassword: null, newPassword: null, confirmPassword: null };
 
 function isValidPassword(value: string): boolean {
   return value.length >= 8 && /[A-Za-z]/.test(value) && /\d/.test(value);
@@ -34,6 +35,7 @@ export function SecurityModule() {
   const [sessionActionPending, setSessionActionPending] = useState<string | null>(null);
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordErrors, setPasswordErrors] = useState<PasswordErrors>(EMPTY_PASSWORD_ERRORS);
   const [submittingPassword, setSubmittingPassword] = useState(false);
 
@@ -93,6 +95,11 @@ export function SecurityModule() {
     setPasswordErrors((errors) => ({ ...errors, newPassword: null }));
   }
 
+  function onConfirmPasswordChange(event: ChangeEvent<HTMLInputElement>): void {
+    setConfirmPassword(event.target.value);
+    setPasswordErrors((errors) => ({ ...errors, confirmPassword: null }));
+  }
+
   async function changePassword(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (submittingPassword) {
@@ -102,6 +109,15 @@ export function SecurityModule() {
       setPasswordErrors({
         oldPassword: null,
         newPassword: copy.settings.security.invalidPasswordRule,
+        confirmPassword: null,
+      });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordErrors({
+        oldPassword: null,
+        newPassword: null,
+        confirmPassword: copy.settings.security.passwordMismatch,
       });
       return;
     }
@@ -116,11 +132,11 @@ export function SecurityModule() {
       authStore.handleServerAllSessionsRevoked(initiatedAuthSessionId);
     } catch (error) {
       if (error instanceof ApiError && error.status === 400 && error.code === 'invalid_password_rule') {
-        setPasswordErrors({ oldPassword: null, newPassword: copy.settings.security.invalidPasswordRule });
+        setPasswordErrors({ ...EMPTY_PASSWORD_ERRORS, newPassword: copy.settings.security.invalidPasswordRule });
       } else if (error instanceof ApiError && error.status === 403 && error.code === 'wrong_old_password') {
-        setPasswordErrors({ oldPassword: copy.settings.security.wrongOldPassword, newPassword: null });
+        setPasswordErrors({ ...EMPTY_PASSWORD_ERRORS, oldPassword: copy.settings.security.wrongOldPassword });
       } else {
-        setPasswordErrors({ oldPassword: null, newPassword: copy.settings.security.passwordChangeError });
+        setPasswordErrors({ ...EMPTY_PASSWORD_ERRORS, newPassword: copy.settings.security.passwordChangeError });
       }
     } finally {
       setSubmittingPassword(false);
@@ -216,6 +232,25 @@ export function SecurityModule() {
           {passwordErrors.newPassword !== null && (
             <p role="alert" className="mt-2 text-caption text-danger">
               {passwordErrors.newPassword}
+            </p>
+          )}
+        </div>
+        <div className="mt-5">
+          <label htmlFor="settings-confirm-password" className="mb-2 block text-caption text-slate-gray">
+            {copy.settings.security.confirmPasswordLabel}
+          </label>
+          <input
+            id="settings-confirm-password"
+            type="password"
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={onConfirmPasswordChange}
+            aria-invalid={passwordErrors.confirmPassword !== null}
+            className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
+          />
+          {passwordErrors.confirmPassword !== null && (
+            <p role="alert" className="mt-2 text-caption text-danger">
+              {passwordErrors.confirmPassword}
             </p>
           )}
         </div>

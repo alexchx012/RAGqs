@@ -216,12 +216,12 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
         <EmptyState text={copyDocuments.empty} />
       ) : (
         <div role="table" aria-label={copyDocuments.title}>
-          <div role="row" className="sr-only">
-            <span role="columnheader">{copySpaces.colDocument}</span>
-            <span role="columnheader">{copySpaces.colStatus}</span>
-            <span role="columnheader">{copySpaces.colUploadedAt}</span>
-            <span role="columnheader">{copySpaces.colUsage}</span>
-            {manage && <span role="columnheader">{copySpaces.colActions}</span>}
+          <div role="row" className="flex items-center gap-3 px-4 py-2">
+            <span role="columnheader" className="min-w-0 flex-1 truncate text-[14px] text-ash-gray">{copySpaces.colDocument}</span>
+            <span role="columnheader" className="w-28 shrink-0 truncate text-[14px] text-ash-gray">{copySpaces.colStatus}</span>
+            <span role="columnheader" className="hidden w-40 shrink-0 truncate text-[14px] text-ash-gray md:inline">{copySpaces.colUploadedAt}</span>
+            <span role="columnheader" className="hidden w-28 shrink-0 truncate text-[14px] text-ash-gray lg:inline">{copySpaces.colUsage}</span>
+            {manage && <span role="columnheader" aria-label={copySpaces.colActions} className="w-8 shrink-0" />}
           </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
           {documents.map((doc) => (
@@ -253,7 +253,11 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
                 <span role="cell" className="hidden w-40 shrink-0 truncate text-[15px] text-slate-gray md:inline">
                   {formatDateTime(doc.uploaded_at)}
                 </span>
-                <span role="cell" className="hidden w-28 shrink-0 truncate text-[15px] text-slate-gray lg:inline">
+                <span
+                  role="cell"
+                  title={copyDocuments.usageDetail(doc.usage.pages, doc.usage.images)}
+                  className="hidden w-28 shrink-0 truncate text-[15px] text-slate-gray lg:inline"
+                >
                   {copyDocuments.usageDetail(doc.usage.pages, doc.usage.images)}
                 </span>
                 {manage && (

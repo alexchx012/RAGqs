@@ -33,6 +33,7 @@ import type {
   SpaceItem,
 } from './types';
 import { KnowledgeDocumentRow } from './KnowledgeModule';
+import { formatFileSize } from './UploadDialog';
 import { NewVersionDialog } from './NewVersionDialog';
 
 function formatDateTime(value: string): string {
@@ -58,6 +59,8 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
     getManageSpaceSelection(sessionKey),
   );
   const [newVersionTarget, setNewVersionTarget] = useState<DocumentListItem | null>(null);
+  // 投稿审核待办计数徽标（用户端 §5.3：为 0 时不显示）
+  const [pendingApprovals, setPendingApprovals] = useState<number | null>(null);
   const spacesSeqRef = useRef(0);
   // 当前部门文档列表 reload 句柄（由 ManageDocuments 注册；NewVersionDialog 冲突刷新用，
   // 不只 reload spaces；review A2/A3）
@@ -103,7 +106,12 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
 
   useEffect(() => {
     void loadManageSpaces();
-  }, [loadManageSpaces]);
+    // 待审计数：仅用于入口徽标（为 0 时不渲染）；失败静默（列表层仍有自己的错误态）
+    api
+      .listApprovals()
+      .then((list) => setPendingApprovals(list.items.length))
+      .catch(() => setPendingApprovals(null));
+  }, [loadManageSpaces, api]);
 
   // 选中变化：写入跨层上下文（approvals 返回时恢复）
   const selectSpace = (spaceId: string | null) => {
@@ -122,6 +130,11 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
         >
           <span className="flex items-center gap-2">
             {copy.settings.knowledge.manage.approvals}
+            {pendingApprovals !== null && pendingApprovals > 0 && (
+              <span className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black">
+                {pendingApprovals}
+              </span>
+            )}
           </span>
           <ChevronRight size={16} className="text-slate-gray" aria-hidden />
         </button>
@@ -694,11 +707,13 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
                   fading.has(approval.submission_id) ? 'opacity-0' : 'opacity-100'
                 }`}
               >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="truncate text-body text-ink-black">{approval.file_name}</p>
-                    <p className="mt-1 text-caption text-smoke-gray">
-                      {approval.media_kind} ·{' '}
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[15px] font-w450 text-ink-black">{approval.file_name}</p>
+                    <p className="mt-1 text-caption text-slate-gray">
+                      {approval.submitter_name}
+                      {approval.submitter_department !== null ? ` · ${approval.submitter_department.name}` : ''} ·{' '}
+                      {approval.media_kind} / {formatFileSize(approval.file_size)} ·{' '}
                       {copy.settings.knowledge.manage.submittedAt(formatDateTime(approval.created_at))}
                     </p>
                     {rowErrors.get(approval.submission_id) !== undefined && (

@@ -70,16 +70,20 @@ describe('SegmentedControl', () => {
     expect(onChange).toHaveBeenLastCalledWith('deep');
   });
 
-  it('滑块按选中索引平移；accent 段选中时滑块桃底', () => {
+  it('滑块按选中段实测定位（left/width，非等分 transform）；accent 段选中时滑块桃底', () => {
     const { container, rerender } = render(
       <SegmentedControl options={OPTIONS} value="fast" onChange={() => {}} ariaLabel="effort" />,
     );
     const slider = () => container.querySelector('span[aria-hidden="true"]') as HTMLElement;
-    expect(slider().style.transform).toBe('translateX(calc(0 * 100%))');
+    // jsdom 无布局：offsetLeft/offsetWidth 恒 0，断言定位由实测值驱动且不再使用等分 translateX
+    expect(slider().style.left).toBe('0px');
+    expect(slider().style.width).toBe('0px');
+    expect(slider().style.transform).toBe('none');
     expect(slider().className).toContain('bg-paper-white');
 
     rerender(<SegmentedControl options={OPTIONS} value="deep" onChange={() => {}} ariaLabel="effort" />);
-    expect(slider().style.transform).toBe('translateX(calc(2 * 100%))');
+    expect(slider().style.left).toMatch(/^0px$|^\d+px$/);
+    expect(slider().style.transform).toBe('none');
     expect(slider().className).toContain('bg-blush-peach');
     expect(screen.getByRole('radio', { name: 'deep' }).className).toContain('text-sienna-brown');
   });

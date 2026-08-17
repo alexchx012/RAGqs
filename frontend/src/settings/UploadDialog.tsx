@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { X } from 'lucide-react';
 import { ApiError } from '../api/errors';
 import { copy } from '../copy';
 import { formatDrawerLocation } from '../router/drawer-params';
@@ -32,6 +33,17 @@ export interface UploadDialogProps {
 
 type UploadPhase = 'idle' | 'uploading' | 'done';
 
+/** 已选文件行/审核列表的大小显示（KB/MB 简单呈现，避免引入格式化依赖）。 */
+export function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(0)} KB`;
+  }
+  return `${bytes} B`;
+}
+
 export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogProps) {
   const { api } = useSettings();
   const navigate = useNavigate();
@@ -43,6 +55,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
   const [spacesError, setSpacesError] = useState(false);
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [files, setFiles] = useState<readonly File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [phase, setPhase] = useState<UploadPhase>('idle');
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
@@ -199,7 +212,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
         }}
         aria-hidden="true"
       />
-      <div className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+      <div className="fixed top-1/2 left-1/2 w-[480px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.upload.dialogTitle}</h2>
         <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.upload.dialogDescription}</p>
 
@@ -255,7 +268,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
           )}
         </fieldset>
 
-        {/* 文件选择 */}
+        {/* 文件区（共用基座 §5.6）：拖拽区 + 点击选择；已选文件行（名 + 大小 + 移除 ×） */}
         <div className="mt-4">
           <input
             ref={fileInputRef}
@@ -272,14 +285,74 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
             }}
             className="hidden"
           />
-          <Pill variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} disabled={phase === 'uploading'}>
-            {copy.settings.knowledge.upload.chooseFiles}
-          </Pill>
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label={copy.settings.knowledge.upload.chooseFiles}
+            onClick={() => {
+              if (phase !== 'uploading') {
+                fileInputRef.current?.click();
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                if (phase !== 'uploading') {
+                  fileInputRef.current?.click();
+                }
+              }
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              if (phase !== 'uploading') {
+                setDragActive(true);
+              }
+            }}
+            onDragLeave={() => setDragActive(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragActive(false);
+              if (phase !== 'uploading') {
+                const dropped = Array.from(event.dataTransfer.files ?? []);
+                if (dropped.length > 0) {
+                  addFiles(dropped);
+                }
+              }
+            }}
+            className={
+              'flex h-[120px] cursor-pointer items-center justify-center rounded-[var(--radius-inputs)] bg-mist-gray text-[15px] text-slate-gray outline-none transition-colors duration-[var(--duration-fast)] ' +
+              (dragActive
+                ? 'border border-solid border-ink-black'
+                : 'border border-dashed border-smoke-gray hover:text-ink-black')
+            }
+          >
+            {copy.settings.knowledge.upload.dropHint}
+          </div>
           {files.length > 0 && (
             <ul aria-label={copy.settings.knowledge.upload.fileListAria} className="mt-3 flex max-h-40 flex-col gap-1 overflow-y-auto">
               {files.map((file) => (
-                <li key={`${file.name}:${file.size}`} className="truncate text-caption text-slate-gray">
-                  {file.name}
+                <li key={`${file.name}:${file.size}`} className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-caption text-ink-black">{file.name}</span>
+                  <span className="shrink-0 text-caption text-slate-gray">{formatFileSize(file.size)}</span>
+                  <button
+                    type="button"
+                    aria-label={copy.settings.knowledge.upload.removeFile}
+                    disabled={phase === 'uploading'}
+                    onClick={() => {
+                      if (phase === 'uploading') {
+                        return;
+                      }
+                      invalidateOperation();
+                      setFiles((current) => current.filter((item) => !(item.name === file.name && item.size === file.size)));
+                      setResult(null);
+                      setPhase('idle');
+                      setQuotaError(null);
+                      setSubmitError(null);
+                    }}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-images)] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-danger disabled:text-smoke-gray"
+                  >
+                    <X aria-hidden="true" className="h-4 w-4" />
+                  </button>
                 </li>
               ))}
             </ul>

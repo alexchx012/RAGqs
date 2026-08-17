@@ -40,7 +40,7 @@ test('ask renders, citation hover card opens preview in a new window, and upvote
     .first();
   await expect(answerBlock).toBeVisible();
 
-  // 引用角标 [1]：悬停出「引自《doc_1》」+ 定位行（第 12 页 第 345–412 字符）
+  // 引用角标 [1]：悬停出「引自《doc_1》」+ 种子页码定位（内部 span 不对用户展示）
   const badge = answerBlock.getByRole('button', { name: copy.chat.message.citeOpenAria }).first();
   await expect(badge).toHaveText('[1]');
   await badge.hover();
@@ -48,7 +48,7 @@ test('ask renders, citation hover card opens preview in a new window, and upvote
   await expect(
     page.getByText(copy.chat.message.citeFrom(CHAT_SEED_DOCUMENT_NAMES.employeeHandbook)),
   ).toBeVisible();
-  await expect(page.getByText(copy.chat.message.citePageSpan(12, 345, 412))).toBeVisible();
+  await expect(page.getByText(copy.chat.message.citePage(1))).toBeVisible();
 
   // 点击角标：新窗口打开原文预览页（fe-doc-preview）并透传 message_id + document_version_id
   const [preview] = await Promise.all([
@@ -63,7 +63,8 @@ test('ask renders, citation hover card opens preview in a new window, and upvote
   await expect(preview.getByRole('heading', { level: 1 })).toHaveText(CHAT_SEED_DOCUMENT_NAMES.employeeHandbook);
   await preview.close();
 
-  // 常设 👍 反馈：点击后固化（store 刷新读模型呈现已投态）
+  // 常设 👍 反馈：指针移离角标让悬停卡收起，再点击固化（store 刷新读模型呈现已投态）
+  await page.mouse.move(0, 0);
   await answerBlock.getByRole('button', { name: copy.chat.feedbackUpAria }).click();
   await expect(
     answerBlock.getByRole('button', { name: copy.chat.feedbackUpAria }),

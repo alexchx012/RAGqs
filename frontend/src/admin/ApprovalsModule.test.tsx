@@ -456,15 +456,18 @@ describe('投稿审核（§8.4–8.5）', () => {
     expect(screen.getByText('跨部门协作指引.pdf')).toBeInTheDocument();
     expect(screen.getByText('历史遗留材料.pdf')).toBeInTheDocument();
     const table = screen.getByRole('table', { name: copyApprovals.submissions });
-    expect(within(table).getAllByRole('columnheader')).toHaveLength(3);
+    // 六列（超管端 §7.3 行结构；ops 范围仅公共库，不渲染目标空间筛选分段控件）
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
     const semanticRow = within(table).getByRole('row', { name: /行业研报汇总\.pdf/ });
-    expect(within(semanticRow).getAllByRole('cell')).toHaveLength(3);
+    expect(within(semanticRow).getAllByRole('cell')).toHaveLength(6);
     const row = rowOf('行业研报汇总.pdf');
     expect(within(row).getByText('pdf')).toBeInTheDocument();
+    expect(within(row).getByText(/zhangsan/)).toBeInTheDocument();
+    expect(within(row).getByText('公共库')).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: copyManage.viewContent })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: copyManage.approve })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: copyManage.reject })).toBeInTheDocument();
-    // 后端按角色范围决定可见项，前端不叠加范围筛选。
+    // ops 待审恒为公共库：目标空间筛选分段控件不渲染
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 
@@ -705,7 +708,7 @@ describe('投稿审核（§8.4–8.5）', () => {
     }
   });
 
-  it('admin 展示后端范围内的全部待审投稿，不附加前端范围筛选', async () => {
+  it('admin 展示全部待审投稿并附目标空间筛选（超管端 §7.3）', async () => {
     const token = loginToken('admin');
     const adminApi = contractAdminApi(token);
     await renderApprovals(
@@ -718,7 +721,9 @@ describe('投稿审核（§8.4–8.5）', () => {
     expect(await screen.findByText('行业研报汇总.pdf')).toBeInTheDocument();
     expect(screen.getByText('招聘流程优化.docx')).toBeInTheDocument();
     expect(screen.getByText('第三季度预算说明.pdf')).toBeInTheDocument();
-    expect(screen.queryByRole('radiogroup')).toBeNull();
+    // 待审含部门库投稿 → 渲染目标空间筛选分段控件
+    const filter = screen.getByRole('radiogroup', { name: copyApprovals.filterSpaceAria });
+    expect(within(filter).getByRole('radio', { name: copyApprovals.filterAll })).toHaveAttribute('aria-checked', 'true');
     expect(adminApi.listApprovalSubmissions).toHaveBeenCalledWith();
   });
 });

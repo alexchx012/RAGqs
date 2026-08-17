@@ -130,8 +130,7 @@ describe('KnowledgeModule 知识库首页', () => {
     const store = await createAuthedStore();
     await renderKnowledge(store, api);
 
-    expect(await screen.findByText(copy.settings.knowledge.quota.title)).toBeInTheDocument();
-    expect(screen.getByText('120 / 500 页')).toBeInTheDocument();
+    expect(await screen.findByText('120 / 500 页')).toBeInTheDocument();
     expect(screen.getByText(copy.settings.knowledge.quota.pendingRequest)).toBeInTheDocument();
     expect(await screen.findByText('员工手册.pdf')).toBeInTheDocument();
     expect(screen.getByText('50 页正文 + 40 张图')).toBeInTheDocument();
@@ -173,10 +172,12 @@ describe('KnowledgeModule 知识库首页', () => {
     let quotaCalls = 0;
     api.getQuota = vi.fn(async () => {
       quotaCalls += 1;
-      // 首次加载无 pending；201 后 loadQuota 再次请求时服务端已存在 pending_request
+      // 首次加载无 pending；201 后 loadQuota 再次请求时服务端已存在 pending_request。
+      // 申请入口仅耗尽时出现（共用基座 §5.6），故 quota 恒为耗尽态
+      const exhausted = { ...SAMPLE_QUOTA, used: 500 };
       return quotaCalls > 1
         ? {
-            ...SAMPLE_QUOTA,
+            ...exhausted,
             pending_request: {
               id: 'qr_1',
               version: 1,
@@ -185,7 +186,7 @@ describe('KnowledgeModule 知识库首页', () => {
               created_at: '2026-08-01T00:00:00Z',
             },
           }
-        : SAMPLE_QUOTA;
+        : exhausted;
     });
     const requestQuota = vi.fn(async () => ({
       id: 'qr_1',
@@ -221,6 +222,7 @@ describe('KnowledgeModule 知识库首页', () => {
 
   it('配额申请 409 pending_request_exists 就地提示', async () => {
     const api = createSettingsApi();
+    api.getQuota = vi.fn(async () => ({ ...SAMPLE_QUOTA, used: 500 }));
     api.requestQuota = vi.fn(async () => {
       throw new ApiError({ status: 409, code: 'pending_request_exists', message: '', details: {}, requestId: null });
     });
