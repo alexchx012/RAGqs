@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -36,6 +37,22 @@ _ALLOWED_OUTCOMES = frozenset(
     }
 )
 _ALLOWED_STATUS_FAMILIES = frozenset({"1xx", "2xx", "3xx", "4xx", "5xx", "other"})
+
+logger = logging.getLogger(__name__)
+
+
+def _truncate_route_templates(templates: Iterable[str], max_route_templates: int) -> frozenset[str]:
+    unique = frozenset(templates)
+    if len(unique) > max_route_templates:
+        kept = sorted(unique)[:max_route_templates]
+        logger.warning(
+            "observability route templates exceed max_route_templates=%d; "
+            "registering only the first %d (sorted) templates",
+            max_route_templates,
+            len(kept),
+        )
+        return frozenset(kept)
+    return unique
 
 
 class ObservabilityMetricsError(PlatformError):
@@ -151,14 +168,15 @@ class InMemoryObservabilityMetrics:
         self.max_route_templates = max_route_templates
         self.minimum_sample_weight = minimum_sample_weight
         self._samples: list[ObservabilitySample] = []
-        self._seen_routes: set[str] = set()
 
     @property
     def samples(self) -> tuple[ObservabilitySample, ...]:
         return tuple(self._samples)
 
     def configure_route_templates(self, route_templates: Iterable[str]) -> None:
-        self.allowed_route_templates = frozenset(route_templates)
+        self.allowed_route_templates = _truncate_route_templates(
+            route_templates, self.max_route_templates
+        )
 
     def _utc_now(self) -> datetime:
         value = self._now()
@@ -170,10 +188,6 @@ class InMemoryObservabilityMetrics:
         route = sample.route_template
         if route not in self.allowed_route_templates:
             route = "other"
-        elif route not in self._seen_routes and len(self._seen_routes) >= self.max_route_templates:
-            route = "other"
-        if route != "other":
-            self._seen_routes.add(route)
         method = sample.method.upper() if sample.method.upper() in _ALLOWED_METHODS else "other"
         outcome = sample.outcome_class if sample.outcome_class in _ALLOWED_OUTCOMES else "other"
         status = (
@@ -345,28 +359,17 @@ class SqlAlchemyObservabilityMetrics:
         self.minimum_sample_weight = minimum_sample_weight
 
     def configure_route_templates(self, route_templates: Iterable[str]) -> None:
-        self.allowed_route_templates = frozenset(route_templates)
+        self.allowed_route_templates = _truncate_route_templates(
+            route_templates, self.max_route_templates
+        )
 
     def _utc_now(self) -> datetime:
         return _as_utc(self._now())
 
-    def _sanitize(self, connection: Connection, sample: ObservabilitySample) -> ObservabilitySample:
+    def _sanitize(self, sample: ObservabilitySample) -> ObservabilitySample:
         route = sample.route_template
         if route not in self.allowed_route_templates:
             route = "other"
-        elif route != "other":
-            seen = connection.execute(
-                select(
-                    func.count(func.distinct(platform_observability_sample_table.c.route_template))
-                ).where(platform_observability_sample_table.c.route_template != "other")
-            ).scalar_one()
-            already_seen = connection.execute(
-                select(platform_observability_sample_table.c.id)
-                .where(platform_observability_sample_table.c.route_template == route)
-                .limit(1)
-            ).scalar_one_or_none()
-            if already_seen is None and int(seen) >= self.max_route_templates:
-                route = "other"
         method = sample.method.upper() if sample.method.upper() in _ALLOWED_METHODS else "other"
         outcome = sample.outcome_class if sample.outcome_class in _ALLOWED_OUTCOMES else "other"
         status = (
@@ -424,7 +427,7 @@ class SqlAlchemyObservabilityMetrics:
             if normalized_input.observed_at_utc < now - timedelta(days=self.retention_days):
                 return
             with self._engine.begin() as connection:
-                normalized = self._sanitize(connection, normalized_input)
+                normalized = self._sanitize(normalized_input)
                 connection.execute(
                     platform_observability_sample_table.insert().values(
                         observed_at_utc=normalized.observed_at_utc,

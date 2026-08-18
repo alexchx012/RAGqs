@@ -12,9 +12,10 @@ from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
 from app.platform.http_contract import validate_idempotency_key
 
-from .dependencies import current_principal
+from .dependencies import current_principal, require_ops_role
 
 router = APIRouter(tags=["evaluation"])
+
 
 def evaluation_service(request: Request):
     service = request.app.state.platform_runtime.resolve("evaluation_service")
@@ -24,13 +25,11 @@ def evaluation_service(request: Request):
 
 
 def require_ops(principal: AuthPrincipal) -> None:
-    if principal.role != "ops":
-        raise PlatformError(
-            "evaluation_run_forbidden",
-            "The evaluation:run capability is required",
-            {},
-            403,
-        )
+    require_ops_role(
+        principal,
+        error_code="evaluation_run_forbidden",
+        message="The evaluation:run capability is required",
+    )
 
 
 class ShadowRunCreateRequest(BaseModel):

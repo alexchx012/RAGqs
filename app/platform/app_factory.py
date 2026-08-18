@@ -31,6 +31,10 @@ def create_platform_app(
     runtime: PlatformRuntime | None = None,
 ) -> FastAPI:
     settings = settings or load_platform_settings()
+    # RAG_LOG_LEVEL：无 handler 时安装默认 handler，并始终把根 logger 调到配置级别
+    # （uvicorn 已配置 handler 时 basicConfig 不生效，setLevel 仍然生效）。
+    logging.basicConfig(level=settings.logging.level)
+    logging.getLogger().setLevel(settings.logging.level)
     owns_runtime = runtime is None
     runtime = runtime or build_runtime(settings)
 

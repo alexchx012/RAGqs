@@ -11,13 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.chat.conversations import ConversationService
 from app.chat.generation import GenerationService
 from app.chat.models import AskRequest, ConversationScope
-from app.chat.read_models import conversation_detail
 from app.chat.streaming import GenerationStreamService
 from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
 from app.platform.http_contract import validate_idempotency_key
 
-from .dependencies import current_principal
+from .dependencies import current_principal, require_streaming
 
 router = APIRouter(tags=["conversations"])
 
@@ -33,7 +32,6 @@ class AskBody(BaseModel):
     content: str = Field(min_length=1)
     effort_level: str
     scope: ScopeBody | None = None
-    overrides: dict[str, Any] | None = None
 
 
 class GroupBody(BaseModel):
@@ -69,19 +67,6 @@ def _stream_service(request: Request) -> GenerationStreamService:
     return service
 
 
-def _require_streaming(accept: str | None) -> None:
-    if accept is None:
-        return
-    accepted = [part.strip() for part in accept.split(",")]
-    if not any(part == "*/*" or part.startswith("text/event-stream") for part in accepted):
-        raise PlatformError(
-            "streaming_response_required",
-            "This endpoint only returns text/event-stream",
-            {},
-            406,
-        )
-
-
 def _idempotency_key(request: Request) -> str:
     return validate_idempotency_key(request.headers.get("Idempotency-Key"))
 
@@ -114,13 +99,9 @@ def get_conversation(
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
 ) -> dict[str, Any]:
-    engine = request.app.state.platform_runtime.resolve("database_engine")
-    with engine.connect() as connection:
-        return conversation_detail(
-            connection,
-            conversation_id=conversation_id,
-            user_id=str(principal.user_id),
-        )
+    return _conversation_service(request).get_conversation_detail(
+        user_id=str(principal.user_id), conversation_id=conversation_id
+    )
 
 
 @router.patch("/conversations/{conversation_id}")
@@ -160,12 +141,8 @@ def create_message(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     accept: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
-    _require_streaming(accept)
+    require_streaming(accept)
     key = _idempotency_key(request)
-    if body.overrides is not None and body.overrides:
-        raise PlatformError(
-            "validation_error", "overrides must be null", {"field": "overrides"}, 422
-        )
     if body.effort_level not in {"quick", "think", "deep"}:
         raise PlatformError(
             "validation_error",
