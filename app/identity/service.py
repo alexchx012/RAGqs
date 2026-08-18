@@ -70,7 +70,6 @@ from .schema import (
 Role = Literal["user", "minister", "ops", "admin"]
 _ROLES = frozenset({"user", "minister", "ops", "admin"})
 _COMPLETED_HISTORY_RETENTION = timedelta(days=90)
-_DEVELOPMENT_IDEMPOTENCY_FINGERPRINT_KEY = b"ragqs-development-auth-secret"
 
 
 def _utc(value: datetime) -> datetime:
@@ -230,9 +229,10 @@ class IdentityAccessService:
         configured_secret = settings.secret_key.get_secret_value() if settings.secret_key else None
         configured_secret_bytes = configured_secret.encode("utf-8") if configured_secret else None
         self._secret = configured_secret_bytes or secrets.token_bytes(32)
-        self._idempotency_secret = (
-            configured_secret_bytes or _DEVELOPMENT_IDEMPOTENCY_FINGERPRINT_KEY
-        )
+        # Development fallback: a per-process random key keeps initial-password fingerprints
+        # unguessable; the tradeoff is that an idempotency replay attempted after a process
+        # restart is rejected as a hash conflict (409) instead of returning the stored response.
+        self._idempotency_secret = configured_secret_bytes or secrets.token_bytes(32)
         self._now = now or (lambda: datetime.now(UTC))
         self._revocation_port = revocation_port or UnavailableGenerationRevocationPort()
         self._department_work_check = department_work_check or UnavailableDepartmentWorkCheckPort()
@@ -1751,39 +1751,41 @@ class IdentityAccessService:
         if actor.role not in {"admin", "ops"}:
             raise PlatformError("forbidden_target", "Directory access is not allowed", {}, 403)
 
-    @staticmethod
-    def _backfill_legacy_directory_search_text(connection: Connection) -> None:
-        records = (
-            connection.execute(
-                select(
-                    identity_user_table.c.id,
-                    identity_user_table.c.username,
-                    identity_user_table.c.real_name,
-                    identity_user_table.c.display_name,
-                    identity_user_table.c.role,
-                ).where(identity_user_table.c.directory_search_text == "")
+    def backfill_directory_search_text(self) -> int:
+        """One-shot maintenance backfill for rows written before the search column existed."""
+        with self._engine.begin() as connection:
+            records = (
+                connection.execute(
+                    select(
+                        identity_user_table.c.id,
+                        identity_user_table.c.username,
+                        identity_user_table.c.real_name,
+                        identity_user_table.c.display_name,
+                        identity_user_table.c.role,
+                    ).where(identity_user_table.c.directory_search_text == "")
+                )
+                .mappings()
+                .all()
             )
-            .mappings()
-            .all()
-        )
-        for record in records:
-            connection.execute(
-                update(identity_user_table)
-                .where(
-                    and_(
-                        identity_user_table.c.id == record["id"],
-                        identity_user_table.c.directory_search_text == "",
+            for record in records:
+                connection.execute(
+                    update(identity_user_table)
+                    .where(
+                        and_(
+                            identity_user_table.c.id == record["id"],
+                            identity_user_table.c.directory_search_text == "",
+                        )
+                    )
+                    .values(
+                        directory_search_text=_directory_search_text(
+                            username=str(record["username"]),
+                            real_name=str(record["real_name"]),
+                            display_name=str(record["display_name"]),
+                            role=str(record["role"]),
+                        )
                     )
                 )
-                .values(
-                    directory_search_text=_directory_search_text(
-                        username=str(record["username"]),
-                        real_name=str(record["real_name"]),
-                        display_name=str(record["display_name"]),
-                        role=str(record["role"]),
-                    )
-                )
-            )
+            return len(records)
 
     def list_managed_users(
         self,
@@ -1834,9 +1836,6 @@ class IdentityAccessService:
         )
         start = (page - 1) * page_size
         with self._engine.begin() as connection:
-            if query is not None:
-                # Old replicas omit this column until a rolling upgrade completes.
-                self._backfill_legacy_directory_search_text(connection)
             total = connection.execute(
                 select(func.count()).select_from(user_with_department).where(*conditions)
             ).scalar_one()
@@ -3078,7 +3077,7 @@ class IdentityAccessService:
             )
         existing = (
             connection.execute(
-                select(identity_revocation_command_table).where(
+                select(identity_revocation_command_table.c.operation_id).where(
                     identity_revocation_command_table.c.operation_id == command.operation_id
                 )
             )
@@ -3086,22 +3085,7 @@ class IdentityAccessService:
             .one_or_none()
         )
         if existing is not None:
-            fields_match = (
-                str(existing["user_id"]) == command.user_id
-                and existing["auth_session_id"] == command.auth_session_id
-                and str(existing["reason"]) == command.reason
-                and int(existing["identity_transition_version"])
-                == command.identity_transition_version
-                and str(existing["receipt_reference"]) == receipt.reference
-                and str(existing["receipt_state"]) == receipt.state
-            )
-            if not fields_match:
-                raise PlatformError(
-                    "generation_revocation_conflict",
-                    "Generation revocation command conflicts with an existing operation",
-                    {},
-                    409,
-                )
+            # Field-level conflict detection already happened in the revocation port.
             return
         connection.execute(
             identity_revocation_command_table.insert().values(

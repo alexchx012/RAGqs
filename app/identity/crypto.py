@@ -149,43 +149,6 @@ def _validated_replay_payload(decoded: object) -> dict[str, str] | None:
     return decoded if all(isinstance(item, str) for item in decoded.values()) else None
 
 
-def _legacy_replay_keystream(secret: bytes, nonce: bytes, length: int) -> bytes:
-    chunks: list[bytes] = []
-    counter = 0
-    while sum(len(chunk) for chunk in chunks) < length:
-        chunks.append(hmac.new(secret, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
-        counter += 1
-    return b"".join(chunks)[:length]
-
-
-def _decrypt_legacy_replay_payload(secret: bytes, values: list[str]) -> dict[str, str] | None:
-    try:
-        nonce_value, ciphertext_value, tag_value = values
-        nonce = _strict_b64decode(nonce_value)
-        ciphertext = _strict_b64decode(ciphertext_value)
-        tag = _strict_b64decode(tag_value)
-        if len(nonce) != 16 or len(tag) != hashlib.sha256().digest_size:
-            return None
-        expected = hmac.new(secret, nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(tag, expected):
-            return None
-        stream = _legacy_replay_keystream(secret, nonce, len(ciphertext))
-        decoded = json.loads(
-            bytes(left ^ right for left, right in zip(ciphertext, stream, strict=True)).decode(
-                "utf-8"
-            )
-        )
-        return _validated_replay_payload(decoded)
-    except (
-        binascii.Error,
-        TypeError,
-        UnicodeDecodeError,
-        ValueError,
-        json.JSONDecodeError,
-    ):
-        return None
-
-
 def encrypt_replay_payload(secret: bytes, payload: dict[str, str]) -> str:
     nonce = secrets.token_bytes(_REPLAY_NONCE_BYTES)
     plaintext = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -196,9 +159,6 @@ def encrypt_replay_payload(secret: bytes, payload: dict[str, str]) -> str:
 def decrypt_replay_payload(secret: bytes, value: str) -> dict[str, str] | None:
     try:
         values = value.split(".")
-        if len(values) == 3:
-            # Old replicas can leave a valid payload only for the replay grace interval.
-            return _decrypt_legacy_replay_payload(secret, values)
         nonce_value, ciphertext_value = values
         nonce = _strict_b64decode(nonce_value)
         ciphertext = _strict_b64decode(ciphertext_value)
