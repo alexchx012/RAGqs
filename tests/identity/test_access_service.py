@@ -550,9 +550,13 @@ def test_identity_changes_and_pending_delete_invalidate_pending_submissions() ->
         role="admin",
         department_id=None,
     )
-    admin = service.authenticate_access_token(service.login(username="admin", password="Password1").access_token)
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
     first = service.create_department(actor=admin, name="First", idempotency_key="department-first")
-    second = service.create_department(actor=admin, name="Second", idempotency_key="department-second")
+    second = service.create_department(
+        actor=admin, name="Second", idempotency_key="department-second"
+    )
     user = service.create_managed_user(
         actor=admin,
         username="alice",
