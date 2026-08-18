@@ -171,6 +171,7 @@ export class ChatStore {
   private feedbackKeys = new Map<string, string>();
   private abKeys = new Map<string, string>();
   private openSeq = 0;
+  private listSeq = 0;
 
   constructor(private readonly deps: ChatStoreDeps) {
     this.serverSearchThreshold = deps.serverSearchThreshold ?? DEFAULT_SERVER_SEARCH_THRESHOLD;
@@ -210,10 +211,12 @@ export class ChatStore {
   /* ---------- 会话列表 / 搜索 ---------- */
 
   async loadConversationList(): Promise<void> {
+    const seq = ++this.listSeq; // 服务端过滤模式下并发加载，慢的旧响应不得覆盖新结果
     this.setState({ listStatus: 'loading', searchStatus: this.state.searchQuery.trim() !== '' ? 'loading' : 'idle' });
     try {
       const q = this.shouldServerSearch(this.state.searchQuery) ? this.state.searchQuery : undefined;
       const result = await this.deps.api.listConversations(q);
+      if (seq !== this.listSeq) return; // 已有更新的加载请求
       const sorted = sortConversations(result.items);
       const serverFiltered = q !== undefined;
       this.setState({
@@ -225,6 +228,7 @@ export class ChatStore {
       });
       this.recomputeVisible();
     } catch {
+      if (seq !== this.listSeq) return;
       this.setState({ listStatus: 'error', searchStatus: 'idle' });
     }
   }

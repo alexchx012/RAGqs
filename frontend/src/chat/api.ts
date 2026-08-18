@@ -108,8 +108,8 @@ interface SseCallParams {
   readonly options?: Pick<SseStreamOptions, 'onOpen' | 'onError' | 'signal'>;
 }
 
-function stream(client: ApiClient, params: SseCallParams): Promise<void> {
-  void client; // SSE 流不经过 ApiClient 的 JSON 请求/响应归一化，仅复用其路径前缀约定
+function stream(params: SseCallParams): Promise<void> {
+  // SSE 流不经过 ApiClient 的 JSON 请求/响应归一化，仅复用其路径前缀约定
   return openGenerationStream({
     path: params.path,
     method: params.method,
@@ -166,7 +166,7 @@ export function createChatApi(client: ApiClient): ChatApi {
     },
 
     ask(conversationId, body, idempotencyKey, token, onEvent, options) {
-      return stream(client, {
+      return stream({
         path: `/conversations/${encodeURIComponent(conversationId)}/messages`,
         method: 'POST',
         body,
@@ -183,7 +183,7 @@ export function createChatApi(client: ApiClient): ChatApi {
       );
     },
     retryGeneration(failedGenerationId, idempotencyKey, token, onEvent, options) {
-      return stream(client, {
+      return stream({
         path: `/generations/${encodeURIComponent(failedGenerationId)}/retry`,
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
@@ -197,7 +197,7 @@ export function createChatApi(client: ApiClient): ChatApi {
       if (lastEventId !== null) {
         headers['Last-Event-ID'] = String(lastEventId);
       }
-      return stream(client, {
+      return stream({
         path: `/generations/${encodeURIComponent(generationId)}/events`,
         method: 'GET',
         headers,

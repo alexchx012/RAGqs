@@ -94,10 +94,8 @@ export async function openGenerationStream(options: SseStreamOptions): Promise<v
         const id = message.id !== null && message.id !== undefined && Number.isFinite(rawId) ? rawId : null;
         options.onEvent({
           id,
-          event: {
-            event: message.event as SseGenerationEvent['event'],
-            data: JSON.parse(message.data) as never,
-          },
+          // 判别联合的 event/data 相互关联，无法分别断言后组合；整体一次断言保留类型可见性
+          event: { event: message.event, data: JSON.parse(message.data) } as SseGenerationEvent,
         });
       } catch {
         // 数据非 JSON：忽略该事件（契约未知字段忽略规则）
