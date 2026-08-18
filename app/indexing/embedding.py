@@ -11,6 +11,9 @@ from app.platform.errors import PlatformError
 
 EmbeddingMetric = Literal["cosine", "l2", "ip"]
 DEFAULT_EMBEDDING_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# DashScope-compatible endpoints cap texts per embeddings request well below
+# large-document chunk counts, so embed() fans out in fixed batches.
+_EMBEDDING_BATCH_SIZE = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +129,12 @@ class OpenAICompatibleEmbedding:
 
     def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
         payload = _normalize_texts(texts)
+        vectors: list[tuple[float, ...]] = []
+        for start in range(0, len(payload), _EMBEDDING_BATCH_SIZE):
+            vectors.extend(self._embed_batch(payload[start : start + _EMBEDDING_BATCH_SIZE]))
+        return tuple(vectors)
+
+    def _embed_batch(self, payload: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
         url = urljoin(self.config.base_url.rstrip("/") + "/", "embeddings")
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:

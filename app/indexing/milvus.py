@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -16,6 +17,45 @@ from .models import IndexChunk, ProviderSearchPage
 from .providers import StageResult, validate_stage_chunks, validate_stage_identity
 
 _MILVUS_METRIC = {"cosine": "COSINE", "l2": "L2", "ip": "IP"}
+# Server-side query page size; stage/publish reads loop until a short page.
+_QUERY_PAGE_SIZE = 16384
+
+
+def _invalidates_collection_cache(method):
+    """Reset the ensure_collection existence flag when a backend call fails.
+
+    The flag only mirrors "the collection exists on the server"; any backend
+    error may mean it was dropped externally, so the next call re-probes.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except PlatformError:
+            self._collection_ready = False
+            raise
+
+    return wrapper
+
+
+def _hit_score(item: Mapping[str, Any], *, metric: str, index: int) -> float:
+    """Convert the Milvus search distance to a higher-is-better similarity.
+
+    COSINE/IP return a similarity; values below 0 mean "dissimilar" and clamp
+    to 0 so scores stay comparable with score_threshold. L2 returns a distance
+    mapped through 1/(1+d).
+    """
+
+    raw = item.get("distance")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return max(0.0, 1.0 - index * 0.01)
+    distance = float(raw)
+    if metric == "l2":
+        return 1.0 / (1.0 + distance) if distance >= 0 else 0.0
+    return max(0.0, distance)
+
+
 _OUTPUT_FIELDS = (
     "id",
     "generation_id",
@@ -72,7 +112,13 @@ class MilvusClient(Protocol):
     def delete(self, name: str, expr: str) -> int: ...
 
     def query(
-        self, name: str, expr: str, output_fields: Sequence[str]
+        self,
+        name: str,
+        expr: str,
+        output_fields: Sequence[str],
+        *,
+        limit: int = _QUERY_PAGE_SIZE,
+        offset: int = 0,
     ) -> tuple[Mapping[str, Any], ...]: ...
 
     def search(
@@ -244,10 +290,18 @@ class HttpMilvusClient:
             },
         )
         hits = data.get("data") or data.get("results") or []
-        return tuple((item, 1.0 - index * 0.01) for index, item in enumerate(hits))
+        return tuple(
+            (item, _hit_score(item, metric=metric, index=index)) for index, item in enumerate(hits)
+        )
 
     def _v1_query(
-        self, name: str, expr: str, output_fields: Sequence[str]
+        self,
+        name: str,
+        expr: str,
+        output_fields: Sequence[str],
+        *,
+        limit: int = _QUERY_PAGE_SIZE,
+        offset: int = 0,
     ) -> tuple[Mapping[str, Any], ...]:
         data = self._post(
             "/api/v1/entities",
@@ -256,7 +310,8 @@ class HttpMilvusClient:
                 "operation": "query",
                 "filter": expr,
                 "outputFields": list(output_fields),
-                "limit": 16384,
+                "limit": limit,
+                "offset": offset,
             },
         )
         rows = data.get("data") or data.get("results") or []
@@ -297,9 +352,15 @@ class HttpMilvusClient:
         return self._v1_delete(name, expr)
 
     def query(
-        self, name: str, expr: str, output_fields: Sequence[str]
+        self,
+        name: str,
+        expr: str,
+        output_fields: Sequence[str],
+        *,
+        limit: int = _QUERY_PAGE_SIZE,
+        offset: int = 0,
     ) -> tuple[Mapping[str, Any], ...]:
-        return self._v1_query(name, expr, output_fields)
+        return self._v1_query(name, expr, output_fields, limit=limit, offset=offset)
 
     def search(
         self,
@@ -321,8 +382,6 @@ class HttpMilvusClient:
             metric=metric,
             output_fields=output_fields,
         )
-
-
 
 
 def _varchar_fields() -> list[dict[str, Any]]:
@@ -367,6 +426,7 @@ class MilvusIndexWriter:
         self._embedding = embedding
         self._prefix = collection_prefix
         self._allow_create = allow_create_collection
+        self._collection_ready = False
         self.collection_name = milvus_collection_name(
             collection_prefix, embedding.config.revision, embedding.config.dimension
         )
@@ -404,9 +464,13 @@ class MilvusIndexWriter:
                 {"expected": expected_metric, "actual": metric},
                 503,
             )
+        self._collection_ready = True
 
     def ensure_collection(self) -> None:
+        if self._collection_ready:
+            return
         if self._client.has_collection(self.collection_name):
+            self._collection_ready = True
             return
         if not self._allow_create:
             raise PlatformError(
@@ -420,6 +484,7 @@ class MilvusIndexWriter:
             dimension=self._embedding.config.dimension,
             metric=self._embedding.config.metric,
         )
+        self._collection_ready = True
 
     def _require_generation_config(
         self, expected_generation_id: str | None, chunks: Sequence[IndexChunk]
@@ -442,6 +507,7 @@ class MilvusIndexWriter:
                     409,
                 )
 
+    @_invalidates_collection_cache
     def stage_chunks(
         self,
         attempt_id: str,
@@ -533,6 +599,7 @@ class MilvusIndexWriter:
             fencing_token,
         )
 
+    @_invalidates_collection_cache
     def publish_staged(
         self,
         attempt_id: str,
@@ -591,6 +658,7 @@ class MilvusIndexWriter:
             result.fencing_token,
         )
 
+    @_invalidates_collection_cache
     def discard_staged(
         self,
         attempt_id: str,
@@ -632,6 +700,7 @@ class MilvusIndexWriter:
             )
         return StageResult("discarded", attempt_id, publication_id, "", (), "", 1)
 
+    @_invalidates_collection_cache
     def delete_document_version(
         self, document_id: str, document_version_id: str, *, generation_id: str | None = None
     ) -> int:
@@ -644,6 +713,7 @@ class MilvusIndexWriter:
             expr += f" && generation_id == {_quote(generation_id)}"
         return self._client.delete(self.collection_name, expr)
 
+    @_invalidates_collection_cache
     def delete_document(self, document_id: str, *, generation_id: str | None = None) -> int:
         self.ensure_collection()
         expr = f"document_id == {_quote(document_id)}"
@@ -651,6 +721,7 @@ class MilvusIndexWriter:
             expr += f" && generation_id == {_quote(generation_id)}"
         return self._client.delete(self.collection_name, expr)
 
+    @_invalidates_collection_cache
     def search(
         self,
         query: str,
@@ -692,12 +763,24 @@ class MilvusIndexWriter:
     def _load_rows(
         self, attempt_id: str, publication_id: str, status: str
     ) -> tuple[Mapping[str, Any], ...]:
-        return self._client.query(
-            self.collection_name,
+        expr = (
             f"attempt_id == {_quote(attempt_id)} && publication_id == {_quote(publication_id)} "
-            f"&& status == {_quote(status)}",
-            _OUTPUT_FIELDS,
+            f"&& status == {_quote(status)}"
         )
+        collected: list[Mapping[str, Any]] = []
+        offset = 0
+        while True:
+            page = self._client.query(
+                self.collection_name,
+                expr,
+                _OUTPUT_FIELDS,
+                limit=_QUERY_PAGE_SIZE,
+                offset=offset,
+            )
+            collected.extend(page)
+            if len(page) < _QUERY_PAGE_SIZE:
+                return tuple(collected)
+            offset += _QUERY_PAGE_SIZE
 
 
 def _row(

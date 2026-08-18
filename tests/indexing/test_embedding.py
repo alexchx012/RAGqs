@@ -109,3 +109,29 @@ def test_openai_compatible_embedding_does_not_fabricate_on_failure(payload: obje
     with pytest.raises(PlatformError) as error:
         provider.embed(["chunk text"])
     assert error.value.code == "embedding_failed"
+
+
+def test_openai_compatible_embedding_batches_large_inputs_in_order() -> None:
+    requests: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        input_list = [str(item) for item in body["input"]]
+        requests.append(input_list)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": index, "embedding": [float(text[1:]), 0.0, 0.0, 0.0]}
+                    for index, text in enumerate(input_list)
+                ]
+            },
+        )
+
+    provider = OpenAICompatibleEmbedding(
+        _config(),
+        transport=httpx.MockTransport(handler),
+    )
+    vectors = provider.embed([f"t{index}" for index in range(25)])
+    assert [vector[0] for vector in vectors] == [float(index) for index in range(25)]
+    assert [len(batch) for batch in requests] == [10, 10, 5]
