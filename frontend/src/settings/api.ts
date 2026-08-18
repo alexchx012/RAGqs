@@ -341,12 +341,14 @@ export function createSettingsApi(client: ApiClient): SettingsApi {
 
     async deleteDocument(documentId, expectedVersion, idempotencyKey) {
       const authSessionGuard = guard();
-      await client.request<void>(`/documents/${encodeURIComponent(documentId)}`, {
-        method: 'DELETE',
-        body: { expected_version: expectedVersion },
-        headers: idempotencyHeaders(idempotencyKey),
-        authSessionGuard,
-      });
+      await client.request<void>(
+        `/documents/${encodeURIComponent(documentId)}?expected_version=${encodeURIComponent(String(expectedVersion))}`,
+        {
+          method: 'DELETE',
+          headers: idempotencyHeaders(idempotencyKey),
+          authSessionGuard,
+        },
+      );
     },
 
     listSubmissions(status) {
@@ -378,12 +380,14 @@ export function createSettingsApi(client: ApiClient): SettingsApi {
 
     async deleteSubmission(submissionId, expectedVersion, idempotencyKey) {
       const authSessionGuard = guard();
-      await client.request<void>(`/submissions/${encodeURIComponent(submissionId)}`, {
-        method: 'DELETE',
-        body: { expected_version: expectedVersion },
-        headers: idempotencyHeaders(idempotencyKey),
-        authSessionGuard,
-      });
+      await client.request<void>(
+        `/submissions/${encodeURIComponent(submissionId)}?expected_version=${encodeURIComponent(String(expectedVersion))}`,
+        {
+          method: 'DELETE',
+          headers: idempotencyHeaders(idempotencyKey),
+          authSessionGuard,
+        },
+      );
     },
 
     listManageSpaces() {
