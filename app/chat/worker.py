@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from .schema import (
 EXECUTION_LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 MAX_PHYSICAL_EXECUTIONS = 3
+# Renewal cadence for the background execution heartbeat; well below the lease TTL.
 
 
 def _utc(value: Any) -> datetime:
@@ -79,7 +81,7 @@ class ChatGenerationWorker:
     def _now(self, connection: Connection | None = None) -> datetime:
         value = self._clock.now_utc(connection)
         if value.tzinfo is None:
-            value = value.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            value = value.replace(tzinfo=UTC)
         return value
 
     # ------------------------------------------------------------- maintenance
@@ -323,6 +325,7 @@ class ChatGenerationWorker:
             .mappings()
             .all()
         )
+        expired = 0
         for row in rows:
             deadlines = [
                 _utc(value)
@@ -331,12 +334,15 @@ class ChatGenerationWorker:
             ]
             if not deadlines or min(deadlines) > now:
                 continue
-            connection.execute(
+            expired += connection.execute(
                 update(chat_ab_pair_table)
-                .where(chat_ab_pair_table.c.pair_id == row["pair_id"])
+                .where(
+                    chat_ab_pair_table.c.pair_id == row["pair_id"],
+                    chat_ab_pair_table.c.status == "open",
+                )
                 .values(status="expired", updated_at_utc=now)
-            )
-        return len(rows)
+            ).rowcount
+        return expired
 
     # ----------------------------------------------------------------- execute
 
@@ -399,7 +405,7 @@ class ChatGenerationWorker:
             if execution is None or str(execution["status"]) not in {"queued", "retry_wait"}:
                 return None
             generation = self._lock_generation(connection, generation_id=generation_id)
-            if str(generation["status"]) not in {"running", "stop_requested"}:
+            if generation is None or str(generation["status"]) not in {"running", "stop_requested"}:
                 connection.execute(
                     update(chat_generation_execution_table)
                     .where(chat_generation_execution_table.c.execution_id == execution_id)
@@ -431,6 +437,73 @@ class ChatGenerationWorker:
             return
         control_version = int(generation["control_version"])
         fencing_token = self._execution_fence(generation_id, execution_id)
+        stop_heartbeat = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._heartbeat_loop,
+            kwargs={
+                "execution_id": execution_id,
+                "fencing_token": fencing_token,
+                "stop": stop_heartbeat,
+            },
+            daemon=True,
+            name=f"chat-execution-heartbeat-{execution_id}",
+        )
+        heartbeat.start()
+        try:
+            self._execute_claimed(
+                execution_id=execution_id,
+                generation_id=generation_id,
+                generation=generation,
+                control_version=control_version,
+                fencing_token=fencing_token,
+            )
+        finally:
+            stop_heartbeat.set()
+            heartbeat.join(timeout=HEARTBEAT_SECONDS)
+
+    def _heartbeat_loop(
+        self, *, execution_id: str, fencing_token: int, stop: threading.Event
+    ) -> None:
+        """Extend the execution lease while the fenced execution still owns it.
+
+        Provider calls can run far longer than the lease TTL; without renewal,
+        maintenance would expire the running execution and re-enqueue a retry
+        that duplicates the provider call.
+        """
+
+        while not stop.wait(HEARTBEAT_SECONDS):
+            try:
+                with self._engine.begin() as connection:
+                    now = self._now(connection)
+                    renewed = connection.execute(
+                        update(chat_generation_execution_table)
+                        .where(
+                            chat_generation_execution_table.c.execution_id == execution_id,
+                            chat_generation_execution_table.c.status == "running",
+                            chat_generation_execution_table.c.fencing_token == fencing_token,
+                        )
+                        .values(
+                            lease_expires_at_utc=now + timedelta(seconds=self._lease_seconds),
+                            heartbeat_at_utc=now,
+                        )
+                    ).rowcount
+                if not renewed:
+                    return
+            except Exception:
+                # Best effort: a transient DB error must not kill the execution;
+                # the next tick retries, and a persistent failure lets the lease
+                # expire so recovery can take over.
+                continue
+
+    def _execute_claimed(
+        self,
+        *,
+        execution_id: str,
+        generation_id: str,
+        generation: Mapping[str, Any],
+        control_version: int,
+        fencing_token: int,
+    ) -> None:
         profile_id = str(generation["retrieval_profile_id"])
         profile_version = str(generation["retrieval_profile_version"])
         effort = str(generation["effective_effort_level"])
@@ -929,6 +1002,8 @@ class ChatGenerationWorker:
                 execution_id=execution_id,
             )
             generation = self._lock_generation(connection, generation_id=generation_id)
+            if generation is None:
+                return
             if str(generation["status"]) not in {"stop_requested", "running"}:
                 return
             self._stop_terminal_in_transaction(
@@ -953,6 +1028,9 @@ class ChatGenerationWorker:
             execution_id=execution_id,
         )
         generation = self._lock_generation(connection, generation_id=generation_id)
+        if generation is None:
+            self._cancel_execution_row(connection, execution_id=execution_id, now=now)
+            return
         if str(generation["status"]) == "stop_requested":
             self._stop_terminal_in_transaction(
                 connection,
@@ -962,6 +1040,22 @@ class ChatGenerationWorker:
                 now=now,
             )
             return
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(
+                chat_generation_execution_table.c.execution_id == execution_id,
+                chat_generation_execution_table.c.status == "running",
+            )
+            .values(
+                status="cancelled",
+                lease_owner=None,
+                lease_expires_at_utc=None,
+                updated_at_utc=now,
+            )
+        )
+
+    @staticmethod
+    def _cancel_execution_row(connection: Connection, *, execution_id: str, now: datetime) -> None:
         connection.execute(
             update(chat_generation_execution_table)
             .where(
@@ -1047,6 +1141,9 @@ class ChatGenerationWorker:
                 execution_id=execution_id,
             )
             generation = self._lock_generation(connection, generation_id=generation_id)
+            if generation is None:
+                self._cancel_execution_row(connection, execution_id=execution_id, now=now)
+                return
             if str(generation["status"]) == "stop_requested":
                 self._stop_terminal_in_transaction(
                     connection,
@@ -1114,6 +1211,7 @@ class ChatGenerationWorker:
         generation = self._lock_generation(connection, generation_id=generation_id)
         return bool(
             execution is not None
+            and generation is not None
             and int(execution["fencing_token"]) == fencing_token
             and str(execution["status"]) == "running"
             and int(generation["control_version"]) == control_version
@@ -1233,14 +1331,16 @@ class ChatGenerationWorker:
         row = connection.execute(statement).mappings().one_or_none()
         return None if row is None else dict(row)
 
-    def _lock_generation(self, connection: Connection, *, generation_id: str) -> Mapping[str, Any]:
+    def _lock_generation(
+        self, connection: Connection, *, generation_id: str
+    ) -> Mapping[str, Any] | None:
         statement = select(chat_generation_table).where(chat_generation_table.c.id == generation_id)
         if connection.dialect.name != "sqlite":
             statement = statement.with_for_update()
         row = connection.execute(statement).mappings().one_or_none()
-        if row is None:
-            raise PlatformError("generation_not_found", "Generation was not found", {}, 404)
-        return dict(row)
+        # A missing row means the conversation cascade deleted the generation;
+        # deletion is itself a terminal state, not an error for the worker.
+        return None if row is None else dict(row)
 
     def _read_generation(self, generation_id: str) -> Mapping[str, Any]:
         with self._engine.connect() as connection:

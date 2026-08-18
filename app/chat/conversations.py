@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, select, update
@@ -47,12 +47,8 @@ class ConversationService:
                 if callable(self._now.now_utc)
                 else self._now(connection)
             )
-            return (
-                value
-                if value.tzinfo is not None
-                else value.replace(tzinfo=datetime.now().astimezone().tzinfo)
-            )
-        return datetime.now().astimezone()
+            return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return datetime.now(tz=UTC)
 
     def _require_owned_conversation(
         self, connection: Connection, *, conversation_id: str, user_id: str
