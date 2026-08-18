@@ -123,6 +123,8 @@ outbox_delivery_attempt_table = Table(
         "status IN ('running', 'delivered', 'failed', 'expired')",
         name="ck_outbox_delivery_attempt_status",
     ),
+    # fence 失效/compaction 按 event_id 扫描 attempt 历史。
+    Index("ix_outbox_delivery_attempt_event", "event_id"),
 )
 
 notification_table = Table(

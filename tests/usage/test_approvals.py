@@ -1308,3 +1308,51 @@ def test_summary_minister_zero_and_status_listing() -> None:
     assert cancelled_items[0]["approved_pages"] is None
     assert cancelled_items[0]["applicant"]["display_name"] == "ghost"
     assert approved_items[0]["created_at"] < rejected_items[0]["created_at"]
+
+
+def test_approval_list_query_count_does_not_scale_with_rows() -> None:
+    """ops 列表页不得逐行产生 identity/snapshot 查询（问题清单 N+1 项）。
+
+    差分断言：行数翻倍后 SELECT 次数不变。旧实现每行一次 identity 查询 +
+    一次 read_snapshot（各数条 SELECT），行数增长必然推高计数。
+    """
+    from sqlalchemy import event
+
+    engine, quota, calendar, times = make_service()
+    seed_identity(engine)
+    requests = QuotaRequestService(
+        engine, MutableClock(times), calendar, quota, RecordingOutboxPort()
+    )
+    create_pending(engine, requests, 100)
+    times[0] = NOW + timedelta(minutes=1)
+    create_pending(engine, requests, 50, uid="u2")
+
+    selects = [0]
+
+    def _count_selects(conn, cursor, statement, parameters, context, executemany):
+        del conn, cursor, parameters, context, executemany
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects[0] += 1
+
+    event.listen(engine, "before_cursor_execute", _count_selects)
+    try:
+        two_rows = requests.list_quota_requests(actor=approver(), status="pending")
+        assert len(two_rows) == 2
+        selects_with_two_rows = selects[0]
+
+        times[0] = NOW + timedelta(minutes=2)
+        create_pending(engine, requests, 30, uid="extra1")
+        times[0] = NOW + timedelta(minutes=3)
+        create_pending(engine, requests, 20, uid="extra2")
+
+        selects[0] = 0
+        four_rows = requests.list_quota_requests(actor=approver(), status="pending")
+        assert len(four_rows) == 4
+        selects_with_four_rows = selects[0]
+    finally:
+        event.remove(engine, "before_cursor_execute", _count_selects)
+
+    assert selects_with_four_rows == selects_with_two_rows
+    # 回落申请人（无 identity 行）显示名仍为 applicant id。
+    by_id = {item["applicant"]["id"]: item["applicant"]["display_name"] for item in four_rows}
+    assert by_id["extra1"] == "extra1"

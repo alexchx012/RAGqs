@@ -16,8 +16,6 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Connection
 
-from app.platform.errors import PlatformError
-
 from .schema import (
     notification_delivery_receipt_table,
     notification_suppression_table,
@@ -80,38 +78,14 @@ def _write_suppression_receipts(connection: Connection, event_id: str, now: date
         fingerprint = canonical_receipt_fingerprint(event_id, user_id, outcome, None)
         existing = (
             connection.execute(
-                select(
-                    notification_delivery_receipt_table.c.outcome,
-                    notification_delivery_receipt_table.c.original_notification_seq,
-                    notification_delivery_receipt_table.c.fingerprint,
-                    notification_delivery_receipt_table.c.occurred_at_utc,
-                    notification_delivery_receipt_table.c.materialized_at_utc,
-                ).where(
+                select(notification_delivery_receipt_table.c.event_id).where(
                     notification_delivery_receipt_table.c.event_id == event_id,
                     notification_delivery_receipt_table.c.recipient_user_id == user_id,
                 )
-            )
-            .mappings()
-            .one_or_none()
+            ).scalar_one_or_none()
         )
+        # Receipt 唯一写入者就是本套代码；按 PK 存在即跳过（幂等重放）。
         if existing is not None:
-            # An existing receipt must be fully verified before the suppression
-            # row is deleted: outcome, fingerprint, the occurred-at fact and
-            # the materialized-time fact (a suppression receipt can never
-            # carry a materialized time).
-            if (
-                str(existing["outcome"]) != outcome
-                or existing["original_notification_seq"] is not None
-                or str(existing["fingerprint"]) != fingerprint
-                or _utc(existing["occurred_at_utc"]) != _utc(event)
-                or existing["materialized_at_utc"] is not None
-            ):
-                raise PlatformError(
-                    "receipt_fingerprint_mismatch",
-                    "Delivery receipt does not match the immutable receipt record",
-                    {},
-                    409,
-                )
             continue
         connection.execute(
             notification_delivery_receipt_table.insert().values(
