@@ -15,6 +15,7 @@ from app.identity.ports import DepartmentWorkState
 from app.outbox.ports import DocumentNotificationRedactionCommand
 from app.platform.database import _insert_do_nothing
 from app.platform.errors import PlatformError
+from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH
 from app.platform.storage import MemoryObjectStore, ObjectMetadata, ObjectStorePort, StorageKeyError
 
 from .domain import (
@@ -812,6 +813,51 @@ class DocumentsService:
                 space_id=space_id,
                 action=action,
             )
+        )
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return self._max_upload_bytes
+
+    def _authorize_upload(self, principal: Any, space_id: str) -> str:
+        try:
+            return self._authorize(principal, space_id, "manage")
+        except PlatformError as error:
+            if error.code != "space_action_forbidden":
+                raise
+            return self._authorize(principal, space_id, "contribute")
+
+    def create_upload(
+        self,
+        *,
+        principal: Any,
+        space_id: str,
+        files: Sequence[DocumentUpload],
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        key = self._required_key(idempotency_key)
+        if not files:
+            raise PlatformError("validation_error", "At least one file is required", {}, 422)
+        if self._authorize_upload(principal, space_id) == "contribute":
+            items: list[dict[str, Any]] = []
+            for index, file in enumerate(files):
+                submission_key = f"{key}:{index}"
+                item_index: int | None = None
+                if len(submission_key) > IDEMPOTENCY_KEY_MAX_LENGTH:
+                    submission_key = key
+                    item_index = index
+                items.append(
+                    self.create_submission(
+                        principal=principal,
+                        space_id=space_id,
+                        file=file,
+                        idempotency_key=submission_key,
+                        idempotency_item_index=item_index,
+                    )
+                )
+            return {"items": items}
+        return self.create_initial_upload(
+            principal=principal, space_id=space_id, files=files, idempotency_key=key
         )
 
     def _idempotency_replay(
@@ -1636,6 +1682,21 @@ class DocumentsService:
             document_id=document_id,
             document_version_id=document_version_id,
             sheet=sheet,
+        )
+
+    def content_head_supported(
+        self,
+        *,
+        principal: Any,
+        document_id: str,
+        document_version_id: str | None = None,
+    ) -> bool:
+        from .read_models import DocumentReadModels
+
+        return DocumentReadModels(self).content_head_supported(
+            principal=principal,
+            document_id=document_id,
+            document_version_id=document_version_id,
         )
 
     def get_upload_batch(self, *, principal: Any, upload_batch_id: str) -> dict[str, Any]:

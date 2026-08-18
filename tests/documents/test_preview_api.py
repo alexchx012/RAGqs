@@ -432,3 +432,36 @@ def test_content_returns_structured_word_and_selected_sheets(preview_api) -> Non
         "row_count": 2,
         "rows": [["name"], ["Ada"]],
     }
+
+
+def test_head_non_raw_content_returns_405_without_object_read(preview_api) -> None:
+    client, service, principal, _ = preview_api
+    item = _accepted(
+        service,
+        principal,
+        filename="notes.txt",
+        content=b"plain text",
+        media_kind="text/plain",
+        key="head-txt-1",
+    )
+
+    original_store = service._object_store
+    get_calls = {"count": 0}
+
+    class _CountingStore:
+        def get(self, key: str):
+            get_calls["count"] += 1
+            return original_store.get(key)
+
+        def __getattr__(self, name: str):
+            return getattr(original_store, name)
+
+    service._object_store = _CountingStore()  # type: ignore[assignment]
+    try:
+        response = client.head(f"/v1/documents/{item['document_id']}/content")
+    finally:
+        service._object_store = original_store  # type: ignore[assignment]
+
+    assert response.status_code == 405
+    assert response.headers["allow"] == "GET"
+    assert get_calls["count"] == 0

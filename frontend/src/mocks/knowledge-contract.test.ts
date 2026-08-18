@@ -522,10 +522,9 @@ describe('knowledge contract mock：版本记录', () => {
     expect(reindex.status).toBe(200);
     expect(((await reindex.json()) as { job_id: string }).job_id).toBeTruthy();
 
-    const del = await fetch(resolveUrl(`/v1/documents/${target.id}`), {
+    const del = await fetch(resolveUrl(`/v1/documents/${target.id}?expected_version=${target.version}`), {
       method: 'DELETE',
-      headers: { Authorization: token, 'Content-Type': 'application/json', 'Idempotency-Key': 'idem-del-1' },
-      body: JSON.stringify({ expected_version: target.version }),
+      headers: { Authorization: token, 'Idempotency-Key': 'idem-del-1' },
     });
     expect(del.status).toBe(202);
     const after = (await (await listDocuments(token, 'personal:u_user')).json()) as { items: { id: string }[] };
@@ -578,11 +577,13 @@ describe('knowledge contract mock：投稿五态与 409', () => {
     expect(target).toBeDefined();
 
     // pending 删除 → 409
-    const pendingDel = await fetch(resolveUrl(`/v1/submissions/${target.submission_id}`), {
-      method: 'DELETE',
-      headers: { Authorization: submitterToken, 'Content-Type': 'application/json', 'Idempotency-Key': 'idem-del-pending' },
-      body: JSON.stringify({ expected_version: target.version }),
-    });
+    const pendingDel = await fetch(
+      resolveUrl(`/v1/submissions/${target.submission_id}?expected_version=${target.version}`),
+      {
+        method: 'DELETE',
+        headers: { Authorization: submitterToken, 'Idempotency-Key': 'idem-del-pending' },
+      },
+    );
     expect(pendingDel.status).toBe(409);
     expect(((await pendingDel.json()) as { error: { code: string } }).error.code).toBe('submission_state_conflict');
 
@@ -596,11 +597,13 @@ describe('knowledge contract mock：投稿五态与 409', () => {
     const rejected = (await reject.json()) as { version: number };
 
     // rejected 删除 → 204
-    const del = await fetch(resolveUrl(`/v1/submissions/${target.submission_id}`), {
-      method: 'DELETE',
-      headers: { Authorization: submitterToken, 'Content-Type': 'application/json', 'Idempotency-Key': 'idem-del-final' },
-      body: JSON.stringify({ expected_version: rejected.version }),
-    });
+    const del = await fetch(
+      resolveUrl(`/v1/submissions/${target.submission_id}?expected_version=${rejected.version}`),
+      {
+        method: 'DELETE',
+        headers: { Authorization: submitterToken, 'Idempotency-Key': 'idem-del-final' },
+      },
+    );
     expect(del.status).toBe(204);
     const remaining = (await (await listSubmissions(submitterToken)).json()) as { items: { submission_id: string }[] };
     expect(remaining.items.some((item) => item.submission_id === target.submission_id)).toBe(false);

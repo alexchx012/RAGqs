@@ -163,6 +163,23 @@ class DocumentReadModels:
             sheet=sheet,
         )
 
+    def content_head_supported(
+        self,
+        *,
+        principal: Any,
+        document_id: str,
+        document_version_id: str | None = None,
+    ) -> bool:
+        """Whether HEAD may serve this document without rendering; DB-only, no object read."""
+        _, version, _ = self._visible_version(
+            principal=principal,
+            document_id=document_id,
+            document_version_id=document_version_id,
+        )
+        if self._service._preview_renderer is None:
+            return True
+        return preview_media_kind(version.get("media_kind")) in {"pdf", "image"}
+
     def get_upload_batch(self, *, principal: Any, upload_batch_id: str) -> dict[str, Any]:
         with self._service._engine.connect() as connection:
             batch = (

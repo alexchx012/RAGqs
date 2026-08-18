@@ -52,6 +52,15 @@ function requireIdempotencyKey(request: Request): string {
   return key;
 }
 
+function requireExpectedVersionQuery(request: Request): number {
+  const raw = new URL(request.url).searchParams.get('expected_version');
+  const value = raw === null ? NaN : Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new MockHttpError(422, 'validation_error', { field: 'expected_version' });
+  }
+  return value;
+}
+
 function requireExpectedVersion(body: Record<string, unknown>): number {
   const value = body['expected_version'];
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
@@ -403,10 +412,9 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
       }
     }),
 
-    http.delete('/v1/documents/:id', async ({ request, params }) => {
+    http.delete('/v1/documents/:id', ({ request, params }) => {
       try {
-        const body = await jsonObject(request);
-        const expectedVersion = requireExpectedVersion(body);
+        const expectedVersion = requireExpectedVersionQuery(request);
         const idempotencyKey = requireIdempotencyKey(request);
         controller.deleteDocument(
           request.headers.get('Authorization'),
@@ -464,10 +472,9 @@ export function createKnowledgeHandlers(controller: MockKnowledgeController) {
       }
     }),
 
-    http.delete('/v1/submissions/:id', async ({ request, params }) => {
+    http.delete('/v1/submissions/:id', ({ request, params }) => {
       try {
-        const body = await jsonObject(request);
-        const expectedVersion = requireExpectedVersion(body);
+        const expectedVersion = requireExpectedVersionQuery(request);
         const idempotencyKey = requireIdempotencyKey(request);
         controller.deleteSubmission(
           request.headers.get('Authorization'),

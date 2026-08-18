@@ -5,20 +5,19 @@ from __future__ import annotations
 from typing import Annotated
 from urllib.parse import quote
 
+import anyio.to_thread
 from fastapi import APIRouter, Depends, File, Form, Header, Path, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from app.documents.preview import (
     PreviewContent,
     is_pdf_preview_content,
-    is_raw_preview_content,
     parse_single_byte_range,
 )
 from app.documents.service import DocumentsService, DocumentUpload
 from app.documents.uploads import read_limited_upload
 from app.identity.service import AuthPrincipal
-from app.platform.errors import PlatformError
-from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH, validate_idempotency_key
+from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
 from .document_models import ExpectedVersionRequest, SubmissionRejectRequest
@@ -92,39 +91,11 @@ async def upload_documents(
 ) -> dict[str, object]:
     service = document_service(request)
     key = _key(idempotency_key)
-    uploads = [await _upload(file, max_bytes=service._max_upload_bytes) for file in files]
-    permission = "manage"
-    if service._identity_access is not None:
-        try:
-            permission = service._identity_access.authorize_space(
-                principal=principal, space_id=space_id, action="manage"
-            )
-        except PlatformError as error:
-            if error.code != "space_action_forbidden":
-                raise
-            permission = service._identity_access.authorize_space(
-                principal=principal, space_id=space_id, action="contribute"
-            )
-    if permission == "contribute":
-        items = []
-        for index, file in enumerate(uploads):
-            submission_key = f"{key}:{index}"
-            item_index = None
-            if len(submission_key) > IDEMPOTENCY_KEY_MAX_LENGTH:
-                submission_key = key
-                item_index = index
-            items.append(
-                service.create_submission(
-                    principal=principal,
-                    space_id=space_id,
-                    file=file,
-                    idempotency_key=submission_key,
-                    idempotency_item_index=item_index,
-                )
-            )
-        return {"items": items}
-    return service.create_initial_upload(
-        principal=principal, space_id=space_id, files=uploads, idempotency_key=key
+    uploads = [await _upload(file, max_bytes=service.max_upload_bytes) for file in files]
+    return await anyio.to_thread.run_sync(
+        lambda: service.create_upload(
+            principal=principal, space_id=space_id, files=uploads, idempotency_key=key
+        )
     )
 
 
@@ -152,12 +123,16 @@ async def replace_document_version(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
     service = document_service(request)
-    result = service.replace_version(
-        principal=principal,
-        document_id=document_id,
-        expected_version=expected_version,
-        file=await _upload(file, max_bytes=service._max_upload_bytes),
-        idempotency_key=_key(idempotency_key),
+    key = _key(idempotency_key)
+    upload = await _upload(file, max_bytes=service.max_upload_bytes)
+    result = await anyio.to_thread.run_sync(
+        lambda: service.replace_version(
+            principal=principal,
+            document_id=document_id,
+            expected_version=expected_version,
+            file=upload,
+            idempotency_key=key,
+        )
     )
     if result.get("deduplicated"):
         return JSONResponse(result, status_code=200)  # type: ignore[return-value]
@@ -210,15 +185,15 @@ def reindex_document(
 @router.delete("/documents/{document_id}", status_code=202)
 def delete_document(
     document_id: Annotated[str, Path(min_length=1, max_length=128)],
-    body: ExpectedVersionRequest,
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    expected_version: Annotated[int, Query(ge=1)],
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
     return document_service(request).delete_document(
         principal=principal,
         document_id=document_id,
-        expected_version=body.expected_version,
+        expected_version=expected_version,
         idempotency_key=_key(idempotency_key),
     )
 
@@ -249,15 +224,20 @@ def content_document(
     sheet: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
     range_header: Annotated[str | None, Header(alias="Range")] = None,
 ) -> Response:
-    content = document_service(request).content(
+    service = document_service(request)
+    if request.method == "HEAD" and not service.content_head_supported(
+        principal=principal,
+        document_id=document_id,
+        document_version_id=document_version_id,
+    ):
+        return Response(status_code=405, headers={"Allow": "GET"})
+    content = service.content(
         principal=principal,
         document_id=document_id,
         document_version_id=document_version_id,
         sheet=sheet,
     )
     content = _range_content(content, range_header)
-    if request.method == "HEAD" and not is_raw_preview_content(content.media_type):
-        return Response(status_code=405, headers={"Allow": "GET"})
     return _content_response(content, include_body=request.method != "HEAD")
 
 
@@ -350,15 +330,15 @@ def withdraw_submission(
 @router.delete("/submissions/{submission_id}", status_code=204)
 def delete_submission(
     submission_id: Annotated[str, Path(min_length=1, max_length=128)],
-    body: ExpectedVersionRequest,
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    expected_version: Annotated[int, Query(ge=1)],
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> Response:
     document_service(request).delete_submission(
         principal=principal,
         submission_id=submission_id,
-        expected_version=body.expected_version,
+        expected_version=expected_version,
         idempotency_key=_key(idempotency_key),
     )
     return Response(status_code=204)
