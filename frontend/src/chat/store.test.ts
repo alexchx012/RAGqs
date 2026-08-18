@@ -120,6 +120,78 @@ describe('会话状态机（ChatStore）', () => {
       expect(visible.length).toBeGreaterThan(0);
       expect(visible.every((item) => item.title.includes('甲'))).toBe(true);
     });
+
+    /* ---------- 列表加载竞态（评审 #14）：旧响应不得覆盖新结果 ---------- */
+
+    function summary(id: string, title: string): ConversationSummary {
+      return { id, title, pinned: false, group_id: null, last_active_at: '2026-08-18T00:00:00Z' };
+    }
+
+    /** 可控延迟的列表加载：按次序返回 deferred，手动决定解析顺序模拟慢旧响应。 */
+    function makeDeferredListApi() {
+      const pending: {
+        q: string | undefined;
+        resolve: (value: { items: ConversationSummary[]; groups: never[] }) => void;
+      }[] = [];
+      const api = {
+        listConversations: (q?: string) =>
+          new Promise<{ items: ConversationSummary[]; groups: never[] }>((resolve) => {
+            pending.push({ q, resolve });
+          }),
+      } as unknown as ChatApi;
+      const take = () => {
+        const entry = pending.shift();
+        if (entry === undefined) throw new Error('no pending list request');
+        return entry;
+      };
+      return { api, take };
+    }
+
+    it('并发加载：慢的旧搜索子集后返回，不覆盖新查询结果（评审 #14）', async () => {
+      const { api, take } = makeDeferredListApi();
+      const { store } = makeStore({ api, serverSearchThreshold: 1 });
+
+      // 预置全量列表，使已加载量超阈值（setSearchQuery 进入服务端 q 模式）
+      const p0 = store.loadConversationList();
+      take().resolve({ items: [summary('a', 'A'), summary('b', 'B')], groups: [] });
+      await p0;
+
+      // 快速连续输入两个关键词：'甲'（旧，慢）与 '乙'（新，快）各触发一次服务端加载
+      store.setSearchQuery('甲');
+      store.setSearchQuery('乙');
+      const staleReq = take(); // '甲' 的请求（先入队，后到）
+      const newReq = take(); // '乙' 的请求（新，先回）
+
+      newReq.resolve({ items: [summary('s_yi', '乙会话')], groups: [] });
+      await waitFor(() => store.getState().conversations.length === 1);
+      staleReq.resolve({ items: [summary('s_jia', '甲会话')], groups: [] }); // 旧响应后到，必须丢弃
+      await flush();
+
+      const state = store.getState();
+      expect(state.conversations.map((item) => item.id)).toEqual(['s_yi']);
+      expect(state.serverFiltered).toBe(true);
+      expect(state.listStatus).toBe('ready');
+    });
+
+    it('并发加载：旧全量响应后返回，不覆盖新加载结果', async () => {
+      const { api, take } = makeDeferredListApi();
+      const { store } = makeStore({ api, serverSearchThreshold: 1 });
+
+      // 两次直接加载：旧的（慢）与新的（快）交错，新响应先回
+      const pOld = store.loadConversationList();
+      const pNew = store.loadConversationList();
+      const oldReq = take();
+      const newReq = take();
+
+      newReq.resolve({ items: [summary('a', 'A'), summary('b', 'B')], groups: [] });
+      await pNew;
+      oldReq.resolve({ items: [summary('a', 'A'), summary('b', 'B'), summary('c', 'C')], groups: [] });
+      await pOld;
+
+      const state = store.getState();
+      expect(state.conversations.map((item) => item.id)).toEqual(['a', 'b']);
+      expect(state.listStatus).toBe('ready');
+    });
   });
 
   describe('提问与消息合并视图', () => {
