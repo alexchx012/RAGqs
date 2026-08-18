@@ -14,22 +14,13 @@ from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
 from app.platform.http_contract import validate_idempotency_key
 
-from .dependencies import current_principal
+from .dependencies import current_principal, outbox_dispatcher, require_ops_role
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
-def dispatcher(request: Request):
-    from app.outbox.dispatcher import OutboxDispatcher
-
-    dispatcher = request.app.state.platform_runtime.resolve("outbox_dispatcher")
-    if not isinstance(dispatcher, OutboxDispatcher):
-        raise RuntimeError("outbox dispatcher is not configured")
-    return dispatcher
-
 
 def require_ops(principal: AuthPrincipal) -> None:
-    if principal.role != "ops":
-        raise PlatformError("forbidden", "Ops access is required", {}, 403)
+    require_ops_role(principal, error_code="forbidden", message="Ops access is required")
 
 
 class DeliveryReplayRequest(BaseModel):
@@ -64,7 +55,7 @@ def outbox_delivery_view(
     consumer_name: Annotated[Literal["in_app_notification"], Query()] = "in_app_notification",
 ) -> dict[str, object]:
     require_ops(principal)
-    view = dispatcher(request).ops_view(event_id, consumer_name=consumer_name)
+    view = outbox_dispatcher(request).ops_view(event_id, consumer_name=consumer_name)
     if view is None:
         raise PlatformError("not_found", "Delivery was not found", {}, 404)
     return {
@@ -95,7 +86,7 @@ def outbox_delivery_replay(
 ) -> JSONResponse:
     require_ops(principal)
     key = validate_idempotency_key(idempotency_key)
-    receipt = dispatcher(request).replay(
+    receipt = outbox_dispatcher(request).replay(
         event_id,
         consumer_name=body.consumer_name,
         expected_version=body.expected_version,

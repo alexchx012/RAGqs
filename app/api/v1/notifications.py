@@ -21,15 +21,6 @@ def notification_service(request: Request) -> NotificationService:
     return service
 
 
-def dispatcher(request: Request):
-    from app.outbox.dispatcher import OutboxDispatcher
-
-    dispatcher = request.app.state.platform_runtime.resolve("outbox_dispatcher")
-    if not isinstance(dispatcher, OutboxDispatcher):
-        raise RuntimeError("outbox dispatcher is not configured")
-    return dispatcher
-
-
 @router.get("")
 def list_notifications(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],

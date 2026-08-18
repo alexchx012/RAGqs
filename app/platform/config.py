@@ -114,9 +114,11 @@ class DocumentsSettings(_StrictModel):
 
 
 class EvaluationSettings(_StrictModel):
-    judge_provider: str = Field(default="bailian", min_length=1, max_length=64)
-    judge_model: str = Field(default="qwen3.7-plus", min_length=1, max_length=128)
-    judge_mode: str = Field(default="non_thinking", min_length=1, max_length=64)
+    # judge_provider/judge_model/judge_mode 是固定值（平台唯一支持的评审组合），
+    # 不提供 env 覆盖；credential/base_url/api_key 才是可部署配置。
+    judge_provider: Literal["bailian"] = "bailian"
+    judge_model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
+    judge_mode: Literal["non_thinking"] = "non_thinking"
     judge_credential_ref: str = Field(default="judge", min_length=1, max_length=64)
     judge_base_url: str | None = None
     judge_api_key: SecretStr | None = None
@@ -251,9 +253,6 @@ _ENV_KEYS = {
     "RAG_EVALUATION_JUDGE_BASE_URL",
     "RAG_EVALUATION_JUDGE_API_KEY",
     "RAG_EVALUATION_CANDIDATE_CONFIGS",
-    "RAG_EVALUATION_JUDGE_PROVIDER",
-    "RAG_EVALUATION_JUDGE_MODEL",
-    "RAG_EVALUATION_JUDGE_MODE",
     "RAG_BUSINESS_TIMEZONE",
     "RAG_MAINTENANCE_KEY",
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
@@ -386,8 +385,7 @@ def load_platform_settings(
             for key, value in {
                 "namespace": _optional(env, "RAG_INDEX_NAMESPACE") or "default",
                 "sparse_provider": _optional(env, "RAG_INDEX_SPARSE_PROVIDER") or "meilisearch",
-                "reranker_provider": _optional(env, "RAG_INDEX_RERANKER_PROVIDER")
-                or "configured",
+                "reranker_provider": _optional(env, "RAG_INDEX_RERANKER_PROVIDER") or "configured",
                 "image_vlm_provider": _optional(env, "RAG_INDEX_IMAGE_VLM_PROVIDER")
                 or "configured",
                 "image_vlm_credential_ref": _optional(env, "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF")
@@ -425,9 +423,6 @@ def load_platform_settings(
         "evaluation": {
             key: value
             for key, value in {
-                "judge_provider": _optional(env, "RAG_EVALUATION_JUDGE_PROVIDER") or "bailian",
-                "judge_model": _optional(env, "RAG_EVALUATION_JUDGE_MODEL") or "qwen3.7-plus",
-                "judge_mode": _optional(env, "RAG_EVALUATION_JUDGE_MODE") or "non_thinking",
                 "judge_credential_ref": _optional(env, "RAG_EVALUATION_JUDGE_CREDENTIAL_REF")
                 or "judge",
                 "judge_base_url": _optional(env, "RAG_EVALUATION_JUDGE_BASE_URL"),
@@ -524,11 +519,3 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production auth allowed origins are required")
         if not settings.auth.admin_roster:
             raise ValueError("production auth admin roster is required")
-
-    evaluation = settings.evaluation
-    if evaluation.judge_provider != "bailian":
-        raise ValueError("evaluation judge provider must be bailian")
-    if evaluation.judge_model != "qwen3.7-plus":
-        raise ValueError("evaluation judge model must be qwen3.7-plus")
-    if evaluation.judge_mode != "non_thinking":
-        raise ValueError("evaluation judge mode must be non_thinking")

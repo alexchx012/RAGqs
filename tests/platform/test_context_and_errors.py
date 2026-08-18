@@ -28,11 +28,10 @@ def settings():
 
 
 def test_request_context_always_uses_server_generated_request_id() -> None:
-    context = new_request_context(request_id="req_client_supplied", trace_id="invalid trace")
+    context = new_request_context()
 
     assert context.request_id.startswith("req_")
-    assert context.request_id != "req_client_supplied"
-    assert context.trace_id != "invalid trace"
+    assert context.trace_id
     assert context.started_at_utc.tzinfo == UTC
 
 

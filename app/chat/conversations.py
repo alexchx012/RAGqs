@@ -12,6 +12,7 @@ from sqlalchemy.engine import Connection, Engine
 
 from app.platform.errors import PlatformError
 
+from .read_models import conversation_detail
 from .schema import (
     chat_ab_candidate_table,
     chat_ab_pair_table,
@@ -53,6 +54,10 @@ class ConversationService:
                 else value.replace(tzinfo=datetime.now().astimezone().tzinfo)
             )
         return datetime.now().astimezone()
+
+    def get_conversation_detail(self, *, conversation_id: str, user_id: str) -> dict[str, Any]:
+        with self._engine.connect() as connection:
+            return conversation_detail(connection, conversation_id=conversation_id, user_id=user_id)
 
     def _require_owned_conversation(
         self, connection: Connection, *, conversation_id: str, user_id: str

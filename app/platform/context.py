@@ -63,14 +63,11 @@ class TaskContext(AbstractContextManager["TaskContext"]):
 
 def new_request_context(
     *,
-    request_id: str | None = None,
-    trace_id: str | None = None,
     started_at_utc: datetime | None = None,
     deadline_utc: datetime | None = None,
 ) -> RequestContext:
     """Create server-owned identifiers; client-provided values are never trusted."""
 
-    del request_id, trace_id
     started = started_at_utc or _utc_now()
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)

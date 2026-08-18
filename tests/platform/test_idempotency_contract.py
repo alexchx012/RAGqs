@@ -3,12 +3,15 @@ from __future__ import annotations
 import pytest
 
 from app.platform.errors import PlatformError
-from app.platform.http_contract import parse_idempotency_key, validate_idempotency_key
+from app.platform.http_contract import validate_idempotency_key
 
 
-def test_idempotency_key_parser_rejects_values_longer_than_persistence_limit() -> None:
+@pytest.mark.parametrize("value", ["x" * 257])
+def test_idempotency_key_validation_rejects_values_longer_than_persistence_limit(
+    value: str,
+) -> None:
     with pytest.raises(PlatformError) as exc_info:
-        parse_idempotency_key({"Idempotency-Key": "x" * 257})
+        validate_idempotency_key(value)
 
     assert exc_info.value.code == "validation_error"
     assert exc_info.value.status_code == 422

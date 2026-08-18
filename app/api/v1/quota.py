@@ -20,9 +20,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.identity.service import AuthPrincipal
 from app.platform.http_contract import validate_idempotency_key
-from app.usage.requests import QuotaRequestService
 
 from .dependencies import current_principal
+from .dependencies import quota_request_service as _quota_request_service
 
 router = APIRouter(tags=["quota"])
 
@@ -30,13 +30,6 @@ router = APIRouter(tags=["quota"])
 class QuotaRequestCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requested_pages: int = Field(strict=True, ge=1, le=500)
-
-
-def _quota_request_service(request: Request) -> QuotaRequestService:
-    service = request.app.state.platform_runtime.resolve("quota_request_service")
-    if not isinstance(service, QuotaRequestService):
-        raise RuntimeError("quota request service is not configured")
-    return service
 
 
 @router.get("/quota/me")

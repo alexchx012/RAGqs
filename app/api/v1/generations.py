@@ -15,7 +15,7 @@ from app.identity.service import AuthPrincipal
 from app.platform.errors import PlatformError
 from app.platform.http_contract import validate_idempotency_key
 
-from .dependencies import current_principal
+from .dependencies import current_principal, require_streaming
 
 router = APIRouter(tags=["generations"])
 
@@ -62,19 +62,6 @@ def _last_event_id(request: Request) -> int:
         ) from error
 
 
-def _require_streaming(accept: str | None) -> None:
-    if accept is None:
-        return
-    accepted = [part.strip() for part in accept.split(",")]
-    if not any(part == "*/*" or part.startswith("text/event-stream") for part in accepted):
-        raise PlatformError(
-            "streaming_response_required",
-            "This endpoint only returns text/event-stream",
-            {},
-            406,
-        )
-
-
 @router.get("/generations/{generation_id}/events")
 def generation_events(
     generation_id: str,
@@ -82,7 +69,7 @@ def generation_events(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     accept: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
-    _require_streaming(accept)
+    require_streaming(accept)
     return StreamingResponse(
         _stream_service(request).stream(
             principal=principal,
@@ -112,7 +99,7 @@ def retry_generation(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     accept: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
-    _require_streaming(accept)
+    require_streaming(accept)
     result = _service(request).retry(
         principal=principal,
         failed_generation_id=failed_generation_id,

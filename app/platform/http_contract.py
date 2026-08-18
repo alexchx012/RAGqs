@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -50,14 +49,6 @@ def sse_error_event(error: PlatformError, request_id: str | None = None) -> str:
     )
 
 
-def parse_idempotency_key(headers: Mapping[str, str]) -> str | None:
-    for key, value in headers.items():
-        if key.casefold() == "idempotency-key":
-            normalized = value.strip()
-            return validate_idempotency_key(normalized) if normalized else None
-    return None
-
-
 def validate_idempotency_key(value: str | None) -> str:
     if not value or not value.strip():
         raise PlatformError("validation_error", "Idempotency-Key is required", {}, 422)
@@ -70,19 +61,6 @@ def validate_idempotency_key(value: str | None) -> str:
             422,
         )
     return normalized
-
-
-def parse_if_match(headers: Mapping[str, str]) -> str | None:
-    for key, value in headers.items():
-        if key.casefold() != "if-match":
-            continue
-        normalized = value.strip()
-        if not normalized or "\r" in normalized or "\n" in normalized:
-            return None
-        if normalized.startswith('"') and normalized.endswith('"') and len(normalized) > 1:
-            normalized = normalized[1:-1]
-        return normalized or None
-    return None
 
 
 def paginated_response(
