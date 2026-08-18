@@ -69,6 +69,9 @@ _OUTPUT_FIELDS = (
     "content_hash",
     "fencing_token",
     "payload",
+    # REST v2 query returns only requested fields; publish re-inserts the
+    # staged rows as published, so the vector must come back too.
+    "vector",
 )
 
 
@@ -135,7 +138,7 @@ class MilvusClient(Protocol):
 
 
 class HttpMilvusClient:
-    """Milvus v1 HTTP API client. Never drops collections."""
+    """Milvus 2.5 RESTful v2 client. Never drops collections."""
 
     def __init__(
         self,
@@ -153,6 +156,12 @@ class HttpMilvusClient:
         self._timeout = timeout
         self._transport = transport
         self._allow_create = allow_create
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        return headers
 
     def _post(self, path: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         url = urljoin(self._base, path.lstrip("/"))
@@ -173,49 +182,55 @@ class HttpMilvusClient:
             raise PlatformError("milvus_unavailable", "Milvus response is invalid", {}, 503)
         code = body.get("code", 0)
         if code not in {0, "0", None}:
+            milvus_code = code if isinstance(code, int) else 0
             raise PlatformError(
                 "milvus_unavailable",
                 str(body.get("message") or "Milvus request failed"),
+                {"milvus_code": milvus_code},
+                503,
+            )
+        return body
+
+    def _describe(self, name: str) -> Mapping[str, Any] | None:
+        """Return the describe body, or None when Milvus reports collection-not-found (code 100)."""
+
+        try:
+            return self._post("/v2/vectordb/collections/describe", {"collectionName": name})
+        except PlatformError as error:
+            if error.details.get("milvus_code") == 100:
+                return None
+            raise
+
+    def health(self) -> None:
+        # REST v2 shares the gRPC port (default 19530); 9091 only serves metrics.
+        self._post("/v2/vectordb/collections/list", {})
+
+    def has_collection(self, name: str) -> bool:
+        return self._describe(name) is not None
+
+    def describe_collection(self, name: str) -> Mapping[str, Any]:
+        described = self._describe(name)
+        if described is None:
+            raise PlatformError(
+                "milvus_collection_missing", "Milvus collection was not found", {}, 503
+            )
+        data = described.get("data")
+        return data if isinstance(data, Mapping) else {}
+
+    def create_collection(self, name: str, *, dimension: int, metric: str) -> None:
+        if self.has_collection(name):
+            return
+        if not self._allow_create:
+            raise PlatformError(
+                "milvus_collection_missing",
+                "Milvus collection was not found",
                 {},
                 503,
             )
-        data = body.get("data", body)
-        return data if isinstance(data, dict) else {"value": data}
-
-    def _get(self, path: str) -> Mapping[str, Any]:
-        url = urljoin(self._base, path.lstrip("/"))
-        try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
-                response = client.get(url, headers=self._headers())
-        except httpx.HTTPError as exc:
-            raise PlatformError("milvus_unavailable", "Milvus request failed", {}, 503) from exc
-        if response.status_code >= 400:
-            raise PlatformError("milvus_unavailable", "Milvus request failed", {}, 503)
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise PlatformError(
-                "milvus_unavailable", "Milvus response is invalid", {}, 503
-            ) from exc
-        if not isinstance(body, dict):
-            raise PlatformError("milvus_unavailable", "Milvus response is invalid", {}, 503)
-        return body
-
-    def _v1_collection_list(self) -> Mapping[str, Any]:
-        return self._get("/api/v1/collections")
-
-    def _v1_collection_exists(self, name: str) -> bool:
-        try:
-            r = self._post("/api/v1/collection/existence", {"collection_name": name})
-        except Exception:
-            return False
-        return bool(r.get("status") or r.get("has") or r.get("exists"))
-
-    def _v1_create_collection(self, name: str, *, dimension: int, metric: str) -> None:
         self._post(
-            "/api/v1/collection",
+            "/v2/vectordb/collections/create",
             {
-                "collection_name": name,
+                "collectionName": name,
                 "schema": {
                     "autoId": False,
                     "enableDynamicField": False,
@@ -234,7 +249,7 @@ class HttpMilvusClient:
                         *_varchar_fields(),
                     ],
                 },
-                "index_params": [
+                "indexParams": [
                     {
                         "fieldName": "vector",
                         "indexName": "vector_idx",
@@ -245,111 +260,19 @@ class HttpMilvusClient:
             },
         )
 
-    def _v1_insert(self, name: str, rows: Sequence[Mapping[str, Any]]) -> None:
-        self._post(
-            "/api/v1/entities",
-            {"collection_name": name, "operation": "insert", "data": [dict(row) for row in rows]},
-        )
-
-    def _v1_delete(self, name: str, expr: str) -> int:
-        data = self._post(
-            "/api/v1/entities",
-            {"collection_name": name, "operation": "delete", "filter": expr},
-        )
-        deleted = data.get("deleted") or data.get("deleteCount") or 0
-        try:
-            return int(deleted)
-        except (TypeError, ValueError):
-            return 0
-
-    def _v1_search(
-        self,
-        name: str,
-        vector: Sequence[float],
-        *,
-        limit: int,
-        offset: int,
-        expr: str,
-        metric: str,
-        output_fields: Sequence[str],
-    ) -> tuple[tuple[Mapping[str, Any], float], ...]:
-        data = self._post(
-            "/api/v1/entities",
-            {
-                "collection_name": name,
-                "operation": "search",
-                "data": [list(vector)],
-                "limit": limit,
-                "offset": offset,
-                "filter": expr,
-                "outputFields": list(output_fields),
-                "search_params": {
-                    "metricType": _MILVUS_METRIC[metric],
-                    "params": {"nprobe": 16},
-                },
-            },
-        )
-        hits = data.get("data") or data.get("results") or []
-        return tuple(
-            (item, _hit_score(item, metric=metric, index=index)) for index, item in enumerate(hits)
-        )
-
-    def _v1_query(
-        self,
-        name: str,
-        expr: str,
-        output_fields: Sequence[str],
-        *,
-        limit: int = _QUERY_PAGE_SIZE,
-        offset: int = 0,
-    ) -> tuple[Mapping[str, Any], ...]:
-        data = self._post(
-            "/api/v1/entities",
-            {
-                "collection_name": name,
-                "operation": "query",
-                "filter": expr,
-                "outputFields": list(output_fields),
-                "limit": limit,
-                "offset": offset,
-            },
-        )
-        rows = data.get("data") or data.get("results") or []
-        return tuple(item for item in rows if isinstance(item, Mapping))
-
-    def health(self) -> None:
-        try:
-            self._get("/healthz")
-            return
-        except PlatformError:
-            pass
-        self._v1_collection_list()
-
-    def has_collection(self, name: str) -> bool:
-        return self._v1_collection_exists(name)
-
-    def describe_collection(self, name: str) -> Mapping[str, Any]:
-        return self._v1_collection_list()
-
-    def create_collection(self, name: str, *, dimension: int, metric: str) -> None:
-        if self._v1_collection_exists(name):
-            return
-        if not self._allow_create:
-            raise PlatformError(
-                "milvus_collection_missing",
-                "Milvus collection was not found",
-                {},
-                503,
-            )
-        self._v1_create_collection(name, dimension=dimension, metric=metric)
-
     def insert(self, name: str, rows: Sequence[Mapping[str, Any]]) -> None:
         if not rows:
             return
-        self._v1_insert(name, rows)
+        self._post(
+            "/v2/vectordb/entities/insert",
+            {"collectionName": name, "data": [dict(row) for row in rows]},
+        )
 
     def delete(self, name: str, expr: str) -> int:
-        return self._v1_delete(name, expr)
+        body = self._post("/v2/vectordb/entities/delete", {"collectionName": name, "filter": expr})
+        data = body.get("data")
+        deleted = data.get("deleteCount") if isinstance(data, Mapping) else None
+        return deleted if isinstance(deleted, int) else 0
 
     def query(
         self,
@@ -360,7 +283,20 @@ class HttpMilvusClient:
         limit: int = _QUERY_PAGE_SIZE,
         offset: int = 0,
     ) -> tuple[Mapping[str, Any], ...]:
-        return self._v1_query(name, expr, output_fields, limit=limit, offset=offset)
+        body = self._post(
+            "/v2/vectordb/entities/query",
+            {
+                "collectionName": name,
+                "filter": expr,
+                "outputFields": list(output_fields),
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        rows = body.get("data")
+        if not isinstance(rows, list):
+            return ()
+        return tuple(item for item in rows if isinstance(item, Mapping))
 
     def search(
         self,
@@ -373,14 +309,26 @@ class HttpMilvusClient:
         metric: str,
         output_fields: Sequence[str],
     ) -> tuple[tuple[Mapping[str, Any], float], ...]:
-        return self._v1_search(
-            name,
-            vector,
-            limit=limit,
-            offset=offset,
-            expr=expr,
-            metric=metric,
-            output_fields=output_fields,
+        body = self._post(
+            "/v2/vectordb/entities/search",
+            {
+                "collectionName": name,
+                "data": [list(vector)],
+                "limit": limit,
+                "offset": offset,
+                "filter": expr,
+                "outputFields": list(output_fields),
+                "searchParams": {
+                    "metricType": _MILVUS_METRIC[metric],
+                    "params": {"nprobe": 16},
+                },
+            },
+        )
+        hits = body.get("data")
+        if not isinstance(hits, list):
+            return ()
+        return tuple(
+            (item, _hit_score(item, metric=metric, index=index)) for index, item in enumerate(hits)
         )
 
 
@@ -870,7 +818,21 @@ def _collection_dimension(description: Mapping[str, Any]) -> int | None:
         if name != "vector":
             continue
         params = field.get("elementTypeParams") or field.get("params") or {}
-        dim = params.get("dim") or field.get("dim")
+        dim = None
+        if isinstance(params, list):
+            # REST v2 describe returns params as [{"key": "dim", "value": "4"}, ...]
+            dim = next(
+                (
+                    item.get("value")
+                    for item in params
+                    if isinstance(item, Mapping) and item.get("key") == "dim"
+                ),
+                None,
+            )
+        elif isinstance(params, Mapping):
+            dim = params.get("dim")
+        if dim is None:
+            dim = field.get("dim")
         if dim is not None:
             return int(dim)
     return None

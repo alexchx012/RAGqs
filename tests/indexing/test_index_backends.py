@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -482,7 +483,8 @@ def test_real_meilisearch_stage_publish_search_with_jieba(tmp_path: Path) -> Non
 
 @pytest.mark.integration
 def test_real_milvus_stage_publish_search() -> None:
-    uri = os.environ.get("RAG_INDEX_VECTOR_URI", "http://127.0.0.1:9091")
+    # REST v2 shares the gRPC port (compose default 19530); 9091 is metrics only.
+    uri = os.environ.get("RAG_INDEX_VECTOR_URI", "http://127.0.0.1:19530")
     token = os.environ.get("RAG_INDEX_VECTOR_TOKEN") or None
     if not _milvus_ready(uri):
         pytest.skip(f"Milvus is not reachable at {uri}")
@@ -508,11 +510,16 @@ def test_real_milvus_stage_publish_search() -> None:
         "publication_1",
         "document_1",
         "version_1",
-        [_chunk("live_1")],
+        [_chunk(f"live_{index}") for index in range(3)],
     )
+    time.sleep(3)  # Bounded consistency: let staged rows become queryable
     published = writer.publish_staged("attempt_live", "publication_1")
     assert published.state == "published"
+    assert len(published.resource_ids) == 3
     page = writer.search("中文文本", ["space_1"], 5, None, generation_id="generation_1")
     assert page.items
     assert page.items[0]["publication_id"] == "publication_1"
+    assert all(float(item["score"]) >= 0.0 for item in page.items)
     assert writer.delete_document("document_1", generation_id="generation_1") >= 1
+    emptied = writer.search("中文文本", ["space_1"], 5, None, generation_id="generation_1")
+    assert emptied.items == ()
