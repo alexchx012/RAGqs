@@ -26,7 +26,10 @@ const drawerRegistry = createDrawerRegistry();
 
 export function App() {
   return (
-    <BrowserRouter>
+    // useTransitions=false：location 更新同步提交（RR 默认包 startTransition）。
+    // 否则快速连切模块/下钻时，模块挂载数据加载等 urgent 更新反复抢占 transition 渲染，
+    // URL（pushState 同步）与抽屉 UI（高亮/页头/内容）错位 100–300ms（fix-drawer-nav-highlight-race）。
+    <BrowserRouter useTransitions={false}>
       <AuthProvider store={auth.store}>
         <SettingsProvider
           api={settingsApi}
