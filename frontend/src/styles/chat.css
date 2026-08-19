@@ -146,6 +146,11 @@
   pointer-events: none;
 }
 
+/* R10/D2：非「空会话发出首条消息」路径的问候语隐藏直出（首次挂载/切换非空会话初始即隐藏，不播收拢动画）。 */
+.chat-empty-greeting[data-instant='true'] {
+  transition: none;
+}
+
 /* 输入区落底：空态居中 → 消息态粘底，400ms --ease-in-out（§3.1 / M11）。 */
 .chat-composer-settle {
   transition:
@@ -212,6 +217,18 @@
   transition:
     width var(--duration-slow) var(--ease-in-out),
     opacity var(--duration-base) var(--ease-in-out);
+}
+
+/* 触屏（hover: none）：会话条目 ⋯ 操作入口常显可发现（D1；基座 §3.2），并关闭长按时的系统 callout/文本选择。 */
+@media (hover: none) {
+  .chat-item-menu-trigger {
+    opacity: 1;
+  }
+
+  .chat-conversation-item {
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
 }
 
 /* 引用角标 hover：悬停卡由 Radix HoverCard 驱动（ui-hovercard-content 已含进入动效）。 */

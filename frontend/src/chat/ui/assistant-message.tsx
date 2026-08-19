@@ -1,13 +1,15 @@
 /*
  * 单条 assistant 回答渲染（共用基座 §3.4；spec §4–§6）。
  * 组合：系统提示条 → 正文（Markdown + 引用角标 + 打字光标）→ 分档占位区（思考状态行 / 深度研究步骤）
- * → 停止态小字 / 失败错误行+重试 → 常设 👍👎（A/B voted:false 期间隐藏）→ A/B 对比视图。
+ * → 停止态小字 / 失败错误行+重试 → 常设 👍👎（A/B voted:false 期间隐藏）→ A/B 对比视图
+ * → hover 淡入相对时间（与用户气泡一致，§3.4）。
  * 模拟流式正文来自 store 合并视图的 generation.content（实时进度）；终态后由读模型收敛。
  */
 
 import { Info } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { copy } from '../../copy';
+import { formatRelativeTime } from '../../notifications/relative-time';
 import { StatusDot } from '../../ui/StatusDot';
 import { TextLink } from '../../ui/TextLink';
 import type { AssistantMessageView } from '../store';
@@ -170,7 +172,7 @@ export function AssistantMessage({
   );
 
   return (
-    <div className="chat-message-enter">
+    <div className="chat-message-enter group">
       {notices.length > 0 && (
         <div className="mb-2 flex flex-col gap-2">
           {notices.map((notice, index) => (
@@ -193,6 +195,10 @@ export function AssistantMessage({
           onVote={onFeedback}
         />
       )}
+      {/* hover 回答下方淡入相对时间（基座 §3.4，与用户气泡一致；reduced-motion 由 base.css 全局直出） */}
+      <span className="mt-1 block text-[15px] text-slate-gray opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">
+        {formatRelativeTime(message.created_at)}
+      </span>
     </div>
   );
 }

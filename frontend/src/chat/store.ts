@@ -125,6 +125,8 @@ interface MessageOverlay {
   readonly messageId: string;
   readonly session: GenerationSession;
   readonly conversationId: string;
+  /** 合成视图（读模型未含该消息时）的回答时间戳：overlay 创建时刻，稳定不变。 */
+  readonly localCreatedAt: string;
   /** 重试链：链首 generation；ask 为自身 generation_id。 */
   readonly rootGenerationId: string | null;
   readonly retryOfGenerationId: string | null;
@@ -599,6 +601,7 @@ export class ChatStore {
       messageId,
       session,
       conversationId,
+      localCreatedAt: new Date().toISOString(),
       rootGenerationId,
       retryOfGenerationId,
       simulator: null,
@@ -882,6 +885,7 @@ export class ChatStore {
       id: errorId,
       role: 'assistant',
       content: '',
+      created_at: this.pendingAsk?.createdAt ?? new Date().toISOString(),
       answer_mode: 'grounded',
       effort_level: 'quick',
       generation_id: view.id,
@@ -973,6 +977,7 @@ export class ChatStore {
       id: overlay.messageId,
       role: 'assistant',
       content,
+      created_at: overlay.localCreatedAt,
       answer_mode: view.answer?.answer_mode ?? 'grounded',
       effort_level: view.answer?.effort_level ?? 'quick',
       generation_id: generationId,

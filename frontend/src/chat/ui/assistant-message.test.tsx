@@ -3,13 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { EscStackProvider } from '../../lib/esc-stack-provider';
 import { copy } from '../../copy';
+import { formatRelativeTime } from '../../notifications/relative-time';
 import type { AssistantMessageView } from '../store';
 import { AssistantMessage } from './assistant-message';
 
 /*
  * assistant 回答渲染测试（共用基座 §3.4；spec §4–§6）：
  * 系统提示条已知/未知 notice 映射、深度研究步骤折叠、停止态文案、失败错误行 + 重试、
- * 常设反馈（已投固化 / A/B voted:false 隐藏）、A/B 对比视图与投票。
+ * 常设反馈（已投固化 / A/B voted:false 隐藏）、A/B 对比视图与投票、hover 淡入相对时间。
  */
 
 function makeMessage(overrides: Partial<AssistantMessageView> = {}): AssistantMessageView {
@@ -17,6 +18,7 @@ function makeMessage(overrides: Partial<AssistantMessageView> = {}): AssistantMe
     id: 'm_1',
     role: 'assistant',
     content: 'Mock answer.',
+    created_at: '2026-08-16T00:00:00Z',
     answer_mode: 'grounded',
     effort_level: 'quick',
     generation_id: 'g_1',
@@ -318,5 +320,27 @@ describe('AssistantMessage', () => {
     expect(await screen.findByText(copy.chat.message.citeFromFallback)).toBeInTheDocument();
     // 不展示不透明 document_id
     expect(screen.queryByText(/doc_9/)).not.toBeInTheDocument();
+  });
+
+  // R9/A2：hover AI 回答时其下方淡入相对时间（与用户气泡同一规格）。
+  // jsdom 不计算 CSS，断言淡入机制：时间行存在、默认隐藏、由 group-hover 驱动、规格类名与用户气泡一致。
+  it('hover 相对时间：回答下方渲染相对时间行，默认 opacity-0、group-hover 淡入（同用户气泡规格）', () => {
+    const message = makeMessage();
+    renderMessage(message);
+    const time = screen.getByText(formatRelativeTime(message.created_at));
+    expect(time).toHaveClass(
+      'mt-1',
+      'text-[15px]',
+      'text-slate-gray',
+      'opacity-0',
+      'transition-opacity',
+      'duration-[var(--duration-fast)]',
+      'group-hover:opacity-100',
+    );
+    // 位于整条回答末尾（反馈行之后），hover 区域为整条消息（group 容器）
+    const root = time.parentElement;
+    expect(root).not.toBeNull();
+    expect(root).toHaveClass('chat-message-enter', 'group');
+    expect(root?.lastElementChild).toBe(time);
   });
 });
