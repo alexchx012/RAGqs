@@ -19,6 +19,13 @@ function roleLabel(role: Role | undefined): string {
   }
 }
 
+/** 「已保存」小字的淡出时长（与 --duration-fast 一致；jsdom 不触发 transitionend，用定时器卸载）。 */
+const SAVED_FADE_OUT_MS = 150;
+/** 保存成功反馈停留约 2s 后淡出（共用基座 §5.3）。 */
+const SAVED_VISIBLE_MS = 2000;
+
+type SavedFeedback = 'idle' | 'visible' | 'fading';
+
 export function ProfileModule() {
   const { api, beginCurrentUserPresentationSync } = useSettings();
   const { user } = useAuthState();
@@ -28,27 +35,53 @@ export function ProfileModule() {
   const [profileError, setProfileError] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarFailed, setAvatarFailed] = useState(false);
+  const [savedFeedback, setSavedFeedback] = useState<SavedFeedback>('idle');
 
   useEffect(() => {
     setDisplayName(user?.display_name ?? '');
   }, [user?.display_name]);
 
+  // 「已保存」反馈：淡入后停留约 2s，再按 --duration-fast 淡出并卸载。
+  useEffect(() => {
+    if (savedFeedback === 'idle') {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setSavedFeedback(savedFeedback === 'visible' ? 'fading' : 'idle'),
+      savedFeedback === 'visible' ? SAVED_VISIBLE_MS : SAVED_FADE_OUT_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [savedFeedback]);
+
+  const committedDisplayName = user?.display_name ?? '';
+  const hasUnsavedChanges = displayName !== committedDisplayName;
+
   async function saveProfile(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (savingProfile) {
+    if (savingProfile || !hasUnsavedChanges) {
       return;
     }
     const sync = beginCurrentUserPresentationSync(['display_name']);
     setSavingProfile(true);
     setProfileError(null);
+    setSavedFeedback('idle');
     try {
       const updated = await api.updateProfile({ display_name: displayName });
       sync.commit({ display_name: updated.display_name });
+      setSavedFeedback('visible');
     } catch {
       setProfileError(copy.settings.profile.saveError);
     } finally {
       setSavingProfile(false);
     }
+  }
+
+  function revertProfile(): void {
+    if (savingProfile) {
+      return;
+    }
+    setDisplayName(committedDisplayName);
+    setProfileError(null);
   }
 
   async function uploadAvatar(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -126,9 +159,29 @@ export function ProfileModule() {
             {profileError}
           </p>
         )}
-        <Pill type="submit" loading={savingProfile} className="mt-4">
-          {copy.settings.profile.save}
-        </Pill>
+        {/* 卡底部操作行（共用基座 §5.3）：仅有未保存变更（或保存反馈展示中）时出现 */}
+        {(hasUnsavedChanges || savingProfile || savedFeedback !== 'idle') && (
+          <div className="mt-4 flex items-center gap-3">
+            <Pill type="submit" loading={savingProfile} disabled={!hasUnsavedChanges}>
+              {copy.settings.profile.save}
+            </Pill>
+            <Pill variant="ghost" disabled={savingProfile} onClick={revertProfile}>
+              {copy.controls.cancel}
+            </Pill>
+            {savedFeedback !== 'idle' && (
+              <span
+                role="status"
+                className={`text-caption text-success ${
+                  savedFeedback === 'fading'
+                    ? 'opacity-0 transition-opacity duration-[var(--duration-fast)]'
+                    : 'ui-fade-enter-fast'
+                }`}
+              >
+                {copy.settings.profile.saved}
+              </span>
+            )}
+          </div>
+        )}
       </form>
 
       <dl className="mt-10 divide-y divide-[var(--color-hairline)]">

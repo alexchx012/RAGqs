@@ -490,7 +490,7 @@ function ManageDocuments({
           }
         }}
         title={copy.settings.knowledge.documents.deleteConfirmTitle}
-        description={copy.settings.knowledge.documents.deleteConfirmDescription(pendingDelete?.name ?? '')}
+        description={copy.settings.knowledge.documents.deleteConfirmDescription}
         confirmLabel={copy.settings.knowledge.documents.delete}
         danger
         onConfirm={() => void confirmDelete()}

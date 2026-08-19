@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe('AppearanceModule', () => {
-  it('loads preferences and applies theme, chat font size, and privacy state', async () => {
+  it('loads preferences and applies theme and chat font size', async () => {
     const initial = preferences({ theme: 'dark', chat_font_size: 'large', ab_opt_out: true });
     const { api } = createPreferencesApi(initial);
     const theme = createThemeController();
@@ -101,10 +101,8 @@ describe('AppearanceModule', () => {
       'aria-checked',
       'true',
     );
-    expect(screen.getByRole('switch', { name: copy.settings.appearance.abOptOutLabel })).toHaveAttribute(
-      'data-state',
-      'checked',
-    );
+    // 隐私开关已挪至安全模块（共用基座 §5.4），外观模块不再渲染
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
 
   it('persists every selection as a complete snapshot and applies it immediately', async () => {
@@ -135,15 +133,6 @@ describe('AppearanceModule', () => {
       }),
     );
     expect(document.documentElement.dataset.chatFontSize).toBe('large');
-
-    await user.click(screen.getByRole('switch', { name: copy.settings.appearance.abOptOutLabel }));
-    await waitFor(() =>
-      expect(updatePreferences).toHaveBeenLastCalledWith({
-        theme: 'dark',
-        chat_font_size: 'large',
-        ab_opt_out: true,
-      }),
-    );
   });
 
   it('rolls back the optimistic selection and shows an accessible error when saving fails', async () => {

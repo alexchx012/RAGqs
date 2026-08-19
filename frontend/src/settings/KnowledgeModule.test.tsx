@@ -250,6 +250,11 @@ describe('KnowledgeModule 知识库首页', () => {
     const rowMenu = await screen.findByRole('button', { name: copy.settings.knowledge.documents.rowMenuAria('员工手册.pdf') });
     await user.click(rowMenu);
     await user.click(await screen.findByRole('menuitem', { name: copy.settings.knowledge.documents.delete }));
+
+    // 删除二次确认：说明固定两点（共用基座 §5.6）
+    const dialog = await screen.findByRole('dialog', { name: copy.settings.knowledge.documents.deleteConfirmTitle });
+    expect(within(dialog).getByText(copy.settings.knowledge.documents.deleteConfirmDescription)).toBeInTheDocument();
+
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.documents.delete }));
 
     await waitFor(() => expect(api.deleteDocument).toHaveBeenCalledWith('doc_1', 1, expect.stringMatching(/^idem_/)));

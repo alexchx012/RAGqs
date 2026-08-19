@@ -582,7 +582,7 @@ export function KnowledgeModule() {
           }
         }}
         title={copy.settings.knowledge.documents.deleteConfirmTitle}
-        description={copy.settings.knowledge.documents.deleteConfirmDescription(pendingDeleteDoc?.name ?? '')}
+        description={copy.settings.knowledge.documents.deleteConfirmDescription}
         confirmLabel={copy.settings.knowledge.documents.delete}
         danger
         onConfirm={() => void confirmDelete()}

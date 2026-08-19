@@ -534,3 +534,75 @@ describe('SecurityModule 会话 fence（review Major 1：A 的会话列表不在
     expect(screen.getByText('B 的浏览器')).toBeInTheDocument();
   });
 });
+
+describe('SecurityModule 隐私区卡（共用基座 §5.4）', () => {
+  it('隐私区卡呈现标题 + 说明 + 开关，开关反映已加载的 ab_opt_out 偏好', async () => {
+    const { store } = await createAuthedStore();
+    const settingsApi = {
+      changePassword: vi.fn(async () => {}),
+      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: true })),
+      updatePreferences: vi.fn(async (next: { theme: string; chat_font_size: string; ab_opt_out: boolean }) => next),
+    } as unknown as SettingsApi;
+
+    renderSecurity(store, settingsApi);
+
+    expect(await screen.findByText(copy.settings.security.privacyTitle)).toBeInTheDocument();
+    // 加载期只渲染标题 + loading 行，开关标签需等待偏好加载完成
+    expect(await screen.findByText(copy.settings.security.abOptOutLabel)).toBeInTheDocument();
+    expect(screen.getByText(copy.settings.security.abOptOutDescription)).toBeInTheDocument();
+    expect(
+      await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel }),
+    ).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('切换开关以完整快照写回偏好（ab_opt_out 语义不变）', async () => {
+    const { store } = await createAuthedStore();
+    const initial = { theme: 'dark', chat_font_size: 'large', ab_opt_out: false } as const;
+    const updatePreferences = vi.fn(async (next: typeof initial) => next);
+    const settingsApi = {
+      changePassword: vi.fn(async () => {}),
+      getPreferences: vi.fn(async () => initial),
+      updatePreferences,
+    } as unknown as SettingsApi;
+    const user = userEvent.setup();
+
+    renderSecurity(store, settingsApi);
+    const toggle = await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel });
+    expect(toggle).toHaveAttribute('data-state', 'unchecked');
+
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(updatePreferences).toHaveBeenLastCalledWith({
+        theme: 'dark',
+        chat_font_size: 'large',
+        ab_opt_out: true,
+      }),
+    );
+    expect(
+      await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel }),
+    ).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('保存失败回滚开关并出现错误行', async () => {
+    const { store } = await createAuthedStore();
+    const initial = { theme: 'system', chat_font_size: 'standard', ab_opt_out: false } as const;
+    const updatePreferences = vi.fn(async (_next: typeof initial) => {
+      throw new Error('offline');
+    });
+    const settingsApi = {
+      changePassword: vi.fn(async () => {}),
+      getPreferences: vi.fn(async () => initial),
+      updatePreferences,
+    } as unknown as SettingsApi;
+    const user = userEvent.setup();
+
+    renderSecurity(store, settingsApi);
+    const toggle = await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel });
+    await user.click(toggle);
+
+    expect(await screen.findByText(copy.settings.security.preferencesSaveError)).toBeInTheDocument();
+    expect(
+      screen.getByRole('switch', { name: copy.settings.security.abOptOutLabel }),
+    ).toHaveAttribute('data-state', 'unchecked');
+  });
+});

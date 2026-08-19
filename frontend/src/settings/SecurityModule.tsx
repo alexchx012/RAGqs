@@ -4,8 +4,10 @@ import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import type { DeviceSession } from '../auth/types';
 import { copy } from '../copy';
 import { Pill } from '../ui/Pill';
+import { Switch } from '../ui/Switch';
 import { TextLink } from '../ui/TextLink';
 import { useSettings } from './SettingsProvider';
+import { usePreferences } from './use-preferences';
 
 type PasswordErrors = {
   readonly oldPassword: string | null;
@@ -28,6 +30,8 @@ export function SecurityModule() {
   const { api } = useSettings();
   const authStore = useAuthStore();
   const authState = useAuthState();
+  // 隐私区卡（共用基座 §5.4）：ab_opt_out 开关读写偏好，与外观模块共用同一套偏好机制。
+  const preferencesSync = usePreferences();
   const [sessions, setSessions] = useState<readonly DeviceSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState(false);
@@ -192,6 +196,14 @@ export function SecurityModule() {
   const authenticated = authState.status === 'authenticated';
   const sessionActionsDisabled = !authenticated || sessionActionPending !== null;
 
+  const toggleAbOptOut = (checked: boolean) => {
+    const { preferences, saving, save } = preferencesSync;
+    if (preferences === null || saving || checked === preferences.ab_opt_out) {
+      return;
+    }
+    save({ ...preferences, ab_opt_out: checked });
+  };
+
   return (
     <section aria-label={copy.settings.security.sectionLabel} className="pb-10">
       <form onSubmit={(event) => void changePassword(event)} noValidate>
@@ -326,6 +338,47 @@ export function SecurityModule() {
           </ul>
         )}
       </div>
+
+      {/* 隐私区卡（共用基座 §5.4）：标题 + 说明 + 开关；读写 ab_opt_out 偏好字段，语义不变 */}
+      <section className="mt-12" aria-labelledby="settings-security-privacy">
+        <h2 id="settings-security-privacy" className="text-subheading font-medium text-ink-black">
+          {copy.settings.security.privacyTitle}
+        </h2>
+        {preferencesSync.loading ? (
+          <p role="status" className="mt-4 text-caption text-smoke-gray">
+            {copy.settings.security.preferencesLoading}
+          </p>
+        ) : preferencesSync.loadError ? (
+          <div className="mt-4 flex items-center gap-3">
+            <p role="alert" className="text-caption text-danger">
+              {copy.settings.security.preferencesLoadError}
+            </p>
+            <TextLink onClick={preferencesSync.reload}>{copy.states.retry}</TextLink>
+          </div>
+        ) : (
+          preferencesSync.preferences !== null && (
+            <div className="mt-4 flex items-start justify-between gap-6">
+              <div>
+                <p className="text-body text-ink-black">{copy.settings.security.abOptOutLabel}</p>
+                <p className="mt-2 max-w-[520px] text-caption text-smoke-gray">
+                  {copy.settings.security.abOptOutDescription}
+                </p>
+              </div>
+              <Switch
+                checked={preferencesSync.preferences.ab_opt_out}
+                onCheckedChange={toggleAbOptOut}
+                disabled={preferencesSync.saving}
+                ariaLabel={copy.settings.security.abOptOutLabel}
+              />
+            </div>
+          )
+        )}
+        {preferencesSync.saveError && (
+          <p role="alert" className="mt-4 text-caption text-danger">
+            {copy.settings.security.preferencesSaveError}
+          </p>
+        )}
+      </section>
     </section>
   );
 }

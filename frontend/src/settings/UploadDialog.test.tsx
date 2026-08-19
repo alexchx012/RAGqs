@@ -307,3 +307,71 @@ describe('UploadDialog 上传中控件禁用与 token 隔离（review Medium 1�
     expect(screen.getByRole('dialog', { name: copy.settings.knowledge.upload.dialogTitle })).toBeInTheDocument();
   });
 });
+
+describe('UploadDialog 目标空间超过 8 行（共用基座 §5.6）', () => {
+  function nineSpacesApi(): SettingsApi {
+    const items = [
+      { id: 'personal:u_user', kind: 'personal', name: '个人库', permission: 'manage', document_count: 0 },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `department:d_${index}`,
+        kind: 'department',
+        name: `部门库${index + 1}`,
+        permission: index === 0 ? 'manage' : 'contribute',
+        document_count: 0,
+      })),
+    ];
+    return {
+      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
+      listUploadSpaces: vi.fn(async () => ({ items })),
+      uploadDocuments: vi.fn(),
+    } as unknown as SettingsApi;
+  }
+
+  it('返回项 >8 行：出现顶部搜索框且列表内部滚动（max-height 320px），按空间名实时过滤', async () => {
+    const api = nineSpacesApi();
+    const user = userEvent.setup();
+    await renderUpload(api);
+
+    // 顶部搜索框（规格同 3.2 搜索框）出现；9 个目标全部列出
+    const search = await screen.findByRole('searchbox', {
+      name: copy.settings.knowledge.upload.spaceSearchPlaceholder,
+    });
+    expect(screen.getAllByRole('radio')).toHaveLength(9);
+
+    // 列表容器内部滚动（max-height 320px）
+    const list = screen.getAllByRole('radio')[0]!.closest('ul');
+    expect(list).toHaveClass('max-h-[320px]', 'overflow-y-auto');
+
+    // 权限标注与默认选中态不变（第一个 manage 默认选中）
+    expect(screen.getAllByText(copy.settings.knowledge.upload.manageTargetHint).length).toBe(2);
+    expect(screen.getAllByText(copy.settings.knowledge.upload.contributeTargetHint).length).toBe(7);
+    expect(screen.getByRole('radio', { name: /个人库/ })).toBeChecked();
+
+    // 按空间名实时过滤
+    await user.type(search, '部门库3');
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
+    expect(screen.getByRole('radio', { name: /部门库3/ })).toBeInTheDocument();
+
+    // 过滤无结果：一行空态说明
+    await user.clear(search);
+    await user.type(search, '不存在的空间');
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(screen.getByText(copy.settings.knowledge.upload.spaceSearchEmpty)).toBeInTheDocument();
+
+    // 清空过滤词恢复完整列表
+    await user.clear(search);
+    expect(screen.getAllByRole('radio')).toHaveLength(9);
+  });
+
+  it('返回项 ≤8 行：维持平铺，不出现搜索框', async () => {
+    const api = createContractApi(); // 契约 mock：普通用户 3 个上传目标
+    await renderUpload(api);
+
+    expect(await screen.findByText(copy.settings.knowledge.upload.manageTargetHint)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('searchbox', { name: copy.settings.knowledge.upload.spaceSearchPlaceholder }),
+    ).not.toBeInTheDocument();
+    const list = screen.getAllByRole('radio')[0]!.closest('ul');
+    expect(list).not.toHaveClass('max-h-[320px]');
+  });
+});

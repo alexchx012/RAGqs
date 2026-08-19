@@ -151,8 +151,8 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
   });
 });
 
-describe('SubmissionsLayer filter fence（review Major 6）', () => {
-  it('pending 筛选下撤回成功：行从当前视图移除（不写 withdrawn 进 pending 列表）', async () => {
+describe('SubmissionsLayer 撤回行保留（《用户端设计.md》§5.2 / D1）', () => {
+  it('pending 筛选下撤回成功：行原地保留转「已撤回」，操作换为「查看内容」+「删除」', async () => {
     const api = createContractApi();
     const user = userEvent.setup();
     // 契约 mock：创建一个 pending 投稿
@@ -177,11 +177,52 @@ describe('SubmissionsLayer filter fence（review Major 6）', () => {
     await user.click(screen.getAllByRole('button', { name: copy.settings.knowledge.submissions.withdraw })[0]);
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.withdraw }));
 
-    // 行从当前 pending 视图移除
-    await waitFor(() => expect(screen.queryByText('待撤回-筛选.md')).not.toBeInTheDocument());
+    // 行原地保留：状态 tag 转「已撤回」，行操作换为「查看内容」+「删除」，不再出现「撤回」
+    const row = (await screen.findByText('待撤回-筛选.md')).closest('li') as HTMLElement;
+    await waitFor(() =>
+      expect(within(row).getByText(copy.settings.knowledge.submissions.statusTag.withdrawn)).toBeInTheDocument(),
+    );
+    // §5.2 交叉淡变：就地状态迁移后 tag 挂一次性淡入类（--duration-fast）
+    expect(
+      within(row).getByText(copy.settings.knowledge.submissions.statusTag.withdrawn).className,
+    ).toContain('ui-fade-enter-fast');
+    expect(within(row).getByRole('button', { name: copy.settings.knowledge.submissions.viewContent })).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: copy.settings.knowledge.submissions.delete })).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: copy.settings.knowledge.submissions.withdraw })).not.toBeInTheDocument();
     // 服务端确实转 withdrawn（数据验证而非 mock 自证）
     const all = mockKnowledge.listSubmissions(`Bearer ${accessToken}`, 'withdrawn');
     expect(all.items.some((submission) => submission.submission_id === submissionId)).toBe(true);
+  });
+
+  it('撤回后下一次按筛选重新请求：按服务端结果呈现（pending 筛选不再含已撤回行）', async () => {
+    const api = createContractApi();
+    const user = userEvent.setup();
+    const { accessToken } = mockAuth.login('zhangsan', 'password123', 'refetch-device');
+    await mockKnowledge.uploadDocuments(
+      `Bearer ${accessToken}`,
+      'public',
+      [{ name: '待撤回-重拉.md', size: 5, type: 'text/markdown', contentHash: 'hash-refetch-1' }],
+      'idem-refetch-1',
+    );
+
+    await renderLayer(api);
+    expect(await screen.findByText('待撤回-重拉.md')).toBeInTheDocument();
+
+    // 切到「待审核」筛选并撤回：行原地保留转「已撤回」
+    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.filterAria(copy.settings.knowledge.submissions.filters.pending) }));
+    expect(await screen.findByText('待撤回-重拉.md')).toBeInTheDocument();
+    await user.click(screen.getAllByRole('button', { name: copy.settings.knowledge.submissions.withdraw })[0]);
+    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.withdraw }));
+    const row = (await screen.findByText('待撤回-重拉.md')).closest('li') as HTMLElement;
+    await waitFor(() =>
+      expect(within(row).getByText(copy.settings.knowledge.submissions.statusTag.withdrawn)).toBeInTheDocument(),
+    );
+
+    // 重新按「待审核」筛选请求后：按服务端结果呈现（该行不再出现）
+    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.filterAria(copy.settings.knowledge.submissions.filters.all) }));
+    expect(await screen.findByText('待撤回-重拉.md')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.filterAria(copy.settings.knowledge.submissions.filters.pending) }));
+    await waitFor(() => expect(screen.queryByText('待撤回-重拉.md')).not.toBeInTheDocument());
   });
 });
 
