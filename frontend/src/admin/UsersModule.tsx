@@ -7,6 +7,8 @@
  *   「新增用户」（高 36）；筛选变更重新拉取并回到第一页。
  * - 用户表：姓名 / 用户名 / 部门（无部门「—」smoke）/ 角色 / 最近活跃 / 操作；行高 56、发丝线、
  *   hover mist-gray；默认含 active 与 pending_delete（只读），无 deleted 墓碑；分页 Paginator。
+ *   可读性（D1）：≥1024px（lg）角色 / 最近活跃列带最小宽直接可读；更窄时列可收缩，截断单元格
+ *   一律 title 悬停全文（含冻结行角色文本与「将于 YYYY-MM-DD 清理」）。
  * - 操作可见性按 §12 规则表推导（冻结 / 自己 / admin 目标 / ops 视角其他 ops 行均不渲染任何
  *   操作；不做禁用态），后端 403 兜底；渲染规则见 canManageUser。
  * - 编辑对话框（400px）：姓名只读 17px → 角色单选（admin 三选 / ops 两选，选中行左侧 6px 墨点）
@@ -64,8 +66,11 @@ const FLASH_MS = 400;
 /** 新行插入动画时长（--duration-base = 250ms，略留余量后清理 class）。 */
 const ENTER_MS = 300;
 
-// 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）
-const USER_GRID = 'grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto]';
+// 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）。
+// ≥1024px（lg）为「角色」「最近活跃」两列加最小宽：冻结行「角色 + 已冻结，待清理」tag 与完整时间 /
+// 「将于 YYYY-MM-DD 清理」直接可读（D1 优先直接显示）；小于 lg 沿用可收缩栅格（窄屏渲染不变），
+// 截断列一律带 title 悬停全文（空间不足时的兜底通道）。
+const USER_GRID = 'grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto] lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(168px,1.2fr)_minmax(136px,1.2fr)_auto]';
 
 /** 角色中文标签：用户列表 / 筛选 / 单选统一取 copy.settings.profile 角色常量。 */
 function roleLabel(role: Role): string {
@@ -534,6 +539,14 @@ export function UsersModule() {
             {items.map((item) => {
               const frozen = item.lifecycle_status === 'pending_delete';
               const manageable = user !== null && canManageUser(user, item);
+              // 最近活跃列文案：冻结行改显「将于 YYYY-MM-DD 清理」（purge_after_at）；单元格与 title 同源
+              const lastActiveText = frozen
+                ? item.purge_after_at !== null
+                  ? copyUsers.purgeAfter(formatDate(item.purge_after_at))
+                  : copyUsers.noDepartment
+                : item.last_active_at !== null
+                  ? formatDateTime(item.last_active_at)
+                  : copyUsers.noDepartment;
               return (
                 <li
                   key={item.id}
@@ -550,12 +563,23 @@ export function UsersModule() {
                       'transition-colors duration-150 hover:bg-mist-gray'
                     }
                   >
-                    <span role="cell" className="truncate text-[15px] font-medium text-ink-black">
-                      {item.real_name}
-                    </span>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">{item.username}</span>
                     <span
                       role="cell"
+                      title={item.real_name}
+                      className="truncate text-[15px] font-medium text-ink-black"
+                    >
+                      {item.real_name}
+                    </span>
+                    <span
+                      role="cell"
+                      title={item.username}
+                      className="truncate text-[15px] text-slate-gray"
+                    >
+                      {item.username}
+                    </span>
+                    <span
+                      role="cell"
+                      title={item.department?.name ?? copyUsers.noDepartment}
                       className={
                         'truncate text-[15px] ' +
                         (item.department === null ? 'text-smoke-gray' : 'text-slate-gray')
@@ -564,21 +588,17 @@ export function UsersModule() {
                       {item.department?.name ?? copyUsers.noDepartment}
                     </span>
                     <span role="cell" className="flex min-w-0 items-center gap-2 text-[15px] text-slate-gray">
-                      <span className="truncate">{roleLabel(item.role)}</span>
+                      <span className="truncate" title={roleLabel(item.role)}>
+                        {roleLabel(item.role)}
+                      </span>
                       {frozen && (
                         <span className="shrink-0 text-[14px] text-ash-gray">
                           {copy.admin.common.frozenTag}
                         </span>
                       )}
                     </span>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">
-                      {frozen
-                        ? item.purge_after_at !== null
-                          ? copyUsers.purgeAfter(formatDate(item.purge_after_at))
-                          : copyUsers.noDepartment
-                        : item.last_active_at !== null
-                          ? formatDateTime(item.last_active_at)
-                          : copyUsers.noDepartment}
+                    <span role="cell" title={lastActiveText} className="truncate text-[15px] text-slate-gray">
+                      {lastActiveText}
                     </span>
                     <span role="cell" className="flex items-center gap-3">
                       {manageable && (

@@ -4,7 +4,7 @@
  * 超阈整卡变红（class + data 属性）、link 卡整卡可点导航（formatDrawerLocation 目标）、
  * 无数据卡「—」与「暂无数据」、user_rank 展开/收起、每包 description 有无、
  * 窗口切换新请求与错峰交叉淡变（旧 150ms 出 → 新 250ms 入，delay = index×30ms）、
- * sparkline 400ms 形变终态、首载/刷新失败与单卡重试骨架。
+ * sparkline 400ms 形变终态、首载/刷新失败与单卡重试骨架；内容区根右 padding（滚动条留白）。
  * 动画断言以终态与 transition/delay 属性为准（真实时钟，参照 DrawerHost.test.tsx 头注约定）。
  */
 
@@ -197,6 +197,12 @@ function cardBody(card: HTMLElement): HTMLElement {
 }
 
 describe('总览 dashboard：组包渲染（数据驱动，不判角色）', () => {
+  it('内容区根右 padding：溢出滚动时右列卡片与纵向滚动条之间保留留白（A3；纯间距亮/暗主题均成立）', async () => {
+    const { container } = renderDashboard();
+    await screen.findByText(copyDashboard.title);
+    expect(container.firstElementChild?.className).toContain('pr-4');
+  });
+
   it('运维组包：包标题 + stat/distribution/count 卡；包无 description 说明行', async () => {
     const { container } = renderDashboard(
       fakeAdminApi({ getDashboard: vi.fn(async (window: MetricsWindow) => opsDashboard(window)) }),

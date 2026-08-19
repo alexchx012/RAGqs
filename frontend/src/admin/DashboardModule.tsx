@@ -7,6 +7,8 @@
  * 状态粒度：首载整区 LoadingCards、首载失败整区 ErrorState；窗口切换保留旧卡
  * （数值区 150ms 淡出 → 新数据 250ms 错峰 index×30ms 淡入）；切换或重试失败时旧卡
  * 保留在网格位并逐卡错误态，点重试只重置该卡（先回骨架）后整体重拉（数据单端点）。
+ * 可读性：内容区根 pr-4——溢出滚动时右列卡片右缘与纵向滚动条之间保留 16px 留白
+ * （纯间距无颜色，亮/暗主题均成立）。
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -62,7 +64,7 @@ export function DashboardModule() {
   let cardIndex = 0;
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-8 pr-4">
       <div className="flex items-center justify-between">
         <h2 className="text-[20px] font-medium text-ink-black">{copyDashboard.title}</h2>
         <SegmentedControl

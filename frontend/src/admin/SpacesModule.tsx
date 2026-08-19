@@ -68,6 +68,8 @@ interface AdminDocumentListProps {
 /**
  * 管理侧空间文档列表（§6.2 + §12.6）：行高 56、状态列 6px 点 + 15px、上传时间、用量；
  * manage=false 即只读（无行操作列）；本模块不设上传新文档入口（「上传新版本」是行级版本操作）。
+ * 可读性（D1）：「用量」列宽 w-40 直接可读（如「200 页正文 + 40 张图」），文档名 / 上传时间 /
+ * 用量截断时均带 title 悬停全文；行尾 ⋯ 固定 32px 槽位（shrink-0），随行 px-4 与容器右缘保持间距。
  */
 function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentListProps) {
   const { api } = useSettings();
@@ -220,7 +222,7 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
             <span role="columnheader" className="min-w-0 flex-1 truncate text-[14px] text-ash-gray">{copySpaces.colDocument}</span>
             <span role="columnheader" className="w-28 shrink-0 truncate text-[14px] text-ash-gray">{copySpaces.colStatus}</span>
             <span role="columnheader" className="hidden w-40 shrink-0 truncate text-[14px] text-ash-gray md:inline">{copySpaces.colUploadedAt}</span>
-            <span role="columnheader" className="hidden w-28 shrink-0 truncate text-[14px] text-ash-gray lg:inline">{copySpaces.colUsage}</span>
+            <span role="columnheader" className="hidden w-40 shrink-0 truncate text-[14px] text-ash-gray lg:inline">{copySpaces.colUsage}</span>
             {manage && <span role="columnheader" aria-label={copySpaces.colActions} className="w-8 shrink-0" />}
           </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
@@ -231,6 +233,7 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
                   <button
                     type="button"
                     aria-label={copySpaces.openPreviewAria(doc.name)}
+                    title={doc.name}
                     onClick={() => openDocumentPreview(doc.id)}
                     className="w-full truncate text-left text-[15px] text-ink-black underline-offset-2 hover:underline"
                   >
@@ -250,18 +253,22 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
                     </>
                   )}
                 </span>
-                <span role="cell" className="hidden w-40 shrink-0 truncate text-[15px] text-slate-gray md:inline">
+                <span
+                  role="cell"
+                  title={formatDateTime(doc.uploaded_at)}
+                  className="hidden w-40 shrink-0 truncate text-[15px] text-slate-gray md:inline"
+                >
                   {formatDateTime(doc.uploaded_at)}
                 </span>
                 <span
                   role="cell"
                   title={copyDocuments.usageDetail(doc.usage.pages, doc.usage.images)}
-                  className="hidden w-28 shrink-0 truncate text-[15px] text-slate-gray lg:inline"
+                  className="hidden w-40 shrink-0 truncate text-[15px] text-slate-gray lg:inline"
                 >
                   {copyDocuments.usageDetail(doc.usage.pages, doc.usage.images)}
                 </span>
                 {manage && (
-                  <div role="cell">
+                  <div role="cell" className="flex w-8 shrink-0 justify-end">
                     {doc.active_operation === null && (
                       <MeatballMenu
                         ariaLabel={copyDocuments.rowMenuAria(doc.name)}
