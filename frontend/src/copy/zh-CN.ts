@@ -87,6 +87,7 @@ export const zhCN = {
       avatarInputLabel: '更换头像', // 措辞后定
       displayNameLabel: '显示名', // 措辞后定
       save: '保存', // 措辞后定
+      saved: '已保存', // 措辞后定：保存成功小字（15px 成功绿，约 2s 后淡出）
       saveError: '保存失败，请稍后重试', // 措辞后定
       avatarError: '头像上传失败，请稍后重试', // 措辞后定
       realNameLabel: '姓名', // 措辞后定
@@ -119,6 +120,12 @@ export const zhCN = {
       logoutOther: '退出此设备', // 措辞后定
       logoutAll: '退出全部设备', // 措辞后定
       sessionActionError: '会话操作失败，请稍后重试', // 措辞后定
+      privacyTitle: '隐私', // 措辞后定
+      abOptOutLabel: '不参与答案对比测试', // 措辞后定
+      abOptOutDescription: '采样由系统决定，用户只有退出权；已创建的对比对不受影响。', // 措辞后定
+      preferencesLoading: '正在加载隐私设置', // 措辞后定
+      preferencesLoadError: '隐私设置加载失败，请稍后重试', // 措辞后定
+      preferencesSaveError: '保存失败，已恢复上次设置，请稍后重试', // 措辞后定
     },
     appearance: {
       sectionLabel: '外观', // 措辞后定
@@ -133,9 +140,6 @@ export const zhCN = {
       fontSizeAria: '对话字号', // 措辞后定
       fontStandard: '标准', // 措辞后定
       fontLarge: '大号', // 措辞后定
-      privacyTitle: '隐私', // 措辞后定
-      abOptOutLabel: '不参与答案对比测试', // 措辞后定
-      abOptOutDescription: '采样由系统决定，用户只有退出权；已创建的对比对不受影响。', // 措辞后定
       loading: '正在加载外观设置', // 措辞后定
       loadError: '外观设置加载失败，请稍后重试', // 措辞后定
       retry: '重试', // 措辞后定
@@ -176,7 +180,7 @@ export const zhCN = {
         reindex: '重建索引', // 措辞后定
         delete: '删除', // 措辞后定
         deleteConfirmTitle: '删除文档？', // 措辞后定
-        deleteConfirmDescription: (name: string) => `将永久删除「${name}」，此操作不可撤销。`, // 措辞后定
+        deleteConfirmDescription: '文档及全部版本立即永久退出列表、检索、预览和下载，操作不可恢复；历史回答正文保留，但引用内容将不可用。', // 措辞后定：固定两点说明（共用基座 §5.6）
         reindexConfirmTitle: '重建索引？', // 措辞后定
         reindexConfirmDescription: (name: string) => `将对「${name}」重新解析并建立索引，处理期间文档继续可检索。`, // 措辞后定
         rowMenuAria: (name: string) => `文档 ${name} 操作`, // 措辞后定
@@ -187,6 +191,8 @@ export const zhCN = {
         dialogTitle: '上传文档', // 措辞后定
         dialogDescription: '选择目标空间，可一次上传多个文件', // 措辞后定
         targetLabel: '目标空间', // 措辞后定
+        spaceSearchPlaceholder: '搜索空间', // 措辞后定：返回项 >8 行时顶部搜索框
+        spaceSearchEmpty: '没有匹配的空间', // 措辞后定：过滤无结果
         manageTargetHint: '上传后直接写入该空间', // 措辞后定
         contributeTargetHint: '需审核后才能发布，先进入「我的投稿」', // 措辞后定：contribute 分支提示
         chooseFiles: '选择文件', // 措辞后定

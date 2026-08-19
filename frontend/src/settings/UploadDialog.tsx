@@ -54,6 +54,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
   const [spaces, setSpaces] = useState<readonly SpaceItem[]>([]);
   const [spacesError, setSpacesError] = useState(false);
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [spaceQuery, setSpaceQuery] = useState('');
   const [files, setFiles] = useState<readonly File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [phase, setPhase] = useState<UploadPhase>('idle');
@@ -100,12 +101,21 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
       setSubmitError(null);
       setFiles([]);
       setSelectedSpaceId(null);
+      setSpaceQuery('');
       idem.current.clear();
       void loadSpaces();
     }
   }, [open, loadSpaces]);
 
   const selectedSpace = spaces.find((space) => space.id === selectedSpaceId) ?? null;
+  // 共用基座 §5.6：目标空间返回项超过 8 行时列表内部滚动（max-height 320px）+
+  // 顶部搜索框按空间名实时过滤；不超过 8 行维持平铺（选中态与权限标注不变）。
+  const spaceListScrollable = spaces.length > 8;
+  const normalizedSpaceQuery = spaceQuery.trim().toLowerCase();
+  const visibleSpaces =
+    spaceListScrollable && normalizedSpaceQuery !== ''
+      ? spaces.filter((space) => space.name.toLowerCase().includes(normalizedSpaceQuery))
+      : spaces;
 
   const addFiles = (next: readonly File[]) => {
     if (phase === 'uploading') {
@@ -229,42 +239,64 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
           ) : spaces.length === 0 ? (
             <p className="text-caption text-smoke-gray">{copy.states.empty}</p>
           ) : (
-            <ul className="flex flex-col gap-1">
-              {spaces.map((space) => (
-                <li key={space.id}>
-                  <label
-                    className={`flex cursor-pointer items-center gap-3 rounded-[var(--radius-images)] border px-3 py-2.5 ${
-                      selectedSpaceId === space.id ? 'border-ink-black bg-mist-gray' : 'border-[var(--color-hairline)]'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="upload-target"
-                      value={space.id}
-                      checked={selectedSpaceId === space.id}
-                      disabled={phase === 'uploading'}
-                      onChange={() => {
-                        if (phase === 'uploading') {
-                          return;
-                        }
-                        // 目标变化：旧 operation 失效（不跨目标复用 key/不污染）
-                        invalidateOperation();
-                        setSelectedSpaceId(space.id);
-                      }}
-                      className="accent-ink-black disabled:cursor-not-allowed"
-                    />
-                    <span className="min-w-0">
-                      <span className="block truncate text-body text-ink-black">{space.name}</span>
-                      <span className="block text-caption text-smoke-gray">
-                        {space.permission === 'manage'
-                          ? copy.settings.knowledge.upload.manageTargetHint
-                          : copy.settings.knowledge.upload.contributeTargetHint}
-                      </span>
-                    </span>
-                  </label>
-                </li>
-              ))}
-            </ul>
+            <>
+              {spaceListScrollable && (
+                <input
+                  type="search"
+                  value={spaceQuery}
+                  onChange={(event) => setSpaceQuery(event.target.value)}
+                  placeholder={copy.settings.knowledge.upload.spaceSearchPlaceholder}
+                  aria-label={copy.settings.knowledge.upload.spaceSearchPlaceholder}
+                  className="mb-2 h-9 w-full rounded-[var(--radius-inputs)] border border-hairline bg-paper-white px-3 text-[15px] text-ink-black outline-none placeholder:text-smoke-gray focus:border-ink-black"
+                />
+              )}
+              {visibleSpaces.length === 0 ? (
+                <p className="text-caption text-smoke-gray">
+                  {copy.settings.knowledge.upload.spaceSearchEmpty}
+                </p>
+              ) : (
+                <ul
+                  className={`flex flex-col gap-1 ${
+                    spaceListScrollable ? 'max-h-[320px] overflow-y-auto' : ''
+                  }`}
+                >
+                  {visibleSpaces.map((space) => (
+                    <li key={space.id}>
+                      <label
+                        className={`flex cursor-pointer items-center gap-3 rounded-[var(--radius-images)] border px-3 py-2.5 ${
+                          selectedSpaceId === space.id ? 'border-ink-black bg-mist-gray' : 'border-[var(--color-hairline)]'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="upload-target"
+                          value={space.id}
+                          checked={selectedSpaceId === space.id}
+                          disabled={phase === 'uploading'}
+                          onChange={() => {
+                            if (phase === 'uploading') {
+                              return;
+                            }
+                            // 目标变化：旧 operation 失效（不跨目标复用 key/不污染）
+                            invalidateOperation();
+                            setSelectedSpaceId(space.id);
+                          }}
+                          className="accent-ink-black disabled:cursor-not-allowed"
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate text-body text-ink-black">{space.name}</span>
+                          <span className="block text-caption text-smoke-gray">
+                            {space.permission === 'manage'
+                              ? copy.settings.knowledge.upload.manageTargetHint
+                              : copy.settings.knowledge.upload.contributeTargetHint}
+                          </span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </fieldset>
 

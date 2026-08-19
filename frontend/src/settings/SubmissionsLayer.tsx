@@ -5,7 +5,7 @@
  *   invalidated 显示固定机器原因提示，不展示原始机器码、不提供审核重试。
  * - 行操作按状态渲染：pending=查看内容+撤回；approved=查看内容；rejected/withdrawn/invalidated=查看内容+删除。
  * - 查看内容：触发原件下载 GET /submissions/{id}/content；404 submission_content_unavailable 行尾就地提示。
- * - 撤回：二次确认固定两点说明；200 后行原地保留转「已撤回」。
+ * - 撤回：二次确认固定两点说明；200 后行原地保留转「已撤回」，状态 tag 一次性淡入。
  * - 删除：204 后行 opacity→0 收拢移除；无回收站与恢复入口。
  * - 失败处理：行尾危险红错误行 + 重试文字链；409 version_conflict 刷新后基于最新 version 重新确认；
  *   409 submission_state_conflict 刷新列表按最新状态呈现。
@@ -36,6 +36,9 @@ const FILTERS: readonly { readonly value: SubmissionStatus | 'all'; readonly lab
   { value: 'invalidated', label: copy.settings.knowledge.submissions.filters.invalidated },
 ];
 
+/** 状态 tag 一次性淡入标记时长（--duration-fast 150ms + 余量；模式同 DepartmentsLayer RENAME_FADE_MS）。 */
+const STATUS_FADE_MS = 200;
+
 /** 五态 tag 着色（pending ash-gray / approved 成功绿 / rejected 危险红 / withdrawn slate-gray / invalidated 警告琥珀）。 */
 function statusClass(status: SubmissionStatus): string {
   switch (status) {
@@ -64,6 +67,8 @@ export function SubmissionsLayer() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Map<string, { message: string; retry: () => void }>>(new Map());
+  /** 就地状态迁移（撤回）后需一次性淡入状态 tag 的行 id（《用户端设计.md》§5.2 交叉淡变）。 */
+  const [statusChangedIds, setStatusChangedIds] = useState<ReadonlySet<string>>(new Set());
   const withdrawIdem = useRef(createIdempotencyScope());
   const deleteIdem = useRef(createIdempotencyScope());
   // filter/view generation（review A4）：切换 filter 使旧 mutation closure 失效；
@@ -132,6 +137,18 @@ export function SubmissionsLayer() {
     }
   };
 
+  /** 撤回等就地状态迁移后，新状态 tag 以 --duration-fast 淡入一次（模式同 DepartmentsLayer.markRenamed）。 */
+  const markStatusChanged = (submissionId: string): void => {
+    setStatusChangedIds((current) => new Set(current).add(submissionId));
+    window.setTimeout(() => {
+      setStatusChangedIds((current) => {
+        const next = new Set(current);
+        next.delete(submissionId);
+        return next;
+      });
+    }, STATUS_FADE_MS);
+  };
+
   /** 实际撤回（接收 submission 参数，避免 retry 读取尚未提交的 pendingWithdraw 而 no-op）。 */
   const runWithdraw = async (submission: Submission) => {
     const epoch = mutationEpochRef.current;
@@ -156,8 +173,9 @@ export function SubmissionsLayer() {
       }
       withdrawIdem.current.clear();
       // 契约 §6.10：撤回响应只含 { submission_id, version, status }；与原行合并。
-      // filter-fenced（review Major 6）：行不在当前视图（切换了 filter）不写入；
-      // 当前视图为 pending 等非 all/withdrawn 筛选：withdrawn 行不应继续显示。
+      // 《用户端设计.md》§5.2：200 后该行原地保留并转「已撤回」（状态 tag 一次性淡入），
+      // 即使当前筛选为「待审核」也不移除；下一次按筛选重新请求后按服务端结果呈现。
+      markStatusChanged(updated.submission_id);
       setSubmissions((items) => {
         if (epoch !== mutationEpochRef.current) {
           return items; // 旧 mutation 已失效：不写入
@@ -165,16 +183,11 @@ export function SubmissionsLayer() {
         if (!items.some((item) => item.submission_id === updated.submission_id)) {
           return items;
         }
-        const merged = items.map((item) =>
+        return items.map((item) =>
           item.submission_id === updated.submission_id
             ? { ...item, version: updated.version, status: updated.status }
             : item,
         );
-        // 发起时 filter 为 pending 等非 all/withdrawn：withdrawn 行不应继续显示
-        if (filterAtLaunch !== 'all' && filterAtLaunch !== 'withdrawn') {
-          return merged.filter((item) => item.submission_id !== updated.submission_id);
-        }
-        return merged;
       });
       setPendingWithdraw(null);
     } catch (error) {
@@ -379,6 +392,7 @@ export function SubmissionsLayer() {
               key={submission.submission_id}
               submission={submission}
               error={rowErrors.get(submission.submission_id) ?? null}
+              statusChanged={statusChangedIds.has(submission.submission_id)}
               onView={() => void openContent(submission)}
               onWithdraw={() => setPendingWithdraw(submission)}
               onDelete={() => setPendingDelete(submission)}
@@ -430,12 +444,14 @@ export function SubmissionsLayer() {
 interface SubmissionRowProps {
   readonly submission: Submission;
   readonly error: { message: string; retry: () => void } | null;
+  /** 状态刚就地迁移（撤回）时为 true：状态 tag 以 --duration-fast 淡入一次。 */
+  readonly statusChanged: boolean;
   readonly onView: () => void;
   readonly onWithdraw: () => void;
   readonly onDelete: () => void;
 }
 
-function SubmissionRow({ submission, error, onView, onWithdraw, onDelete }: SubmissionRowProps) {
+function SubmissionRow({ submission, error, statusChanged, onView, onWithdraw, onDelete }: SubmissionRowProps) {
   const { status } = submission;
   return (
     <li className="py-4" data-submission-id={submission.submission_id}>
@@ -445,7 +461,10 @@ function SubmissionRow({ submission, error, onView, onWithdraw, onDelete }: Subm
           <p className="mt-1 text-caption text-smoke-gray">
             {submission.media_kind} · {copy.settings.knowledge.submissions.submittedAt(formatDateTime(submission.created_at))}
           </p>
-          <span className={`mt-2 inline-block rounded-[var(--radius-buttons)] px-2 py-0.5 text-caption ${statusClass(status)}`}>
+          <span
+            key={status}
+            className={`mt-2 inline-block rounded-[var(--radius-buttons)] px-2 py-0.5 text-caption ${statusClass(status)}${statusChanged ? ' ui-fade-enter-fast' : ''}`}
+          >
             {copy.settings.knowledge.submissions.statusTag[status]}
           </span>
           {error !== null && (

@@ -326,7 +326,7 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
           }
         }}
         title={copyDocuments.deleteConfirmTitle}
-        description={copyDocuments.deleteConfirmDescription(pendingDelete?.name ?? '')}
+        description={copyDocuments.deleteConfirmDescription}
         confirmLabel={copyDocuments.delete}
         danger
         onConfirm={() => void confirmDelete()}
