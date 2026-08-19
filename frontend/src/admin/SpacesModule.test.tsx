@@ -5,6 +5,7 @@
  * 公共库：行操作仅服务端 permission=manage 渲染（唯一依据，非 manage 收起）、行点击新窗口
  * /preview/:id；图谱维护区仅 ops 挂载（admin 不渲染不调用）、三态文案、发起确认层
  * （revision + 预估参考）、非终态 5s 轮询到终态、取消按 allowed_actions、409/422/503 错误系列。
+ * 公共库可读性（A2）：「用量」列加宽直接可读 + 截断列 title 悬停全文、行尾 ⋯ 固定槽位与右缘间距。
  * 个人库：聚合搜索防抖传 q、冻结行 aria-disabled 不可点 + tag、只读下钻（无行操作）。
  * 部门库：active 按 permission 渲染行操作、inactive 固定只读 + 页头标记，两种状态均无上传入口。
  */
@@ -29,6 +30,7 @@ import { createAuthedStore, fakeAdminApi } from '../test/auth-fixtures';
 import type { ThemeController } from '../theme/theme';
 import { AdminProvider } from './AdminProvider';
 import type { AdminApi } from './api';
+import { formatDateTime } from './format';
 import { DepartmentLibsLayer, PersonalLibsLayer, PublicSpaceLayer } from './SpacesModule';
 import type { AdminUserListQuery, DepartmentStatusFilter, GraphBuildRun } from './types';
 
@@ -212,6 +214,35 @@ describe('公共库（§7.2 ops / §7.3 admin）', () => {
     expect(screen.getByRole('menuitem', { name: copyDocs.reindex })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: copyDocs.uploadNewVersion })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: copyDocs.delete })).toBeInTheDocument();
+  });
+
+  it('「用量」列完整可读（加宽 w-40 + title 悬停全文）；行尾 ⋯ 固定槽位与右缘保持间距（A2）', async () => {
+    const token = loginToken('ops-wang');
+    await renderSpaces(
+      <PublicSpaceLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    expect(await screen.findByText('公共制度汇编.pdf')).toBeInTheDocument();
+    const row = rowOf('公共制度汇编.pdf');
+    // 用量列：完整文本直接展示（w-40），截断兜底 title
+    const usageText = copyDocs.usageDetail(200, 10);
+    const usageCell = within(row).getByText(usageText);
+    expect(usageCell).toHaveAttribute('title', usageText);
+    expect(usageCell.className).toContain('w-40');
+    // 文档名 / 上传时间截断列同样带 title
+    expect(within(row).getByText('公共制度汇编.pdf')).toHaveAttribute('title', '公共制度汇编.pdf');
+    const uploadedText = formatDateTime('2026-06-01T00:00:00Z');
+    expect(within(row).getByText(uploadedText)).toHaveAttribute('title', uploadedText);
+    // 行尾 ⋯：固定 32px 槽位不被压缩，行容器 px-4 与容器右缘保持间距
+    const menuButton = within(row).getByRole('button', {
+      name: copyDocs.rowMenuAria('公共制度汇编.pdf'),
+    });
+    const actionCell = menuButton.closest('[role="cell"]');
+    expect(actionCell?.className).toContain('w-8');
+    expect(actionCell?.className).toContain('shrink-0');
+    expect(row.firstElementChild?.className).toContain('px-4');
   });
 
   it('permission 非 manage：行操作整体收起（唯一依据为服务端 permission）', async () => {

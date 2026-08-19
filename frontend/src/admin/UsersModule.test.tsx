@@ -5,7 +5,8 @@
  * 操作可见性矩阵；编辑对话框每次打开重拉 active 目录、省略语义、无部门 null、422/409/404/
  * version_conflict/403 错误路径；新增对话框校验、眼睛控件、username_exists、成功顶部插入；
  * 永久禁用三点说明、202 原地冻结、version_conflict/user_pending_delete/403；ops 视图无部门
- * 入口与权限矩阵；admin 只读矩阵；部门管理下钻入口与深链回落（registry）。
+ * 入口与权限矩阵；admin 只读矩阵；部门管理下钻入口与深链回落（registry）。列可读性（A1/A45）：
+ * 截断单元格 title 悬停全文、行栅格窄屏可收缩与 ≥1024px 最小列宽。
  */
 
 import { act, fireEvent, render, screen, waitFor, within, type RenderResult } from '@testing-library/react';
@@ -23,6 +24,7 @@ import { createDrawerRegistry } from '../shell/drawer/DrawerRegistryProvider';
 import { createAuthedStore, fakeAdminApi } from '../test/auth-fixtures';
 import { AdminProvider } from './AdminProvider';
 import type { AdminApi } from './api';
+import { formatDate, formatDateTime } from './format';
 import type {
   AdminUserCreateInput,
   AdminUserListQuery,
@@ -269,6 +271,54 @@ describe('用户表结构与冻结行', () => {
     expect(within(row).getByText(copyCommon.frozenTag)).toBeInTheDocument();
     expect(within(row).getByText(/^将于 .* 清理$/)).toBeInTheDocument();
     expect(within(row).queryByRole('button')).toBeNull();
+  });
+});
+
+describe('列可读性与悬停全文（A1、A45；D1 截断策略）', () => {
+  it('「最近活跃」单元格展示完整时间文本并带 title 悬停全文', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('张三');
+    const expected = formatDateTime('2026-08-04T09:00:00Z');
+    const cell = within(rowOf('张三')).getByText(expected);
+    expect(cell).toHaveAttribute('title', expected);
+  });
+
+  it('冻结行角色文本与「将于 … 清理」完整展示且带 title；冻结 tag 不被压缩', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('鬼影');
+    const row = rowOf('鬼影');
+    const roleText = within(row).getByText(copyProfile.roleUser);
+    expect(roleText).toHaveAttribute('title', copyProfile.roleUser);
+    const frozenTag = within(row).getByText(copyCommon.frozenTag);
+    expect(frozenTag.className).toContain('shrink-0');
+    const purgeText = copyUsers.purgeAfter(formatDate('2026-08-19T08:00:00Z'));
+    const purgeCell = within(row).getByText(purgeText);
+    expect(purgeCell).toHaveAttribute('title', purgeText);
+  });
+
+  it('姓名 / 用户名 / 部门截断列均带 title 悬停全文（无部门行回退「—」）', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('张三');
+    const row = rowOf('张三');
+    expect(within(row).getByText('张三')).toHaveAttribute('title', '张三');
+    expect(within(row).getByText('zhangsan')).toHaveAttribute('title', 'zhangsan');
+    expect(within(row).getByText('财务部')).toHaveAttribute('title', '财务部');
+    const noDepartmentCell = within(rowOf('赵六')).getByText(copyUsers.noDepartment);
+    expect(noDepartmentCell).toHaveAttribute('title', copyUsers.noDepartment);
+  });
+
+  it('行栅格：窄屏基础模板保持可收缩 minmax(0,…)（A4 不变）；≥1024px 角色 / 最近活跃列加最小宽', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('张三');
+    const tokens = (rowOf('张三').firstElementChild?.className ?? '').split(' ');
+    // 基础（<1024px，含窄屏）模板与改动前一致：六列均可收缩，不引入固定宽溢出
+    expect(tokens).toContain(
+      'grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto]',
+    );
+    // ≥1024px：角色列 ≥168px（角色 + 冻结 tag）、最近活跃列 ≥136px（完整时间 / 清理日期）
+    expect(tokens).toContain(
+      'lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(168px,1.2fr)_minmax(136px,1.2fr)_auto]',
+    );
   });
 });
 
