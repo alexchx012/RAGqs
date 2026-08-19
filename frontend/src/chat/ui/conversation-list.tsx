@@ -3,6 +3,7 @@
  * 分组顺序：置顶 → 自定义分组（可折叠）→ 今天/本周/更早；条目 40px、hover/当前态/focus；
  * ⋯ 菜单（重命名/置顶|取消置顶/移入分组/删除），重命名就地输入、移入分组子菜单列已有分组+新建分组、
  * 删除二次确认（danger）；自定义分组头可折叠 + 分组重命名/删除（会话分组 CRUD）。
+ * ⋯ 入口桌面 hover/focus 淡入、触屏（hover: none）常显（chat.css）；触屏长按条目唤起同一菜单（use-long-press）。
  */
 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
@@ -16,6 +17,7 @@ import { LoadingRows } from '../../ui/states';
 import { TextLink } from '../../ui/TextLink';
 import type { ConversationGroup, ConversationSummary } from '../types';
 import { groupConversationList, type ConversationSection } from '../store';
+import { useLongPress } from './use-long-press';
 
 export interface ConversationListProps {
   readonly items: readonly ConversationSummary[];
@@ -334,6 +336,8 @@ function ConversationItem({
   const [title, setTitle] = useState(item.title);
   const [newGroupName, setNewGroupName] = useState('');
   useEscShield(menuOpen || confirmOpen || renaming);
+  // 触屏长按唤起与 ⋯ 相同的菜单（基座 §3.2）；长按已触发时吞掉松手后的 click，避免误开会话
+  const longPress = useLongPress(() => setMenuOpen(true));
 
   const commitRename = () => {
     if (title.trim() !== '' && title.trim() !== item.title) {
@@ -380,9 +384,13 @@ function ConversationItem({
     <div className="group relative">
       <button
         type="button"
-        onClick={() => onOpen(item.id)}
+        onClick={() => {
+          if (longPress.consumeFired()) return;
+          onOpen(item.id);
+        }}
+        {...longPress.itemProps}
         className={
-          'flex h-10 w-full cursor-pointer items-center rounded-[var(--radius-images)] px-3 pr-10 text-left ' +
+          'chat-conversation-item flex h-10 w-full cursor-pointer items-center rounded-[var(--radius-images)] px-3 pr-10 text-left ' +
           'transition-colors duration-[var(--duration-fast)] ' +
           (current ? 'bg-mist-gray font-w480' : 'hover:bg-mist-gray')
         }
@@ -397,7 +405,7 @@ function ConversationItem({
             <button
               type="button"
               aria-label={copy.chat.sidebar.itemMenuAria(item.title)}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] text-ink-black transition-opacity duration-[var(--duration-fast)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+              className="chat-item-menu-trigger inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] text-ink-black transition-opacity duration-[var(--duration-fast)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
             >
               <Ellipsis aria-hidden="true" className="h-4 w-4" />
             </button>

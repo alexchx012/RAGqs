@@ -196,6 +196,8 @@ export interface AssistantMessage {
   readonly id: string;
   readonly role: 'assistant';
   readonly content: string;
+  /** 读模型返回的回答创建时间（ISO 8601 UTC）；hover 回答下方淡入相对时间使用（共用基座 §3.4）。 */
+  readonly created_at: string;
   readonly answer_mode: AnswerMode;
   readonly effort_level: EffortLevel;
   readonly generation_id: string;

@@ -1252,6 +1252,7 @@ export class MockChatController {
       id: message.id,
       role: 'assistant',
       content,
+      created_at: message.created_at,
       answer_mode: answerMode,
       effort_level: generation.effortLevel,
       generation_id: generation.id,
