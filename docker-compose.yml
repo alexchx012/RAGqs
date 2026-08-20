@@ -22,8 +22,8 @@ services:
   milvus-minio:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
     command: minio server /minio_data
     volumes:
       - milvus_minio_data:/minio_data
@@ -61,7 +61,7 @@ services:
   meilisearch:
     image: getmeili/meilisearch:v1.11
     environment:
-      MEILI_MASTER_KEY: ragqs-dev-meili-key
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-ragqs-dev-meili-key}
       MEILI_ENV: development
       MEILI_DB_PATH: /meili_data
     ports:
