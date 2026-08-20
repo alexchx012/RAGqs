@@ -246,7 +246,7 @@ def test_replay_is_ops_only_and_uses_new_publication(service, principal) -> None
     assert replay["publication_id"] != job["publication_id"]
 
 
-def test_replay_requires_intact_content_and_hides_unavailable_action(service, principal) -> None:
+def test_replay_eligibility_trusts_stored_state_and_ignores_object_body(service, principal) -> None:
     created = service.create_initial_upload(
         principal=principal,
         space_id="space_1",
@@ -276,15 +276,31 @@ def test_replay_requires_intact_content_and_hides_unavailable_action(service, pr
         department_id=None,
     )
 
+    # Listing decides from durable DB state only; the missing object body does not
+    # hide the replay action, and replay eligibility no longer re-reads the object.
+    get_calls = []
+
+    class _CountingStore:
+        def __init__(self, store) -> None:
+            self._store = store
+
+        def __getattr__(self, name):
+            return getattr(self._store, name)
+
+        def get(self, key):
+            get_calls.append(key)
+            return self._store.get(key)
+
+    service._object_store = _CountingStore(service._object_store)
     listed = service.list_jobs(principal=ops, space_id="space_1")
-    assert listed["items"][0]["allowed_actions"] == []
-    with pytest.raises(PlatformError) as error:
-        service.replay_job(
-            principal=ops,
-            job_id=created["job_id"],
-            idempotency_key="replay-content-missing",
-        )
-    assert error.value.code == "document_version_purged"
+    assert listed["items"][0]["allowed_actions"] == ["replay"]
+    replayed = service.replay_job(
+        principal=ops,
+        job_id=created["job_id"],
+        idempotency_key="replay-content-missing",
+    )
+    assert replayed["state"] == "pending"
+    assert get_calls == []
 
 
 def test_direct_replay_uses_ops_as_execution_quota_and_notification_subject(
@@ -611,7 +627,9 @@ def test_late_receipt_does_not_discard_expired_current_attempt_staging(service, 
     assert second.attempt_id not in [request.attempt_id for request in handoff.discarded]
 
 
-def test_malformed_late_receipt_does_not_discard_current_attempt_staging(service, principal) -> None:
+def test_malformed_late_receipt_does_not_discard_current_attempt_staging(
+    service, principal
+) -> None:
     clock = [datetime(2026, 1, 1, tzinfo=UTC)]
     service._now = lambda: clock[0]
     handoff = _IndexingHandoff()

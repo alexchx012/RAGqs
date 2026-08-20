@@ -432,7 +432,9 @@ class IndexingHandoffPort(Protocol):
 
     def discard(self, request: IndexStagingRequest, *, connection: Connection) -> Any: ...
 
-    def cleanup_resource(self, resource: Mapping[str, Any], *, connection: Connection) -> Any: ...
+    def cleanup_resource(
+        self, resource: Mapping[str, Any], *, connection: Connection | None
+    ) -> Any: ...
 
 
 class NoopIndexingHandoff:
@@ -451,7 +453,9 @@ class NoopIndexingHandoff:
     def discard(self, request: IndexStagingRequest, *, connection: Connection) -> None:
         del request, connection
 
-    def cleanup_resource(self, resource: Mapping[str, Any], *, connection: Connection) -> None:
+    def cleanup_resource(
+        self, resource: Mapping[str, Any], *, connection: Connection | None
+    ) -> None:
         del resource, connection
 
 
