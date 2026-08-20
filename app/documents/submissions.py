@@ -98,8 +98,12 @@ class SubmissionService:
         *,
         submission: Any,
         principal: Any,
-    ) -> tuple[Any | None, bytes | None, ObjectMetadata | None, str | None]:
-        """Lock review facts and return either verified source content or an invalidation reason."""
+    ) -> tuple[Any | None, str | None]:
+        """Lock review facts and return either a duplicate claim or an invalidation reason.
+
+        Content integrity is trusted from the stored hash/manifest state written at
+        upload time; the object body is only touched when approve copies it.
+        """
         normalized_name = " ".join(str(submission["file_name"]).strip().split()).casefold()
         existing_claim = (
             connection.execute(
@@ -124,7 +128,7 @@ class SubmissionService:
             except PlatformError:
                 submitter = {"lifecycle_status": "deleted"}
             if submitter.get("lifecycle_status") != "active":
-                return existing_claim, None, None, "submitter_not_active"
+                return existing_claim, "submitter_not_active"
             if not self._can_contribute(
                 user_id=str(submission["submitter_user_id"]),
                 role=str(submitter.get("role", "")),
@@ -132,22 +136,12 @@ class SubmissionService:
                 lifecycle_status=str(submitter.get("lifecycle_status", "deleted")),
                 space_id=str(submission["space_id"]),
             ):
-                return existing_claim, None, None, "submitter_contribution_revoked"
+                return existing_claim, "submitter_contribution_revoked"
         try:
             self._service._authorize(principal, str(submission["space_id"]), "manage")
         except PlatformError:
-            return existing_claim, None, None, "space_not_writable"
-        try:
-            content, metadata = self._service._object_store.get(
-                str(submission["private_object_key"])
-            )
-        except (StorageKeyError, KeyError):
-            return existing_claim, None, None, "private_object_unavailable"
-        if self._service._hash(content) != str(submission["content_hash_sha256"]) or len(
-            content
-        ) != int((submission["object_manifest_json"] or {}).get("size_bytes", len(content))):
-            return existing_claim, None, None, "private_object_manifest_invalid"
-        return existing_claim, content, metadata, None
+            return existing_claim, "space_not_writable"
+        return existing_claim, None
 
     def invalidate_pending_for_identity(
         self,
@@ -382,21 +376,24 @@ class SubmissionService:
         return {"items": [self._public_row(row) for row in rows]}
 
     def list_approvals(self, *, principal: Any) -> dict[str, Any]:
+        role = str(getattr(principal, "role", ""))
         with self._service._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    select(knowledge_submissions_table).where(
-                        knowledge_submissions_table.c.status == "pending"
-                    )
-                )
-                .mappings()
-                .all()
+            query = select(knowledge_submissions_table).where(
+                knowledge_submissions_table.c.status == "pending"
             )
-        visible = []
-        for row in rows:
-            if self._review_allowed(principal, str(row["space_id"])):
-                visible.append(self._public_row(row))
-        return {"items": visible}
+            if role == "admin":
+                pass
+            elif role == "ops":
+                query = query.where(knowledge_submissions_table.c.space_id == "public")
+            elif role == "minister":
+                query = query.where(
+                    knowledge_submissions_table.c.space_id
+                    == f"department:{getattr(principal, 'department_id', None)}"
+                )
+            else:
+                return {"items": []}
+            rows = connection.execute(query).mappings().all()
+        return {"items": [self._public_row(row) for row in rows]}
 
     def content(self, *, principal: Any, submission_id: str) -> tuple[bytes, ObjectMetadata, str]:
         with self._service._engine.connect() as connection:
@@ -522,7 +519,7 @@ class SubmissionService:
             if submission["status"] != "pending":
                 raise PlatformError("submission_not_pending", "Submission is not pending", {}, 409)
             now = self._service._current_time()
-            existing_claim, content, metadata, invalid_reason = self._review_preconditions(
+            existing_claim, invalid_reason = self._review_preconditions(
                 connection,
                 submission=submission,
                 principal=principal,
@@ -574,23 +571,29 @@ class SubmissionService:
                         {"document_id": existing_claim["document_id"]},
                         409,
                     )
-                if content is None or metadata is None:
-                    raise RuntimeError("review preconditions did not produce source content")
                 normalized_name = " ".join(str(submission["file_name"]).strip().split()).casefold()
                 document_id = _new_id("doc")
                 version_id = _new_id("version")
                 job_id = _new_id("job")
                 publication_id = _new_id("publication")
                 object_key = f"documents/{document_id}/{version_id}/original"
-                self._service._object_store.put(
-                    object_key,
-                    content,
-                    ObjectMetadata(
-                        content_type=metadata.content_type,
-                        size_bytes=len(content),
-                        checksum_sha256=submission["content_hash_sha256"],
-                    ),
-                )
+                manifest_size = int((submission["object_manifest_json"] or {}).get("size_bytes", 0))
+                try:
+                    self._service._object_store.copy(
+                        str(submission["private_object_key"]), object_key
+                    )
+                except (StorageKeyError, KeyError):
+                    return self._invalidate(
+                        connection,
+                        submission=submission,
+                        reviewer=principal,
+                        reason="private_object_unavailable",
+                        now=now,
+                        actor_id=actor_id,
+                        endpoint=endpoint,
+                        key=key,
+                        fingerprint=fingerprint,
+                    )
                 connection.execute(
                     documents_table.insert().values(
                         id=document_id,
@@ -617,11 +620,14 @@ class SubmissionService:
                         version_number=1,
                         status=DocumentVersionState.PENDING.value,
                         content_hash_sha256=submission["content_hash_sha256"],
-                        object_manifest_json={"object_key": object_key, "size_bytes": len(content)},
+                        object_manifest_json={
+                            "object_key": object_key,
+                            "size_bytes": manifest_size,
+                        },
                         original_object_key=object_key,
                         file_name=submission["file_name"],
                         media_kind=submission["media_kind"],
-                        size_bytes=len(content),
+                        size_bytes=manifest_size,
                         created_by_user_id=submission["submitter_user_id"],
                         activated_at_utc=None,
                         terminal_at_utc=None,
@@ -697,7 +703,8 @@ class SubmissionService:
                             select(upload_dedup_claims_table.c.document_id).where(
                                 and_(
                                     upload_dedup_claims_table.c.space_id == submission["space_id"],
-                                    upload_dedup_claims_table.c.normalized_filename == normalized_name,
+                                    upload_dedup_claims_table.c.normalized_filename
+                                    == normalized_name,
                                     upload_dedup_claims_table.c.content_hash_sha256
                                     == submission["content_hash_sha256"],
                                 )
@@ -712,7 +719,6 @@ class SubmissionService:
                         {"document_id": winning_claim["document_id"]},
                         409,
                     )
-                self._service._object_store.delete(str(submission["private_object_key"]))
                 grant_id = _new_id("grant")
                 grant_fingerprint = self._service._idempotency_fingerprint(
                     {
@@ -750,7 +756,6 @@ class SubmissionService:
                         reviewer_user_id=actor_id,
                         reviewer_role_snapshot=str(principal.role),
                         private_object_cleanup_requested_at_utc=now,
-                        private_object_cleaned_at_utc=now,
                         reviewed_at_utc=now,
                         updated_at_utc=now,
                     )
@@ -942,7 +947,9 @@ class SubmissionService:
                     select(knowledge_submissions_table)
                     .where(
                         and_(
-                            knowledge_submissions_table.c.status.in_(["withdrawn", "invalidated"]),
+                            knowledge_submissions_table.c.status.in_(
+                                ["approved", "withdrawn", "invalidated"]
+                            ),
                             knowledge_submissions_table.c.private_object_cleanup_requested_at_utc.is_not(
                                 None
                             ),

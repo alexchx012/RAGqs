@@ -333,7 +333,13 @@ class DocumentsJobCoordinator:
                 connection.execute(
                     select(func.count())
                     .select_from(ingestion_attempts_table)
-                    .where(ingestion_attempts_table.c.job_id == expired_job_id)
+                    .where(
+                        and_(
+                            ingestion_attempts_table.c.job_id == expired_job_id,
+                            ingestion_attempts_table.c.replay_generation
+                            == job["replay_generation"],
+                        )
+                    )
                 ).scalar_one()
             )
             will_retry = attempt_count < 4

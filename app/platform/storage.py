@@ -25,6 +25,8 @@ class ObjectStorePort(Protocol):
 
     def get(self, key: str) -> tuple[bytes, ObjectMetadata]: ...
 
+    def copy(self, source_key: str, target_key: str) -> None: ...
+
     def exists(self, key: str) -> bool: ...
 
     def delete(self, key: str) -> None: ...
@@ -47,6 +49,10 @@ class MemoryObjectStore:
         except KeyError as exc:
             raise StorageKeyError(key) from exc
         return bytes(content), metadata
+
+    def copy(self, source_key: str, target_key: str) -> None:
+        content, metadata = self._objects[source_key]
+        self._objects[target_key] = (content, metadata)
 
     def exists(self, key: str) -> bool:
         if not key:
@@ -125,6 +131,18 @@ class S3ObjectStore:
         if len(content) != metadata.size_bytes:
             raise StorageKeyError(key)
         return content, metadata
+
+    def copy(self, source_key: str, target_key: str) -> None:
+        self._validate(source_key)
+        self._validate(target_key)
+        try:
+            self._active_client().copy_object(
+                Bucket=self._bucket,
+                Key=target_key,
+                CopySource={"Bucket": self._bucket, "Key": source_key},
+            )
+        except Exception as exc:
+            raise StorageKeyError(source_key) from exc
 
     def exists(self, key: str) -> bool:
         self._validate(key)

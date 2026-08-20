@@ -58,7 +58,9 @@ def test_contribute_upload_creates_private_pending_submission(service, principal
     )
 
 
-def test_contribute_upload_accepts_maximum_key_for_distinct_request_items(service, principal) -> None:
+def test_contribute_upload_accepts_maximum_key_for_distinct_request_items(
+    service, principal
+) -> None:
     key = "x" * 256
 
     first = service.create_submission(
@@ -137,6 +139,10 @@ def test_approval_deletes_private_submission_original_after_copying_document(
         f"documents/{approved['document_id']}/{approved['document_version_id']}/original"
     )
     assert document_content == b"hello"
+    # The private original is only removed by the scheduled cleanup pass, never inside
+    # the approve transaction itself.
+    service._object_store.get(private_object_key)
+    assert service.cleanup_scheduled_submissions() == [submission["submission_id"]]
     with pytest.raises(StorageKeyError):
         service._object_store.get(private_object_key)
 
@@ -169,7 +175,9 @@ def test_reject_revalidates_the_target_space_before_transitioning(service, princ
         def authorize_space(self, *, principal, space_id, action):
             del principal, space_id
             if action == "manage":
-                raise PlatformError("space_action_forbidden", "Space is no longer writable", {}, 403)
+                raise PlatformError(
+                    "space_action_forbidden", "Space is no longer writable", {}, 403
+                )
             return "contribute"
 
     service._identity_access = _ReadOnlyIdentity()
@@ -191,7 +199,9 @@ def test_reject_revalidates_the_target_space_before_transitioning(service, princ
     assert result["reason"] == "space_not_writable"
 
 
-def test_terminal_submission_delete_replays_after_the_submission_row_is_removed(service, principal) -> None:
+def test_terminal_submission_delete_replays_after_the_submission_row_is_removed(
+    service, principal
+) -> None:
     submission = service.create_submission(
         principal=principal,
         space_id="space_1",
@@ -205,18 +215,24 @@ def test_terminal_submission_delete_replays_after_the_submission_row_is_removed(
         idempotency_key="withdraw-delete-replay-1",
     )
 
-    assert service.delete_submission(
-        principal=principal,
-        submission_id=submission["submission_id"],
-        expected_version=withdrawn["version"],
-        idempotency_key="delete-terminal-replay-1",
-    ) is None
-    assert service.delete_submission(
-        principal=principal,
-        submission_id=submission["submission_id"],
-        expected_version=withdrawn["version"],
-        idempotency_key="delete-terminal-replay-1",
-    ) is None
+    assert (
+        service.delete_submission(
+            principal=principal,
+            submission_id=submission["submission_id"],
+            expected_version=withdrawn["version"],
+            idempotency_key="delete-terminal-replay-1",
+        )
+        is None
+    )
+    assert (
+        service.delete_submission(
+            principal=principal,
+            submission_id=submission["submission_id"],
+            expected_version=withdrawn["version"],
+            idempotency_key="delete-terminal-replay-1",
+        )
+        is None
+    )
 
 
 def test_submitter_can_read_an_uncleaned_withdrawn_original(service, principal) -> None:

@@ -430,19 +430,8 @@ class DocumentsService:
             raise PlatformError(
                 "document_version_purged", "Document version content was purged", {}, 410
             )
-        try:
-            content, _metadata = self._object_store.get(object_key)
-        except (StorageKeyError, KeyError) as exc:
-            raise PlatformError(
-                "document_version_purged", "Document version content was purged", {}, 410
-            ) from exc
-        if self._hash(content) != expected_hash or len(content) != int(version["size_bytes"]):
-            raise PlatformError(
-                "document_version_manifest_invalid",
-                "Document version content does not match its manifest",
-                {},
-                409,
-            )
+        # Content integrity is trusted from the hash stored at upload time; the object
+        # body is re-read only when replay actually stages a new processing attempt.
 
     def _can_replay_job(
         self, connection: Connection, *, job: Mapping[str, Any], principal: Any
@@ -666,7 +655,7 @@ class DocumentsService:
             ),
         )
 
-    def _cleanup_version_targets(
+    def _stage_cleanup_targets(
         self,
         connection: Connection,
         *,
@@ -676,8 +665,12 @@ class DocumentsService:
         version: Mapping[str, Any],
         now: datetime,
     ) -> bool:
+        """Durably record cleanup targets; return True once every target is completed.
+
+        Performs database writes only: the actual external deletions run in
+        ``_execute_cleanup_targets`` after the caller's transaction commits.
+        """
         resources = self._cleanup_resources_for_version(connection, version=version)
-        owner_column = target_table.c[owner_field]
         for resource in resources:
             _insert_do_nothing(
                 connection,
@@ -694,34 +687,110 @@ class DocumentsService:
                 },
                 index_elements=[owner_field, "backend_kind", "resource_id"],
             )
+        owner_column = target_table.c[owner_field]
         for resource in resources:
-            predicate = and_(
-                owner_column == owner_id,
-                target_table.c.backend_kind == str(resource["backend_kind"]),
-                target_table.c.resource_id == str(resource["resource_id"]),
-            )
             target = (
-                connection.execute(select(target_table).where(predicate).with_for_update())
+                connection.execute(
+                    select(target_table)
+                    .where(
+                        and_(
+                            owner_column == owner_id,
+                            target_table.c.backend_kind == str(resource["backend_kind"]),
+                            target_table.c.resource_id == str(resource["resource_id"]),
+                        )
+                    )
+                    .with_for_update()
+                )
                 .mappings()
                 .one()
             )
             if target["state"] == "completed":
                 continue
-            if (
-                target["state"] == "failed"
-                and int(target["attempt_count"]) >= self._cleanup_max_attempts
-            ):
-                return False
-            connection.execute(
-                update(target_table)
-                .where(predicate)
-                .values(
-                    state="pending",
-                    attempt_count=int(target["attempt_count"]) + 1,
-                    last_error=None,
-                    updated_at_utc=now,
+            return False
+        return True
+
+    def _execute_cleanup_targets(
+        self,
+        target_table: Any,
+        owner_field: str,
+        owner_id: str,
+        *,
+        resource_context: Mapping[str, Any],
+    ) -> tuple[int, bool]:
+        """Run one pass of staged cleanup deletions outside any caller transaction.
+
+        Targets are claimed and marked in short transactions of their own, while external
+        I/O receives no database connection. One pass per invocation and the pass stops at
+        the first failure, mirroring the historical retry cadence:
+        failed targets are retried on the next pass until the attempt budget is used.
+        Returns how many targets were newly completed and whether any target failed.
+        """
+        owner_column = target_table.c[owner_field]
+        now = self._current_time()
+        with self._engine.connect() as connection:
+            targets = connection.execute(
+                select(target_table.c.backend_kind, target_table.c.resource_id).where(
+                    and_(
+                        owner_column == owner_id,
+                        target_table.c.state != "completed",
+                    )
                 )
-            )
+            ).all()
+        completed = 0
+        for backend_kind, resource_id in sorted(
+            targets,
+            key=lambda item: (
+                self._cleanup_phase(str(item[0])),
+                str(item[0]),
+                str(item[1]),
+            ),
+        ):
+            with self._engine.begin() as connection:
+                target = (
+                    connection.execute(
+                        select(target_table)
+                        .where(
+                            and_(
+                                owner_column == owner_id,
+                                target_table.c.backend_kind == backend_kind,
+                                target_table.c.resource_id == resource_id,
+                            )
+                        )
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if target is None or target["state"] == "completed":
+                    continue
+                if (
+                    target["state"] == "failed"
+                    and int(target["attempt_count"]) >= self._cleanup_max_attempts
+                ):
+                    return completed, False
+                attempts = int(target["attempt_count"]) + 1
+                connection.execute(
+                    update(target_table)
+                    .where(
+                        and_(
+                            owner_column == owner_id,
+                            target_table.c.backend_kind == backend_kind,
+                            target_table.c.resource_id == resource_id,
+                        )
+                    )
+                    .values(
+                        state="pending",
+                        attempt_count=attempts,
+                        last_error=None,
+                        updated_at_utc=now,
+                    )
+                )
+            resource = {
+                **resource_context,
+                "backend_kind": str(backend_kind),
+                "resource_id": str(resource_id),
+            }
+            error: str | None = None
             try:
                 if resource["backend_kind"] == "object_store":
                     self._object_store.delete(str(resource["resource_id"]))
@@ -729,26 +798,39 @@ class DocumentsService:
                     cleanup = getattr(self._indexing_handoff_port, "cleanup_resource", None)
                     if not callable(cleanup):
                         raise RuntimeError("indexing cleanup handoff is not configured")
-                    cleanup(resource, connection=connection)
+                    cleanup(resource, connection=None)
             except (StorageKeyError, KeyError):
-                pass
+                error = None
             except Exception as exc:
-                connection.execute(
-                    update(target_table)
-                    .where(predicate)
-                    .values(
-                        state="failed",
-                        last_error=type(exc).__name__,
-                        updated_at_utc=now,
+                error = type(exc).__name__
+            with self._engine.begin() as connection:
+                if error is None:
+                    connection.execute(
+                        update(target_table)
+                        .where(
+                            and_(
+                                owner_column == owner_id,
+                                target_table.c.backend_kind == backend_kind,
+                                target_table.c.resource_id == resource_id,
+                            )
+                        )
+                        .values(state="completed", last_error=None, updated_at_utc=now)
                     )
-                )
-                return False
-            connection.execute(
-                update(target_table)
-                .where(predicate)
-                .values(state="completed", last_error=None, updated_at_utc=now)
-            )
-        return True
+                    completed += 1
+                else:
+                    connection.execute(
+                        update(target_table)
+                        .where(
+                            and_(
+                                owner_column == owner_id,
+                                target_table.c.backend_kind == backend_kind,
+                                target_table.c.resource_id == resource_id,
+                            )
+                        )
+                        .values(state="failed", last_error=error, updated_at_utc=now)
+                    )
+                    return completed, True
+        return completed, False
 
     @staticmethod
     def _normalize_filename(filename: str) -> tuple[str, str]:
@@ -1767,34 +1849,18 @@ class DocumentsService:
                 raise PlatformError(
                     "document_version_purged", "Document version content was purged", {}, 410
                 )
-            try:
-                content, metadata = self._object_store.get(str(source["original_object_key"]))
-            except (StorageKeyError, KeyError) as exc:
-                raise PlatformError(
-                    "document_version_purged", "Document version content was purged", {}, 410
-                ) from exc
-            if self._hash(content) != str(source["content_hash_sha256"]) or len(content) != int(
-                source["size_bytes"]
-            ):
-                raise PlatformError(
-                    "document_version_manifest_invalid",
-                    "Document version content does not match its manifest",
-                    {},
-                    409,
-                )
             version_id = _new_id("version")
             job_id = _new_id("job")
             publication_id = _new_id("publication")
             object_key = f"documents/{document_id}/{version_id}/original"
-            self._object_store.put(
-                object_key,
-                content,
-                ObjectMetadata(
-                    content_type=metadata.content_type,
-                    size_bytes=len(content),
-                    checksum_sha256=self._hash(content),
-                ),
-            )
+            try:
+                self._object_store.copy(str(source["original_object_key"]), object_key)
+            except (StorageKeyError, KeyError) as exc:
+                raise PlatformError(
+                    "document_version_purged", "Document version content was purged", {}, 410
+                ) from exc
+            content_hash = str(source["content_hash_sha256"])
+            restored_size = int(source["size_bytes"])
             version_number = (
                 int(
                     connection.execute(
@@ -1813,12 +1879,12 @@ class DocumentsService:
                     document_id=document_id,
                     version_number=version_number,
                     status=DocumentVersionState.PENDING.value,
-                    content_hash_sha256=self._hash(content),
-                    object_manifest_json={"object_key": object_key, "size_bytes": len(content)},
+                    content_hash_sha256=content_hash,
+                    object_manifest_json={"object_key": object_key, "size_bytes": restored_size},
                     original_object_key=object_key,
                     file_name=source["file_name"],
                     media_kind=source["media_kind"],
-                    size_bytes=len(content),
+                    size_bytes=restored_size,
                     created_by_user_id=actor_id,
                     activated_at_utc=None,
                     terminal_at_utc=None,
@@ -2379,6 +2445,12 @@ class DocumentsService:
                     {"expected_version": int(document["version"])},
                     409,
                 )
+            if document["space_id"] == "public":
+                self._assert_public_source_manifest(
+                    connection,
+                    document_id=document_id,
+                    document_version_id=document["active_version_id"],
+                )
             if self._lifecycle_port is None:
                 raise PlatformError(
                     "document_lifecycle_unavailable",
@@ -2704,39 +2776,51 @@ class DocumentsService:
                 .where(document_deletions_table.c.id == deletion_id)
                 .values(status="cleaning")
             )
+            all_targets_done = True
             for version in versions:
-                if not self._cleanup_version_targets(
+                if not self._stage_cleanup_targets(
                     connection,
                     target_table=document_deletion_cleanup_targets_table,
                     owner_field="deletion_id",
                     owner_id=deletion_id,
-                    version=version,
+                    version=dict(version),
                     now=now,
                 ):
-                    return {"document_id": document_id, "state": "cleaning"}
+                    all_targets_done = False
+                    continue
                 self._tombstone_version(connection, str(version["id"]), now)
-            connection.execute(
-                update(documents_table)
-                .where(documents_table.c.id == document_id)
-                .values(
-                    lifecycle_status=DocumentLifecycle.DELETED.value,
-                    space_id=None,
-                    active_version_id=None,
-                    pending_version_id=None,
-                    active_operation_job_id=None,
-                    name=None,
-                    normalized_name=None,
-                    media_kind=None,
-                    created_by_user_id=None,
-                    updated_at_utc=now,
+            if all_targets_done:
+                connection.execute(
+                    update(documents_table)
+                    .where(documents_table.c.id == document_id)
+                    .values(
+                        lifecycle_status=DocumentLifecycle.DELETED.value,
+                        space_id=None,
+                        active_version_id=None,
+                        pending_version_id=None,
+                        active_operation_job_id=None,
+                        name=None,
+                        normalized_name=None,
+                        media_kind=None,
+                        created_by_user_id=None,
+                        updated_at_utc=now,
+                    )
                 )
-            )
-            connection.execute(
-                update(document_deletions_table)
-                .where(document_deletions_table.c.id == deletion_id)
-                .values(status="completed", completed_at_utc=now)
-            )
-            return {"document_id": document_id, "state": "deleted"}
+                connection.execute(
+                    update(document_deletions_table)
+                    .where(document_deletions_table.c.id == deletion_id)
+                    .values(status="completed", completed_at_utc=now)
+                )
+                return {"document_id": document_id, "state": "deleted"}
+        newly_completed, had_failure = self._execute_cleanup_targets(
+            document_deletion_cleanup_targets_table,
+            "deletion_id",
+            deletion_id,
+            resource_context={"document_id": document_id},
+        )
+        if newly_completed and not had_failure:
+            return self.finalize_deletion(document_id=document_id, deletion_id=deletion_id)
+        return {"document_id": document_id, "state": "cleaning"}
 
     def purge_retained_versions(self, *, limit: int = 100) -> list[str]:
         if limit < 1 or limit > 1000:
@@ -2770,6 +2854,7 @@ class DocumentsService:
                 .all()
             )
             purged: list[str] = []
+            incomplete: list[tuple[str, str]] = []
             for version in candidates:
                 document = self._locked_document(connection, str(version["document_id"]))
                 if (
@@ -2810,17 +2895,62 @@ class DocumentsService:
                     .where(document_versions_table.c.id == version["id"])
                     .values(status=DocumentVersionState.PURGING.value, updated_at_utc=now)
                 )
-                if self._cleanup_version_targets(
+                if self._stage_cleanup_targets(
                     connection,
                     target_table=document_version_cleanup_targets_table,
                     owner_field="document_version_id",
                     owner_id=str(version["id"]),
-                    version=version,
+                    version=dict(version),
                     now=now,
                 ):
                     self._tombstone_version(connection, str(version["id"]), now)
                     purged.append(str(version["id"]))
-            return purged
+                else:
+                    incomplete.append((str(version["id"]), str(version["document_id"])))
+        for version_id, document_id in incomplete:
+            newly_completed, had_failure = self._execute_cleanup_targets(
+                document_version_cleanup_targets_table,
+                "document_version_id",
+                version_id,
+                resource_context={
+                    "document_id": document_id,
+                    "document_version_id": version_id,
+                },
+            )
+            if not newly_completed or had_failure:
+                continue
+            with self._engine.begin() as connection:
+                document = self._locked_document(connection, document_id)
+                if (
+                    document is None
+                    or document["lifecycle_status"] != DocumentLifecycle.ACTIVE.value
+                ):
+                    continue
+                version_row = (
+                    connection.execute(
+                        select(document_versions_table)
+                        .where(document_versions_table.c.id == version_id)
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    version_row is None
+                    or version_row["status"] != DocumentVersionState.PURGING.value
+                ):
+                    continue
+                if self._stage_cleanup_targets(
+                    connection,
+                    target_table=document_version_cleanup_targets_table,
+                    owner_field="document_version_id",
+                    owner_id=version_id,
+                    version=dict(version_row),
+                    now=self._current_time(),
+                ):
+                    self._tombstone_version(connection, version_id, self._current_time())
+                    purged.append(version_id)
+        return purged
 
     def reindex(
         self,
@@ -3100,7 +3230,13 @@ class DocumentsService:
                 connection.execute(
                     select(func.count())
                     .select_from(ingestion_attempts_table)
-                    .where(ingestion_attempts_table.c.job_id == job_id)
+                    .where(
+                        and_(
+                            ingestion_attempts_table.c.job_id == job_id,
+                            ingestion_attempts_table.c.replay_generation
+                            == job["replay_generation"],
+                        )
+                    )
                 ).scalar_one()
             )
             will_retry = retryable and attempt_count < 4
@@ -3649,6 +3785,41 @@ class DocumentsService:
         )
 
     @staticmethod
+    def _assert_public_source_manifest(
+        connection: Connection,
+        *,
+        document_id: str,
+        document_version_id: str | None,
+    ) -> None:
+        if document_version_id is None:
+            return
+        publication = (
+            connection.execute(
+                select(publications_table.c.resource_manifest_json).where(
+                    and_(
+                        publications_table.c.document_id == document_id,
+                        publications_table.c.document_version_id == document_version_id,
+                        publications_table.c.status == PublicationState.ACTIVE.value,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if publication is None:
+            return
+        manifest = dict(publication["resource_manifest_json"] or {})
+        manifest_id = str(manifest.get("content_manifest_id") or "").strip()
+        manifest_hash = str(manifest.get("content_manifest_hash") or "").strip()
+        if not manifest_id or not manifest_hash:
+            raise PlatformError(
+                "public_source_manifest_invalid",
+                "Public document source manifest is incomplete",
+                {"document_id": document_id},
+                409,
+            )
+
+    @staticmethod
     def _current_index_revision(connection: Connection) -> int:
         counter = connection.execute(
             select(documents_instance_counters_table.c.value).where(
@@ -3732,12 +3903,9 @@ class DocumentsService:
             manifest_id = str(manifest.get("content_manifest_id") or "").strip()
             manifest_hash = str(manifest.get("content_manifest_hash") or "").strip()
             if not manifest_id or not manifest_hash:
-                raise PlatformError(
-                    "processing_receipt_conflict",
-                    "Active public publication has no immutable content manifest",
-                    {},
-                    409,
-                )
+                # Isolate historical bad rows: they drop out of the snapshot instead of
+                # blocking every public publish/delete for the whole space.
+                continue
             publications.append(
                 {
                     "document_id": str(row["document_id"]),
