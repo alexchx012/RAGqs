@@ -176,6 +176,22 @@ def test_runtime_assembles_sql_adapters_from_one_configuration() -> None:
     runtime.close()
 
 
+def test_runtime_binds_usage_submission_to_configured_embedding_adapter() -> None:
+    class UsageBindableEmbedding:
+        def __init__(self) -> None:
+            self.submission = None
+
+        def set_usage_submission(self, submission) -> None:
+            self.submission = submission
+
+    embedding = UsageBindableEmbedding()
+    runtime = build_runtime(settings(), adapters={"indexing_embedding": embedding})
+    try:
+        assert embedding.submission is runtime.resolve("indexing_usage_submission")
+    finally:
+        runtime.close()
+
+
 def test_default_runtime_persists_generation_revocation_commands() -> None:
     runtime = build_runtime(settings())
     engine = runtime.resolve("database_engine")

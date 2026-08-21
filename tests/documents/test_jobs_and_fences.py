@@ -37,6 +37,11 @@ class _IndexingHandoff:
         del resource, connection
 
 
+class _PublicGraphSource:
+    def record_source_change(self, **kwargs) -> None:
+        del kwargs
+
+
 class _Calendar:
     def lock_or_verify(self, connection):
         del connection
@@ -756,6 +761,117 @@ def test_handoff_and_quota_are_part_of_publication_transaction(service, principa
     service.cancel_job(principal=principal, job_id=reindex["job_id"])
     assert quota.checked[-1] == {"quota_subject_user_id": "user_1", "pages": 1, "role": "user"}
     assert len(handoff.discarded) == 1
+
+
+@pytest.mark.parametrize(
+    ("space_id", "cost_center_key", "space_kind"),
+    [
+        ("public", "public", "public"),
+        ("department:dept_1", "department:dept_1", "department"),
+    ],
+)
+def test_publication_quota_uses_the_trusted_space_cost_center(
+    service, principal, space_id: str, cost_center_key: str, space_kind: str
+) -> None:
+    quota = _Quota()
+    service._quota_service = quota
+    service._identity_access = None
+    service._public_graph_source_service = _PublicGraphSource()
+    item = service.create_initial_upload(
+        principal=principal,
+        space_id=space_id,
+        files=[_upload()],
+        idempotency_key=f"upload-quota-space-{space_id}",
+    )["items"][0]
+
+    _accept(service, principal, item)
+
+    ownership = quota.recorded[-1]["ownership"]
+    assert ownership.cost_center_key == cost_center_key
+    assert ownership.space_id == space_id
+    assert ownership.space_kind == space_kind
+
+
+@pytest.mark.parametrize(
+    ("space_id", "cost_center_key", "space_kind"),
+    [
+        ("public", "public", "public"),
+        ("department:dept_1", "department:dept_1", "department"),
+    ],
+)
+def test_claim_snapshots_trusted_space_ownership_for_actual_usage(
+    service, principal, space_id: str, cost_center_key: str, space_kind: str
+) -> None:
+    service._identity_access = None
+    item = service.create_initial_upload(
+        principal=principal,
+        space_id=space_id,
+        files=[_upload()],
+        idempotency_key=f"upload-usage-space-{space_id}",
+    )["items"][0]
+
+    lease = service.claim_job(worker_id="worker-usage", job_id=item["job_id"])
+    with service._engine.connect() as connection:
+        staging_request = connection.execute(
+            select(ingestion_attempts_table.c.staging_request_json).where(
+                ingestion_attempts_table.c.id == lease.attempt_id
+            )
+        ).scalar_one()
+
+    assert staging_request["usage_ownership"] == {
+        "actor_user_id": "user_1",
+        "actor_role_snapshot": "user",
+        "actor_department_id_snapshot": None,
+        "quota_subject_user_id": "user_1",
+        "cost_center_key": cost_center_key,
+        "space_id": space_id,
+        "space_kind": space_kind,
+        "space_owner_user_id": None,
+        "authorization_version": None,
+        "fence_token": lease.fencing_token,
+        "source_space_ids": [space_id],
+    }
+    assert staging_request["usage_replay_generation"] == 0
+
+
+def test_successful_publication_persists_quota_charge_status(service, principal) -> None:
+    quota = _Quota()
+    service._quota_service = quota
+    service._identity_access = None
+    service._public_graph_source_service = _PublicGraphSource()
+    item = service.create_initial_upload(
+        principal=principal,
+        space_id="public",
+        files=[_upload()],
+        idempotency_key="upload-quota-charge-status-1",
+    )["items"][0]
+
+    _accept(service, principal, item)
+
+    with service._engine.connect() as connection:
+        job = (
+            connection.execute(
+                select(
+                    ingestion_jobs_table.c.quota_charge_status,
+                    ingestion_jobs_table.c.quota_charge_reason,
+                ).where(ingestion_jobs_table.c.id == item["job_id"])
+            )
+            .mappings()
+            .one()
+        )
+        publication = (
+            connection.execute(
+                select(
+                    publications_table.c.quota_charge_status,
+                    publications_table.c.quota_charge_reason,
+                ).where(publications_table.c.id == item["publication_id"])
+            )
+            .mappings()
+            .one()
+        )
+
+    assert dict(job) == {"quota_charge_status": "charged", "quota_charge_reason": None}
+    assert dict(publication) == {"quota_charge_status": "charged", "quota_charge_reason": None}
 
 
 def test_text_processor_receipt_records_one_page_of_quota(service, principal) -> None:

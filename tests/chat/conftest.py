@@ -95,10 +95,13 @@ class RecordingUsageSubmission:
     def __init__(self) -> None:
         self.prepared: list[str] = []
         self.completed: list[tuple[str, str]] = []
+        self.prepared_requests: list[dict[str, Any]] = []
+        self.completion_requests: list[dict[str, Any]] = []
 
     def prepare_provider_call(self, **kwargs: Any) -> str:
         call_id = f"call_{len(self.prepared) + 1}"
         self.prepared.append(call_id)
+        self.prepared_requests.append(dict(kwargs))
         return call_id
 
     def mark_dispatching(self, provider_call_id: str, *, started_at_provider: Any) -> bool:
@@ -106,8 +109,10 @@ class RecordingUsageSubmission:
         return True
 
     def complete_provider_call(self, *, provider_call_id: str, result: str, **kwargs: Any) -> str:
-        del kwargs
         self.completed.append((provider_call_id, result))
+        self.completion_requests.append(
+            {"provider_call_id": provider_call_id, "result": result, **kwargs}
+        )
         return provider_call_id
 
     def mark_not_sent(self, provider_call_id: str) -> None:
@@ -209,6 +214,7 @@ def build_test_env(
             calibration=calibration,
             sampler=sampler or (lambda: 0.0),
         )
+    usage = RecordingUsageSubmission()
     runtime = build_runtime(
         settings,
         adapters={
@@ -221,7 +227,7 @@ def build_test_env(
             "chat_provider_port": provider,
             "chat_calibration_port": calibration,
             "chat_generation_service": generation_service,
-            "chat_usage_submission": RecordingUsageSubmission(),
+            "chat_usage_submission": usage,
         },
     )
     client = TestClient(create_platform_app(settings, runtime=runtime))
@@ -234,6 +240,7 @@ def build_test_env(
         "retrieval": retrieval,
         "provider": provider,
         "calibration": calibration,
+        "usage": usage,
     }
 
 

@@ -112,6 +112,11 @@ chat_generation_table = Table(
         nullable=False,
     ),
     Column("owner_user_id", String(64), nullable=False),
+    Column("actor_role_snapshot", String(32), nullable=True),
+    Column("actor_department_id_snapshot", String(64), nullable=True),
+    Column("quota_subject_user_id", String(64), nullable=True),
+    Column("cost_center_key", String(128), nullable=True),
+    Column("source_space_ids_json", JSON, nullable=True),
     Column("user_message_id", String(64), nullable=False),
     Column(
         "message_id",

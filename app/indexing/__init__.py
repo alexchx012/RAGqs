@@ -3,6 +3,7 @@
 from .embedding import (
     EmbeddingConfig,
     EmbeddingProvider,
+    EmbeddingUsageContext,
     InMemoryEmbeddingProvider,
     OpenAICompatibleEmbedding,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "DocumentVisibilityFact",
     "EmbeddingConfig",
     "EmbeddingProvider",
+    "EmbeddingUsageContext",
     "Generation",
     "GenerationComponentReaderLease",
     "GenerationManager",

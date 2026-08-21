@@ -217,6 +217,25 @@ class DocumentsService:
                 role=str(getattr(principal, "role", "user")),
             )
 
+    @staticmethod
+    def _publication_space_ownership(
+        *, space_id: object, subject_user_id: str
+    ) -> tuple[str, str | None, str | None]:
+        """Derive publication cost ownership from the trusted document space id.
+
+        ``public`` and ``department:<id>`` are the durable space identities used by
+        the identity service. Personal/legacy test spaces remain user-owned without
+        being misclassified as public.
+        """
+        trusted_space_id = str(space_id)
+        if trusted_space_id == "public":
+            return "public", "public", None
+        if trusted_space_id.startswith("department:"):
+            return trusted_space_id, "department", None
+        if trusted_space_id.startswith("personal:"):
+            return f"user:{subject_user_id}", "personal", subject_user_id
+        return f"user:{subject_user_id}", None, None
+
     def _record_publication_quota(
         self,
         connection: Connection,
@@ -245,13 +264,19 @@ class DocumentsService:
 
         subject = str(job["created_by_user_id"])
         role = str(job["quota_role_snapshot"])
+        cost_center_key, space_kind, space_owner_user_id = self._publication_space_ownership(
+            space_id=document["space_id"], subject_user_id=subject
+        )
         ownership = OwnershipSnapshot(
             actor_user_id=subject,
             actor_role_snapshot=role,
             actor_department_id_snapshot=job["quota_department_id_snapshot"],
             quota_subject_user_id=subject,
-            cost_center_key=f"user:{subject}",
+            cost_center_key=cost_center_key,
             space_id=document["space_id"],
+            space_kind=space_kind,
+            space_owner_user_id=space_owner_user_id,
+            source_space_ids=(str(document["space_id"]),),
         )
         debit_id = recorder(
             connection,
@@ -267,7 +292,27 @@ class DocumentsService:
             replay_generation=int(job["replay_generation"]),
             published_at=published_at,
         )
-        return {"pages": pages, "quota_debit_id": debit_id}
+        if debit_id is not None:
+            charge_status = "charged"
+            charge_reason = None
+        elif job["quota_exempt_reason"] is not None:
+            charge_status = "exempt"
+            charge_reason = str(job["quota_exempt_reason"])
+        elif str(role) in {"ops", "admin"}:
+            charge_status = "exempt"
+            charge_reason = "unlimited_role"
+        elif int(job["replay_generation"]) > 0:
+            charge_status = "exempt"
+            charge_reason = "replay_generation"
+        else:
+            charge_status = "not_charged"
+            charge_reason = "quota_debit_not_recorded"
+        return {
+            "pages": pages,
+            "quota_debit_id": debit_id,
+            "quota_charge_status": charge_status,
+            "quota_charge_reason": charge_reason,
+        }
 
     def _publish_ingestion_notifications(
         self,
@@ -303,25 +348,8 @@ class DocumentsService:
         if not value:
             return None
         try:
-            return IndexStagingRequest(
-                job_id=str(value["job_id"]),
-                attempt_id=str(value["attempt_id"]),
-                fencing_token=int(value["fencing_token"]),
-                publication_id=str(value["publication_id"]),
-                document_id=str(value["document_id"]),
-                document_version_id=str(value["document_version_id"]),
-                space_id=str(value["space_id"]),
-                operation=str(value["operation"]),
-                base_active_version_id=value.get("base_active_version_id"),
-                expected_generation_id=str(value["expected_generation_id"]),
-                index_revision_at_start=int(value["index_revision_at_start"]),
-                object_manifest_ref=str(value["object_manifest_ref"]),
-                processing_config_snapshot=dict(value["processing_config_snapshot"]),
-                authorization_fence=dict(value["authorization_fence"]),
-                input_manifest_hash=str(value["input_manifest_hash"]),
-                processing_profile_version=str(value["processing_profile_version"]),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
+            return IndexStagingRequest.from_mapping(value)
+        except PlatformError as exc:
             raise PlatformError(
                 "processing_receipt_conflict",
                 "The stored staging request is invalid",
@@ -2360,6 +2388,20 @@ class DocumentsService:
                 receipt=receipt,
                 published_at=now,
             )
+            if usage is None:
+                quota_charge_status = "not_applicable"
+                quota_charge_reason = "quota_service_unavailable"
+            else:
+                quota_charge_status = str(usage["quota_charge_status"])
+                quota_charge_reason = usage["quota_charge_reason"]
+            connection.execute(
+                update(publications_table)
+                .where(publications_table.c.id == publication["id"])
+                .values(
+                    quota_charge_status=quota_charge_status,
+                    quota_charge_reason=quota_charge_reason,
+                )
+            )
             notification_event_ids = self._publish_ingestion_notifications(
                 connection,
                 job=job,
@@ -2376,6 +2418,8 @@ class DocumentsService:
                     active_attempt_id=attempt_id,
                     processing_summary_json=_json(dict(receipt)),
                     usage_json=usage,
+                    quota_charge_status=quota_charge_status,
+                    quota_charge_reason=quota_charge_reason,
                     degradations_json=_json(receipt.get("degradations", [])),
                     ocr_low_confidence=bool(receipt.get("ocr_low_confidence", False)),
                     notification_event_ids_json=notification_event_ids,

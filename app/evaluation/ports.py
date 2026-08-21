@@ -181,6 +181,7 @@ class UsageSubmissionPort(Protocol):
         resource_id: str | None = None,
         deadline_utc: datetime,
         request_fingerprint: str,
+        replay_generation: int = 0,
     ) -> str: ...
 
     def mark_dispatching(

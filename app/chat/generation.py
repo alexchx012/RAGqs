@@ -244,6 +244,11 @@ class GenerationService:
             attempt_number = 1
             root_generation_id = generation_id
             retry_of_generation_id = None
+            actor_role_snapshot = str(principal.role)
+            actor_department_id_snapshot = principal.department_id
+            quota_subject_user_id = user_id
+            cost_center_key = f"user:{user_id}"
+            source_space_ids = tuple(str(space_id) for space_id in user_scope.get("space_ids", ()))
         else:
             user_message_content = str(parent["request_content"])
             user_scope = dict(parent["request_scope_json"])
@@ -251,6 +256,13 @@ class GenerationService:
             attempt_number = int(parent["attempt_number"]) + 1
             root_generation_id = str(parent["root_generation_id"])
             retry_of_generation_id = str(parent["id"])
+            actor_role_snapshot = str(parent["actor_role_snapshot"] or principal.role)
+            actor_department_id_snapshot = parent["actor_department_id_snapshot"]
+            quota_subject_user_id = str(parent["quota_subject_user_id"] or parent["owner_user_id"])
+            cost_center_key = str(parent["cost_center_key"] or f"user:{quota_subject_user_id}")
+            source_space_ids = tuple(
+                str(space_id) for space_id in (parent["source_space_ids_json"] or ())
+            )
         if parent is None:
             connection.execute(
                 chat_message_table.insert().values(
@@ -289,6 +301,11 @@ class GenerationService:
             "id": generation_id,
             "conversation_id": str(conversation["id"]),
             "owner_user_id": user_id,
+            "actor_role_snapshot": actor_role_snapshot,
+            "actor_department_id_snapshot": actor_department_id_snapshot,
+            "quota_subject_user_id": quota_subject_user_id,
+            "cost_center_key": cost_center_key,
+            "source_space_ids_json": list(source_space_ids),
             "user_message_id": user_message_id_to_keep,
             "message_id": message_id,
             "root_generation_id": root_generation_id,

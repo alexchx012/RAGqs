@@ -233,6 +233,79 @@ def test_complete_writes_single_provider_usage() -> None:
     assert calls[0]["started_at_utc"] == NOW.replace(tzinfo=None)
 
 
+def test_usage_events_record_replay_generation_and_adjustments_inherit_it() -> None:
+    engine, ledger = make_ledger()
+    seed(engine, ledger)
+    call_id = _prepare_provider_call(
+        ledger,
+        provider="dashscope",
+        model="qwen-plus",
+        operation="generate",
+        execution_kind="ingestion",
+        execution_id="job_replay_2",
+        attempt_id="attempt_replay_2",
+        request_fingerprint="fp-replay-2",
+        replay_generation=2,
+    )
+    ledger.mark_dispatching(call_id, started_at_provider=NOW)
+    provider_id = ledger.complete_provider_call(
+        provider_call_id=call_id,
+        measurement=measurement(),
+        ownership=ownership(),
+        result="succeeded",
+    )
+    local_id = ledger.submit_local_usage(
+        execution_kind="ingestion",
+        execution_id="job_replay_2",
+        stage="ocr",
+        resource_kind="gpu",
+        measurement=LocalMeasurement(
+            page_count=10,
+            input_bytes=1024,
+            item_count=None,
+            gpu_milliseconds=None,
+            cpu_milliseconds=None,
+            peak_vram_bytes=None,
+        ),
+        ownership=ownership(),
+        result="succeeded",
+        started_at_utc=NOW,
+        replay_generation=2,
+    )
+    usage_adjustment_id = ledger.append_usage_adjustment(
+        referenced_event_id=local_id,
+        adjustment_source_namespace="meter_recheck",
+        adjustment_source_id="replay-2",
+        adjustment_allocation_key="ocr-gpu",
+        deltas={"page_count": 1},
+        ownership=ownership(),
+    )
+    cost_adjustment_id = ledger.append_cost_adjustment(
+        referenced_event_id=provider_id,
+        adjustment_source_namespace="billing",
+        adjustment_source_id="replay-2",
+        adjustment_allocation_key="cost",
+        amount_delta=Decimal("0.000001"),
+        currency_code="USD",
+        ownership=ownership(),
+    )
+
+    with engine.connect() as connection:
+        rows = (
+            connection.execute(
+                select(usage_event_table).where(
+                    usage_event_table.c.usage_event_id.in_(
+                        [provider_id, local_id, usage_adjustment_id, cost_adjustment_id]
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    assert {row["replay_generation"] for row in rows} == {2}
+
+
 def test_known_failure_after_send_records_usage() -> None:
     """C4：sent=True 的已知失败（503）→ completed + usage（result=failed）。"""
     engine, ledger = make_ledger()

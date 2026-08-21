@@ -764,13 +764,37 @@ class ChatGenerationWorker:
                 {},
                 503,
             )
+        owner_user_id = str(generation["owner_user_id"])
+        source_space_ids = tuple(
+            str(space_id) for space_id in (generation.get("source_space_ids_json") or ())
+        )
+        space_id = source_space_ids[0] if len(source_space_ids) == 1 else None
+        if space_id == "public":
+            space_kind = "public"
+            space_owner_user_id = None
+        elif space_id is not None and space_id.startswith("department:"):
+            space_kind = "department"
+            space_owner_user_id = None
+        elif space_id is not None and space_id.startswith("personal:"):
+            space_kind = "personal"
+            space_owner_user_id = owner_user_id
+        else:
+            space_kind = None
+            space_owner_user_id = None
+        quota_subject_user_id = str(generation.get("quota_subject_user_id") or owner_user_id)
         ownership = OwnershipSnapshot(
-            actor_user_id=str(generation["owner_user_id"]),
-            actor_role_snapshot="user",
-            actor_department_id_snapshot=None,
-            quota_subject_user_id=None,
-            cost_center_key="public",
+            actor_user_id=owner_user_id,
+            actor_role_snapshot=str(generation.get("actor_role_snapshot") or "user"),
+            actor_department_id_snapshot=generation.get("actor_department_id_snapshot"),
+            quota_subject_user_id=quota_subject_user_id,
+            cost_center_key=str(
+                generation.get("cost_center_key") or f"user:{quota_subject_user_id}"
+            ),
+            space_id=space_id,
+            space_kind=space_kind,
+            space_owner_user_id=space_owner_user_id,
             fence_token=fencing_token,
+            source_space_ids=source_space_ids,
         )
         try:
             response = self._provider.generate(request)

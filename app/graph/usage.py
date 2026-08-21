@@ -64,7 +64,7 @@ class GraphUsageRecorder:
             actor_role_snapshot="ops",
             actor_department_id_snapshot=None,
             quota_subject_user_id=None,
-            cost_center_key="public",
+            cost_center_key="system:graph",
         )
         measurement = ProviderMeasurement(
             input_tokens=None,
@@ -122,6 +122,7 @@ class UsageLedgerSubmissionAdapter:
         resource_id: str | None = None,
         deadline_utc: datetime,
         request_fingerprint: str,
+        replay_generation: int = 0,
     ) -> str:
         call_id, created = self._ledger.prepare_provider_call_with_status(
             provider=provider,
@@ -135,6 +136,7 @@ class UsageLedgerSubmissionAdapter:
             resource_id=resource_id,
             deadline_utc=deadline_utc,
             request_fingerprint=request_fingerprint,
+            replay_generation=replay_generation,
         )
         if not created:
             raise PlatformError(

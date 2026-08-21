@@ -45,6 +45,7 @@ class UsageSubmissionPort(Protocol):
         resource_id: str | None = None,
         deadline_utc: datetime,
         request_fingerprint: str,
+        replay_generation: int = 0,
     ) -> str: ...
     def mark_dispatching(
         self,
@@ -75,6 +76,7 @@ class UsageSubmissionPort(Protocol):
         ownership: object,
         result: str,
         started_at_utc: object,
+        replay_generation: int = 0,
     ) -> str: ...
     def recover_unknown_call(
         self,

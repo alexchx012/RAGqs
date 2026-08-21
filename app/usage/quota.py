@@ -61,7 +61,7 @@ from __future__ import annotations
 import re
 import secrets
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
@@ -73,7 +73,7 @@ from app.platform.errors import PlatformError
 from ._fingerprint import ledger_fingerprint
 from ._sql import _insert_do_nothing
 from .calendar import BusinessCalendarService, CalendarLock
-from .ledger import OwnershipSnapshot
+from .ledger import OwnershipSnapshot, _ownership_json
 from .ports import PublicationTerminalStatus
 from .schema import quota_debit_table, quota_projection_table
 
@@ -364,7 +364,7 @@ class QuotaService:
             "page_delta": page_delta,
             "entry_fingerprint": self._entry_fingerprint(entry_kind, fingerprint_payload),
             "cost_center_key": ownership.cost_center_key,
-            "ownership_json": asdict(ownership),
+            "ownership_json": _ownership_json(ownership),
             "effective_calendar_version_id": (
                 effective_calendar_version_id or calendar_lock.version_id
             ),
@@ -530,7 +530,7 @@ class QuotaService:
                 "operation": quota_operation_id,
                 "publication_id": publication_id,
                 "pages": pages,
-                "ownership": asdict(ownership),
+                "ownership": _ownership_json(ownership),
                 "subject": quota_subject_user_id,
                 "effective_at_utc": effective,
                 "effective_period": period,
@@ -554,7 +554,7 @@ class QuotaService:
         )
         if existing_id is not None:
             return existing_id
-        projection = self._lock_projection(
+        self._lock_projection(
             connection,
             quota_subject_user_id=quota_subject_user_id,
             quota_period=period,
@@ -569,8 +569,6 @@ class QuotaService:
         )
         if existing_id is not None:
             return existing_id
-        if int(projection["used"]) + pages > self._base_limit + int(projection["extra_granted"]):
-            raise PlatformError("quota_exceeded", "Quota limit exceeded", {}, 409)
         debit_id, inserted = self._insert_entry(
             connection,
             values=values,
@@ -716,7 +714,7 @@ class QuotaService:
             "referenced": referenced_debit_id,
             "pages": pages,
             "source": (namespace, source_id),
-            "ownership": asdict(ownership),
+            "ownership": _ownership_json(ownership),
         }
         unique_where = and_(
             quota_debit_table.c.entry_kind == "reversal",
@@ -827,7 +825,7 @@ class QuotaService:
             "referenced": referenced_debit_id,
             "pages": pages,
             "source": (namespace, source_id),
-            "ownership": asdict(ownership),
+            "ownership": _ownership_json(ownership),
         }
         unique_where = and_(
             quota_debit_table.c.entry_kind == "supplement",
@@ -932,7 +930,7 @@ class QuotaService:
             "period": quota_period,
             "pages": pages,
             "source": (namespace, source_id),
-            "ownership": asdict(ownership),
+            "ownership": _ownership_json(ownership),
         }
         unique_where = and_(
             quota_debit_table.c.entry_kind == "credit",

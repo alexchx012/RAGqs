@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 
 from sqlalchemy import select, update
 
-from app.chat.models import AskRequest, RetrievalHitOutcome, RetrievalOutcome
+from app.chat.models import AskRequest, ConversationScope, RetrievalHitOutcome, RetrievalOutcome
 from app.chat.ports import RecordingChatRetrievalPort
 from app.chat.schema import (
     chat_ab_candidate_table,
@@ -51,6 +52,55 @@ def _events(env: dict, headers: dict, generation_id: str):
         headers={**headers, "Accept": "text/event-stream"},
     )
     return sse_frames(response.text)
+
+
+def test_provider_usage_uses_creation_time_generation_ownership_snapshot() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = replace(env["identity"].authenticate_access_token(token), department_id="dept_1")
+    result = (
+        env["runtime"]
+        .resolve("chat_generation_service")
+        .ask(
+            principal=principal,
+            conversation_id=conversation_id,
+            request=AskRequest(
+                content="hello",
+                effort_level="quick",
+                scope=ConversationScope(space_ids=("department:dept_1", "public"), document_ids=()),
+            ),
+            idempotency_key="ask-ownership-snapshot-1",
+        )
+    )
+
+    with env["engine"].connect() as connection:
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert generation["actor_role_snapshot"] == "user"
+    assert generation["actor_department_id_snapshot"] == "dept_1"
+    assert generation["quota_subject_user_id"] == principal.user_id
+    assert generation["cost_center_key"] == f"user:{principal.user_id}"
+    assert generation["source_space_ids_json"] == ["department:dept_1", "public"]
+
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    completion = env["usage"].completion_requests[-1]
+    ownership = completion["ownership"]
+    assert env["usage"].prepared_requests[-1]["generation_id"] == result.generation_id
+    assert ownership.actor_role_snapshot == "user"
+    assert ownership.actor_department_id_snapshot == "dept_1"
+    assert ownership.quota_subject_user_id == principal.user_id
+    assert ownership.cost_center_key == f"user:{principal.user_id}"
+    assert ownership.space_id is None
 
 
 def test_session_revocation_converges_running_generation_to_stopped() -> None:

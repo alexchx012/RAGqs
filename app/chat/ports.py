@@ -373,24 +373,56 @@ class RecordingChatRetrievalPort:
 
 
 class ChatUsageRecorder:
-    """Provider/local usage submission with the chat cost-center ownership."""
+    """Provider/local usage submission with the persisted chat ownership facts."""
 
-    def __init__(self, submission: UsageSubmissionPort, *, actor_user_id: str) -> None:
+    def __init__(
+        self,
+        submission: UsageSubmissionPort,
+        *,
+        actor_user_id: str,
+        actor_role_snapshot: str = "user",
+        actor_department_id_snapshot: str | None = None,
+        quota_subject_user_id: str | None = None,
+        cost_center_key: str | None = None,
+        source_space_ids: tuple[str, ...] = (),
+    ) -> None:
         self._submission = submission
         self._actor_user_id = actor_user_id
+        self._actor_role_snapshot = actor_role_snapshot
+        self._actor_department_id_snapshot = actor_department_id_snapshot
+        self._quota_subject_user_id = quota_subject_user_id or actor_user_id
+        self._cost_center_key = cost_center_key or f"user:{self._quota_subject_user_id}"
+        self._source_space_ids = tuple(source_space_ids)
 
     @property
     def submission(self) -> UsageSubmissionPort:
         return self._submission
 
     def ownership(self, *, fence_token: int) -> OwnershipSnapshot:
+        space_id = self._source_space_ids[0] if len(self._source_space_ids) == 1 else None
+        if space_id == "public":
+            space_kind = "public"
+            space_owner_user_id = None
+        elif space_id is not None and space_id.startswith("department:"):
+            space_kind = "department"
+            space_owner_user_id = None
+        elif space_id is not None and space_id.startswith("personal:"):
+            space_kind = "personal"
+            space_owner_user_id = self._actor_user_id
+        else:
+            space_kind = None
+            space_owner_user_id = None
         return OwnershipSnapshot(
             actor_user_id=self._actor_user_id,
-            actor_role_snapshot="user",
-            actor_department_id_snapshot=None,
-            quota_subject_user_id=None,
-            cost_center_key="public",
+            actor_role_snapshot=self._actor_role_snapshot,
+            actor_department_id_snapshot=self._actor_department_id_snapshot,
+            quota_subject_user_id=self._quota_subject_user_id,
+            cost_center_key=self._cost_center_key,
+            space_id=space_id,
+            space_kind=space_kind,
+            space_owner_user_id=space_owner_user_id,
             fence_token=fence_token,
+            source_space_ids=self._source_space_ids,
         )
 
 

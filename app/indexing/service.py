@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 
 from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
 from app.platform.errors import PlatformError
 from app.platform.storage import ObjectStorePort
+from app.usage.ledger import OwnershipSnapshot
 
-from .embedding import EmbeddingProvider, InMemoryEmbeddingProvider
+from .embedding import EmbeddingProvider, EmbeddingUsageContext, InMemoryEmbeddingProvider
 from .generation import GenerationManager
 from .graph import GraphComponentCoordinator
 from .models import NarrowingScope, RetrievalProfile, RetrievalResult
@@ -21,6 +23,10 @@ from .providers import (
     build_sparse_provider,
 )
 from .retrieval import CitationService, NoopReranker, RetrievalService, ScoreReranker
+
+_INDEX_MAINTENANCE_EXECUTION_KIND = "index_maintenance"
+_INDEX_MAINTENANCE_COST_CENTER = "system:indexing"
+_INDEX_MAINTENANCE_TIMEOUT = timedelta(minutes=15)
 
 
 class IndexingService:
@@ -45,6 +51,7 @@ class IndexingService:
         token_counter: Any | None = None,
         object_store: ObjectStorePort | None = None,
         embedding: EmbeddingProvider | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         if environment == "production":
             if (
@@ -64,6 +71,7 @@ class IndexingService:
             ):
                 raise RuntimeError("production does not accept memory or test indexing adapters")
         self.embedding = embedding
+        self._now = now or (lambda: datetime.now(UTC))
         self.processor = processor or ContentProcessor()
         self.dense_writer = dense_writer or InMemoryIndexWriter(provider_name="dense-memory")
         self.sparse_provider = sparse_provider or build_sparse_provider(sparse_provider_name)
@@ -147,23 +155,44 @@ class IndexingService:
             raise PlatformError(
                 "generation_source_conflict", "Documents publication content has changed", {}, 409
             )
+        generation_id = str(generation.generation_id)
+        publication_id = str(source["publication_id"])
+        document_id = str(source["document_id"])
+        document_version_id = str(source["document_version_id"])
+        space_id = str(source["space_id"])
+        attempt_id = f"generation-build:{generation_id}:{publication_id}"
         request = IndexStagingRequest(
-            job_id=f"generation-build:{generation.generation_id}:{source['publication_id']}",
-            attempt_id=f"generation-build:{generation.generation_id}:{source['publication_id']}",
+            job_id=attempt_id,
+            attempt_id=attempt_id,
             fencing_token=1,
-            publication_id=str(source["publication_id"]),
-            document_id=str(source["document_id"]),
-            document_version_id=str(source["document_version_id"]),
-            space_id=str(source["space_id"]),
+            publication_id=publication_id,
+            document_id=document_id,
+            document_version_id=document_version_id,
+            space_id=space_id,
             operation="reindex",
             base_active_version_id=None,
-            expected_generation_id=generation.generation_id,
+            expected_generation_id=generation_id,
             index_revision_at_start=generation.applied_revision,
             object_manifest_ref=object_key,
             processing_config_snapshot=dict(manifest.get("processing_config_snapshot") or {}),
-            authorization_fence={"generation_id": generation.generation_id},
+            authorization_fence={"generation_id": generation_id},
             input_manifest_hash=content_manifest_hash,
             processing_profile_version=str(manifest.get("processing_profile_version") or "default"),
+            usage_ownership={
+                "actor_user_id": _INDEX_MAINTENANCE_COST_CENTER,
+                "actor_role_snapshot": "ops",
+                "actor_department_id_snapshot": None,
+                "quota_subject_user_id": None,
+                "cost_center_key": _INDEX_MAINTENANCE_COST_CENTER,
+                "space_id": space_id,
+                "space_kind": None,
+                "space_owner_user_id": None,
+                "authorization_version": None,
+                "fence_token": 1,
+                "source_space_ids": [space_id],
+            },
+            usage_deadline_at_utc=self._now_utc() + _INDEX_MAINTENANCE_TIMEOUT,
+            usage_replay_generation=0,
         )
         output = self.processor.process(
             request,
@@ -171,6 +200,10 @@ class IndexingService:
             media_kind=media_kind,
             content_manifest_id=content_manifest_id,
             content_manifest_hash=content_manifest_hash,
+        )
+        embedding_usage_context = self._document_embedding_usage_context(
+            request,
+            execution_kind=_INDEX_MAINTENANCE_EXECUTION_KIND,
         )
         self.dense_writer.stage_chunks(
             request.attempt_id,
@@ -182,6 +215,7 @@ class IndexingService:
             expected_generation_id=request.expected_generation_id,
             stage_resource_manifest=output.receipt.stage_resources,
             content_hash=output.receipt.input_manifest_hash,
+            usage_context=embedding_usage_context,
         )
         self.sparse_provider.stage_chunks(
             request.attempt_id,
@@ -237,6 +271,83 @@ class IndexingService:
             return None
         return repository.ensure_configuration_staging()
 
+    def _now_utc(self) -> datetime:
+        value = self._now()
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @staticmethod
+    def _document_embedding_usage_context(
+        request: IndexStagingRequest,
+        *,
+        execution_kind: str = "ingestion",
+    ) -> EmbeddingUsageContext | None:
+        facts = request.usage_ownership
+        if facts is None:
+            return None
+        if request.usage_deadline_at_utc is None:
+            raise PlatformError(
+                "indexing_usage_context_invalid",
+                "The staged document usage deadline is missing",
+                {},
+                409,
+            )
+        try:
+            source_space_ids = facts["source_space_ids"]
+            if not isinstance(source_space_ids, (list, tuple)) or any(
+                not isinstance(space_id, str) or not space_id.strip()
+                for space_id in source_space_ids
+            ):
+                raise TypeError
+            authorization_version = facts.get("authorization_version")
+            fence_token = facts.get("fence_token")
+            if (
+                authorization_version is not None
+                and (isinstance(authorization_version, bool) or not isinstance(authorization_version, int))
+            ) or (
+                fence_token is not None
+                and (isinstance(fence_token, bool) or not isinstance(fence_token, int))
+            ):
+                raise TypeError
+            optional_texts = (
+                facts.get("actor_department_id_snapshot"),
+                facts.get("quota_subject_user_id"),
+                facts.get("space_id"),
+                facts.get("space_kind"),
+                facts.get("space_owner_user_id"),
+            )
+            if any(value is not None and not isinstance(value, str) for value in optional_texts):
+                raise TypeError
+            ownership = OwnershipSnapshot(
+                actor_user_id=facts["actor_user_id"],
+                actor_role_snapshot=facts["actor_role_snapshot"],
+                actor_department_id_snapshot=facts.get("actor_department_id_snapshot"),
+                quota_subject_user_id=facts.get("quota_subject_user_id"),
+                cost_center_key=facts["cost_center_key"],
+                space_id=facts.get("space_id"),
+                space_kind=facts.get("space_kind"),
+                space_owner_user_id=facts.get("space_owner_user_id"),
+                authorization_version=authorization_version,
+                fence_token=fence_token,
+                source_space_ids=tuple(source_space_ids),
+            )
+            return EmbeddingUsageContext(
+                execution_kind=execution_kind,
+                execution_id=request.job_id,
+                attempt_id=request.attempt_id,
+                generation_id=request.expected_generation_id,
+                publication_id=request.publication_id,
+                deadline_utc=request.usage_deadline_at_utc,
+                replay_generation=request.usage_replay_generation,
+                ownership=ownership,
+            )
+        except (KeyError, TypeError, ValueError, PlatformError) as exc:
+            raise PlatformError(
+                "indexing_usage_context_invalid",
+                "The staged document usage ownership is invalid",
+                {},
+                409,
+            ) from exc
+
     def process_and_stage(
         self,
         request: IndexStagingRequest,
@@ -248,6 +359,7 @@ class IndexingService:
         **options: Any,
     ) -> ProcessingOutput:
         self._ensure_current_generation(request)
+        embedding_usage_context = self._document_embedding_usage_context(request)
         output = self.processor.process(
             request,
             content,
@@ -267,6 +379,7 @@ class IndexingService:
                 expected_generation_id=request.expected_generation_id,
                 stage_resource_manifest=output.receipt.stage_resources,
                 content_hash=output.receipt.input_manifest_hash,
+                usage_context=embedding_usage_context,
             )
             self.sparse_provider.stage_chunks(
                 request.attempt_id,

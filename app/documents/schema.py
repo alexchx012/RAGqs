@@ -274,6 +274,8 @@ ingestion_jobs_table = Table(
     Column("quota_role_snapshot", String(32), nullable=False),
     Column("quota_department_id_snapshot", String(64), nullable=True),
     Column("quota_exempt_reason", String(64), nullable=True),
+    Column("quota_charge_status", String(16), nullable=False, server_default="pending"),
+    Column("quota_charge_reason", String(64), nullable=True),
     *_timestamps(),
     CheckConstraint(
         "operation IN ('initial','replace','reindex')",
@@ -335,6 +337,8 @@ publications_table = Table(
     Column("generation_id", String(128), nullable=False),
     Column("status", String(32), nullable=False),
     Column("resource_manifest_json", JSON, nullable=False),
+    Column("quota_charge_status", String(16), nullable=False, server_default="pending"),
+    Column("quota_charge_reason", String(64), nullable=True),
     Column("created_at_utc", DateTime(timezone=True), nullable=False),
     Column("activated_at_utc", DateTime(timezone=True), nullable=True),
     Column("superseded_at_utc", DateTime(timezone=True), nullable=True),

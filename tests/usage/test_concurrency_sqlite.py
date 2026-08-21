@@ -131,8 +131,8 @@ def _credit_rows(engine) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def test_serial_debits_reject_over_limit_at_final_debit(env) -> None:
-    """最终 debit 必须重验余额，不能仅依赖受理时的只读 gate。"""
+def test_serial_debits_allow_over_limit_after_direct_gate(env) -> None:
+    """已通过受理门禁的 publication 完成时允许越限，后续门禁才拒绝。"""
     engine, quota, _requests, _times = env
     with engine.begin() as connection:
         lock = quota.calendar.lock_or_verify(connection)
@@ -147,24 +147,26 @@ def test_serial_debits_reject_over_limit_at_final_debit(env) -> None:
             role="user",
             effective_at_utc=NOW,
         )
-        with pytest.raises(PlatformError) as debit:
-            quota.append_debit(
-                connection,
-                quota_operation_id="job_2",
-                publication_id="pub_2",
-                quota_subject_user_id="u1",
-                pages=300,
-                ownership=ownership(),
-                calendar_lock=lock,
-                role="user",
-                effective_at_utc=NOW,
-            )
-        assert debit.value.code == "quota_exceeded"
-        assert debit.value.status_code == 409
+        quota.append_debit(
+            connection,
+            quota_operation_id="job_2",
+            publication_id="pub_2",
+            quota_subject_user_id="u1",
+            pages=300,
+            ownership=ownership(),
+            calendar_lock=lock,
+            role="user",
+            effective_at_utc=NOW,
+        )
         snapshot = quota.read_snapshot(connection, quota_subject_user_id="u1", role="user")
-        assert snapshot.used == 300
+        assert snapshot.used == 600
         rows = connection.execute(select(quota_debit_table)).mappings().all()
-        assert [row["quota_operation_id"] for row in rows] == ["job_1"]
+        assert [row["quota_operation_id"] for row in rows] == ["job_1", "job_2"]
+        with pytest.raises(PlatformError) as gate:
+            quota.check_direct_ingest_balance(
+                connection, quota_subject_user_id="u1", pages=1, role="user"
+            )
+        assert gate.value.code == "quota_exceeded"
 
 
 def test_credit_uniqueness_enforced_by_constraint(env) -> None:
