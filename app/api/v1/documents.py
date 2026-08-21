@@ -348,8 +348,14 @@ def delete_submission(
 def approval_submissions(
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    target_kind: Annotated[str | None, Query(pattern="^(public|department|personal)$")] = None,
+    target_space_id: Annotated[str | None, Query(max_length=128)] = None,
 ) -> dict[str, object]:
-    return document_service(request).list_approval_submissions(principal=principal)
+    return document_service(request).list_approval_submissions(
+        principal=principal,
+        target_kind=target_kind,
+        target_space_id=target_space_id,
+    )
 
 
 @router.post("/approvals/submissions/{submission_id}/approve", status_code=202)

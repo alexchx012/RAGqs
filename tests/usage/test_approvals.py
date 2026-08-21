@@ -81,6 +81,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import Connection
 from sqlalchemy.pool import StaticPool
 
+from app.documents.schema import documents_metadata, knowledge_submissions_table
 from app.identity.schema import identity_metadata, identity_user_table
 from app.identity.service import AuthPrincipal
 from app.platform.database import (
@@ -209,6 +210,7 @@ def make_service(now: datetime = NOW, clock: MutableClock | SequenceClock | None
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
     usage_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
     _outbox_meta.create_all(engine)
     if clock is None:
         times = [now]
@@ -1275,6 +1277,49 @@ def test_approve_approved_pages_over_requested_rejected() -> None:
     )
     assert ok["status"] == "approved"
     assert ok["approved_pages"] == 100
+
+
+def test_summary_counts_pending_submissions_within_scope() -> None:
+    engine, quota, calendar, times = make_service()
+    seed_identity(engine)
+    requests = QuotaRequestService(
+        engine, MutableClock(times), calendar, quota, RecordingOutboxPort()
+    )
+    with engine.begin() as connection:
+        for sid, space in (
+            ("sub1", "public"),
+            ("sub2", "department:d9"),
+            ("sub3", "personal:u1"),
+        ):
+            connection.execute(
+                knowledge_submissions_table.insert().values(
+                    id=sid,
+                    space_id=space,
+                    submitter_user_id="u1",
+                    version=1,
+                    status="pending",
+                    file_name=f"{sid}.txt",
+                    media_kind="text",
+                    content_hash_sha256=f"hash-{sid}",
+                    private_object_key=f"objects/{sid}",
+                    object_manifest_json={"size_bytes": 10},
+                    created_at_utc=NOW,
+                    updated_at_utc=NOW,
+                )
+            )
+    # ops 只见 public；admin 见 public + department:*；minister 只见本部门；
+    # user 无审核范围，恒为 0。
+    assert requests.summary(actor=approver())["submission_pending"] == 1
+    assert requests.summary(actor=admin())["submission_pending"] == 2
+    minister = AuthPrincipal(
+        user_id="m1",
+        auth_session_id="s4",
+        username="minister",
+        role="minister",
+        department_id="d9",
+    )
+    assert requests.summary(actor=minister)["submission_pending"] == 1
+    assert requests.summary(actor=applicant())["submission_pending"] == 0
 
 
 def test_summary_minister_zero_and_status_listing() -> None:

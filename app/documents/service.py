@@ -3149,13 +3149,36 @@ class DocumentsService:
                         ingestion_jobs_table.c.state == state,
                     )
                 )
-                .values(state=IngestionJobState.CANCELLED.value, stage=None, updated_at_utc=now)
+                .values(
+                    state=IngestionJobState.CANCELLED.value,
+                    stage=None,
+                    cancelled_by_user_id=str(principal.user_id),
+                    updated_at_utc=now,
+                )
             )
             if job["active_attempt_id"]:
+                # 递增 fencing token：持有旧 token 的 worker 提交结果时会被
+                # receipt 校验拒绝，无法继续推进已取消的状态机。
+                next_fencing_token = (
+                    int(
+                        connection.execute(
+                            select(func.max(ingestion_attempts_table.c.fencing_token)).where(
+                                ingestion_attempts_table.c.job_id == job_id
+                            )
+                        ).scalar_one()
+                        or 0
+                    )
+                    + 1
+                )
                 connection.execute(
                     update(ingestion_attempts_table)
                     .where(ingestion_attempts_table.c.id == job["active_attempt_id"])
-                    .values(state="cancelled", lease_expires_at_utc=None, updated_at_utc=now)
+                    .values(
+                        state="cancelled",
+                        fencing_token=next_fencing_token,
+                        lease_expires_at_utc=None,
+                        updated_at_utc=now,
+                    )
                 )
             connection.execute(
                 update(publications_table)
@@ -3661,10 +3684,16 @@ class DocumentsService:
 
         return SubmissionService(self).list(principal=principal, status=status)
 
-    def list_approval_submissions(self, *, principal: Any) -> dict[str, Any]:
+    def list_approval_submissions(
+        self, *, principal: Any, target_kind: str | None = None, target_space_id: str | None = None
+    ) -> dict[str, Any]:
         from .submissions import SubmissionService
 
-        return SubmissionService(self).list_approvals(principal=principal)
+        return SubmissionService(self).list_approvals(
+            principal=principal,
+            target_kind=target_kind,
+            target_space_id=target_space_id,
+        )
 
     def submission_content(
         self, *, principal: Any, submission_id: str

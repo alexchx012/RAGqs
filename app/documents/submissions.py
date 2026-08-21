@@ -375,14 +375,32 @@ class SubmissionService:
             )
         return {"items": [self._public_row(row) for row in rows]}
 
-    def list_approvals(self, *, principal: Any) -> dict[str, Any]:
+    _APPROVAL_TARGET_KINDS = {"public", "department", "personal"}
+
+    def list_approvals(
+        self,
+        *,
+        principal: Any,
+        target_kind: str | None = None,
+        target_space_id: str | None = None,
+    ) -> dict[str, Any]:
         role = str(getattr(principal, "role", ""))
+        if target_kind is not None and target_kind not in self._APPROVAL_TARGET_KINDS:
+            raise PlatformError(
+                "validation_error",
+                "target_kind must be public, department or personal",
+                {},
+                422,
+            )
         with self._service._engine.connect() as connection:
             query = select(knowledge_submissions_table).where(
                 knowledge_submissions_table.c.status == "pending"
             )
             if role == "admin":
-                pass
+                query = query.where(
+                    (knowledge_submissions_table.c.space_id == "public")
+                    | knowledge_submissions_table.c.space_id.like("department:%")
+                )
             elif role == "ops":
                 query = query.where(knowledge_submissions_table.c.space_id == "public")
             elif role == "minister":
@@ -391,9 +409,102 @@ class SubmissionService:
                     == f"department:{getattr(principal, 'department_id', None)}"
                 )
             else:
-                return {"items": []}
-            rows = connection.execute(query).mappings().all()
-        return {"items": [self._public_row(row) for row in rows]}
+                raise PlatformError(
+                    "approval_forbidden", "Approval list is not available for this role", {}, 403
+                )
+            if target_space_id is not None:
+                query = query.where(knowledge_submissions_table.c.space_id == target_space_id)
+            if target_kind is not None:
+                if target_kind == "public":
+                    query = query.where(knowledge_submissions_table.c.space_id == "public")
+                else:
+                    query = query.where(
+                        knowledge_submissions_table.c.space_id.like(f"{target_kind}:%")
+                    )
+            rows = (
+                connection.execute(
+                    query.order_by(
+                        knowledge_submissions_table.c.created_at_utc,
+                        knowledge_submissions_table.c.id,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        department_names = self._department_names(principal)
+        items = []
+        for row in rows:
+            submitter_name, submitter_department = self._submitter_profile(
+                str(row["submitter_user_id"])
+            )
+            items.append(
+                {
+                    "submission_id": row["id"],
+                    "space_id": row["space_id"],
+                    "space_name": self._space_display_name(
+                        str(row["space_id"]), department_names
+                    ),
+                    "version": row["version"],
+                    "status": row["status"],
+                    "file_name": row["file_name"],
+                    "media_kind": row["media_kind"],
+                    "submitter_name": submitter_name,
+                    "submitter_department": submitter_department,
+                    "file_size": int((row["object_manifest_json"] or {}).get("size_bytes", 0)),
+                    "created_at": row["created_at_utc"].isoformat(),
+                    "reviewed_at": (
+                        row["reviewed_at_utc"].isoformat() if row["reviewed_at_utc"] else None
+                    ),
+                }
+            )
+        return {"items": items}
+
+    def _department_names(self, principal: Any) -> dict[str, str]:
+        identity_access = self._service._identity_access
+        if identity_access is None or not hasattr(identity_access, "list_departments"):
+            return {}
+        try:
+            departments = identity_access.list_departments(actor=principal, status="all")
+        except PlatformError:
+            return {}
+        return {
+            str(item["id"]): str(item["name"])
+            for item in departments
+            if item.get("id") is not None
+        }
+
+    def _submitter_profile(self, submitter_user_id: str) -> tuple[str, dict[str, str] | None]:
+        identity_access = self._service._identity_access
+        if identity_access is not None and hasattr(identity_access, "user_response"):
+            try:
+                user = identity_access.user_response(submitter_user_id)
+            except PlatformError:
+                user = {}
+            name = str(
+                user.get("display_name")
+                or user.get("real_name")
+                or user.get("username")
+                or submitter_user_id
+            )
+            department = user.get("department")
+            if isinstance(department, dict) and department.get("id"):
+                return name, {
+                    "id": str(department["id"]),
+                    "name": str(department.get("name") or department["id"]),
+                }
+            return name, None
+        return submitter_user_id, None
+
+    @staticmethod
+    def _space_display_name(space_id: str, department_names: dict[str, str]) -> str:
+        if space_id == "public":
+            return "公共库"
+        if space_id.startswith("department:"):
+            department_id = space_id.split(":", 1)[1]
+            return department_names.get(department_id, space_id)
+        if space_id.startswith("personal:"):
+            return "个人库"
+        return space_id
 
     def content(self, *, principal: Any, submission_id: str) -> tuple[bytes, ObjectMetadata, str]:
         with self._service._engine.connect() as connection:
@@ -486,6 +597,9 @@ class SubmissionService:
         fingerprint = self._service._idempotency_fingerprint(
             {"submission_id": submission_id, "expected_version": expected_version, "reason": reason}
         )
+        # 前端契约（§8.5）：资格失效时投稿先落库 invalidated，再向审核者返回
+        # 409 + 最新 version，因此在事务提交后再抛出。
+        deferred_conflict: PlatformError | None = None
         with self._service._engine.begin() as connection:
             submission = (
                 connection.execute(
@@ -500,7 +614,7 @@ class SubmissionService:
                 raise PlatformError("submission_not_found", "Submission was not found", {}, 404)
             if not self._review_allowed(principal, str(submission["space_id"])):
                 raise PlatformError(
-                    "submission_review_forbidden", "Submission review is not allowed", {}, 403
+                    "approval_forbidden", "Submission review is not allowed", {}, 403
                 )
             replay = self._service._idempotency_replay(
                 connection,
@@ -514,10 +628,18 @@ class SubmissionService:
                 return replay
             if int(submission["version"]) != expected_version:
                 raise PlatformError(
-                    "submission_version_conflict", "Submission version does not match", {}, 409
+                    "version_conflict",
+                    "Submission version does not match",
+                    {"current_version": int(submission["version"])},
+                    409,
                 )
             if submission["status"] != "pending":
-                raise PlatformError("submission_not_pending", "Submission is not pending", {}, 409)
+                raise PlatformError(
+                    "submission_already_reviewed",
+                    "Submission is not pending",
+                    {"status": str(submission["status"])},
+                    409,
+                )
             now = self._service._current_time()
             existing_claim, invalid_reason = self._review_preconditions(
                 connection,
@@ -525,7 +647,7 @@ class SubmissionService:
                 principal=principal,
             )
             if invalid_reason is not None:
-                return self._invalidate(
+                invalidated = self._invalidate(
                     connection,
                     submission=submission,
                     reviewer=principal,
@@ -536,7 +658,24 @@ class SubmissionService:
                     key=key,
                     fingerprint=fingerprint,
                 )
-            if not approve:
+                if invalid_reason == "submitter_not_active":
+                    deferred_conflict = PlatformError(
+                        "submitter_pending_delete",
+                        "The submitter account is no longer active",
+                        {"version": int(invalidated["version"])},
+                        409,
+                    )
+                else:
+                    deferred_conflict = PlatformError(
+                        "submission_scope_changed",
+                        "The submission scope is no longer valid",
+                        {"version": int(invalidated["version"])},
+                        409,
+                    )
+                # _invalidate 内部已 _complete_idempotency（重试同 key 回放
+                # invalidated 终态），这里只需在提交后向审核者抛出 409。
+                response = invalidated
+            elif not approve:
                 connection.execute(
                     update(knowledge_submissions_table)
                     .where(knowledge_submissions_table.c.id == submission_id)
@@ -777,16 +916,18 @@ class SubmissionService:
                     recipient_user_id=str(submission["submitter_user_id"]),
                     occurred_at=now,
                 )
-            self._service._complete_idempotency(
-                connection,
-                actor_id=actor_id,
-                endpoint=endpoint,
-                target_id=submission_id,
-                key=key,
-                fingerprint=fingerprint,
-                response=response,
-            )
-            return response
+            if deferred_conflict is None:
+                self._service._complete_idempotency(
+                    connection,
+                    actor_id=actor_id,
+                    endpoint=endpoint,
+                    target_id=submission_id,
+                    key=key,
+                    fingerprint=fingerprint,
+                    response=response,
+                )
+                return response
+        raise deferred_conflict
 
     def withdraw(
         self,

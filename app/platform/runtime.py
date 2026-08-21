@@ -536,6 +536,7 @@ def build_runtime(
             public_graph_source_service=public_graph_source_service,
             max_upload_bytes=settings.documents.upload_max_bytes,
             cleanup_max_attempts=settings.documents.cleanup_max_attempts,
+            version_retention_days=settings.documents.version_retention_days,
             preview_renderer=preview_renderer,
             message_citation_preview_port=message_citation_preview_port,
         )
