@@ -817,6 +817,16 @@ class ChatGenerationWorker:
                 result="failed",
             )
             raise error
+        except Exception:
+            # 已派发但传输中断（连接断开/超时等）：结果未知而非确定失败，
+            # 按 §6.5 记 unknown 并以 provider_result_unknown 终态化（SSE error 事件）。
+            self._usage.mark_unknown(call_id)
+            raise PlatformError(
+                "provider_result_unknown",
+                "The chat provider result is unknown after dispatch",
+                {},
+                504,
+            ) from None
         measurement = ProviderMeasurement(
             input_tokens=getattr(response, "input_tokens", None),
             prompt_cache_hit_tokens=None,

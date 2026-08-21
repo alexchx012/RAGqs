@@ -981,8 +981,12 @@ export class MockChatController {
     if (body.effort_level !== 'quick' && body.effort_level !== 'think' && body.effort_level !== 'deep') {
       throw new MockHttpError(422, 'validation_error', { field: 'effort_level' });
     }
-    if (body.overrides !== null) {
-      // 专家模式预留：当前前端固定不传（§3.7）
+    if (
+      body.overrides !== null &&
+      body.overrides !== undefined &&
+      (typeof body.overrides !== 'object' || Array.isArray(body.overrides))
+    ) {
+      // 专家模式预留：传入时接受但忽略，不改变现有执行默认值（§3.7）
       throw new MockHttpError(422, 'validation_error', { field: 'overrides' });
     }
     if (body.scope !== undefined) {

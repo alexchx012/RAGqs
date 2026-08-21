@@ -27,6 +27,7 @@ def test_uvicorn_entrypoint_exposes_only_versioned_routes(monkeypatch) -> None:
     assert "/v1/health" in paths
     assert all(path.startswith("/v1") for path in paths)
     assert "/api/chat" not in paths
+    assert "/v1/chat" in paths
     assert "/chat" not in paths
 
     # lifespan 会锁定业务日历（Task 12）：先建 usage 表，否则启动即失败。
