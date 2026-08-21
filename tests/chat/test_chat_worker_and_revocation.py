@@ -843,3 +843,229 @@ def test_fence_locks_execution_before_generation(monkeypatch) -> None:
         control_version=3,
     )
     assert lock_order == ["execution", "generation"]
+
+
+# --------------------------------------------- query error classification fixes
+
+
+def _acl_hit(chunk: str) -> RetrievalHitOutcome:
+    return RetrievalHitOutcome(
+        document_id=f"doc_{chunk}",
+        document_version_id=f"docver_{chunk}",
+        publication_id=f"pub_{chunk}",
+        chunk_id=chunk,
+        space_id="space_1",
+        locator={"page": 1},
+        snippet=f"snippet {chunk}",
+    )
+
+
+class _AllFilteredRetrieval(RecordingChatRetrievalPort):
+    """Every citation resolution is ACL-filtered during generation."""
+
+    def resolve_citations(self, hits, *, principal):  # type: ignore[no-untyped-def]
+        del principal
+        return ()
+
+
+def _ask_scoped(env: dict, principal, conversation_id: str, content: str, scope=None):
+    return (
+        env["runtime"]
+        .resolve("chat_generation_service")
+        .ask(
+            principal=principal,
+            conversation_id=conversation_id,
+            request=AskRequest(content=content, effort_level="quick", scope=scope),
+            idempotency_key=f"ask-{content}",
+        )
+    )
+
+
+def _failed_generation(env: dict, principal, conversation_id: str, scope=None):
+    env["provider"].fail_next = True
+    result = _ask_scoped(env, principal, conversation_id, "hello", scope=scope)
+    env["runtime"].resolve("chat_generation_worker").run_once()
+    return result.generation_id
+
+
+def test_all_hits_acl_filtered_answers_no_context_instead_of_failing() -> None:
+    env = build_test_env(
+        retrieval=_AllFilteredRetrieval(),
+        outcomes={"hello": RetrievalOutcome(hits=(_acl_hit("c1"), _acl_hit("c2")))},
+    )
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask_scoped(env, principal, conversation_id, "hello")
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
+    assistant = detail["messages"][1]
+    assert assistant["status"] == "completed"
+    assert assistant["answer_mode"] == "no_context"
+    assert assistant["citations"] == []
+    frames = _events(env, headers, result.generation_id)
+    assert frames[-1][0] == "done"
+    answer = json.loads(frames[-2][2])
+    assert answer["answer_mode"] == "no_context"
+
+
+def test_rerank_degradation_uses_its_own_notice_kind() -> None:
+    env = build_test_env(
+        outcomes={
+            "hello": RetrievalOutcome(
+                hits=(),
+                degradations=(
+                    {"code": "rerank_degraded", "provider": "none"},
+                    {"code": "tree_degraded", "failed": "tree"},
+                ),
+            )
+        },
+    )
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    _ask_scoped(env, principal, conversation_id, "hello")
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
+    kinds = {notice["kind"]: notice for notice in detail["messages"][1]["notices"]}
+    assert "rerank_degraded" in kinds
+    assert kinds["rerank_degraded"]["detail"]["code"] == "rerank_degraded"
+    assert "retrieval_degraded" in kinds
+    assert kinds["retrieval_degraded"]["detail"]["code"] == "tree_degraded"
+
+
+def test_retry_rejected_when_scope_no_longer_accessible() -> None:
+    from app.chat.models import ConversationScope
+    from app.platform.errors import PlatformError
+
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    scope = ConversationScope(space_ids=("space_gone",), document_ids=())
+    failed_id = _failed_generation(env, principal, conversation_id, scope=scope)
+
+    service = env["runtime"].resolve("chat_generation_service")
+    try:
+        service.retry(
+            principal=principal,
+            failed_generation_id=failed_id,
+            idempotency_key="retry-1",
+        )
+    except PlatformError as error:
+        assert error.code == "retry_scope_changed"
+        assert error.status_code == 409
+    else:
+        raise AssertionError("retry must reject a scope the user can no longer see")
+    # No retry message appeared: only the failed assistant message exists.
+    detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
+    assistant_messages = [item for item in detail["messages"] if item["role"] == "assistant"]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["status"] == "failed"
+
+
+def test_retry_rejected_when_concurrency_quota_exhausted() -> None:
+    from app.chat.generation import GenerationService
+    from app.platform.errors import PlatformError
+
+    from .conftest import FakeCalibration, build_runtime_authorization
+
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    env["runtime"].adapters["chat_generation_service"] = GenerationService(
+        env["engine"],
+        clock=env["clock"],
+        authorization=build_runtime_authorization(env["identity"]),
+        calibration=FakeCalibration(),
+        max_running_per_user=1,
+        sampler=lambda: 0.0,
+    )
+    service = env["runtime"].resolve("chat_generation_service")
+
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    failed_id = _failed_generation(env, principal, conversation_id)
+    # A second, still-running generation exhausts the per-user quota.
+    service.ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=AskRequest(content="still running", effort_level="quick", scope=None),
+        idempotency_key="ask-2",
+    )
+    try:
+        service.retry(
+            principal=principal,
+            failed_generation_id=failed_id,
+            idempotency_key="retry-1",
+        )
+    except PlatformError as error:
+        assert error.code == "concurrency_limit_exceeded"
+        assert error.status_code == 429
+    else:
+        raise AssertionError("retry must respect the running-generation quota")
+
+
+def test_retry_rejected_when_retrieval_profile_superseded(monkeypatch) -> None:
+    from app.platform.errors import PlatformError
+
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    failed_id = _failed_generation(env, principal, conversation_id)
+    # The pinned profile generation of the failed attempt is now superseded.
+    monkeypatch.setattr("app.chat.generation.DEFAULT_RETRIEVAL_PROFILE_VERSION", "2")
+
+    service = env["runtime"].resolve("chat_generation_service")
+    try:
+        service.retry(
+            principal=principal,
+            failed_generation_id=failed_id,
+            idempotency_key="retry-1",
+        )
+    except PlatformError as error:
+        assert error.code == "retrieval_profile_superseded"
+        assert error.status_code == 409
+    else:
+        raise AssertionError("retry must reject a superseded retrieval profile")
+
+
+def test_deadline_expiry_commits_failed_state_atomically() -> None:
+    from app.chat.generation import GenerationService
+
+    from .conftest import FakeCalibration, build_runtime_authorization
+
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    # Every created generation is already past its absolute deadline.
+    env["runtime"].adapters["chat_generation_service"] = GenerationService(
+        env["engine"],
+        clock=env["clock"],
+        authorization=build_runtime_authorization(env["identity"]),
+        calibration=FakeCalibration(),
+        absolute_deadline_seconds=-1,
+    )
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask_scoped(env, principal, conversation_id, "hello")
+
+    outcome = env["runtime"].resolve("chat_generation_worker").run_once()
+    assert outcome.stage == "failed"
+    assert outcome.details["code"] == "generation_deadline_exceeded"
+
+    frames = _events(env, headers, result.generation_id)
+    assert frames[-1][0] == "error"
+    assert json.loads(frames[-1][2])["code"] == "generation_deadline_exceeded"
+    assert sum(1 for frame in frames if frame[0] == "error") == 1
+    detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
+    assistant = detail["messages"][1]
+    assert assistant["status"] == "failed"
+    assert assistant["content"] == ""

@@ -80,6 +80,8 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
         "document_id": str,
         "document_version_id": str,
         "publication_id": str,
+        "reason": str,
+        "status": str,
         "machine_low_confidence_fact": dict,
     },
     "submission_approved": {"submission_id": str},
@@ -368,6 +370,7 @@ class SqlAlchemyOutboxPublisher:
         self._now = now
         self._graph_activated_receipt_port = graph_activated_receipt_port
         self._retention_days = retention_days
+
     def _database_now(self, connection: Connection) -> datetime:
         if self._clock is not None:
             value = self._clock.now_utc(connection)
@@ -1062,6 +1065,8 @@ class SqlAlchemyIngestionOutboxAdapter:
                     "ocr_low_confidence",
                     {
                         **base_payload,
+                        "reason": "low_confidence",
+                        "status": "degraded",
                         "machine_low_confidence_fact": dict(ocr_low_confidence_fact),
                     },
                 )

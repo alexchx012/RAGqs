@@ -66,6 +66,12 @@ class ProcessingOutput:
     receipt: IndexProcessingReceipt
 
 
+def _machine_low_confidence_fact(confidence: float, page: int | None) -> dict[str, Any]:
+    """Outbox-closed OCR fact shape: only confidence, page and region."""
+
+    return {"confidence": confidence, "page": int(page or 1), "region": []}
+
+
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -400,7 +406,9 @@ class ContentProcessor:
             if confidence is not None:
                 ocr["confidence"] = float(confidence)
                 ocr["low_confidence"] = float(confidence) < 0.9
-                ocr["fact"] = {"threshold": 0.9, "confidence": float(confidence)}
+                ocr["reason"] = "low_confidence"
+                ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
+                ocr["fact"] = _machine_low_confidence_fact(float(confidence), None)
             local_confidence = parsed.get("ocr_confidence_by_page", {})
             if isinstance(local_confidence, Mapping):
                 sample = OCRSamplePlan.for_page_count(page_count)
@@ -411,13 +419,14 @@ class ContentProcessor:
                 }
                 if sampled:
                     lowest = min(sampled.values())
+                    worst_page = min(
+                        int(page) for page, value in sampled.items() if value == lowest
+                    )
                     ocr["local_confidence"] = sampled
                     ocr["low_confidence"] = lowest < 0.9
-                    ocr["fact"] = {
-                        "threshold": 0.9,
-                        "sampled_pages": sampled,
-                        "lowest_confidence": lowest,
-                    }
+                    ocr["reason"] = "low_confidence"
+                    ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
+                    ocr["fact"] = _machine_low_confidence_fact(lowest, worst_page)
             summary["ocr"] = ocr
             parsed_chunks = parsed.get("chunks", ())
             locations = tuple(parsed_chunks) if isinstance(parsed_chunks, Sequence) else ()

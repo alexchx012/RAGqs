@@ -595,6 +595,10 @@ class GenerationService:
             )
             if replay is not None:
                 return self._creation_result(connection, generation_id=replay)
+            # Re-validate the preconditions that were true for the original ask
+            # before any new generation, execution or worker side effect exists.
+            self._enforce_concurrency(connection, user_id=user_id)
+            self._validate_retry_preconditions(principal=principal, failed=failed)
             conversation = _require_owned_conversation(
                 connection,
                 conversation_id=str(failed["conversation_id"]),
@@ -623,6 +627,41 @@ class GenerationService:
                 now=now,
             )
             return result
+
+    def _validate_retry_preconditions(self, *, principal: Any, failed: Mapping[str, Any]) -> None:
+        """Reject retries whose scope or index profile no longer holds.
+
+        A retry must not start a new provider/retrieval run against a narrowing
+        scope the user can no longer see, or against a superseded retrieval
+        profile or RAG budget policy generation.
+        """
+
+        allowed = self._authorization.allowed_retrieval_scope(principal)
+        allowed_spaces = allowed.get("space_ids") if isinstance(allowed, Mapping) else None
+        scope = dict(failed["request_scope_json"] or {})
+        requested_spaces = [str(item) for item in scope.get("space_ids") or ()]
+        if (
+            requested_spaces
+            and isinstance(allowed_spaces, (set, frozenset, list, tuple))
+            and not set(requested_spaces).intersection(allowed_spaces)
+        ):
+            raise PlatformError(
+                "retry_scope_changed",
+                "The retry scope is no longer accessible to the user",
+                {"generation_id": str(failed["id"])},
+                409,
+            )
+        if (
+            str(failed["retrieval_profile_id"]) != DEFAULT_RETRIEVAL_PROFILE_ID
+            or str(failed["retrieval_profile_version"]) != DEFAULT_RETRIEVAL_PROFILE_VERSION
+            or str(failed["rag_budget_policy_version"]) != RAG_BUDGET_POLICY_VERSION
+        ):
+            raise PlatformError(
+                "retrieval_profile_superseded",
+                "The retrieval profile or budget policy changed since the failed attempt",
+                {"generation_id": str(failed["id"])},
+                409,
+            )
 
     @staticmethod
     def _retry_fingerprint(failed: Mapping[str, Any]) -> str:
