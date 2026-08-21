@@ -131,8 +131,9 @@ def validate_ask_body(body: Any) -> AskRequest:
     if not isinstance(content, str) or not content.strip():
         raise _invalid("content", "content must be a non-empty string")
     effort_level = validate_effort_level(body.get("effort_level"))
-    if "overrides" in body and body.get("overrides") is not None:
-        raise _invalid("overrides", "overrides must be null")
+    overrides = body.get("overrides")
+    if "overrides" in body and overrides is not None and not isinstance(overrides, Mapping):
+        raise _invalid("overrides", "overrides must be an object or null")
     scope = ConversationScope.from_value(body.get("scope"))
     return AskRequest(content=content.strip(), effort_level=effort_level, scope=scope)
 

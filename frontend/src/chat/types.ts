@@ -40,6 +40,21 @@ export interface ApiErrorEnvelope {
   };
 }
 
+/** 兼容 POST /chat 的成功信封；data 按端点定义具体字段。 */
+export interface ApiEnvelope<T = unknown> {
+  readonly code: number;
+  readonly message: string;
+  readonly data: T;
+}
+
+export interface ChatAcceptedData {
+  readonly conversation_id: string;
+  readonly generation_id: string;
+  readonly message_id: string;
+  readonly user_message_id: string;
+  readonly replay: boolean;
+}
+
 /* ---------- §3.1–§3.6 会话与分组 ---------- */
 
 /** GET /conversations 的单行摘要。 */
@@ -233,8 +248,8 @@ export interface AskRequest {
   readonly effort_level: EffortLevel;
   /** 省略 = 全部范围；space_ids 一律透传 §6.1 返回的实际值。 */
   readonly scope?: ConversationScope;
-  /** 专家模式预留：当前前端固定不传。 */
-  readonly overrides: null;
+  /** 专家模式预留：传入时由后端接受但忽略，不改变现有执行默认值。 */
+  readonly overrides?: Record<string, unknown> | null;
 }
 
 /** SSE start 事件：固定首事件，先于其他一切事件与终态。 */

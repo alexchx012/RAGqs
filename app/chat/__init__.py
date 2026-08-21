@@ -1,8 +1,8 @@
 """chat-generation domain: conversations, durable generations, SSE, feedback and A/B voting.
 
 This domain is a greenfield rewrite: all conversation, message, generation, event,
-feedback and A/B facts start from an empty schema. There is no import, migration,
-dual-read/dual-write or compatibility layer for any legacy chat route or envelope.
+feedback and A/B facts start from an empty schema. Compatibility HTTP routes delegate
+to these services; they do not add a second conversation or generation implementation.
 """
 
 from .conversations import ConversationService

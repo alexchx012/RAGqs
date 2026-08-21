@@ -32,6 +32,37 @@ class AskBody(BaseModel):
     content: str = Field(min_length=1)
     effort_level: str
     scope: ScopeBody | None = None
+    # 专家模式预留契约字段：先接受并忽略，不改变现有执行默认值。
+    overrides: dict[str, Any] | None = None
+
+
+class ApiEnvelope(BaseModel):
+    """成功 JSON 响应的兼容信封。"""
+
+    model_config = ConfigDict(extra="forbid")
+    code: int
+    message: str
+    data: dict[str, Any]
+
+
+class ChatBody(AskBody):
+    """POST /chat 非流式兼容请求；省略 conversation_id 时自动新建会话。"""
+
+    conversation_id: str | None = None
+
+
+def _ask_request(body: AskBody) -> AskRequest:
+    if body.effort_level not in {"quick", "think", "deep"}:
+        raise PlatformError(
+            "validation_error",
+            "effort_level must be quick, think or deep",
+            {"field": "effort_level"},
+            422,
+        )
+    scope = None
+    if body.scope is not None:
+        scope = ConversationScope.from_value(body.scope.model_dump())
+    return AskRequest(content=body.content, effort_level=body.effort_level, scope=scope)
 
 
 class GroupBody(BaseModel):
@@ -143,17 +174,7 @@ def create_message(
 ) -> StreamingResponse:
     require_streaming(accept)
     key = _idempotency_key(request)
-    if body.effort_level not in {"quick", "think", "deep"}:
-        raise PlatformError(
-            "validation_error",
-            "effort_level must be quick, think or deep",
-            {"field": "effort_level"},
-            422,
-        )
-    scope = None
-    if body.scope is not None:
-        scope = ConversationScope.from_value(body.scope.model_dump())
-    ask = AskRequest(content=body.content, effort_level=body.effort_level, scope=scope)
+    ask = _ask_request(body)
     result = _service(request).ask(
         principal=principal,
         conversation_id=conversation_id,
@@ -168,6 +189,38 @@ def create_message(
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/chat", status_code=202, response_model=ApiEnvelope)
+def post_chat(
+    body: ChatBody,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> ApiEnvelope:
+    """非流式兼容出口：复用会话 + 生成服务，返回创建信封（答案经既有 SSE/读模型获取）。"""
+    key = _idempotency_key(request)
+    conversation_id = body.conversation_id
+    if conversation_id is None:
+        conversation_id = str(
+            _conversation_service(request).create_conversation(user_id=str(principal.user_id))["id"]
+        )
+    result = _service(request).ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=_ask_request(body),
+        idempotency_key=key,
+    )
+    return ApiEnvelope(
+        code=202,
+        message="accepted",
+        data={
+            "conversation_id": conversation_id,
+            "generation_id": result.generation_id,
+            "message_id": result.message_id,
+            "user_message_id": result.user_message_id,
+            "replay": result.replay,
+        },
     )
 
 
