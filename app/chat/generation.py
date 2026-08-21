@@ -247,7 +247,8 @@ class GenerationService:
                     chat_generation_table.c.id == chat_ab_pair_table.c.generation_id,
                 )
                 .where(
-                    chat_generation_table.c.root_generation_id == root_generation_id
+                    chat_generation_table.c.root_generation_id
+                    == str(parent["root_generation_id"])
                 )
                 .limit(1)
             ).scalar_one_or_none()
