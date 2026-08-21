@@ -19,7 +19,7 @@ from app.usage.ports import UsageSubmissionPort
 from .budget import GenerationBudget
 from .events import append_event, has_terminal_event
 from .leases import generation_has_active_lease
-from .models import RetrievalHitOutcome
+from .models import NOTICE_KINDS, RetrievalHitOutcome
 from .ports import (
     CalibrationWindowPort,
     ChatProviderPort,
@@ -512,6 +512,15 @@ class ChatGenerationWorker:
 
         round_index = 0
         while True:
+            if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
+                # Fail atomically through _fail_execution before any retrieval,
+                # provider or usage side effects of this round.
+                raise PlatformError(
+                    "generation_deadline_exceeded",
+                    "The generation deadline expired before further execution",
+                    {},
+                    500,
+                )
             if round_index > 0 and not budget.can_start_rag_round():
                 previous_effort = budget.effort_level
                 upgraded = budget.upgrade_effort()
@@ -560,12 +569,14 @@ class ChatGenerationWorker:
             hits = outcome.hits
             budget.record_rag_round()
             for item in outcome.degradations:
+                code = str(item.get("code") or "")
+                kind = code if code in NOTICE_KINDS else "retrieval_degraded"
                 self._emit_notice(
                     generation_id=generation_id,
                     execution_id=execution_id,
                     fencing_token=fencing_token,
                     control_version=control_version,
-                    kind="retrieval_degraded",
+                    kind=kind,
                     detail=dict(item),
                     generation=generation,
                 )
@@ -575,12 +586,11 @@ class ChatGenerationWorker:
             visible_ids = {(str(item["document_id"]), str(item["chunk_id"])) for item in citations}
             hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
             if not hits:
-                raise PlatformError(
-                    "source_scope_changed",
-                    "All retrieval sources left the online path during generation",
-                    {},
-                    500,
-                )
+                # Every hit was ACL-filtered between search and citation
+                # resolution: this is a normal business outcome (no_context),
+                # not a generation failure.
+                citations = []
+                break
             round_index += 1
 
         candidates = self._produce_candidates(
