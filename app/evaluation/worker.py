@@ -255,6 +255,7 @@ class ShadowEvaluationWorker:
                         metrics = self._metrics(
                             scores,
                             hits=hits,
+                            candidate_hits=tuple(outcome.get("candidate_hits", ())),
                             expected_sources=expected_sources,
                             expects_refusal=expects_refusal,
                             judge_k=judge_k,
@@ -384,19 +385,21 @@ class ShadowEvaluationWorker:
         scores: JudgeScores,
         *,
         hits: tuple[Mapping[str, Any], ...],
+        candidate_hits: tuple[Mapping[str, Any], ...],
         expected_sources: tuple[str, ...],
         expects_refusal: bool | None,
         judge_k: int,
     ) -> dict[str, float]:
-        candidate_ids = _hit_source_ids(hits)
+        final_ids = _hit_source_ids(hits)
+        candidate_ids = _hit_source_ids(candidate_hits) if candidate_hits else final_ids
         if expected_sources:
             hit_candidate = (
                 1.0 if hit_at_k_candidate(candidate_ids, expected_sources, judge_k) else 0.0
             )
-            hit_final = 1.0 if hit_at_k_final(candidate_ids, expected_sources, judge_k) else 0.0
-            mrr_value = mrr(candidate_ids, expected_sources)
+            hit_final = 1.0 if hit_at_k_final(final_ids, expected_sources, judge_k) else 0.0
+            mrr_value = mrr(final_ids, expected_sources)
             ndcg = (
-                ndcg_at_k(candidate_ids, expected_sources, judge_k)
+                ndcg_at_k(final_ids, expected_sources, judge_k)
                 if len(expected_sources) > 1
                 else 0.0
             )

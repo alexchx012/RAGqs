@@ -38,6 +38,9 @@ from .schema import (
 EXECUTION_LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 MAX_PHYSICAL_EXECUTIONS = 3
+# Candidates at/above this ROUGE-L similarity are near duplicates and the
+# pair is collapsed instead of being offered for a vote.
+AB_NEAR_DUPLICATE_ROUGE_L = 0.92
 # Renewal cadence for the background execution heartbeat; well below the lease TTL.
 
 
@@ -922,7 +925,9 @@ class ChatGenerationWorker:
             pair = self._pair_row(connection, generation_id=str(generation["id"]))
             ab_open = pair is not None and len(candidates) == 2
             near_duplicate = bool(
-                ab_open and _rouge_l(candidates[0]["content"], candidates[1]["content"]) >= 0.92
+                ab_open
+                and _rouge_l(candidates[0]["content"], candidates[1]["content"])
+                >= AB_NEAR_DUPLICATE_ROUGE_L
             )
             if near_duplicate:
                 assert pair is not None

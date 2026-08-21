@@ -237,6 +237,22 @@ class GenerationService:
             and not self._calibration.user_ab_opt_out(connection, user_id=user_id)
             and self._sampler() < window.sample_rate
         )
+        if create_ab and parent is not None:
+            # A retry of the same user question must not claim a second
+            # calibration sample for the root generation chain.
+            existing_pair = connection.execute(
+                select(chat_ab_pair_table.c.pair_id)
+                .join(
+                    chat_generation_table,
+                    chat_generation_table.c.id == chat_ab_pair_table.c.generation_id,
+                )
+                .where(
+                    chat_generation_table.c.root_generation_id == root_generation_id
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if existing_pair is not None:
+                create_ab = False
         if parent is None:
             user_message_content = content
             user_scope = scope_json
@@ -368,11 +384,20 @@ class GenerationService:
             now=now,
         )
         if create_ab and window is not None:
+            scope_space_ids = (
+                user_scope.get("space_ids") if isinstance(user_scope, Mapping) else None
+            )
+            pair_space_id = (
+                str(scope_space_ids[0])
+                if isinstance(scope_space_ids, list) and scope_space_ids
+                else ""
+            )
             self._create_ab_pair(
                 connection,
                 generation_id=generation_id,
                 message_id=message_id,
                 user_id=user_id,
+                space_id=pair_space_id,
                 window=window,
                 now=now,
             )
@@ -399,6 +424,7 @@ class GenerationService:
         generation_id: str,
         message_id: str,
         user_id: str,
+        space_id: str,
         window: CalibrationWindowSnapshot,
         now: datetime,
     ) -> None:
@@ -418,6 +444,7 @@ class GenerationService:
                 message_id=message_id,
                 window_id=window.window_id,
                 owner_user_id=user_id,
+                space_id=space_id,
                 status="pending",
                 voted=False,
                 choice=None,
@@ -785,6 +812,32 @@ class GenerationService:
 
     # -------------------------------------------------------------- ab vote
 
+    @staticmethod
+    def _require_votable_message(
+        connection: Connection, *, principal: Any, message_id: str
+    ) -> None:
+        row = (
+            connection.execute(
+                select(chat_message_table.c.id, chat_message_table.c.owner_user_id,
+                       chat_message_table.c.role).where(chat_message_table.c.id == message_id)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise PlatformError("message_not_found", "Message was not found", {}, 404)
+        if str(row["owner_user_id"]) != str(principal.user_id):
+            raise PlatformError(
+                "ab_vote_forbidden", "This message cannot be voted on by this user", {}, 403
+            )
+        if str(row["role"]) != "assistant":
+            raise PlatformError(
+                "validation_error",
+                "Only assistant messages accept A/B votes",
+                {"field": "message_id"},
+                422,
+            )
+
     def submit_ab_vote(
         self,
         *,
@@ -804,7 +857,7 @@ class GenerationService:
         )
         with self._engine.begin() as connection:
             self._authorization.verify_active(connection, principal)
-            self._require_owned_assistant_message(
+            self._require_votable_message(
                 connection, principal=principal, message_id=message_id
             )
             pair = (
@@ -821,6 +874,21 @@ class GenerationService:
             )
             if pair is None:
                 raise PlatformError("ab_pair_not_found", "A/B pair was not found", {}, 404)
+            # Cross-space isolation: the voter must still hold retrieval access
+            # to the space the pair belongs to (A3).
+            pair_space_id = str(pair["space_id"] or "")
+            if pair_space_id:
+                allowed = self._authorization.allowed_retrieval_scope(principal)
+                allowed_spaces = allowed.get("space_ids") if isinstance(allowed, Mapping) else None
+                if allowed_spaces is not None and pair_space_id not in {
+                    str(space_id) for space_id in allowed_spaces
+                }:
+                    raise PlatformError(
+                        "ab_vote_forbidden",
+                        "This A/B pair belongs to an inaccessible space",
+                        {},
+                        403,
+                    )
             replay = self._find_idempotency(
                 connection,
                 user_id=user_id,
@@ -859,6 +927,8 @@ class GenerationService:
                     pair_id=request.pair_id,
                     voter_user_id=user_id,
                     choice=request.choice,
+                    operation_kind="ab_vote",
+                    idempotency_key=idempotency_key,
                     created_at_utc=now,
                 )
             )

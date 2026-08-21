@@ -20,6 +20,10 @@ from app.platform.errors import PlatformError
 
 from .models import IndexChunk
 
+# OCR pages below this confidence are flagged low-confidence in the processing
+# receipt; the value is a stable default, not per-document configuration.
+OCR_LOW_CONFIDENCE_THRESHOLD = 0.9
+
 
 class CompressionPort(Protocol):
     def compress(self, text: str, *, context: Mapping[str, Any]) -> str: ...
@@ -405,7 +409,7 @@ class ContentProcessor:
             confidence = parsed.get("ocr_confidence")
             if confidence is not None:
                 ocr["confidence"] = float(confidence)
-                ocr["low_confidence"] = float(confidence) < 0.9
+                ocr["low_confidence"] = float(confidence) < OCR_LOW_CONFIDENCE_THRESHOLD
                 ocr["reason"] = "low_confidence"
                 ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
                 ocr["fact"] = _machine_low_confidence_fact(float(confidence), None)
@@ -423,7 +427,7 @@ class ContentProcessor:
                         int(page) for page, value in sampled.items() if value == lowest
                     )
                     ocr["local_confidence"] = sampled
-                    ocr["low_confidence"] = lowest < 0.9
+                    ocr["low_confidence"] = lowest < OCR_LOW_CONFIDENCE_THRESHOLD
                     ocr["reason"] = "low_confidence"
                     ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
                     ocr["fact"] = _machine_low_confidence_fact(lowest, worst_page)

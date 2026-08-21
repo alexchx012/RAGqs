@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select, update
 
 from app.chat.models import CalibrationWindowSnapshot, RetrievalHitOutcome, RetrievalOutcome
@@ -560,3 +561,145 @@ def test_expired_ab_pair_displays_candidate_zero_after_two_candidates_published(
     assert assistant["ab"] is None
     assert assistant["content"] == "answer for hello using the answer is 42"
     assert assistant["answer_mode"] == "grounded"
+
+
+# ------------------------------------------- A/B vote contract fixes (A1-A3)
+
+
+def _open_ab_pair_for(
+    env: dict,
+    *,
+    token: str,
+    content: str = "hello",
+    scope: dict | None = None,
+) -> tuple[str, str]:
+    """Create one completed generation with an open A/B pair; return (headers, message_id)."""
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    service = env["runtime"].resolve("chat_generation_service")
+    principal = env["identity"].authenticate_access_token(token)
+    from app.chat.models import AskRequest, ConversationScope
+
+    service.ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=AskRequest(
+            content=content,
+            effort_level="quick",
+            scope=ConversationScope.from_value(scope),
+        ),
+        idempotency_key=f"ask-{content}-{scope}",
+    )
+    env["runtime"].resolve("chat_generation_worker").run_once()
+    detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
+    assistant = detail["messages"][1]
+    assert assistant["ab"]["status"] == "open"
+    return headers, assistant["id"], assistant["ab"]["pair_id"]
+
+
+def test_ab_vote_by_non_owner_returns_403_and_missing_message_keeps_404() -> None:
+    env = build_test_env(
+        calibration=FakeCalibration(window=open_window()),
+        outcomes={"hello": RetrievalOutcome(hits=(_hit(),))},
+    )
+    env["provider"].candidate_bias = True
+    alice_token, alice_id = provision_and_login(env["identity"], "alice")
+    bob_token, _ = provision_and_login(env["identity"], "bob")
+    headers, message_id, _pair_id = _open_ab_pair_for(env, token=alice_token)
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+    forbidden = env["client"].post(
+        f"/v1/messages/{message_id}/ab-vote",
+        json={"pair_id": "any", "choice": "0"},
+        headers={**bob_headers, "Idempotency-Key": "bob-vote"},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["error"]["code"] == "ab_vote_forbidden"
+    # An authorized voter referencing a nonexistent message keeps the
+    # existing resource semantics (A1).
+    missing = env["client"].post(
+        "/v1/messages/msg_does_not_exist/ab-vote",
+        json={"pair_id": "pair_x", "choice": "0"},
+        headers={**headers, "Idempotency-Key": "missing-vote"},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "message_not_found"
+
+
+def test_ab_vote_replay_keeps_single_vote_row_with_idempotency_columns() -> None:
+    from app.chat.schema import chat_ab_vote_table
+
+    env = build_test_env(
+        calibration=FakeCalibration(window=open_window()),
+        outcomes={"hello": RetrievalOutcome(hits=(_hit(),))},
+    )
+    env["provider"].candidate_bias = True
+    alice_token, _ = provision_and_login(env["identity"], "alice")
+    headers, message_id, pair_id = _open_ab_pair_for(env, token=alice_token)
+    for _ in range(2):
+        vote = env["client"].post(
+            f"/v1/messages/{message_id}/ab-vote",
+            json={"pair_id": pair_id, "choice": "0"},
+            headers={**headers, "Idempotency-Key": "vote-once"},
+        )
+        assert vote.status_code == 200
+    with env["engine"].connect() as connection:
+        votes = connection.execute(select(chat_ab_vote_table)).mappings().all()
+    # One valid vote regardless of resubmissions (A2).
+    assert len(votes) == 1
+    assert str(votes[0]["operation_kind"]) == "ab_vote"
+    assert str(votes[0]["idempotency_key"]) == "vote-once"
+
+
+def test_ab_pair_is_space_isolated_and_cross_space_vote_is_forbidden() -> None:
+    from app.chat.generation import GenerationService
+    from app.chat.models import AbVoteRequest
+    from app.chat.schema import chat_ab_vote_table
+    from app.platform.errors import PlatformError
+
+    env = build_test_env(
+        calibration=FakeCalibration(window=open_window()),
+        outcomes={"hello": RetrievalOutcome(hits=(_hit(),))},
+    )
+    env["provider"].candidate_bias = True
+    alice_token, alice_id = provision_and_login(env["identity"], "alice")
+    alice_space = f"personal:{alice_id}"
+    headers, message_id, pair_id = _open_ab_pair_for(
+        env, token=alice_token, scope={"space_ids": [alice_space]}
+    )
+    with env["engine"].connect() as connection:
+        pair = connection.execute(select(chat_ab_pair_table)).mappings().one()
+    # The pair records its owning space (A3).
+    assert str(pair["space_id"]) == alice_space
+    principal = env["identity"].authenticate_access_token(alice_token)
+
+    class _NoSpaceAuthorization:
+        """Delegates session checks but reports an empty retrieval scope."""
+
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def verify_active(self, connection, principal):
+            return self._inner.verify_active(connection, principal)
+
+        def allowed_retrieval_scope(self, principal):
+            return {"space_ids": frozenset()}
+
+    restricted = GenerationService(
+        env["engine"],
+        clock=env["clock"],
+        authorization=_NoSpaceAuthorization(build_runtime_authorization(env["identity"])),
+        calibration=env["calibration"],
+        sampler=lambda: 0.0,
+    )
+    with pytest.raises(PlatformError) as raised:
+        restricted.submit_ab_vote(
+            principal=principal,
+            message_id=message_id,
+            request=AbVoteRequest(pair_id=pair_id, choice="0"),
+            idempotency_key="cross-space-vote",
+        )
+    assert raised.value.code == "ab_vote_forbidden"
+    assert raised.value.status_code == 403
+    # No vote landed for the inaccessible space (A3).
+    with env["engine"].connect() as connection:
+        assert connection.execute(select(chat_ab_vote_table)).all() == []

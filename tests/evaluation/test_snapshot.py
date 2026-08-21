@@ -107,6 +107,7 @@ def test_snapshot_uses_completed_assistant_facts_for_weak_signals() -> None:
                 message_id="assistant_message_1",
                 window_id=None,
                 owner_user_id="owner_1",
+                space_id="space_1",
                 status="voted",
                 voted=True,
                 choice="0",

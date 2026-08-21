@@ -28,11 +28,13 @@ def _insert_run(
     sample_items=(),
     candidate_configs=("default",),
     golden_version: str | None = None,
+    snapshot_id: str = "snap_1",
+    idempotency_key: str = "key_1",
 ) -> str:
     repo = env["runtime"].resolve("evaluation_repository")
     policy = default_policy_snapshot(now=NOW)
     frozen = {
-        "snapshot_id": "snap_1",
+        "snapshot_id": snapshot_id,
         "policy_version": policy.policy_version,
         "initiator_user_id": "ops_1",
     }
@@ -50,12 +52,12 @@ def _insert_run(
             index_generation_id="gen_1",
             index_revision=1,
             frozen_snapshot=frozen,
-            snapshot_id="snap_1",
+            snapshot_id=snapshot_id,
             sample_items=sample_items,
             now=NOW,
             initiator_user_id="ops_1",
             request_hash="hash_1",
-            idempotency_key="key_1",
+            idempotency_key=idempotency_key,
         )
     return run_id
 

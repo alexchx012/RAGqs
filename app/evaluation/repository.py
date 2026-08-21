@@ -420,9 +420,15 @@ class SqlAlchemyEvaluationRepository:
                     shadow_evaluation_run_table.c.state.in_(ACTIVE_CLAIM_STATES),
                     shadow_evaluation_run_table.c.next_attempt_at_utc <= now,
                 )
-                .order_by(shadow_evaluation_run_table.c.created_at_utc.asc())
+                # run_id tie-break keeps claim order deterministic when
+                # created_at_utc ties; SKIP LOCKED stops concurrent workers
+                # from claiming (sampling) the same run twice (A6).
+                .order_by(
+                    shadow_evaluation_run_table.c.created_at_utc.asc(),
+                    shadow_evaluation_run_table.c.run_id.asc(),
+                )
                 .limit(1)
-                .with_for_update()
+                .with_for_update(skip_locked=True)
             )
             .mappings()
             .one_or_none()

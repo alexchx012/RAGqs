@@ -190,3 +190,60 @@ def test_reranker_failure_keeps_original_order() -> None:
     result = service.search("text", principal="user_1")
     assert [hit.chunk.chunk_id for hit in result.hits] == ["chunk_1"]
     assert result.degradations[-1]["code"] == "rerank_degraded"
+
+
+# ------------------------------------- rerank stability and candidate split
+
+
+def test_equal_score_ties_are_ordered_stably_across_rerankers() -> None:
+    class ReversingReranker:
+        def rerank(self, query, hits, profile):
+            del query, profile
+            return tuple(reversed(tuple(hits))), None
+
+    def _search(reranker) -> list[str]:
+        provider = InMemorySparseIndexProvider()
+        for chunk_id in ("chunk_b", "chunk_a", "chunk_c"):
+            _publish(provider, _chunk(chunk_id), f"attempt_{chunk_id}")
+        service = RetrievalService(
+            GenerationManager(),
+            [provider],
+            identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+            visibility_facts=_facts,
+            reranker=reranker,
+        )
+        return [hit.chunk.chunk_id for hit in service.search("text", principal="user_1").hits]
+
+    # All chunks share the same provider score: two rerankers with opposite
+    # output orders must converge on the same deterministic ranking (A6).
+    noop_order = _search(None)
+    reversed_order = _search(ReversingReranker())
+    assert noop_order == reversed_order == ["chunk_a", "chunk_b", "chunk_c"]
+
+
+def test_candidate_pool_is_exposed_separately_from_final_hits() -> None:
+    provider = InMemorySparseIndexProvider()
+    for index in range(1, 6):
+        _publish(provider, _chunk(f"chunk_{index}"), f"attempt_{index}")
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+    )
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=2,
+            candidate_limit=5,
+            retrieval_context_items_per_space=5,
+        ),
+    )
+    # The pre-rerank candidate pool feeds hit_at_k_candidate; the budgeted
+    # final ranking feeds hit_at_k_final (A4).
+    assert len(result.candidates) == 5
+    assert len(result.hits) == 2
+    assert {hit.chunk.chunk_id for hit in result.hits} <= {
+        hit.chunk.chunk_id for hit in result.candidates
+    }

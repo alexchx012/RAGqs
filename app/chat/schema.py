@@ -281,6 +281,7 @@ chat_ab_pair_table = Table(
     ),
     Column("window_id", String(64), nullable=True),
     Column("owner_user_id", String(64), nullable=False),
+    Column("space_id", String(64), nullable=False, server_default=""),
     Column("status", String(16), nullable=False),
     Column("voted", Boolean, nullable=False),
     Column("choice", String(16), nullable=True),
@@ -296,6 +297,7 @@ chat_ab_pair_table = Table(
         "choice IS NULL OR choice IN ('0','1','neither')", name="ck_chat_ab_pair_choice"
     ),
     Index("ix_chat_ab_pair_owner", "owner_user_id"),
+    Index("ix_chat_ab_pair_space", "space_id"),
 )
 
 
@@ -332,8 +334,16 @@ chat_ab_vote_table = Table(
     ),
     Column("voter_user_id", String(64), primary_key=True),
     Column("choice", String(16), nullable=False),
+    Column("operation_kind", String(32), nullable=False, server_default="ab_vote"),
+    Column("idempotency_key", String(256), nullable=False, server_default=""),
     Column("created_at_utc", DateTime(timezone=True), nullable=False),
     CheckConstraint("choice IN ('0','1','neither')", name="ck_chat_ab_vote_choice"),
+    UniqueConstraint(
+        "voter_user_id",
+        "operation_kind",
+        "idempotency_key",
+        name="uq_chat_ab_vote_idempotency",
+    ),
 )
 
 

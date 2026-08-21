@@ -610,6 +610,7 @@ class RetrievalService:
             selected,
             principal,
         )
+        candidate_hits = tuple(hits)
         try:
             reranked, degradation = self._reranker.rerank(query, hits, selected)
         except Exception:
@@ -617,6 +618,17 @@ class RetrievalService:
             degradation = {"code": "rerank_degraded"}
         if degradation is not None:
             degradations.append(degradation)
+        # Deterministic order across rerankers: equal scores fall back to a
+        # stable chunk_id tie-break (A6).
+        reranked = tuple(
+            sorted(
+                reranked,
+                key=lambda hit: (
+                    -(hit.rerank_score if hit.rerank_score is not None else hit.score),
+                    hit.chunk.chunk_id,
+                ),
+            )
+        )
         rag_call_limit, tree_document_limit = _EFFORT_LIMITS[selected.effort]
         tree_candidates = self._document_candidates(reranked, tree_document_limit)
         if selected.route_tree and selected.effort != "quick" and self._tree_router is not None:
@@ -708,6 +720,7 @@ class RetrievalService:
             lease.generation_id,
             selected,
             tuple(degradations),
+            candidate_hits,
         )
 
 
