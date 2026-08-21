@@ -291,10 +291,11 @@ class RetrievalResult:
     generation_id: str
     profile: RetrievalProfile
     degradations: tuple[Mapping[str, Any], ...] = ()
+    candidate_hits: tuple[RetrievalHit, ...] = ()
 
     @property
     def candidates(self) -> tuple[RetrievalHit, ...]:
-        return self.hits
+        return self.candidate_hits or self.hits
 
     @property
     def preview_hits(self) -> tuple[Mapping[str, Any], ...]:

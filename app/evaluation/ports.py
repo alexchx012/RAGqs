@@ -131,8 +131,8 @@ class IndexingReplayAdapter:
                 narrowing_scope={"space_ids": [space_id]},
                 profile=profile,
             )
-            hits = tuple(
-                {
+            def _to_mapping(hit: Any) -> dict[str, Any]:
+                return {
                     "document_id": hit.chunk.document_id,
                     "document_version_id": hit.chunk.document_version_id,
                     "publication_id": hit.chunk.publication_id,
@@ -141,12 +141,14 @@ class IndexingReplayAdapter:
                     "locator": dict(hit.chunk.locator),
                     "snippet": hit.chunk.snippet,
                 }
-                for hit in result.hits
-            )
+
             return {
                 "session_id": session_id,
                 "candidate_config_version": candidate_config_version,
-                "hits": hits,
+                "hits": tuple(_to_mapping(hit) for hit in result.hits),
+                # Pre-rerank candidate pool feeds hit_at_k_candidate while the
+                # final ranking feeds hit_at_k_final (A4).
+                "candidate_hits": tuple(_to_mapping(hit) for hit in result.candidates),
                 "degradations": tuple(result.degradations),
             }
         finally:

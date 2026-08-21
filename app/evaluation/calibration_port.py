@@ -38,12 +38,15 @@ class EvaluationCalibrationWindowPort:
         del now, user_id
         if not self._table_present(connection):
             return None
+        # Explicit row lock so concurrent samplers serialize against window
+        # close and cannot claim samples into a closing/closed window (A6).
         row = (
             connection.execute(
                 select(calibration_window_table)
                 .where(calibration_window_table.c.status == "open")
                 .order_by(calibration_window_table.c.opened_at_utc.desc())
                 .limit(1)
+                .with_for_update()
             )
             .mappings()
             .one_or_none()

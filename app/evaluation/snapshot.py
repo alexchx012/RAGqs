@@ -84,7 +84,9 @@ class SqlAlchemyChatFactsSnapshot:
         for position, message in enumerate(messages, start=1):
             question = str(message["content"])
             question_hash = _content_hash(question)
-            weak_signals = self._weak_signals(connection, message_id=str(message["id"]))
+            weak_signals = self._weak_signals(
+                connection, message_id=str(message["id"]), space_id=space_id
+            )
             samples.append(
                 {
                     "item_id": str(message["id"]),
@@ -102,7 +104,9 @@ class SqlAlchemyChatFactsSnapshot:
             )
         return tuple(samples)
 
-    def _weak_signals(self, connection: Connection, *, message_id: str) -> dict[str, Any]:
+    def _weak_signals(
+        self, connection: Connection, *, message_id: str, space_id: str
+    ) -> dict[str, Any]:
         assistant = (
             connection.execute(
                 select(
@@ -146,7 +150,9 @@ class SqlAlchemyChatFactsSnapshot:
             signals["weak_feedback_down"] = sum(1 for vote in feedback if str(vote) == "down")
             pair_id = connection.execute(
                 select(chat_ab_pair_table.c.pair_id).where(
-                    chat_ab_pair_table.c.generation_id == assistant["generation_id"]
+                    chat_ab_pair_table.c.generation_id == assistant["generation_id"],
+                    # A/B pairs and votes stay isolated per space (A3).
+                    chat_ab_pair_table.c.space_id == space_id,
                 )
             ).scalar_one_or_none()
             if pair_id is not None:

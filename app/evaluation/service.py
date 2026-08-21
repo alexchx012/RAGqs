@@ -527,6 +527,39 @@ class EvaluationService:
 
     # ---------------------------------------------------------------- golden
 
+    def _maybe_auto_shadow_run(self, space_id: str, golden_version: str) -> None:
+        """Attempt to auto-trigger a shadow evaluation after golden set adoption.
+
+        Uses the existing create_shadow_run path with a system actor and a
+        deterministic idempotency key. Non-eligibility (not enough samples,
+        active run, missing policy/config) is silently skipped; unexpected
+        errors propagate.
+        """
+
+        class _SystemActor:
+            user_id = "system:evaluation"
+            role = "ops"
+            auth_session_id = "system"
+            username = "system"
+            department_id = None
+
+        _AUTO_ELIGIBLE = frozenset(
+            {
+                "evaluation_not_eligible",
+                "shadow_evaluation_in_progress",
+                "evaluation_space_unavailable",
+            }
+        )
+        try:
+            self.create_shadow_run(
+                _SystemActor(),
+                space_id=space_id,
+                idempotency_key=f"golden-auto:{space_id}:{golden_version}",
+            )
+        except PlatformError as exc:
+            if exc.code not in _AUTO_ELIGIBLE:
+                raise
+
     def publish_golden_set(
         self,
         *,
@@ -578,6 +611,7 @@ class EvaluationService:
                 items=tuple(normalized),
                 now=self._now_utc(connection),
             )
+        self._maybe_auto_shadow_run(space_id, version)
         return version
 
     # ---------------------------------------------------------------- window

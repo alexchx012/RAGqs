@@ -361,9 +361,11 @@ def test_retrieval_keeps_hybrid_before_rerank_and_routes_tree_afterwards() -> No
 
     assert events == [
         ("rerank", ("dense_1", "sparse_1")),
-        ("tree", (("sparse_1", "dense_1"), 7, 4)),
+        # Equal scores fall back to the chunk_id tie-break, so the reranker's
+        # reversed output still routes in a deterministic order (A6).
+        ("tree", (("dense_1", "sparse_1"), 7, 4)),
     ]
-    assert [hit.chunk.chunk_id for hit in result.hits] == ["sparse_1", "dense_1"]
+    assert [hit.chunk.chunk_id for hit in result.hits] == ["dense_1", "sparse_1"]
 
 
 def test_cleanup_resource_removes_dense_and_sparse_document_version_resources() -> None:
