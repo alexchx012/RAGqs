@@ -102,7 +102,7 @@ def test_approval_creates_immutable_grant_and_initial_job(service, principal) ->
             expected_version=1,
             idempotency_key="approve-1",
         )
-    assert error.value.code == "submission_review_forbidden"
+    assert error.value.code == "approval_forbidden"
 
 
 def test_approval_deletes_private_submission_original_after_copying_document(
@@ -189,14 +189,17 @@ def test_reject_revalidates_the_target_space_before_transitioning(service, princ
         department_id=None,
     )
 
-    result = service.reject_submission(
-        principal=reviewer,
-        submission_id=submission["submission_id"],
-        expected_version=1,
-        idempotency_key="reject-revalidate-1",
-    )
-    assert result["status"] == "invalidated"
-    assert result["reason"] == "space_not_writable"
+    # 前端契约（§8.5）：scope 失效时先落库 invalidated，再向审核者返回
+    # 409 submission_scope_changed + 最新 version。
+    with pytest.raises(PlatformError) as error:
+        service.reject_submission(
+            principal=reviewer,
+            submission_id=submission["submission_id"],
+            expected_version=1,
+            idempotency_key="reject-revalidate-1",
+        )
+    assert error.value.code == "submission_scope_changed"
+    assert error.value.details == {"version": 2}
 
 
 def test_terminal_submission_delete_replays_after_the_submission_row_is_removed(

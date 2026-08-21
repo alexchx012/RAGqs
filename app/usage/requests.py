@@ -30,7 +30,8 @@
 - Task 10 审批（正式 spec §5 + Task 10 约束，旧 brief 示例陷阱已审计修正）：
   - summary 所有登录角色可读：仅精确 ops 统计当前业务月 pending（spec L50：admin
     的 quota_pending 为 0，旧示例把 admin 放行到真实计数已修正）；user/minister/
-    admin 一律 {"quota_pending": 0, "submission_pending": 0}；submission_pending 恒 0。
+    admin 的 quota_pending 为 0；submission_pending 为当前角色可见范围
+    （public/department:*、public、本部门）的真实 pending 投稿数。
   - list_quota_requests 仅精确 ops（403 forbidden_target，admin 也 403）；status
     仅 pending/approved/rejected/cancelled（否则 422）；created_at 升序；
     display_name 读 identity_user_table（缺失回落 applicant id）；current_usage 用
@@ -79,6 +80,7 @@ from sqlalchemy import Engine, and_, func, select, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
+from app.documents.schema import knowledge_submissions_table
 from app.identity.schema import identity_user_table
 from app.identity.service import AuthPrincipal
 from app.platform.context import current_context
@@ -681,25 +683,50 @@ class QuotaRequestService:
                 ) from exc
 
     def summary(self, *, actor: AuthPrincipal) -> dict:
-        """审批摘要：仅 ops 统计当前业务月 pending（正式 spec L50：admin 为 0）。"""
+        """审批摘要：仅 ops 统计当前业务月 pending（正式 spec L50：admin 为 0）。
+
+        submission_pending 为当前角色可见范围内的真实 pending 投稿数
+        （scope 与投稿审核列表 list_approvals 一致）。
+        """
         if actor.role != "ops":
-            return {"quota_pending": 0, "submission_pending": 0}
-        with self._tx.begin() as tx:
-            connection = tx.connection
-            assert connection is not None
-            lock = self.calendar.lock_or_verify(connection)
-            period = self.calendar.period_for(lock, self._clock.now_utc(connection))
-            count = connection.execute(
-                select(func.count())
-                .select_from(quota_request_table)
-                .where(
-                    and_(
-                        quota_request_table.c.status == "pending",
-                        quota_request_table.c.quota_period == period,
+            quota_pending = 0
+        else:
+            with self._tx.begin() as tx:
+                connection = tx.connection
+                assert connection is not None
+                lock = self.calendar.lock_or_verify(connection)
+                period = self.calendar.period_for(lock, self._clock.now_utc(connection))
+                quota_pending = connection.execute(
+                    select(func.count())
+                    .select_from(quota_request_table)
+                    .where(
+                        and_(
+                            quota_request_table.c.status == "pending",
+                            quota_request_table.c.quota_period == period,
+                        )
                     )
-                )
-            ).scalar_one()
-        return {"quota_pending": int(count), "submission_pending": 0}
+                ).scalar_one()
+        role = str(getattr(actor, "role", ""))
+        space_filter = None
+        if role == "admin":
+            space_filter = (
+                knowledge_submissions_table.c.space_id == "public"
+            ) | knowledge_submissions_table.c.space_id.like("department:%")
+        elif role == "ops":
+            space_filter = knowledge_submissions_table.c.space_id == "public"
+        elif role == "minister":
+            space_filter = knowledge_submissions_table.c.space_id == (
+                f"department:{getattr(actor, 'department_id', None)}"
+            )
+        submission_pending = 0
+        if space_filter is not None:
+            with self._engine.connect() as connection:
+                submission_pending = connection.execute(
+                    select(func.count())
+                    .select_from(knowledge_submissions_table)
+                    .where(knowledge_submissions_table.c.status == "pending", space_filter)
+                ).scalar_one()
+        return {"quota_pending": int(quota_pending), "submission_pending": int(submission_pending)}
 
     def list_quota_requests(self, *, actor: AuthPrincipal, status: str) -> list[dict]:
         """审批列表：仅精确 ops；created_at 升序；current_usage 读路径不创建投影。"""

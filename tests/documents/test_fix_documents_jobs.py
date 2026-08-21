@@ -467,7 +467,17 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         role="admin",
         department_id=None,
     )
-    assert len(service.list_approval_submissions(principal=admin)["items"]) == 3
+    admin_items = service.list_approval_submissions(principal=admin)["items"]
+    assert {item["space_id"] for item in admin_items} == {"public", "department:d1"}
+    # admin 不可见范围外的空间（如 personal/space_1）不会出现在审核列表。
+    assert all(
+        item["space_id"] == "public" or item["space_id"].startswith("department:")
+        for item in admin_items
+    )
+    kind_items = service.list_approval_submissions(
+        principal=admin, target_kind="department"
+    )["items"]
+    assert [item["space_id"] for item in kind_items] == ["department:d1"]
 
     ops = AuthPrincipal(
         user_id="ops_1",
@@ -489,5 +499,6 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
     minister_items = service.list_approval_submissions(principal=minister)["items"]
     assert [item["space_id"] for item in minister_items] == ["department:d1"]
 
-    user_items = service.list_approval_submissions(principal=submitter)["items"]
-    assert user_items == []
+    with pytest.raises(PlatformError) as error:
+        service.list_approval_submissions(principal=submitter)
+    assert error.value.code == "approval_forbidden"

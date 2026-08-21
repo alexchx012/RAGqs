@@ -265,6 +265,7 @@ ingestion_jobs_table = Table(
     Column("replay_generation", Integer, nullable=False),
     Column("next_attempt_at_utc", DateTime(timezone=True), nullable=True),
     Column("failure_reason", String(256), nullable=True),
+    Column("cancelled_by_user_id", String(64), nullable=True),
     Column("degradations_json", JSON, nullable=False),
     Column("processing_summary_json", JSON, nullable=False),
     Column("usage_json", JSON, nullable=True),

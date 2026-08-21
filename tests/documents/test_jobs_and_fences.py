@@ -165,6 +165,66 @@ def _accepted(service, principal):
     return item
 
 
+def test_cancel_bumps_fencing_token_and_rejects_old_worker_receipt(service, principal) -> None:
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-fencing-1",
+    )
+    item = created["items"][0]
+    lease = service.claim_job(worker_id="worker_1", job_id=item["job_id"])
+    old_token = lease.fencing_token
+
+    cancelled = service.cancel_job(principal=principal, job_id=item["job_id"])
+    assert cancelled["state"] == "cancelled"
+
+    # 取消在同一事务内递增 fencing token：持有旧 token 的 worker 无法发布。
+    with service._engine.connect() as connection:
+        stored_token = (
+            connection.execute(
+                ingestion_attempts_table.select()
+                .with_only_columns(ingestion_attempts_table.c.fencing_token)
+                .where(ingestion_attempts_table.c.id == lease.attempt_id)
+            ).scalar_one()
+        )
+    assert stored_token > old_token
+
+    with pytest.raises(PlatformError) as error:
+        service.accept_processing_receipt(
+            principal=principal,
+            job_id=item["job_id"],
+            receipt={
+                "job_id": item["job_id"],
+                "attempt_id": lease.attempt_id,
+                "fencing_token": old_token,
+                "publication_id": lease.publication_id,
+                "generation_id": lease.authorization_fence.get("generation_id")
+                if isinstance(lease.authorization_fence, dict)
+                else lease.authorization_fence.generation_id,
+                "document_id": item["document_id"],
+                "document_version_id": item["document_version_id"],
+                "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
+                "stage_resources": [],
+                "processing_config_version": "v1",
+                "authorization_fence": dict(lease.authorization_fence),
+                **_receipt_request_echoes(service, lease.attempt_id),
+                **_receipt_contract_fields(),
+            },
+        )
+    assert error.value.code == "fence_conflict"
+
+    with service._engine.connect() as connection:
+        job_state = (
+            connection.execute(
+                ingestion_jobs_table.select().where(ingestion_jobs_table.c.id == item["job_id"])
+            )
+            .mappings()
+            .one()["state"]
+        )
+    assert job_state == "cancelled"
+
+
 def test_reindex_keeps_active_version_and_stages_new_publication(service, principal) -> None:
     item = _accepted(service, principal)
     response = service.reindex(

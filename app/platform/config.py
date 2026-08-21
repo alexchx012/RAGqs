@@ -111,6 +111,7 @@ class IndexSettings(_StrictModel):
 class DocumentsSettings(_StrictModel):
     upload_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     cleanup_max_attempts: int = Field(default=3, ge=1)
+    version_retention_days: int = Field(default=30, ge=1)
 
 
 class EvaluationSettings(_StrictModel):
@@ -417,6 +418,7 @@ def load_platform_settings(
             for key, value in {
                 "upload_max_bytes": _int(env, "RAG_DOCUMENTS_UPLOAD_MAX_BYTES"),
                 "cleanup_max_attempts": _int(env, "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS"),
+                "version_retention_days": _int(env, "DOCUMENT_VERSION_RETENTION_DAYS"),
             }.items()
             if value is not None
         },
