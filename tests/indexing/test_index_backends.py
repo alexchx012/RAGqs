@@ -6,11 +6,16 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 import app.indexing.meilisearch as meilisearch_module
 import app.indexing.milvus as milvus_module
-from app.indexing.embedding import EmbeddingConfig, InMemoryEmbeddingProvider
+from app.indexing.embedding import (
+    EmbeddingConfig,
+    InMemoryEmbeddingProvider,
+    OpenAICompatibleEmbedding,
+)
 from app.indexing.meilisearch import (
     HttpMeilisearchClient,
     MeilisearchSparseIndexProvider,
@@ -214,6 +219,16 @@ def _writer(client: FakeMilvus, *, allow_create: bool = True) -> MilvusIndexWrit
     )
 
 
+class RecordingEmbeddingProvider(InMemoryEmbeddingProvider):
+    def __init__(self, config: EmbeddingConfig) -> None:
+        super().__init__(config)
+        self.usage_context: object | None = None
+
+    def embed(self, texts: Sequence[str], *, usage_context: object | None = None):
+        self.usage_context = usage_context
+        return super().embed(texts)
+
+
 def test_milvus_collection_name_includes_revision_and_dimension() -> None:
     assert milvus_collection_name("ragqs", "text-embedding-v4", 1024) == (
         "ragqs_text_embedding_v4_1024"
@@ -248,6 +263,77 @@ def test_milvus_stage_publish_search_and_idempotent_delete() -> None:
     )
     empty = writer.search("中文", ["space_1"], 5, None, generation_id="generation_1")
     assert empty.items == ()
+
+
+def test_milvus_stage_forwards_document_usage_context_to_embedding_provider() -> None:
+    client = FakeMilvus()
+    embedding = RecordingEmbeddingProvider(
+        EmbeddingConfig(
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="test",
+            model="text-embedding-v4",
+            revision="text-embedding-v4",
+            dimension=4,
+            metric="cosine",
+        )
+    )
+    writer = MilvusIndexWriter(
+        client,
+        embedding,
+        collection_prefix="ragqs",
+        allow_create_collection=True,
+    )
+    usage_context = object()
+
+    try:
+        writer.stage_chunks(
+            "attempt_1",
+            "publication_1",
+            "document_1",
+            "version_1",
+            [_chunk()],
+            usage_context=usage_context,
+        )
+    except TypeError as error:
+        pytest.fail(f"Milvus staging must accept document usage context: {error}")
+
+    assert embedding.usage_context is usage_context
+
+
+def test_milvus_stage_refuses_external_embedding_without_usage_context() -> None:
+    embedding = OpenAICompatibleEmbedding(
+        EmbeddingConfig(
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="test",
+            model="text-embedding-v4",
+            revision="text-embedding-v4",
+            dimension=4,
+            metric="cosine",
+        ),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3, 0.4]}]},
+            )
+        ),
+    )
+    writer = MilvusIndexWriter(
+        FakeMilvus(),
+        embedding,
+        collection_prefix="ragqs",
+        allow_create_collection=True,
+    )
+
+    with pytest.raises(PlatformError) as error:
+        writer.stage_chunks(
+            "attempt_legacy",
+            "publication_1",
+            "document_1",
+            "version_1",
+            [_chunk("legacy_chunk")],
+        )
+
+    assert error.value.code == "embedding_usage_context_required"
 
 
 def test_milvus_probe_validates_and_never_drops() -> None:

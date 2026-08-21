@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -617,12 +617,13 @@ def test_reconcile_amount_only_is_idempotent_on_replay() -> None:
     """纠偏：同 amount 重放不重复写对账事实；异 amount 是账本不变量错误。"""
     engine, ledger = make_ledger()
     call_id = make_unknown_call(engine, ledger)
+    source_ownership = replace(ownership(), source_space_ids=("department:dept_1", "public"))
     amount_port = StubReconciliationPort(
         {
             call_id: ReconciliationOnlyAmount(
                 amount=Decimal("0.001"),
                 currency_code="USD",
-                ownership=ownership(),
+                ownership=source_ownership,
             )
         }
     )
@@ -641,6 +642,7 @@ def test_reconcile_amount_only_is_idempotent_on_replay() -> None:
             .all()
         )
     assert len(rows) == 1
+    assert rows[0]["ownership_json"]["source_space_ids"] == ["department:dept_1", "public"]
     # 异 amount → ledger_invariant_conflict
     conflict_port = StubReconciliationPort(
         {

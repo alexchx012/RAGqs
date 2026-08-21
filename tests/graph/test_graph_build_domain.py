@@ -331,7 +331,7 @@ def test_worker_build_succeeds_and_publishes_single_event() -> None:
     completed = [call for call in usage.calls if call["phase"] == "completed"]
     assert len(completed) == 2
     for call in completed:
-        assert call["ownership"].cost_center_key == "public"
+        assert call["ownership"].cost_center_key == "system:graph"
         assert call["result"] == "succeeded"
     assert created["graph_build_id"] == current["latest_run"]["graph_build_id"]
 

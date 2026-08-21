@@ -365,7 +365,9 @@ class MeilisearchSparseIndexProvider:
         expected_generation_id: str | None = None,
         stage_resource_manifest: Sequence[Mapping[str, Any]] | None = None,
         content_hash: str | None = None,
+        usage_context: object | None = None,
     ) -> StageResult:
+        del usage_context
         prepared = validate_stage_chunks(
             attempt_id,
             publication_id,

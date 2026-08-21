@@ -511,6 +511,52 @@ def test_publication_debit_replay_succeeds_after_quota_is_full() -> None:
         assert len(debit_rows(connection)) == 2
 
 
+def test_successful_publication_can_exceed_latest_balance_without_losing_usage() -> None:
+    """最终 publication 允许越限；已提交的实际 usage 不随 debit 回滚。"""
+    engine, ledger, quota = make_policy_services()
+    seed_provider_price(engine, ledger)
+    provider_result = run_publication_provider_call(
+        ledger,
+        execution_kind="initial",
+        execution_id="job-over-limit",
+        provider_call_root_id="pc-over-limit",
+        behavior="succeeded",
+    )
+    assert provider_result.state == "succeeded"
+    fill_quota(engine, quota, 500)
+
+    with engine.begin() as connection:
+        lock = quota.calendar.lock_or_verify(connection)
+        debit_id = quota.record_publication_debit(
+            connection,
+            publication_status="succeeded",
+            quota_operation_id="job-over-limit",
+            publication_id="pub-over-limit",
+            quota_subject_user_id="u1",
+            pages=1,
+            ownership=ownership(),
+            calendar_lock=lock,
+            role="user",
+            published_at=NOW,
+        )
+
+    assert debit_id is not None
+    with engine.connect() as connection:
+        provider_usage = [
+            row for row in usage_rows(connection) if row["event_kind"] == "provider_usage"
+        ]
+        snapshot = quota.read_snapshot(connection, quota_subject_user_id="u1", role="user")
+    assert len(provider_usage) == 1
+    assert snapshot.used == 501
+
+    with engine.begin() as connection:
+        with pytest.raises(PlatformError) as rejected:
+            quota.check_direct_ingest_balance(
+                connection, quota_subject_user_id="u1", pages=1, role="user"
+            )
+    assert rejected.value.code == "quota_exceeded"
+
+
 def test_publication_debit_exempt_unlimited_replay() -> None:
     """shared_library_submission / ops / admin / replay_generation>0 → None 且不写账本。"""
     engine, quota = make_quota()

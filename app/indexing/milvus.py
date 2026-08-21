@@ -12,7 +12,7 @@ import httpx
 
 from app.platform.errors import PlatformError
 
-from .embedding import EmbeddingConfig, EmbeddingProvider
+from .embedding import EmbeddingConfig, EmbeddingProvider, EmbeddingUsageContext
 from .models import IndexChunk, ProviderSearchPage
 from .providers import StageResult, validate_stage_chunks, validate_stage_identity
 
@@ -468,6 +468,7 @@ class MilvusIndexWriter:
         expected_generation_id: str | None = None,
         stage_resource_manifest: Sequence[Mapping[str, Any]] | None = None,
         content_hash: str | None = None,
+        usage_context: EmbeddingUsageContext | None = None,
     ) -> StageResult:
         prepared = validate_stage_chunks(
             attempt_id,
@@ -523,8 +524,18 @@ class MilvusIndexWriter:
                 str(first.get("content_hash") or prepared.content_hash),
                 int(first.get("fencing_token") or fencing_token),
             )
+        if usage_context is None and getattr(self._embedding, "requires_usage_context", False):
+            raise PlatformError(
+                "embedding_usage_context_required",
+                "Document embedding requires durable usage ownership",
+                {},
+                409,
+            )
         self._require_generation_config(expected_generation_id, prepared.chunks)
-        vectors = self._embedding.embed(tuple(item.embedding_text for item in prepared.chunks))
+        vectors = self._embedding.embed(
+            tuple(item.embedding_text for item in prepared.chunks),
+            usage_context=usage_context,
+        )
         rows = [
             _row(
                 status="staged",

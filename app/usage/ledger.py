@@ -114,6 +114,7 @@ class OwnershipSnapshot:
     space_owner_user_id: str | None = None
     authorization_version: int | None = None
     fence_token: int | None = None
+    source_space_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +166,23 @@ def _optional_text(value, name: str, max_len: int) -> str | None:
     if value is None:
         return None
     return _require_text(value, name, max_len)
+
+
+def _ownership_json(ownership: OwnershipSnapshot) -> dict[str, Any]:
+    """Serialize ownership as JSON facts without changing historic empty snapshots."""
+    values = asdict(ownership)
+    source_space_ids = values.pop("source_space_ids")
+    if source_space_ids:
+        values["source_space_ids"] = list(source_space_ids)
+    return values
+
+
+def _require_replay_generation(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise PlatformError(
+            "validation_error", "replay_generation must be a non-negative integer", {}, 422
+        )
+    return value
 
 
 def _matches(table: Any, index_elements: list[str], values: dict[str, Any]):
@@ -350,6 +368,13 @@ class UsageLedger:
             isinstance(ownership.fence_token, bool) or not isinstance(ownership.fence_token, int)
         ):
             raise PlatformError("validation_error", "fence_token must be an integer", {}, 422)
+        if not isinstance(ownership.source_space_ids, tuple) or any(
+            not isinstance(space_id, str) or not space_id.strip()
+            for space_id in ownership.source_space_ids
+        ):
+            raise PlatformError(
+                "validation_error", "source_space_ids must be a tuple of non-empty strings", {}, 422
+            )
 
     @staticmethod
     def _validate_meter_values(
@@ -525,30 +550,34 @@ class UsageLedger:
             measured,
             availability=availability,
         )
+        replay_generation = _require_replay_generation(call["replay_generation"])
+        fingerprint_payload = {
+            "provider_call_id": provider_call_id,
+            "provider": call["provider"],
+            "model": call["model"],
+            "operation": call["operation"],
+            "execution_kind": call["execution_kind"],
+            "execution_id": call["execution_id"],
+            "attempt_id": call["attempt_id"],
+            "generation_id": call["generation_id"],
+            "resource_id": call["resource_id"],
+            "deadline_utc": _utc(call["deadline_utc"]),
+            "ownership": _ownership_json(ownership),
+            "provider_request_id": provider_request_id,
+            "started_at_utc": started,
+            "measurement": asdict(measurement),
+            "result": result,
+            "price_version_id": price.id,
+            "currency_code": price.currency_code,
+            "estimated_cost_amount": amount,
+            "estimated_cost_status": cost_status,
+            "effective_period": lock_period,
+        }
+        if replay_generation:
+            fingerprint_payload["replay_generation"] = replay_generation
         fingerprint = self._event_fingerprint(
             "provider_usage",
-            {
-                "provider_call_id": provider_call_id,
-                "provider": call["provider"],
-                "model": call["model"],
-                "operation": call["operation"],
-                "execution_kind": call["execution_kind"],
-                "execution_id": call["execution_id"],
-                "attempt_id": call["attempt_id"],
-                "generation_id": call["generation_id"],
-                "resource_id": call["resource_id"],
-                "deadline_utc": _utc(call["deadline_utc"]),
-                "ownership": asdict(ownership),
-                "provider_request_id": provider_request_id,
-                "started_at_utc": started,
-                "measurement": asdict(measurement),
-                "result": result,
-                "price_version_id": price.id,
-                "currency_code": price.currency_code,
-                "estimated_cost_amount": amount,
-                "estimated_cost_status": cost_status,
-                "effective_period": lock_period,
-            },
+            fingerprint_payload,
         )
         event_id = f"ue_{secrets.token_urlsafe(9)}"
         persisted_id = self._insert_usage_once(
@@ -581,10 +610,11 @@ class UsageLedger:
                 "attempt_id": call["attempt_id"],
                 "generation_id": call["generation_id"],
                 "resource_id": call["resource_id"],
+                "replay_generation": replay_generation,
                 "cost_center_key": ownership.cost_center_key,
                 "result": result,
                 "event_fingerprint": fingerprint,
-                "ownership_json": asdict(ownership),
+                "ownership_json": _ownership_json(ownership),
                 "started_at_utc": started,
                 "completed_at_utc": now,
                 "effective_calendar_version_id": lock.version_id,
@@ -862,7 +892,7 @@ class UsageLedger:
                     "amount": str(amount),
                     "currency_code": currency,
                 },
-                "ownership_json": asdict(ownership),
+                "ownership_json": _ownership_json(ownership),
                 "effective_calendar_version_id": lock.version_id,
                 "effective_at_utc": started,
                 "effective_period": effective_period,
@@ -947,7 +977,7 @@ class UsageLedger:
                     adjustment_source_id,
                     adjustment_allocation_key,
                 ),
-                "ownership": asdict(ownership),
+                "ownership": _ownership_json(ownership),
                 "result": result,
                 "extra": extra_values,
             },
@@ -1027,10 +1057,11 @@ class UsageLedger:
                     "attempt_id": ref["attempt_id"],
                     "generation_id": ref["generation_id"],
                     "resource_id": ref["resource_id"],
+                    "replay_generation": ref["replay_generation"],
                     "cost_center_key": ownership.cost_center_key,
                     "result": result,
                     "event_fingerprint": fingerprint,
-                    "ownership_json": asdict(ownership),
+                    "ownership_json": _ownership_json(ownership),
                     "started_at_utc": ref["effective_at_utc"],
                     "completed_at_utc": now,
                     "effective_calendar_version_id": ref["effective_calendar_version_id"],
@@ -1061,6 +1092,7 @@ class UsageLedger:
         resource_id: str | None = None,
         deadline_utc: datetime,
         request_fingerprint: str,
+        replay_generation: int = 0,
     ) -> str:
         """准备 provider call，并保留既有 public wrapper 的 call-id 返回契约。"""
         call_id, _created = self.prepare_provider_call_with_status(
@@ -1075,6 +1107,7 @@ class UsageLedger:
             resource_id=resource_id,
             deadline_utc=deadline_utc,
             request_fingerprint=request_fingerprint,
+            replay_generation=replay_generation,
         )
         return call_id
 
@@ -1092,6 +1125,7 @@ class UsageLedger:
         resource_id: str | None = None,
         deadline_utc: datetime,
         request_fingerprint: str,
+        replay_generation: int = 0,
     ) -> tuple[str, bool]:
         """准备 provider call，并返回 ``(call_id, created_by_this_call)``。"""
         provider = _require_text(provider, "provider", 64)
@@ -1110,6 +1144,7 @@ class UsageLedger:
                 422,
             )
         resource_id = _optional_text(resource_id, "resource_id", 256)
+        replay_generation = _require_replay_generation(replay_generation)
         deadline = _as_utc(deadline_utc, "deadline_utc")
         if provider_call_id is not None:
             provider_call_id = _optional_text(provider_call_id, "provider_call_id", 64)
@@ -1129,6 +1164,7 @@ class UsageLedger:
                     "attempt_id": attempt_id,
                     "generation_id": generation_id,
                     "resource_id": resource_id,
+                    "replay_generation": replay_generation,
                     "request_fingerprint": request_fingerprint,
                     "deadline_utc": deadline,
                     "status": "prepared",
@@ -1157,6 +1193,7 @@ class UsageLedger:
                 "attempt_id": attempt_id,
                 "generation_id": generation_id,
                 "resource_id": resource_id,
+                "replay_generation": replay_generation,
                 "request_fingerprint": request_fingerprint,
             }
             for field, value in immutable_fields.items():
@@ -1390,6 +1427,7 @@ class UsageLedger:
         ownership: OwnershipSnapshot,
         result: str,
         started_at_utc: datetime,
+        replay_generation: int = 0,
     ) -> str:
         """本地昂贵阶段聚合 usage：四元组唯一；本地 V1 无价格金额。
 
@@ -1401,6 +1439,7 @@ class UsageLedger:
         stage = _require_text(stage, "stage", 64)
         resource_kind = _require_text(resource_kind, "resource_kind", 32)
         result = _require_text(result, "result", 32)
+        replay_generation = _require_replay_generation(replay_generation)
         self._validate_ownership(ownership)
         self._validate_local_measurement(measurement)
         started = _as_utc(started_at_utc, "started_at_utc")
@@ -1409,17 +1448,17 @@ class UsageLedger:
             lock = self.calendar.lock_or_verify(connection)
             lock_period = self.calendar.period_for(lock, started)
             recorded_period = self.calendar.period_for(lock, now)
-            fingerprint = self._event_fingerprint(
-                "local_usage",
-                {
-                    "scope": (execution_kind, execution_id, stage, resource_kind),
-                    "ownership": asdict(ownership),
-                    "started_at_utc": started,
-                    "measurement": asdict(measurement),
-                    "result": result,
-                    "effective_period": lock_period,
-                },
-            )
+            fingerprint_payload = {
+                "scope": (execution_kind, execution_id, stage, resource_kind),
+                "ownership": _ownership_json(ownership),
+                "started_at_utc": started,
+                "measurement": asdict(measurement),
+                "result": result,
+                "effective_period": lock_period,
+            }
+            if replay_generation:
+                fingerprint_payload["replay_generation"] = replay_generation
+            fingerprint = self._event_fingerprint("local_usage", fingerprint_payload)
             event_id = f"ue_{secrets.token_urlsafe(9)}"
             persisted_id = self._insert_usage_once(
                 connection,
@@ -1431,6 +1470,7 @@ class UsageLedger:
                     "execution_id": execution_id,
                     "stage": stage,
                     "resource_kind": resource_kind,
+                    "replay_generation": replay_generation,
                     "cost_center_key": ownership.cost_center_key,
                     "item_count": measurement.item_count,
                     "page_count": measurement.page_count,
@@ -1440,7 +1480,7 @@ class UsageLedger:
                     "peak_vram_bytes": measurement.peak_vram_bytes,
                     "result": result,
                     "event_fingerprint": fingerprint,
-                    "ownership_json": asdict(ownership),
+                    "ownership_json": _ownership_json(ownership),
                     "started_at_utc": started,
                     "completed_at_utc": now,
                     "effective_calendar_version_id": lock.version_id,

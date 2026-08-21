@@ -816,7 +816,14 @@ def test_generation_catch_up_rebuilds_a_published_revision_from_documents_conten
 
     repository = SqlAlchemyIndexingRepository(engine)
     manager = SqlAlchemyGenerationManager(repository)
-    IndexingService(generation_manager=manager, object_store=object_store)
+    dense = _CapturingStageWriter(provider_name="dense")
+    _service = IndexingService(
+        dense_writer=dense,
+        sparse_provider=InMemorySparseIndexProvider(),
+        generation_manager=manager,
+        object_store=object_store,
+        now=lambda: datetime(2026, 1, 1, 12, tzinfo=UTC),
+    )
     staging = manager.create_staging([], base_revision=0, generation_id="generation_change")
 
     caught_up = manager.catch_up_from_documents(staging.generation_id)
@@ -829,6 +836,20 @@ def test_generation_catch_up_rebuilds_a_published_revision_from_documents_conten
             )
         ).all()
     assert rows == [("publication_1", sha256(content).hexdigest())]
+    assert dense.stage_kwargs is not None
+    usage_context = dense.stage_kwargs["usage_context"]
+    assert usage_context.execution_kind == "index_maintenance"
+    assert usage_context.execution_id == "generation-build:generation_change:publication_1"
+    assert usage_context.attempt_id == "generation-build:generation_change:publication_1"
+    assert usage_context.generation_id == "generation_change"
+    assert usage_context.publication_id == "publication_1"
+    assert usage_context.replay_generation == 0
+    assert usage_context.ownership.actor_user_id == "system:indexing"
+    assert usage_context.ownership.actor_role_snapshot == "ops"
+    assert usage_context.ownership.quota_subject_user_id is None
+    assert usage_context.ownership.cost_center_key == "system:indexing"
+    assert usage_context.ownership.source_space_ids == ("space_1",)
+    assert usage_context.deadline_utc == datetime(2026, 1, 1, 12, 15, tzinfo=UTC)
 
 
 def test_configuration_change_creates_a_new_staging_generation_with_immutable_manifest() -> None:
@@ -1223,6 +1244,16 @@ class _CapturingPublishWriter(InMemoryIndexWriter):
         return super().publish_staged(attempt_id, publication_id, **kwargs)
 
 
+class _CapturingStageWriter(InMemoryIndexWriter):
+    def __init__(self, *, provider_name: str) -> None:
+        super().__init__(provider_name=provider_name)
+        self.stage_kwargs: dict[str, object] | None = None
+
+    def stage_chunks(self, attempt_id: str, publication_id: str, *args: object, **kwargs: object):
+        self.stage_kwargs = dict(kwargs)
+        return super().stage_chunks(attempt_id, publication_id, *args, **kwargs)
+
+
 def test_publish_binds_provider_call_to_staged_request_identity() -> None:
     dense = _CapturingPublishWriter(provider_name="dense")
     sparse = _CapturingPublishWriter(provider_name="sparse")
@@ -1244,6 +1275,59 @@ def test_publish_binds_provider_call_to_staged_request_identity() -> None:
         assert provider.publish_kwargs["expected_generation_id"] == request.expected_generation_id
         assert provider.publish_kwargs["content_hash"] == request.input_manifest_hash
         assert provider.publish_kwargs["stage_resource_manifest"] == output.receipt.stage_resources
+
+
+def test_process_stages_claimed_document_usage_context() -> None:
+    dense = _CapturingStageWriter(provider_name="dense")
+    sparse = InMemorySparseIndexProvider()
+    service = IndexingService(dense_writer=dense, sparse_provider=sparse)
+    request = replace(
+        _request(),
+        space_id="department:dept_1",
+        usage_ownership={
+            "actor_user_id": "user_1",
+            "actor_role_snapshot": "user",
+            "actor_department_id_snapshot": None,
+            "quota_subject_user_id": "user_1",
+            "cost_center_key": "department:dept_1",
+            "space_id": "department:dept_1",
+            "space_kind": "department",
+            "space_owner_user_id": None,
+            "authorization_version": None,
+            "fence_token": 1,
+            "source_space_ids": ["department:dept_1"],
+        },
+        usage_deadline_at_utc=datetime(2026, 8, 21, 12, 5, tzinfo=UTC),
+        usage_replay_generation=2,
+    )
+
+    service.process_and_stage(
+        request,
+        "# Heading\n\nretrievable text",
+        media_kind="text/markdown",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+
+    assert dense.stage_kwargs is not None
+    context = dense.stage_kwargs["usage_context"]
+    assert context.execution_kind == "ingestion"
+    assert context.execution_id == request.job_id
+    assert context.attempt_id == request.attempt_id
+    assert context.generation_id == request.expected_generation_id
+    assert context.replay_generation == 2
+    assert context.ownership.cost_center_key == "department:dept_1"
+    assert context.ownership.source_space_ids == ("department:dept_1",)
+
+
+def test_staging_request_rejects_boolean_usage_replay_generation() -> None:
+    request = _request().to_mapping()
+    request["usage_replay_generation"] = True
+
+    with pytest.raises(PlatformError) as error:
+        IndexStagingRequest.from_mapping(request)
+
+    assert error.value.code == "validation_error"
 
 
 def test_retrieval_release_resolves_only_for_its_generation() -> None:

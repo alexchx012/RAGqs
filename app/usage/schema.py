@@ -139,6 +139,7 @@ provider_call_table = Table(
     Column("attempt_id", String(128), nullable=True),
     Column("generation_id", String(128), nullable=True),
     Column("resource_id", String(256), nullable=True),
+    Column("replay_generation", Integer, nullable=False, server_default="0"),
     Column("request_fingerprint", String(128), nullable=False),
     Column("deadline_utc", DateTime(timezone=True), nullable=False),
     Column("status", String(16), nullable=False),
@@ -227,6 +228,7 @@ usage_event_table = Table(
     Column("attempt_id", String(128), nullable=True),
     Column("generation_id", String(128), nullable=True),
     Column("resource_id", String(256), nullable=True),
+    Column("replay_generation", Integer, nullable=False, server_default="0"),
     Column("cost_center_key", String(128), nullable=True),
     # local_usage 字段
     Column("stage", String(64), nullable=True),

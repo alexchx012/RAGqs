@@ -50,13 +50,11 @@
     in_progress → 409。幂等 reserve 先于状态/version 校验（task brief）。
   - approve 事务内固定顺序：reserve → 锁 quota_request 行（with_for_update）→
     校验 pending（否则 409 already_processed）→ version==expected（否则 409
-    version_conflict）→ 申请人 lifecycle_status=='active'（否则 409
-    quota_request_not_approvable）→ **单一 calendar lock + 单一 DB now**（锁行后
-    取得一次 lock/now，`_require_approvable` 返回并复用于 period 校验 /
-    append_credit 的 calendar_lock+now / reviewed_at / updated_at / audit
-    occurred_at——approve/reject 均不再二次读取 clock）→ 目标期仍当前
-    （calendar.period_for(now)==request.quota_period，否则同 409）→
-    append_credit（namespace=quota_request/source=request_id，同一 TxManager
+    version_conflict）→ **单一 calendar lock + 单一 DB now**（锁行后取得一次
+    lock/now）。申请人 inactive 或目标期已关闭时，先条件更新为 cancelled（version+1/
+    cancel_reason/reviewed_at），持久化同一幂等 409 结果后提交；其余可审批路径复用
+    lock/now 进行 append_credit 的 calendar_lock+now / reviewed_at / updated_at / audit
+    occurred_at，再 append_credit（namespace=quota_request/source=request_id，同一 TxManager
     connection）→ UPDATE request（version+1/approved/approver 快照/approved_pages/
     credit_entry_id/reviewed_at/updated_at）→ platform_audit INSERT（details_json={}，
     request_id=current_context().request_id or "req_system"）→
@@ -393,10 +391,29 @@ class QuotaRequestService:
         if actor.role != "ops":
             raise PlatformError("forbidden_target", "Approval is ops-only", {}, 403)
 
+    @staticmethod
+    def _not_approvable_error(reason: str) -> PlatformError:
+        messages = {
+            "applicant_inactive": "Applicant is frozen or deleted",
+            "period_closed": "Target quota period is closed",
+        }
+        return PlatformError(
+            "quota_request_not_approvable",
+            messages.get(reason, "Quota request is no longer approvable"),
+            {"reason": reason},
+            409,
+        )
+
+    @classmethod
+    def _raise_replayed_approval_error(cls, result: dict) -> None:
+        reason = result.get("_approval_error_reason")
+        if isinstance(reason, str):
+            raise cls._not_approvable_error(reason)
+
     def _require_approvable(
         self, tx, *, request_id: str, expected_version: int, actor: AuthPrincipal
-    ) -> tuple[dict, CalendarLock, datetime]:
-        """锁 quota_request 行并校验审批前提；返回 (row, calendar_lock, now)。
+    ) -> tuple[dict, CalendarLock, datetime, str | None]:
+        """锁 quota_request 行并校验审批前提；返回取消原因或可审批事实。
 
         Task 10 review：锁行后取得**一次** calendar lock + **一次** DB now 并返回，
         approve/reject 复用于 target period 校验、append_credit 的 calendar_lock/now、
@@ -423,6 +440,8 @@ class QuotaRequestService:
             raise PlatformError(
                 "version_conflict", "Quota request version is no longer current", {}, 409
             )
+        lock = self.calendar.lock_or_verify(connection)
+        now = self._clock.now_utc(connection)
         applicant_row = (
             connection.execute(
                 select(identity_user_table).where(
@@ -433,16 +452,10 @@ class QuotaRequestService:
             .one_or_none()
         )
         if applicant_row is None or applicant_row["lifecycle_status"] != "active":
-            raise PlatformError(
-                "quota_request_not_approvable", "Applicant is frozen or deleted", {}, 409
-            )
-        lock = self.calendar.lock_or_verify(connection)
-        now = self._clock.now_utc(connection)
+            return dict(row), lock, now, "applicant_inactive"
         if self.calendar.period_for(lock, now) != row["quota_period"]:
-            raise PlatformError(
-                "quota_request_not_approvable", "Target quota period is closed", {}, 409
-            )
-        return dict(row), lock, now
+            return dict(row), lock, now, "period_closed"
+        return dict(row), lock, now, None
 
     def _audit(
         self,
@@ -497,6 +510,7 @@ class QuotaRequestService:
             action="approve",
             target_id=request_id,
         )
+        cancelled_error: PlatformError | None = None
         with self._tx.begin() as tx:
             try:
                 replay = self._reserve_approval(
@@ -506,84 +520,106 @@ class QuotaRequestService:
                     request_hash=request_hash,
                 )
                 if replay is not None:
+                    self._raise_replayed_approval_error(replay)
                     return replay
-                row, lock, now = self._require_approvable(
+                row, lock, now, cancellation_reason = self._require_approvable(
                     tx, request_id=request_id, expected_version=expected_version, actor=actor
                 )
-                pages = row["requested_pages"] if approved_pages is None else approved_pages
-                if not 1 <= pages <= int(row["requested_pages"]):
-                    raise PlatformError(
-                        "validation_error", "approved_pages must be 1..requested", {}, 422
-                    )
                 connection = tx.connection
                 assert connection is not None
-                ownership = OwnershipSnapshot(
-                    actor_user_id=actor.user_id,
-                    actor_role_snapshot=actor.role,
-                    actor_department_id_snapshot=actor.department_id,
-                    quota_subject_user_id=str(row["applicant_user_id"]),
-                    cost_center_key=f"user:{row['applicant_user_id']}",
-                )
-                credit_id = self._quota.append_credit(
-                    connection,
-                    quota_subject_user_id=str(row["applicant_user_id"]),
-                    quota_period=str(row["quota_period"]),
-                    pages=pages,
-                    adjustment_source_namespace="quota_request",
-                    adjustment_source_id=request_id,
-                    ownership=ownership,
-                    calendar_lock=lock,
-                    now=now,
-                )
-                new_version = int(row["version"]) + 1
-                connection.execute(
-                    update(quota_request_table)
-                    .where(quota_request_table.c.quota_request_id == request_id)
-                    .values(
-                        version=new_version,
-                        status="approved",
-                        approver_user_id=actor.user_id,
-                        approver_role_snapshot=actor.role,
-                        approved_pages=pages,
-                        credit_entry_id=credit_id,
-                        reviewed_at_utc=now,
-                        updated_at_utc=now,
+                if cancellation_reason is not None:
+                    if (
+                        self._cancel_transition(
+                            connection,
+                            request_id=request_id,
+                            reason=cancellation_reason,
+                            now=now,
+                        )
+                        != 1
+                    ):
+                        raise PlatformError(
+                            "already_processed", "Quota request was already processed", {}, 409
+                        )
+                    tx.commit_idempotency(
+                        scope=scope,
+                        key=key,
+                        request_hash=request_hash,
+                        result={"_approval_error_reason": cancellation_reason},
                     )
-                )
-                self._audit(
-                    connection,
-                    actor=actor,
-                    resource_id=request_id,
-                    result="quota_request_approved",
-                    occurred_at=now,
-                )
-                payload = {"request_id": request_id}
-                self._outbox.enqueue(
-                    connection=connection,
-                    event_type="quota_approved",
-                    aggregate_type="quota_request",
-                    aggregate_id=request_id,
-                    transition_version=new_version,
-                    recipient_user_id=str(row["applicant_user_id"]),
-                    occurred_at=now,
-                    payload_fingerprint=ledger_fingerprint("quota_approved", payload),
-                    payload=payload,
-                )
-                response = {
-                    "id": request_id,
-                    "version": new_version,
-                    "status": "approved",
-                    "approved_pages": pages,
-                    "credit_entry_id": credit_id,
-                    "quota_period": str(row["quota_period"]),
-                }
-                tx.commit_idempotency(
-                    scope=scope,
-                    key=key,
-                    request_hash=request_hash,
-                    result=response,
-                )
-                return response
+                    cancelled_error = self._not_approvable_error(cancellation_reason)
+                else:
+                    pages = row["requested_pages"] if approved_pages is None else approved_pages
+                    if not 1 <= pages <= int(row["requested_pages"]):
+                        raise PlatformError(
+                            "validation_error", "approved_pages must be 1..requested", {}, 422
+                        )
+                    ownership = OwnershipSnapshot(
+                        actor_user_id=actor.user_id,
+                        actor_role_snapshot=actor.role,
+                        actor_department_id_snapshot=actor.department_id,
+                        quota_subject_user_id=str(row["applicant_user_id"]),
+                        cost_center_key=f"user:{row['applicant_user_id']}",
+                    )
+                    credit_id = self._quota.append_credit(
+                        connection,
+                        quota_subject_user_id=str(row["applicant_user_id"]),
+                        quota_period=str(row["quota_period"]),
+                        pages=pages,
+                        adjustment_source_namespace="quota_request",
+                        adjustment_source_id=request_id,
+                        ownership=ownership,
+                        calendar_lock=lock,
+                        now=now,
+                    )
+                    new_version = int(row["version"]) + 1
+                    connection.execute(
+                        update(quota_request_table)
+                        .where(quota_request_table.c.quota_request_id == request_id)
+                        .values(
+                            version=new_version,
+                            status="approved",
+                            approver_user_id=actor.user_id,
+                            approver_role_snapshot=actor.role,
+                            approved_pages=pages,
+                            credit_entry_id=credit_id,
+                            reviewed_at_utc=now,
+                            updated_at_utc=now,
+                        )
+                    )
+                    self._audit(
+                        connection,
+                        actor=actor,
+                        resource_id=request_id,
+                        result="quota_request_approved",
+                        occurred_at=now,
+                    )
+                    payload = {"request_id": request_id}
+                    self._outbox.enqueue(
+                        connection=connection,
+                        event_type="quota_approved",
+                        aggregate_type="quota_request",
+                        aggregate_id=request_id,
+                        transition_version=new_version,
+                        recipient_user_id=str(row["applicant_user_id"]),
+                        occurred_at=now,
+                        payload_fingerprint=ledger_fingerprint("quota_approved", payload),
+                        payload=payload,
+                    )
+                    response = {
+                        "id": request_id,
+                        "version": new_version,
+                        "status": "approved",
+                        "approved_pages": pages,
+                        "credit_entry_id": credit_id,
+                        "quota_period": str(row["quota_period"]),
+                    }
+                    tx.commit_idempotency(
+                        scope=scope,
+                        key=key,
+                        request_hash=request_hash,
+                        result=response,
+                    )
+                    return response
             except IdempotencyConflict as exc:
                 raise PlatformError(
                     "idempotency_key_conflict",
@@ -591,6 +627,9 @@ class QuotaRequestService:
                     {},
                     409,
                 ) from exc
+        if cancelled_error is not None:
+            raise cancelled_error
+        raise RuntimeError("approval transaction completed without a result")
 
     def reject(
         self,
@@ -617,6 +656,7 @@ class QuotaRequestService:
             action="reject",
             target_id=request_id,
         )
+        cancelled_error: PlatformError | None = None
         with self._tx.begin() as tx:
             try:
                 replay = self._reserve_approval(
@@ -626,52 +666,74 @@ class QuotaRequestService:
                     request_hash=request_hash,
                 )
                 if replay is not None:
+                    self._raise_replayed_approval_error(replay)
                     return replay
-                row, lock, now = self._require_approvable(
+                row, _lock, now, cancellation_reason = self._require_approvable(
                     tx, request_id=request_id, expected_version=expected_version, actor=actor
                 )
                 connection = tx.connection
                 assert connection is not None
-                new_version = int(row["version"]) + 1
-                connection.execute(
-                    update(quota_request_table)
-                    .where(quota_request_table.c.quota_request_id == request_id)
-                    .values(
-                        version=new_version,
-                        status="rejected",
-                        approver_user_id=actor.user_id,
-                        approver_role_snapshot=actor.role,
-                        reviewed_at_utc=now,
-                        updated_at_utc=now,
+                if cancellation_reason is not None:
+                    if (
+                        self._cancel_transition(
+                            connection,
+                            request_id=request_id,
+                            reason=cancellation_reason,
+                            now=now,
+                        )
+                        != 1
+                    ):
+                        raise PlatformError(
+                            "already_processed", "Quota request was already processed", {}, 409
+                        )
+                    tx.commit_idempotency(
+                        scope=scope,
+                        key=key,
+                        request_hash=request_hash,
+                        result={"_approval_error_reason": cancellation_reason},
                     )
-                )
-                self._audit(
-                    connection,
-                    actor=actor,
-                    resource_id=request_id,
-                    result="quota_request_rejected",
-                    occurred_at=now,
-                )
-                payload = {"request_id": request_id}
-                self._outbox.enqueue(
-                    connection=connection,
-                    event_type="quota_rejected",
-                    aggregate_type="quota_request",
-                    aggregate_id=request_id,
-                    transition_version=new_version,
-                    recipient_user_id=str(row["applicant_user_id"]),
-                    occurred_at=now,
-                    payload_fingerprint=ledger_fingerprint("quota_rejected", payload),
-                    payload=payload,
-                )
-                response = {"id": request_id, "version": new_version, "status": "rejected"}
-                tx.commit_idempotency(
-                    scope=scope,
-                    key=key,
-                    request_hash=request_hash,
-                    result=response,
-                )
-                return response
+                    cancelled_error = self._not_approvable_error(cancellation_reason)
+                else:
+                    new_version = int(row["version"]) + 1
+                    connection.execute(
+                        update(quota_request_table)
+                        .where(quota_request_table.c.quota_request_id == request_id)
+                        .values(
+                            version=new_version,
+                            status="rejected",
+                            approver_user_id=actor.user_id,
+                            approver_role_snapshot=actor.role,
+                            reviewed_at_utc=now,
+                            updated_at_utc=now,
+                        )
+                    )
+                    self._audit(
+                        connection,
+                        actor=actor,
+                        resource_id=request_id,
+                        result="quota_request_rejected",
+                        occurred_at=now,
+                    )
+                    payload = {"request_id": request_id}
+                    self._outbox.enqueue(
+                        connection=connection,
+                        event_type="quota_rejected",
+                        aggregate_type="quota_request",
+                        aggregate_id=request_id,
+                        transition_version=new_version,
+                        recipient_user_id=str(row["applicant_user_id"]),
+                        occurred_at=now,
+                        payload_fingerprint=ledger_fingerprint("quota_rejected", payload),
+                        payload=payload,
+                    )
+                    response = {"id": request_id, "version": new_version, "status": "rejected"}
+                    tx.commit_idempotency(
+                        scope=scope,
+                        key=key,
+                        request_hash=request_hash,
+                        result=response,
+                    )
+                    return response
             except IdempotencyConflict as exc:
                 raise PlatformError(
                     "idempotency_key_conflict",
@@ -679,6 +741,9 @@ class QuotaRequestService:
                     {},
                     409,
                 ) from exc
+        if cancelled_error is not None:
+            raise cancelled_error
+        raise RuntimeError("rejection transaction completed without a result")
 
     def summary(self, *, actor: AuthPrincipal) -> dict:
         """审批摘要：仅 ops 统计当前业务月 pending（正式 spec L50：admin 为 0）。"""
@@ -731,9 +796,9 @@ class QuotaRequestService:
                 {
                     str(user_row["id"]): str(user_row["display_name"])
                     for user_row in connection.execute(
-                        select(
-                            identity_user_table.c.id, identity_user_table.c.display_name
-                        ).where(identity_user_table.c.id.in_(user_ids))
+                        select(identity_user_table.c.id, identity_user_table.c.display_name).where(
+                            identity_user_table.c.id.in_(user_ids)
+                        )
                     )
                     .mappings()
                     .all()
@@ -742,8 +807,7 @@ class QuotaRequestService:
                 else {}
             )
             snapshot_entries = {
-                (str(row["applicant_user_id"]), str(row["applicant_role_snapshot"]))
-                for row in rows
+                (str(row["applicant_user_id"]), str(row["applicant_role_snapshot"])) for row in rows
             }
             snapshots = self._quota.read_snapshots(connection, entries=list(snapshot_entries))
             items: list[dict] = []

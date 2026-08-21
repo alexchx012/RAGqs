@@ -515,6 +515,13 @@ def build_runtime(
     configured.setdefault("submission_outbox_port", submission_outbox_port)
     configured.setdefault("ingestion_outbox_port", ingestion_outbox_port)
     configured.setdefault("quota_request_service", quota_request_service)
+    indexing_usage_submission = configured.get("indexing_usage_submission") or (
+        UsageLedgerSubmissionAdapter(ledger)
+    )
+    configured.setdefault("indexing_usage_submission", indexing_usage_submission)
+    configure_embedding_usage = getattr(embedding, "set_usage_submission", None)
+    if callable(configure_embedding_usage):
+        configure_embedding_usage(indexing_usage_submission)
     if documents_service is None:
         documents_service = DocumentsService(
             engine,

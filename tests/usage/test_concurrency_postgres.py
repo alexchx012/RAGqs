@@ -944,14 +944,14 @@ def test_pg_projection_insert_then_update_uses_real_insert_result(pg_env) -> Non
     [False, True],
     ids=["first-projection-row", "existing-projection-row"],
 )
-def test_pg_concurrent_debits_do_not_exceed_effective_limit(
+def test_pg_concurrent_debits_commit_after_direct_gate(
     pg_env, monkeypatch, prebuild_projection: bool
 ) -> None:
-    """两个独立事务同时 final debit 时，容量检查在投影行锁内串行执行。
+    """两个独立事务同时 final debit 时，投影行锁串行更新但不拒绝完成。
 
     每个 worker 的首次 ``_lock_projection`` 前汇合；分别覆盖首次创建和既有投影行，
-    放行后由真实 PostgreSQL 唯一键/行锁串行化。断言一个 300 页 debit 成功、另一个以
-    quota_exceeded 失败，提交后只有一笔 ledger 行且 projection.used=300。
+    放行后由真实 PostgreSQL 唯一键/行锁串行化。两个 300 页 debit 都提交，
+    projection.used=600；后续新请求才由 direct gate 拒绝。
     """
     engine = pg_env.engine
     quota = pg_env.quota
@@ -1012,18 +1012,15 @@ def test_pg_concurrent_debits_do_not_exceed_effective_limit(
         t.join(timeout=60)
     assert all(not t.is_alive() for t in threads)
     assert barrier.broken == []
-    assert len(errors) == 1
-    assert isinstance(errors[0], PlatformError)
-    assert errors[0].code == "quota_exceeded"
-    assert errors[0].status_code == 409
+    assert errors == []
     # 提交后状态：全新连接（独立事务）验证
     with engine.connect() as connection:
         debit_count = connection.execute(
             select(func.count()).select_from(quota_debit_table)
         ).scalar_one()
-        assert debit_count == 1
+        assert debit_count == 2
         total = connection.execute(select(func.sum(quota_debit_table.c.page_delta))).scalar_one()
-        assert total == 300
+        assert total == 600
         row = (
             connection.execute(
                 select(quota_projection_table).where(
@@ -1036,13 +1033,13 @@ def test_pg_concurrent_debits_do_not_exceed_effective_limit(
             .mappings()
             .one()
         )
-        assert row["used"] == 300
+        assert row["used"] == 600
         snapshot = quota.read_snapshot(connection, quota_subject_user_id="u1", role="user")
-        assert snapshot.used == 300
+        assert snapshot.used == 600
         # 并发后的 advisory gate 与已提交额度一致。
         with pytest.raises(PlatformError) as gate:
             quota.check_direct_ingest_balance(
-                connection, quota_subject_user_id="u1", pages=201, role="user"
+                connection, quota_subject_user_id="u1", pages=1, role="user"
             )
         assert gate.value.code == "quota_exceeded"
 

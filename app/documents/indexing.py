@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from sqlalchemy.engine import Connection
@@ -27,6 +28,9 @@ class IndexStagingRequest:
     authorization_fence: Mapping[str, Any]
     input_manifest_hash: str
     processing_profile_version: str
+    usage_ownership: Mapping[str, Any] | None = None
+    usage_deadline_at_utc: datetime | None = None
+    usage_replay_generation: int = 0
 
     def __post_init__(self) -> None:
         required = (
@@ -51,6 +55,18 @@ class IndexStagingRequest:
             or not self.input_manifest_hash.strip()
             or not isinstance(self.processing_profile_version, str)
             or not self.processing_profile_version.strip()
+            or ((self.usage_ownership is None) != (self.usage_deadline_at_utc is None))
+            or (
+                self.usage_ownership is not None
+                and not isinstance(self.usage_ownership, Mapping)
+            )
+            or (
+                self.usage_deadline_at_utc is not None
+                and not isinstance(self.usage_deadline_at_utc, datetime)
+            )
+            or isinstance(self.usage_replay_generation, bool)
+            or not isinstance(self.usage_replay_generation, int)
+            or self.usage_replay_generation < 0
         ):
             raise PlatformError("validation_error", "Index staging request is invalid", {}, 422)
 
@@ -72,7 +88,64 @@ class IndexStagingRequest:
             "authorization_fence": dict(self.authorization_fence),
             "input_manifest_hash": self.input_manifest_hash,
             "processing_profile_version": self.processing_profile_version,
+            "usage_ownership": (
+                dict(self.usage_ownership) if self.usage_ownership is not None else None
+            ),
+            "usage_deadline_at_utc": (
+                self.usage_deadline_at_utc.astimezone(UTC).isoformat()
+                if self.usage_deadline_at_utc is not None
+                else None
+            ),
+            "usage_replay_generation": self.usage_replay_generation,
         }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> IndexStagingRequest:
+        if not isinstance(value, Mapping):
+            raise PlatformError("validation_error", "Index staging request is invalid", {}, 422)
+        try:
+            usage_ownership = value.get("usage_ownership")
+            usage_deadline = value.get("usage_deadline_at_utc")
+            usage_replay_generation = value.get("usage_replay_generation", 0)
+            if isinstance(usage_replay_generation, bool):
+                raise TypeError
+            if usage_deadline is not None:
+                if isinstance(usage_deadline, str):
+                    usage_deadline = datetime.fromisoformat(usage_deadline)
+                if not isinstance(usage_deadline, datetime):
+                    raise TypeError
+                usage_deadline = (
+                    usage_deadline.replace(tzinfo=UTC)
+                    if usage_deadline.tzinfo is None
+                    else usage_deadline.astimezone(UTC)
+                )
+            return cls(
+                job_id=str(value["job_id"]),
+                attempt_id=str(value["attempt_id"]),
+                fencing_token=int(value["fencing_token"]),
+                publication_id=str(value["publication_id"]),
+                document_id=str(value["document_id"]),
+                document_version_id=str(value["document_version_id"]),
+                space_id=str(value["space_id"]),
+                operation=str(value["operation"]),
+                base_active_version_id=value.get("base_active_version_id"),
+                expected_generation_id=str(value["expected_generation_id"]),
+                index_revision_at_start=int(value["index_revision_at_start"]),
+                object_manifest_ref=str(value["object_manifest_ref"]),
+                processing_config_snapshot=dict(value["processing_config_snapshot"]),
+                authorization_fence=dict(value["authorization_fence"]),
+                input_manifest_hash=str(value["input_manifest_hash"]),
+                processing_profile_version=str(value["processing_profile_version"]),
+                usage_ownership=(
+                    dict(usage_ownership) if isinstance(usage_ownership, Mapping) else usage_ownership
+                ),
+                usage_deadline_at_utc=usage_deadline,
+                usage_replay_generation=int(usage_replay_generation),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PlatformError(
+                "validation_error", "Index staging request is invalid", {}, 422
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)

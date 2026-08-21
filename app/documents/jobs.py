@@ -192,6 +192,14 @@ class DocumentsJobCoordinator:
             )
             attempt_id = _id("attempt")
             expires = now + self._lease_ttl
+            subject_user_id = str(job["created_by_user_id"])
+            space_id = str(document["space_id"])
+            cost_center_key, space_kind, space_owner_user_id = (
+                self._service._publication_space_ownership(
+                    space_id=space_id,
+                    subject_user_id=subject_user_id,
+                )
+            )
             staging_request = {
                 "job_id": str(job["id"]),
                 "attempt_id": attempt_id,
@@ -199,7 +207,7 @@ class DocumentsJobCoordinator:
                 "publication_id": publication_id,
                 "document_id": str(job["document_id"]),
                 "document_version_id": str(job["document_version_id"] or ""),
-                "space_id": str(document["space_id"]),
+                "space_id": space_id,
                 "operation": str(job["operation"]),
                 "base_active_version_id": job["base_active_version_id"],
                 "expected_generation_id": str(publication["generation_id"]),
@@ -215,6 +223,21 @@ class DocumentsJobCoordinator:
                     str(version["content_hash_sha256"]) if version is not None else None
                 ),
                 "processing_profile_version": "default",
+                "usage_ownership": {
+                    "actor_user_id": subject_user_id,
+                    "actor_role_snapshot": str(job["quota_role_snapshot"]),
+                    "actor_department_id_snapshot": job["quota_department_id_snapshot"],
+                    "quota_subject_user_id": subject_user_id,
+                    "cost_center_key": cost_center_key,
+                    "space_id": space_id,
+                    "space_kind": space_kind,
+                    "space_owner_user_id": space_owner_user_id,
+                    "authorization_version": None,
+                    "fence_token": fencing_token,
+                    "source_space_ids": [space_id],
+                },
+                "usage_deadline_at_utc": expires.isoformat(),
+                "usage_replay_generation": int(job["replay_generation"]),
             }
             connection.execute(
                 ingestion_attempts_table.insert().values(

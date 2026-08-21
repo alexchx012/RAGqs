@@ -428,6 +428,31 @@ def test_approve_rejects_when_applicant_inactive() -> None:
             idempotency_key="approve-frozen",
         )
     assert frozen.value.code == "quota_request_not_approvable"
+    with engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(quota_request_table).where(
+                    quota_request_table.c.quota_request_id == created["id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["status"] == "cancelled"
+    assert row["cancel_reason"] == "applicant_inactive"
+    assert row["version"] == 2
+    assert row["reviewed_at_utc"] is not None
+    assert count_rows(engine, quota_debit_table) == 0
+    assert count_rows(engine, tests_outbox_enqueued) == 0
+    with pytest.raises(PlatformError) as replay:
+        requests.approve(
+            actor=approver(),
+            request_id=created["id"],
+            expected_version=1,
+            approved_pages=50,
+            idempotency_key="approve-frozen",
+        )
+    assert replay.value.code == "quota_request_not_approvable"
 
 
 def test_approve_rejects_when_target_period_closed() -> None:
@@ -453,6 +478,22 @@ def test_approve_rejects_when_target_period_closed() -> None:
             idempotency_key="approve-closed",
         )
     assert closed.value.code == "quota_request_not_approvable"
+    with engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(quota_request_table).where(
+                    quota_request_table.c.quota_request_id == created["id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["status"] == "cancelled"
+    assert row["cancel_reason"] == "period_closed"
+    assert row["version"] == 2
+    assert row["reviewed_at_utc"] is not None
+    assert count_rows(engine, quota_debit_table) == 0
+    assert count_rows(engine, tests_outbox_enqueued) == 0
 
 
 def test_reject_writes_no_credit_and_publishes_quota_rejected() -> None:
@@ -1152,7 +1193,7 @@ def test_reject_single_clock_read_at_month_boundary() -> None:
 
 def test_reject_cannot_cross_closed_month() -> None:
     """review：reject 越过关闭月（业务 now 在 2026-09）→ 统一 409
-    quota_request_not_approvable，零副作用。"""
+    quota_request_not_approvable，同时原子取消且不写 credit/outbox/audit。"""
     engine, quota, calendar, _times = make_service(now=NOW)
     seed_identity(engine)
     create_requests = QuotaRequestService(
@@ -1182,8 +1223,10 @@ def test_reject_cannot_cross_closed_month() -> None:
             .mappings()
             .one()
         )
-        assert row["status"] == "pending"
-        assert row["version"] == 1
+        assert row["status"] == "cancelled"
+        assert row["cancel_reason"] == "period_closed"
+        assert row["version"] == 2
+        assert row["reviewed_at_utc"] is not None
 
 
 def test_approve_approved_pages_over_requested_rejected() -> None:
