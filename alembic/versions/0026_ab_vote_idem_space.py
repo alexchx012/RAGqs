@@ -1,6 +1,6 @@
 """A/B vote idempotency columns and pair space isolation.
 
-Revision ID: 0026_ab_vote_idempotency_space_isolation
+Revision ID: 0026_ab_vote_idem_space
 Revises: 0023_ledger_secondary_indexes
 """
 
@@ -11,7 +11,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0026_ab_vote_idempotency_space_isolation"
+revision: str = "0026_ab_vote_idem_space"
 down_revision: str | None = "0023_ledger_secondary_indexes"
 branch_labels: tuple[str, ...] | Sequence[str] | None = None
 depends_on: tuple[str, ...] | Sequence[str] | None = None
