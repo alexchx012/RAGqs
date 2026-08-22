@@ -14,6 +14,7 @@ import binascii
 import json
 import re
 import struct
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -206,12 +207,14 @@ class BailianImageDescriber:
                 }
             ],
         }
+        started = time.monotonic()
         response = self._transport(
             f"{self._base_url}/chat/completions",
             json.dumps(payload, ensure_ascii=False),
             {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
             {"timeout_seconds": self._timeout_seconds},
         )
+        latency_ms = int((time.monotonic() - started) * 1000)
         try:
             text = str(response["choices"][0]["message"]["content"]).strip()
         except (KeyError, IndexError, TypeError) as exc:
@@ -222,7 +225,13 @@ class BailianImageDescriber:
         usage = dict(usage_raw) if isinstance(usage_raw, Mapping) else None
         if usage is None:
             usage = {}
-        usage = {"provider": self.provider, "model": self._model, "image_count": 1, **usage}
+        usage = {
+            "provider": self.provider,
+            "model": self._model,
+            "image_count": 1,
+            "latency_ms": latency_ms,
+            **usage,
+        }
         if self._usage_sink is not None:
             # Provider usage and the product quota debit are separate facts;
             # quota debits ride the existing publication page ledger.

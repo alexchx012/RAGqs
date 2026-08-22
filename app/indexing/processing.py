@@ -678,6 +678,12 @@ class ContentProcessor:
             parsed_usage = parsed.get("usage")
             if isinstance(parsed_usage, Mapping) and parsed_usage.get("kind") == "local_usage":
                 local_usage_facts.append(dict(parsed_usage))
+            parsed_timings = parsed.get("timings")
+            if isinstance(parsed_timings, Mapping):
+                summary["mineru_timings"] = {
+                    "sample_ms": int(parsed_timings.get("sample_ms", 0) or 0),
+                    "full_ms": int(parsed_timings.get("full_ms", 0) or 0),
+                }
             parsed_chunks = parsed.get("chunks", ())
             locations = tuple(parsed_chunks) if isinstance(parsed_chunks, Sequence) else ()
             if kind in {"application/pdf", "pdf"}:
@@ -1540,6 +1546,7 @@ class ContentProcessor:
                     "ocr": {"applied": False},
                     "tree": {"tree_indexed": False, "tree_reason": "decorative_image"},
                     "cr": {"applied": False, "unit": "image"},
+                    "filtered_image_count": 1,
                 },
                 ({"code": "image_not_indexable", "reason": "decorative"},),
             )

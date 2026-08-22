@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -299,12 +300,16 @@ class MinerUAdapter:
                 OCRSamplePlan.for_page_count(page_count) if page_count else OCRSamplePlan(1, (1,))
             )
             sample_markdown: list[str] = []
+            sample_started = time.monotonic()
             for start, end in _sample_ranges(plan):
                 run = self._run(source, sample_dir / f"{start}-{end}", start=start, end=end)
                 sample_markdown.append(run.markdown)
+            sample_ms = int((time.monotonic() - sample_started) * 1000)
             sampled = "\n\n".join(sample_markdown)
             structure = classify_structure(sampled, sample_pages=list(plan.pages))
+            full_started = time.monotonic()
             full = self._run(source, work_dir / "full")
+            full_ms = int((time.monotonic() - full_started) * 1000)
         facts = self._facts(full, structure, page_count=page_count)
         usage = {
             "kind": "local_usage",
@@ -315,6 +320,7 @@ class MinerUAdapter:
             "gpu_milliseconds": None,
         }
         facts["usage"] = usage
+        facts["timings"] = {"sample_ms": sample_ms, "full_ms": full_ms}
         if self._usage_sink is not None:
             self._usage_sink(usage)
         return facts

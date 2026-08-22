@@ -104,6 +104,7 @@ def test_a1_routes_documents_images_and_urls_to_mineru_pipeline() -> None:
             page_count=2,
         )
         assert output.receipt.processing_summary["route"]["mineru"] is True
+        assert output.receipt.processing_summary["route"]["adapter"] == "mineru-pipeline"
     assert len(mineru.calls) == 4
 
 
@@ -290,6 +291,7 @@ def test_a5_bailian_and_internvl_receive_context_and_ocr_tag_and_return_typed_re
     assert payloads[0]["payload"]["messages"][0]["content"][1]["type"] == "image_url"
     assert result.text == "A revenue chart"
     assert result.indexable is True and result.degraded is False
+    assert result.usage is not None and result.usage["latency_ms"] >= 0
     assert usage_facts[0]["kind"] == "provider_usage"
     internvl = InternVLImageDescriber(
         base_url="https://internvl.example",
@@ -337,6 +339,7 @@ def test_a6_decorative_filter_none_provider_and_quota_usage_separation() -> None
     assert called == []
     assert output.chunks == ()
     assert output.receipt.degradations[0]["reason"] == "decorative"
+    assert output.receipt.processing_summary["filtered_image_count"] == 1
     none_result = NoneImageDescriber()(b"img", {"caption": "Cap", "ocr_text": "OCR text"})
     assert none_result.degraded is True
     assert none_result.indexable is True
