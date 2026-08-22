@@ -84,6 +84,11 @@ class IndexSettings(_StrictModel):
     reranker_provider: str = Field(default="configured", min_length=1, max_length=64)
     image_vlm_provider: str = Field(default="configured", min_length=1, max_length=64)
     image_vlm_credential_ref: str = Field(default="image-vlm")
+    image_vlm_base_url: str | None = None
+    image_vlm_api_key: SecretStr | None = None
+    image_vlm_model: str = Field(default="qwen-vl-plus", min_length=1, max_length=128)
+    image_vlm_revision: str = Field(default="", max_length=128)
+    image_vlm_timeout_seconds: int = Field(default=60, ge=1, le=600)
     generation_rollback_days: int = Field(default=7, ge=1, le=365)
     embedding_provider: Literal["openai-compatible", "memory"] = "memory"
     embedding_base_url: str | None = None
@@ -107,6 +112,9 @@ class IndexSettings(_StrictModel):
     text_chunk_max_chars: int = Field(default=8_000, ge=1)
     xlsx_merged_cells_max: int = Field(default=10_000, ge=1)
     ocr_confidence_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    mineru_provider: Literal["disabled", "local"] = "disabled"
+    mineru_executable: str = Field(default="mineru", min_length=1, max_length=256)
+    mineru_timeout_seconds: int = Field(default=900, ge=1, le=7200)
 
 
 class DocumentsSettings(_StrictModel):
@@ -236,6 +244,11 @@ _ENV_KEYS = {
     "RAG_INDEX_RERANKER_PROVIDER",
     "RAG_INDEX_IMAGE_VLM_PROVIDER",
     "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF",
+    "RAG_INDEX_IMAGE_VLM_BASE_URL",
+    "RAG_INDEX_IMAGE_VLM_API_KEY",
+    "RAG_INDEX_IMAGE_VLM_MODEL",
+    "RAG_INDEX_IMAGE_VLM_REVISION",
+    "RAG_INDEX_IMAGE_VLM_TIMEOUT_SECONDS",
     "RAG_INDEX_GENERATION_ROLLBACK_DAYS",
     "RAG_INDEX_EMBEDDING_PROVIDER",
     "RAG_INDEX_EMBEDDING_BASE_URL",
@@ -255,6 +268,9 @@ _ENV_KEYS = {
     "RAG_INDEX_TEXT_CHUNK_MAX_CHARS",
     "RAG_INDEX_XLSX_MERGED_CELLS_MAX",
     "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD",
+    "RAG_INDEX_MINERU_PROVIDER",
+    "RAG_INDEX_MINERU_EXECUTABLE",
+    "RAG_INDEX_MINERU_TIMEOUT_SECONDS",
     "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
     "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS",
     "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
@@ -405,6 +421,11 @@ def load_platform_settings(
                 or "configured",
                 "image_vlm_credential_ref": _optional(env, "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF")
                 or "image-vlm",
+                "image_vlm_base_url": _optional(env, "RAG_INDEX_IMAGE_VLM_BASE_URL"),
+                "image_vlm_api_key": _optional_secret(env, "RAG_INDEX_IMAGE_VLM_API_KEY"),
+                "image_vlm_model": _optional(env, "RAG_INDEX_IMAGE_VLM_MODEL") or "qwen-vl-plus",
+                "image_vlm_revision": _optional(env, "RAG_INDEX_IMAGE_VLM_REVISION") or "",
+                "image_vlm_timeout_seconds": _int(env, "RAG_INDEX_IMAGE_VLM_TIMEOUT_SECONDS"),
                 "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS") or 7,
                 "embedding_provider": _optional(env, "RAG_INDEX_EMBEDDING_PROVIDER") or "memory",
                 "embedding_base_url": _optional(env, "RAG_INDEX_EMBEDDING_BASE_URL"),
@@ -425,6 +446,9 @@ def load_platform_settings(
                 "text_chunk_max_chars": _int(env, "RAG_INDEX_TEXT_CHUNK_MAX_CHARS"),
                 "xlsx_merged_cells_max": _int(env, "RAG_INDEX_XLSX_MERGED_CELLS_MAX"),
                 "ocr_confidence_threshold": _float(env, "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD"),
+                "mineru_provider": _optional(env, "RAG_INDEX_MINERU_PROVIDER") or "disabled",
+                "mineru_executable": _optional(env, "RAG_INDEX_MINERU_EXECUTABLE") or "mineru",
+                "mineru_timeout_seconds": _int(env, "RAG_INDEX_MINERU_TIMEOUT_SECONDS"),
             }.items()
             if value is not None
         },
@@ -478,9 +502,7 @@ def load_platform_settings(
                 "cookie_secure": _optional_bool(env, "RAG_AUTH_COOKIE_SECURE"),
                 "login_max_attempts": _int(env, "RAG_AUTH_LOGIN_MAX_ATTEMPTS"),
                 "login_lock_seconds": _int(env, "RAG_AUTH_LOGIN_LOCK_SECONDS"),
-                "user_deletion_retention_days": _int(
-                    env, "USER_DELETION_RETENTION_DAYS"
-                ),
+                "user_deletion_retention_days": _int(env, "USER_DELETION_RETENTION_DAYS"),
                 "user_deletion_archive_dir": _optional(env, "USER_DELETION_ARCHIVE_DIR"),
                 "secret_key": _optional(env, "RAG_AUTH_SECRET_KEY"),
                 "allowed_origins": _csv(env, "RAG_AUTH_ALLOWED_ORIGINS"),
@@ -531,6 +553,17 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production reranker provider cannot be none")
         if settings.index.image_vlm_provider.casefold() == "none":
             raise ValueError("production image VLM provider cannot be none")
+        image_vlm = settings.index.image_vlm_provider.casefold()
+        if image_vlm in {"bailian", "internvl"}:
+            if not settings.index.image_vlm_base_url:
+                raise ValueError("production image VLM provider requires a base URL")
+            if image_vlm == "bailian" and (
+                settings.index.image_vlm_api_key is None
+                or not settings.index.image_vlm_api_key.get_secret_value()
+            ):
+                raise ValueError("production bailian image VLM requires an API key")
+            if image_vlm == "internvl" and not settings.index.image_vlm_model:
+                raise ValueError("production InternVL image VLM requires a model ID")
         if settings.provider.api_key is None or not settings.provider.api_key.get_secret_value():
             raise ValueError("production provider api key is required")
         if settings.debug:
@@ -551,18 +584,14 @@ _FORBIDDEN_ARCHIVE_DIR_PARTS = frozenset({"static", "uploads", "frontend", "publ
 def resolve_user_deletion_archive_dir(settings: PlatformSettings) -> str:
     """Return the effective account-deletion archive directory as an absolute path."""
 
-    return _resolve_user_deletion_archive_dir(
-        settings.auth, settings.profile
-    )
+    return _resolve_user_deletion_archive_dir(settings.auth, settings.profile)
 
 
 def _resolve_user_deletion_archive_dir(auth: AuthSettings, profile: str) -> str:
     configured = auth.user_deletion_archive_dir
     if configured is None or not configured.strip():
         if profile == "production":
-            raise ValueError(
-                "production requires USER_DELETION_ARCHIVE_DIR to be configured"
-            )
+            raise ValueError("production requires USER_DELETION_ARCHIVE_DIR to be configured")
         return os.path.abspath(os.path.join("data", "user-deletion-archives"))
     path = os.path.abspath(os.path.expanduser(configured.strip()))
     if not os.path.isabs(path):
