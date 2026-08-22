@@ -82,6 +82,12 @@ from app.indexing.backends import (
     probe_configured_backends,
 )
 from app.indexing.embedding import InMemoryEmbeddingProvider
+from app.indexing.image_vlm import (
+    BailianImageDescriber,
+    InternVLImageDescriber,
+    NoneImageDescriber,
+)
+from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -181,6 +187,19 @@ def missing_evaluation_judge_configuration(settings: PlatformSettings) -> tuple[
     if judge_api_key is None or not judge_api_key.get_secret_value().strip():
         missing.append("RAG_EVALUATION_JUDGE_API_KEY")
     return tuple(missing)
+
+
+class _LazyUsageSubmission:
+    """Resolve the usage submission port lazily; assembly order differs."""
+
+    def __init__(self, configured: dict[str, Any]) -> None:
+        self._configured = configured
+
+    def submit_local_usage(self, **kwargs: Any) -> str | None:
+        submission = self._configured.get("indexing_usage_submission")
+        if submission is None:
+            return None
+        return submission.submit_local_usage(**kwargs)
 
 
 def build_runtime(
@@ -412,13 +431,47 @@ def build_runtime(
         DocumentsRetrievalVisibilityPort(engine, object_store)
     )
     configured.setdefault("indexing_visibility_facts", visibility_facts)
+    mineru_adapter = configured.get("indexing_mineru")
+    if mineru_adapter is None and settings.index.mineru_provider == "local":
+        mineru_adapter = MinerUAdapter(
+            executable=settings.index.mineru_executable,
+            timeout_seconds=settings.index.mineru_timeout_seconds,
+        )
+        configured.setdefault("indexing_mineru", mineru_adapter)
+    image_ocr = configured.get("indexing_image_ocr")
+    if image_ocr is None and settings.index.mineru_provider == "local":
+        image_ocr = MinerUImageOCR(mineru_adapter)
+        configured.setdefault("indexing_image_ocr", image_ocr)
+    image_describer = configured.get("indexing_image_describer")
+    if image_describer is None:
+        vlm_provider = settings.index.image_vlm_provider.casefold()
+        if vlm_provider == "bailian" and settings.index.image_vlm_base_url:
+            api_key = settings.index.image_vlm_api_key
+            image_describer = BailianImageDescriber(
+                base_url=settings.index.image_vlm_base_url,
+                api_key=api_key.get_secret_value() if api_key is not None else "",
+                model=settings.index.image_vlm_model,
+                timeout_seconds=settings.index.image_vlm_timeout_seconds,
+            )
+        elif vlm_provider == "internvl" and settings.index.image_vlm_base_url:
+            image_describer = InternVLImageDescriber(
+                base_url=settings.index.image_vlm_base_url,
+                model=settings.index.image_vlm_model,
+                revision=settings.index.image_vlm_revision,
+                timeout_seconds=settings.index.image_vlm_timeout_seconds,
+            )
+        elif vlm_provider == "none":
+            image_describer = NoneImageDescriber(environment=settings.profile)
+        if image_describer is not None:
+            configured.setdefault("indexing_image_describer", image_describer)
     processor = configured.get("indexing_processor") or ContentProcessor(
-        mineru=configured.get("indexing_mineru"),
-        image_describer=configured.get("indexing_image_describer"),
-        image_ocr=configured.get("indexing_image_ocr"),
+        mineru=mineru_adapter,
+        image_describer=image_describer,
+        image_ocr=image_ocr,
         text_chunk_max_chars=settings.index.text_chunk_max_chars,
         xlsx_merged_cells_max=settings.index.xlsx_merged_cells_max,
         ocr_confidence_threshold=settings.index.ocr_confidence_threshold,
+        usage_submission=_LazyUsageSubmission(configured),
     )
     configured.setdefault("indexing_processor", processor)
     embedding = configured.get("indexing_embedding")
