@@ -73,6 +73,12 @@ export class AuthSessionStore {
    * 同会话普通 refresh 保持不变，用于改密/all-sessions 跨会话 race 防护。
    */
   private authSessionId: string | null = null;
+  /**
+   * 一次性「新登录落地」标记：仅本地交互式 login() 置位；静默 refresh 恢复与
+   * 跨标签页 bus 同步不置位（都不是新登录）。HomePage 挂载时 peek，列表就绪消费时 clear。
+   * 非响应式、不进 AuthState：导航 state 会被守卫的 replace 抢先消费，达不到主页。
+   */
+  private freshLoginLandingPending = false;
   private readonly unsubscribeBus: () => void;
   private readonly ttlMs: number;
   private readonly leadMs: number;
@@ -90,6 +96,16 @@ export class AuthSessionStore {
   /** 当前逻辑认证会话 identity；未认证时为 null。同会话 refresh 不改变该值。 */
   getAuthSessionId(): string | null {
     return this.authSessionId;
+  }
+
+  /** 读取（不清除）一次性「新登录落地」标记；仅交互式 login() 置位。 */
+  peekFreshLoginLanding(): boolean {
+    return this.freshLoginLandingPending;
+  }
+
+  /** 消费一次性「新登录落地」标记（HomePage 列表就绪、进入新会话界面时调用）。 */
+  clearFreshLoginLanding(): void {
+    this.freshLoginLandingPending = false;
   }
 
   subscribe(listener: () => void): () => void {
@@ -182,6 +198,7 @@ export class AuthSessionStore {
     this.advancePresentationSessionInstance();
     this.advanceLifecycleEpoch();
     this.authSessionId = authSessionId;
+    this.freshLoginLandingPending = true;
     this.setState({ status: 'authenticated', token, user });
     this.scheduleRefresh();
     this.deps.bus.post({ type: 'login', token, user, authSessionId });

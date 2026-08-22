@@ -61,6 +61,9 @@ export function HomePage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [composerMemory, setComposerMemory] = useState<ComposerMemory>(DEFAULT_MEMORY);
   const memoryByConversation = useRef(new Map<string, ComposerMemory>());
+  // 新登录落地标记在挂载瞬间从 auth store 捕获（peek 不清除，StrictMode 双调用安全）：
+  // 仅交互式 login 置位；刷新恢复 / 跨标签同步不置位。列表就绪后由 ChatHomeInner 一次性消费。
+  const [freshLoginLanding] = useState(() => authStore.peekFreshLoginLanding());
 
   // m8：卸载时 dispose ChatStore（中止 SSE / 退避计时器 / 模拟器计时器）
   useEffect(() => {
@@ -93,6 +96,7 @@ export function HomePage() {
         composerMemory={composerMemory}
         onComposerMemoryChange={setComposerMemory}
         memoryByConversation={memoryByConversation}
+        freshLoginLanding={freshLoginLanding}
       />
     </ChatProvider>
   );
@@ -107,6 +111,8 @@ interface ChatHomeInnerProps {
   readonly composerMemory: ComposerMemory;
   readonly onComposerMemoryChange: (memory: ComposerMemory) => void;
   readonly memoryByConversation: MutableRefObject<Map<string, ComposerMemory>>;
+  /** 新登录落地（外层挂载瞬间捕获）：进入新会话界面，全局限一。 */
+  readonly freshLoginLanding: boolean;
 }
 
 function ChatHomeInner({
@@ -118,8 +124,10 @@ function ChatHomeInner({
   composerMemory,
   onComposerMemoryChange,
   memoryByConversation,
+  freshLoginLanding,
 }: ChatHomeInnerProps) {
   const store = useChatStore();
+  const authStore = useAuthStore();
   const state = useChatState();
   const [spaces, setSpaces] = useState<readonly import('../chat/types').SpaceItem[]>([]);
 
@@ -132,15 +140,28 @@ function ChatHomeInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 列表就绪且未打开会话：自动打开最近一条（历史会话恢复；空列表则停留在空态问候语）
+  // 新登录落地（每次新登录主页即新会话界面）：有未命名新会话则指向它，否则创建一个；
+  // 全局限一、禁止重复创建。一次性消费（本挂载内不再重放）；消费时清除 auth store 标记。
+  const freshLandingHandled = useRef(false);
   useEffect(() => {
+    if (!freshLoginLanding || freshLandingHandled.current || state.listStatus !== 'ready') return;
+    freshLandingHandled.current = true;
+    authStore.clearFreshLoginLanding();
+    void store.openOrCreateNewConversation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshLoginLanding, state.listStatus]);
+
+  // 列表就绪且未打开会话：自动打开最近一条（历史会话恢复；空列表则停留在空态问候语）。
+  // 新登录落地时由上方新会话逻辑接管，不走本恢复。
+  useEffect(() => {
+    if (freshLoginLanding) return;
     if (state.listStatus !== 'ready' || state.conversationId !== null) return;
     const first = state.visibleConversations[0];
     if (first !== undefined) {
       void store.openConversation(first.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.listStatus, state.visibleConversations.length]);
+  }, [freshLoginLanding, state.listStatus, state.visibleConversations.length]);
 
   // 会话切换：加载该会话记忆（无则默认快速 + 全部范围）；新建会话重置
   const conversationId = state.conversationId ?? '';
@@ -158,10 +179,9 @@ function ChatHomeInner({
 
   const newConversation = async () => {
     onDrawerOpenChange(false);
-    const created = await store.createConversation();
-    if (created !== null) {
-      onComposerMemoryChange(DEFAULT_MEMORY);
-    }
+    // 「新建会话」全局幂等：侧栏已有新会话（含当前正停留的）→ 指向它，无任何变动；
+    // 没有 → 创建。档位/范围由会话记忆 effect 随 conversationId 变化处理。
+    await store.openOrCreateNewConversation();
   };
 
   const rememberMemory = () => {
@@ -185,8 +205,9 @@ function ChatHomeInner({
   const send = async (content: string): Promise<boolean> => {
     rememberMemory();
     if (state.conversationId === null) {
-      const created = await store.createConversation();
-      if (created === null) return false;
+      // 无当前会话时的首问：复用既有新会话（全局限一），没有才创建
+      const opened = await store.openOrCreateNewConversation();
+      if (opened === null) return false;
       onComposerMemoryChange(DEFAULT_MEMORY);
     }
     // scope 省略 = 全部范围；document_ids 仅个人库文档级收窄时携带（ScopeChip 已约束）

@@ -15,7 +15,7 @@ import { copy } from '../copy';
 import { Pill } from '../ui/Pill';
 import { useSettings } from './SettingsProvider';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
-import { useModalDialog } from './use-modal-dialog';
+import { useModalDialog, useModalPresence } from './use-modal-dialog';
 import type { DocumentListItem } from './types';
 
 export interface NewVersionDialogProps {
@@ -39,6 +39,12 @@ export function NewVersionDialog({ target, onClose, onSubmitted, onConflictRefre
     invalidateOperation();
     onClose();
   });
+  const presence = useModalPresence(target !== null);
+  // 退出动画（150ms）期间 target 已为 null：保留最后一个非空 target 供渲染，随 presence 卸载
+  const lastTargetRef = useRef<DocumentListItem | null>(null);
+  if (target !== null) {
+    lastTargetRef.current = target;
+  }
   // operation token（review A3）：提交开始捕获；关闭/切换 target 时递增，
   // 旧请求的 success/error/conflict/onSubmitted/onConflictRefresh 全部 no-op——
   // 不能让文档 A 的迟到响应导航 uploads、关闭文档 B dialog 或刷新错误视图。
@@ -58,9 +64,10 @@ export function NewVersionDialog({ target, onClose, onSubmitted, onConflictRefre
     setSubmitting(false);
   }, [targetId]);
 
-  if (target === null) {
+  if (!presence.mounted || lastTargetRef.current === null) {
     return null;
   }
+  const shownTarget = lastTargetRef.current;
 
   const confirmUpload = async () => {
     if (submitting || file === null || target === null) {
@@ -133,11 +140,19 @@ export function NewVersionDialog({ target, onClose, onSubmitted, onConflictRefre
       aria-modal="true"
       aria-label={copy.settings.knowledge.upload.newVersionDialogTitle}
     >
-      <div className="fixed inset-0 bg-ink-black/24" onClick={() => (submitting ? undefined : requestClose())} aria-hidden="true" />
-      <div className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+      <div
+        className="ui-dialog-overlay fixed inset-0 bg-ink-black/24"
+        data-state={presence.state}
+        onClick={() => (submitting ? undefined : requestClose())}
+        aria-hidden="true"
+      />
+      <div
+        className="ui-dialog-content fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]"
+        data-state={presence.state}
+      >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.upload.newVersionDialogTitle}</h2>
         <p className="mt-2 text-[15px] text-slate-gray">
-          {copy.settings.knowledge.upload.newVersionDescription(target.name)}
+          {copy.settings.knowledge.upload.newVersionDescription(shownTarget.name)}
         </p>
         <div className="mt-4">
           <input

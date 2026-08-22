@@ -10,12 +10,14 @@
 }
 
 .drawer-panel[data-slide='enter'] {
-  transform: translateY(0);
-  transition-timing-function: var(--ease-out);
+  /* 滑上起始帧：面板停在视口底部外（同基态 100%）；下一帧切 open 触发 100%→0 过渡 */
+  transform: translateY(100%);
 }
 
 .drawer-panel[data-slide='open'] {
   transform: translateY(0);
+  /* 过渡动画取目标态的 timing-function：进入（enter→open）用 --ease-out；离开见 closing */
+  transition-timing-function: var(--ease-out);
 }
 
 .drawer-panel[data-slide='closing'] {

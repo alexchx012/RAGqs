@@ -173,6 +173,137 @@ describe('聊天主页（fe-chat-home 集成）', () => {
     });
   });
 
+  it('已处于新会话界面再点「新建会话」不重复创建（侧栏不堆叠空会话）', async () => {
+    const account = testUser();
+    const { accessToken } = mockAuth.login(account.username, 'password123', 'vitest');
+    const store = createTestStore(
+      fakeAuthApi({
+        login: vi.fn(async () => ({ token: accessToken, user: account })),
+        refresh: vi.fn(async () => ({ token: accessToken })),
+        me: vi.fn(async () => account),
+      }),
+    );
+    await store.bootstrap();
+    renderWithShell(<AppRoutes />, store, ['/']);
+    const user = userEvent.setup();
+    await landingComposer();
+
+    const bearer = `Bearer ${accessToken}`;
+    const freshItems = () =>
+      mockChat.listConversations(bearer).items.filter((item) => item.title === '');
+    const newButton = () =>
+      screen.getAllByRole('button', { name: copy.chat.sidebar.newConversation })[0] as HTMLElement;
+
+    await user.click(newButton());
+    await waitFor(() => expect(freshItems()).toHaveLength(1));
+    const freshId = freshItems()[0]?.id;
+
+    // 已停留在新会话界面：再点不创建第二个空会话
+    await user.click(newButton());
+    await user.click(newButton());
+    // 给潜在的重复创建请求留出发出窗口（若有回归，这里会出现第二条空会话）
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(freshItems().map((item) => item.id)).toEqual([freshId]);
+  });
+
+  it('在旧会话界面点「新建会话」：指向已有新会话而非再建', async () => {
+    const account = testUser();
+    const { accessToken } = mockAuth.login(account.username, 'password123', 'vitest');
+    const store = createTestStore(
+      fakeAuthApi({
+        login: vi.fn(async () => ({ token: accessToken, user: account })),
+        refresh: vi.fn(async () => ({ token: accessToken })),
+        me: vi.fn(async () => account),
+      }),
+    );
+    await store.bootstrap();
+    renderWithShell(<AppRoutes />, store, ['/']);
+    const user = userEvent.setup();
+    await landingComposer();
+
+    const bearer = `Bearer ${accessToken}`;
+    const freshItems = () =>
+      mockChat.listConversations(bearer).items.filter((item) => item.title === '');
+    const newButton = () =>
+      screen.getAllByRole('button', { name: copy.chat.sidebar.newConversation })[0] as HTMLElement;
+    const greetingHidden = () =>
+      document.querySelector('.chat-empty-greeting')?.getAttribute('data-hidden');
+
+    // 先建一个新会话（停留在新会话界面）
+    await user.click(newButton());
+    await waitFor(() => expect(freshItems()).toHaveLength(1));
+    const freshId = freshItems()[0]?.id;
+    await waitFor(() => expect(greetingHidden()).toBe('false'));
+
+    // 打开一条旧会话：离开新会话界面
+    await user.click(
+      screen.getAllByRole('button', { name: /年假怎么休/ })[0] as HTMLElement,
+    );
+    await waitFor(() => expect(greetingHidden()).toBe('true'));
+
+    // 再点「新建会话」：指向原来的新会话（数量不变，回到新会话界面）
+    await user.click(newButton());
+    await waitFor(() => expect(greetingHidden()).toBe('false'));
+    expect(freshItems().map((item) => item.id)).toEqual([freshId]);
+  });
+
+  it('新登录落地：无新会话时自动创建并进入新会话界面', async () => {
+    const account = testUser();
+    const { accessToken } = mockAuth.login(account.username, 'password123', 'vitest');
+    const store = createTestStore(
+      fakeAuthApi({
+        login: vi.fn(async () => ({ token: accessToken, user: account })),
+        refresh: vi.fn(async () => ({ token: accessToken })),
+        me: vi.fn(async () => account),
+      }),
+    );
+    // 交互式 login 才置位新登录落地标记（AuthSessionStore 一次性标记，不经导航 state）
+    await store.login(account.username, 'password123');
+    renderWithShell(<AppRoutes />, store, ['/']);
+    await landingComposer();
+
+    await waitFor(() => {
+      const fresh = mockChat
+        .listConversations(`Bearer ${accessToken}`)
+        .items.filter((item) => item.title === '');
+      expect(fresh).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(document.querySelector('.chat-empty-greeting')?.getAttribute('data-hidden')).toBe(
+        'false',
+      );
+    });
+  });
+
+  it('新登录落地：已有新会话则指向它，不重复创建', async () => {
+    const account = testUser();
+    const { accessToken } = mockAuth.login(account.username, 'password123', 'vitest');
+    const bearer = `Bearer ${accessToken}`;
+    const pre = mockChat.createConversation(bearer); // 预置一个未命名新会话
+    const store = createTestStore(
+      fakeAuthApi({
+        login: vi.fn(async () => ({ token: accessToken, user: account })),
+        refresh: vi.fn(async () => ({ token: accessToken })),
+        me: vi.fn(async () => account),
+      }),
+    );
+    await store.login(account.username, 'password123');
+    renderWithShell(<AppRoutes />, store, ['/']);
+    await landingComposer();
+
+    await waitFor(() => {
+      const fresh = mockChat
+        .listConversations(bearer)
+        .items.filter((item) => item.title === '');
+      expect(fresh.map((item) => item.id)).toEqual([pre.id]);
+    });
+    await waitFor(() => {
+      expect(document.querySelector('.chat-empty-greeting')?.getAttribute('data-hidden')).toBe(
+        'false',
+      );
+    });
+  });
+
   it('检索范围 chip：文档名过滤 q 经 HomePage 透传到 listDocuments（m4 集成）', async () => {
     const store = await createAuthedChatStore();
     renderWithShell(<AppRoutes />, store, ['/']);

@@ -84,6 +84,7 @@ export function LoginPage() {
     setErrorKind(null);
     try {
       const user = await store.login(username, password);
+      // 新登录落地标记已由 store.login 置位（AuthSessionStore 一次性标记），不随导航 state 走。
       // 组件已被 RedirectIfAuthenticated 带离卸载时，落地跳转由守卫的 <Navigate>
       // （携同一 state）完成；丢弃这里的延迟跳转。否则 await 续体会在卸载后照样设下
       // 幽灵定时器，150ms 后把用户随后的手动导航（如立刻点开抽屉）顶回落地页
