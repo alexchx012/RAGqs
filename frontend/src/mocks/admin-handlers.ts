@@ -202,7 +202,51 @@ export function createAdminHandlers(
       try {
         const url = new URL(request.url);
         const window = parseEnumParam(url.searchParams.get('window'), METRICS_WINDOWS, '7d', 'window');
-        return HttpResponse.json(controller.getDashboard(request.headers.get('Authorization'), window));
+        const rawExpand = url.searchParams.get('expand');
+        if (rawExpand !== null && rawExpand !== '' && rawExpand !== 'user_rank') {
+          throw new MockHttpError(422, 'validation_error', { field: 'expand' });
+        }
+        return HttpResponse.json(
+          controller.getDashboard(request.headers.get('Authorization'), window, rawExpand as 'user_rank' | null),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.get('/v1/admin/users/:userId/documents', ({ request, params }) => {
+      try {
+        const url = new URL(request.url);
+        const page = parseIntParam(url.searchParams.get('page'), 1, 'page');
+        const pageSize = parseIntParam(url.searchParams.get('page_size'), 50, 'page_size');
+        return HttpResponse.json(
+          knowledge.listDocuments(
+            request.headers.get('Authorization'),
+            `personal:${String(params['userId'])}`,
+            url.searchParams.get('q') ?? undefined,
+            page,
+            pageSize,
+          ),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.get('/v1/admin/departments/:departmentId/documents', ({ request, params }) => {
+      try {
+        const url = new URL(request.url);
+        const page = parseIntParam(url.searchParams.get('page'), 1, 'page');
+        const pageSize = parseIntParam(url.searchParams.get('page_size'), 50, 'page_size');
+        return HttpResponse.json(
+          knowledge.listDocuments(
+            request.headers.get('Authorization'),
+            `department:${String(params['departmentId'])}`,
+            url.searchParams.get('q') ?? undefined,
+            page,
+            pageSize,
+          ),
+        );
       } catch (error) {
         return errorResponse(error);
       }

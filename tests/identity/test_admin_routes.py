@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
+from app.documents.schema import documents_metadata, documents_table
+from app.documents.service import DocumentsDepartmentWorkCheckPort
 from app.identity.ports import NoopDepartmentWorkCheckPort
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
@@ -142,3 +146,81 @@ def test_admin_routes_manage_non_admin_users_and_expose_read_only_matrix() -> No
     assert matrix.json()["capabilities"]
     assert forbidden_matrix.status_code == 403
     assert forbidden_matrix.json()["error"]["code"] == "forbidden_target"
+
+
+def test_admin_directory_counts_read_active_documents_from_the_documents_owner() -> None:
+    configured = settings()
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        configured.auth,
+        revocation_port=NoopGenerationRevocationPort(),
+        department_work_check=DocumentsDepartmentWorkCheckPort(engine),
+    )
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin_principal = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    department = service.create_department(
+        actor=admin_principal,
+        name="Finance",
+        idempotency_key="department-counts",
+    )
+    user = service.create_managed_user(
+        actor=admin_principal,
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=department["id"],
+        idempotency_key="user-counts",
+    )
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        for index, space_id in enumerate(
+            (f"personal:{user['id']}", f"department:{department['id']}")
+        ):
+            connection.execute(
+                documents_table.insert().values(
+                    id=f"doc_count_{index}",
+                    space_id=space_id,
+                    lifecycle_status="active",
+                    active_version_id=None,
+                    pending_version_id=None,
+                    active_operation_job_id=None,
+                    deletion_id=None,
+                    version=1,
+                    name=f"Document {index}",
+                    normalized_name=f"document-{index}",
+                    media_kind="text/plain",
+                    created_by_user_id=str(user["id"]),
+                    uploaded_at_utc=now,
+                    created_at_utc=now,
+                    updated_at_utc=now,
+                )
+            )
+
+    users = service.list_managed_users(actor=admin_principal)
+    departments = service.list_departments(actor=admin_principal)
+    listed_user = next(item for item in users["items"] if item["id"] == user["id"])
+    listed_department = next(item for item in departments if item["id"] == department["id"])
+
+    assert listed_user["document_count"] == 2
+    assert listed_department["document_count"] == 1
+    assert listed_department["member_count"] == 1

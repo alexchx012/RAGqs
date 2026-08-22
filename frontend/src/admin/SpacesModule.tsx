@@ -22,7 +22,7 @@ import { createIdempotencyScope, isBusinessResponse } from '../settings/idempote
 import { useSettings } from '../settings/SettingsProvider';
 import { useModalDialog } from '../settings/use-modal-dialog';
 import { VersionsLayer } from '../settings/VersionsLayer';
-import type { DocumentListItem } from '../settings/types';
+import type { DocumentListItem, DocumentListResponse } from '../settings/types';
 import {
   ConfirmDialog,
   CountBadge,
@@ -59,6 +59,8 @@ function openDocumentPreview(documentId: string): void {
 
 interface AdminDocumentListProps {
   readonly spaceId: string;
+  /** 管理下钻的真实只读端点；公共库继续复用 settings 文档读写边界。 */
+  readonly readDocuments?: (page: number, pageSize: number) => Promise<DocumentListResponse>;
   /** 行级管理操作（版本记录 / 删除 / 重建 / 上传新版本）：仅服务端 permission=manage 渲染。 */
   readonly manage: boolean;
   /** 打开版本记录层（仅 manage 行提供入口）。 */
@@ -71,7 +73,12 @@ interface AdminDocumentListProps {
  * 可读性（D1）：「用量」列宽 w-40 直接可读（如「200 页正文 + 40 张图」），文档名 / 上传时间 /
  * 用量截断时均带 title 悬停全文；行尾 ⋯ 固定 32px 槽位（shrink-0），随行 px-4 与容器右缘保持间距。
  */
-function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentListProps) {
+function AdminDocumentList({
+  spaceId,
+  readDocuments,
+  manage,
+  onOpenVersions,
+}: AdminDocumentListProps) {
   const { api } = useSettings();
   const [documents, setDocuments] = useState<readonly DocumentListItem[]>([]);
   const [page, setPage] = useState(1);
@@ -99,7 +106,10 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
     setLoading(true);
     setLoadError(false);
     try {
-      const response = await api.listDocuments({ spaceId, page, pageSize: DOCUMENT_PAGE_SIZE });
+      const response =
+        readDocuments !== undefined
+          ? await readDocuments(page, DOCUMENT_PAGE_SIZE)
+          : await api.listDocuments({ spaceId, page, pageSize: DOCUMENT_PAGE_SIZE });
       if (seq !== seqRef.current) {
         return;
       }
@@ -114,7 +124,7 @@ function AdminDocumentList({ spaceId, manage, onOpenVersions }: AdminDocumentLis
         setLoading(false);
       }
     }
-  }, [api, page, spaceId]);
+  }, [api, page, readDocuments, spaceId]);
 
   useEffect(() => {
     setPage(1);
@@ -831,6 +841,12 @@ export function PersonalLibsLayer() {
   const [page, setPage] = useState(1);
   const [selectedUser, setSelectedUser] = useState<AdminUserItem | null>(null);
   const copySpaces = copy.admin.spaces;
+  const selectedUserId = selectedUser?.id;
+  const readUserDocuments = useCallback(
+    (pageNumber: number, pageSize: number) =>
+      api.listUserDocuments(selectedUserId ?? "", pageNumber, pageSize),
+    [api, selectedUserId],
+  );
 
   // 实时过滤：前端只防抖传 q（聚合匹配姓名 / 显示名 / 用户名 / 部门名 / 角色名在服务端）
   useEffect(() => {
@@ -863,6 +879,7 @@ export function PersonalLibsLayer() {
         <AdminDocumentList
           key={`personal:${selectedUser.id}`}
           spaceId={`personal:${selectedUser.id}`}
+          readDocuments={readUserDocuments}
           manage={false}
           onOpenVersions={() => undefined}
         />
@@ -1013,6 +1030,7 @@ function DepartmentDocumentsView({
   readonly department: AdminDepartmentItem;
   readonly onBack: () => void;
 }) {
+  const { api } = useAdmin();
   const { api: settingsApi } = useSettings();
   const [versionsDocId, setVersionsDocId] = useState<string | null>(null);
   const [listEpoch, setListEpoch] = useState(0);
@@ -1026,6 +1044,11 @@ function DepartmentDocumentsView({
   const space = spacesRead.data?.items.find((item) => item.id === spaceId) ?? null;
   const manage = active && space?.permission === 'manage';
   const copySpaces = copy.admin.spaces;
+  const readDepartmentDocuments = useCallback(
+    (pageNumber: number, pageSize: number) =>
+      api.listDepartmentDocuments(department.id, pageNumber, pageSize),
+    [api, department.id],
+  );
 
   if (versionsDocId !== null) {
     return (
@@ -1065,6 +1088,7 @@ function DepartmentDocumentsView({
         <AdminDocumentList
           key={`${spaceId}:${listEpoch}`}
           spaceId={spaceId}
+          readDocuments={readDepartmentDocuments}
           manage={manage}
           onOpenVersions={(documentId) => setVersionsDocId(documentId)}
         />

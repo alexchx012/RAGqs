@@ -6,7 +6,7 @@
  * 复用边界（不重复定义）：
  * - 投稿内容受控查看 GET /submissions/{id}/content 复用 settings api.getSubmissionContent；
  * - 任务行操作 POST /ingestion-jobs/{id}/cancel|replay 复用 settings api.cancelJob/replayJob；
- * - 文档列表 / 版本记录 / 删除 / 重建 / 上传新版本复用 settings api 的 spaces/documents 封装；
+ * - 管理侧用户/部门只读文档下钻使用 admin 读端点；公共库与文档写操作复用 settings api；
  * - §8.1 summary 与 §8.4–8.5 投稿审核读模型复用 settings/types（同一批端点）。
  */
 
@@ -15,6 +15,7 @@ import type {
   ApprovalDecisionResponse,
   ApprovalListResponse,
   ApprovalSummary,
+  DocumentListResponse,
 } from '../settings/types';
 import type {
   AdminDepartmentItem,
@@ -47,8 +48,16 @@ import type {
 
 export interface AdminApi {
   /* ---------- §9 指标 ---------- */
-  getDashboard(window: MetricsWindow): Promise<DashboardResponse>;
+  getDashboard(window: MetricsWindow, expand?: 'user_rank'): Promise<DashboardResponse>;
   getOperationsMetrics(window: MetricsWindow): Promise<OperationsMetricsResponse>;
+
+  /* ---------- §12.6 管理侧只读文档下钻 ---------- */
+  listUserDocuments(userId: string, page: number, pageSize: number): Promise<DocumentListResponse>;
+  listDepartmentDocuments(
+    departmentId: string,
+    page: number,
+    pageSize: number,
+  ): Promise<DocumentListResponse>;
 
   /* ---------- §8 审批与投稿审核 ---------- */
   getApprovalSummary(): Promise<ApprovalSummary>;
@@ -139,9 +148,13 @@ export function createAdminApi(client: ApiClient): AdminApi {
   }
 
   return {
-    getDashboard(window) {
+    getDashboard(window, expand) {
       const authSessionGuard = guard();
-      return client.request<DashboardResponse>(`/metrics/dashboard?window=${window}`, {
+      const query = new URLSearchParams({ window });
+      if (expand !== undefined) {
+        query.set('expand', expand);
+      }
+      return client.request<DashboardResponse>(`/metrics/dashboard?${query.toString()}`, {
         authSessionGuard,
       });
     },
@@ -151,6 +164,24 @@ export function createAdminApi(client: ApiClient): AdminApi {
       return client.request<OperationsMetricsResponse>(`/metrics/operations?window=${window}`, {
         authSessionGuard,
       });
+    },
+
+    listUserDocuments(userId, page, pageSize) {
+      const authSessionGuard = guard();
+      const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+      return client.request<DocumentListResponse>(
+        `/admin/users/${encodeURIComponent(userId)}/documents?${query.toString()}`,
+        { authSessionGuard },
+      );
+    },
+
+    listDepartmentDocuments(departmentId, page, pageSize) {
+      const authSessionGuard = guard();
+      const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+      return client.request<DocumentListResponse>(
+        `/admin/departments/${encodeURIComponent(departmentId)}/documents?${query.toString()}`,
+        { authSessionGuard },
+      );
     },
 
     getApprovalSummary() {

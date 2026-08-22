@@ -69,14 +69,32 @@ def _view(value: str | None) -> str:
     return view
 
 
+def _expand(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if value != "user_rank":
+        raise PlatformError(
+            "validation_error",
+            "expand must be user_rank",
+            {"field": "expand"},
+            422,
+        )
+    return value
+
+
 @router.get("/metrics/dashboard")
 def metrics_dashboard(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     request: Request,
     window: Annotated[str | None, Query()] = None,
+    expand: Annotated[str | None, Query()] = None,
 ) -> dict[str, object]:
     _require_metrics_reader(principal)
-    return retention_service(request).dashboard(role=principal.role, window=_window(window))
+    return retention_service(request).dashboard(
+        role=principal.role,
+        window=_window(window),
+        expand=_expand(expand),
+    )
 
 
 @router.get("/metrics/operations")

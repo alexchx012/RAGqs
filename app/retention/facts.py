@@ -9,12 +9,17 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import BigInteger, String, and_, case, cast, func, or_, select, true
 from sqlalchemy.engine import Connection
 
-from app.chat.schema import chat_message_feedback_table, chat_message_table
+from app.chat.schema import (
+    chat_generation_table,
+    chat_message_feedback_table,
+    chat_message_table,
+)
 from app.documents.schema import (
     document_deletions_table,
     documents_table,
@@ -34,12 +39,16 @@ from app.indexing.schema import (
     index_generations_table,
     index_graph_components_table,
 )
-from app.usage.schema import quota_request_table, usage_event_table
+from app.usage.schema import quota_debit_table, quota_request_table, usage_event_table
 
 _WINDOW_DAYS = {"today": 0, "7d": 7, "30d": 30}
 _ACTIVE_JOB_STATES = ("pending", "running", "retry_wait")
 _REPLAYABLE_JOB_STATES = ("failed", "cancelled", "dead_letter")
 _OCR_QUALITY_BUCKETS = ("high_confidence", "medium_confidence", "low_confidence")
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def window_bounds(window: str, now: datetime) -> tuple[datetime, datetime]:
@@ -329,7 +338,7 @@ def provider_usage_trend(
         ).scalar_one()
     )
     cost = connection.execute(
-        select(func.coalesce(func.sum(usage_event_table.c.estimated_cost_amount), 0)).where(
+        select(func.sum(usage_event_table.c.estimated_cost_amount)).where(
             usage_event_table.c.event_kind == "provider_usage",
             usage_event_table.c.estimated_cost_amount.is_not(None),
             usage_event_table.c.completed_at_utc >= start,
@@ -340,6 +349,320 @@ def provider_usage_trend(
     if cost is not None:
         cost_value = float(cost)
     return {"calls": calls, "cost": cost_value}
+
+
+def cache_hit_rate_facts(
+    connection: Connection, *, start: datetime, end: datetime
+) -> Mapping[str, Any]:
+    rows = connection.execute(
+        select(
+            usage_event_table.c.prompt_cache_hit_tokens,
+            usage_event_table.c.prompt_cache_miss_tokens,
+            usage_event_table.c.completed_at_utc,
+        )
+        .where(
+            usage_event_table.c.event_kind == "provider_usage",
+            usage_event_table.c.completed_at_utc >= start,
+            usage_event_table.c.completed_at_utc <= end,
+        )
+        .order_by(usage_event_table.c.completed_at_utc)
+    ).mappings()
+    buckets: list[list[int]] = [[0, 0] for _ in range(5)]
+    total_hit = 0
+    total_miss = 0
+    window_seconds = max(1.0, (end - start).total_seconds())
+    for row in rows:
+        hit = row["prompt_cache_hit_tokens"]
+        miss = row["prompt_cache_miss_tokens"]
+        if not isinstance(hit, int) or isinstance(hit, bool) or hit < 0:
+            hit = 0
+        if not isinstance(miss, int) or isinstance(miss, bool) or miss < 0:
+            miss = 0
+        if hit + miss == 0:
+            continue
+        total_hit += hit
+        total_miss += miss
+        completed = row["completed_at_utc"]
+        elapsed = (
+            (_utc(completed) - start).total_seconds() if isinstance(completed, datetime) else 0
+        )
+        bucket = min(4, max(0, int(elapsed / window_seconds * 5)))
+        buckets[bucket][0] += hit
+        buckets[bucket][1] += miss
+    total = total_hit + total_miss
+    if total == 0:
+        return {"value": None, "sparkline": []}
+    sparkline = []
+    for bucket in buckets:
+        bucket_total = sum(bucket)
+        if bucket_total > 0:
+            sparkline.append(round(bucket[0] / bucket_total, 4))
+    return {"value": round(total_hit / total, 4), "sparkline": sparkline}
+
+
+def provider_usage_breakdown(
+    connection: Connection, *, start: datetime, end: datetime
+) -> Mapping[str, Any]:
+    rows = connection.execute(
+        select(
+            usage_event_table.c.estimated_cost_amount,
+            usage_event_table.c.ownership_json,
+        ).where(
+            usage_event_table.c.event_kind == "provider_usage",
+            usage_event_table.c.completed_at_utc >= start,
+            usage_event_table.c.completed_at_utc <= end,
+            usage_event_table.c.estimated_cost_amount.is_not(None),
+        )
+    ).mappings()
+    facts_rows = list(rows)
+    user_ids: set[str] = set()
+    department_ids: set[str] = set()
+    for row in facts_rows:
+        ownership = row["ownership_json"] if isinstance(row["ownership_json"], Mapping) else {}
+        user_id = ownership.get("quota_subject_user_id") or ownership.get("actor_user_id")
+        department_id = ownership.get("actor_department_id_snapshot")
+        if isinstance(user_id, str) and user_id:
+            user_ids.add(user_id)
+        if isinstance(department_id, str) and department_id:
+            department_ids.add(department_id)
+
+    users: dict[str, Mapping[str, Any]] = {}
+    if user_ids:
+        user_rows = connection.execute(
+            select(
+                identity_user_table.c.id,
+                identity_user_table.c.display_name,
+                identity_user_table.c.username,
+                identity_user_table.c.role,
+                identity_user_table.c.department_id,
+            ).where(identity_user_table.c.id.in_(user_ids))
+        ).mappings()
+        users = {str(row["id"]): row for row in user_rows}
+        department_ids.update(
+            str(row["department_id"])
+            for row in users.values()
+            if isinstance(row["department_id"], str) and row["department_id"]
+        )
+
+    departments: dict[str, str] = {}
+    if department_ids:
+        department_rows = connection.execute(
+            select(identity_department_table.c.id, identity_department_table.c.name).where(
+                identity_department_table.c.id.in_(department_ids)
+            )
+        ).all()
+        departments = {str(row[0]): str(row[1]) for row in department_rows}
+
+    role_labels = {"ops": "运维", "admin": "超管"}
+    department_cost: dict[str, float] = {}
+    user_cost: dict[str, float] = {}
+    for row in facts_rows:
+        cost = row["estimated_cost_amount"]
+        if isinstance(cost, Decimal):
+            amount = float(cost)
+        elif isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            amount = float(cost)
+        else:
+            continue
+        ownership = row["ownership_json"] if isinstance(row["ownership_json"], Mapping) else {}
+        user_id = ownership.get("quota_subject_user_id") or ownership.get("actor_user_id")
+        user = users.get(str(user_id)) if user_id is not None else None
+        department_id = ownership.get("actor_department_id_snapshot")
+        if not isinstance(department_id, str) or not department_id:
+            department_id = user["department_id"] if user is not None else None
+        if isinstance(department_id, str) and department_id in departments:
+            department_label = departments[department_id]
+        elif user is not None and user["role"] in role_labels:
+            department_label = role_labels[str(user["role"])]
+        else:
+            department_label = "无部门"
+        department_cost[department_label] = department_cost.get(department_label, 0.0) + amount
+        if user is not None:
+            user_label = str(user["display_name"] or user["username"])
+        else:
+            user_label = str(user_id) if user_id is not None else "未知用户"
+        user_cost[user_label] = user_cost.get(user_label, 0.0) + amount
+
+    def ordered(values: Mapping[str, float]) -> list[dict[str, Any]]:
+        return [
+            {"label": label, "value": round(value, 4)}
+            for label, value in sorted(values.items(), key=lambda item: (-item[1], item[0]))
+            if value != 0
+        ]
+
+    return {"department_rows": ordered(department_cost), "user_rows": ordered(user_cost)}
+
+
+def feedback_ratio_facts(
+    connection: Connection, *, start: datetime, end: datetime
+) -> Mapping[str, Any]:
+    up, total = connection.execute(
+        select(
+            func.coalesce(
+                func.sum(case((chat_message_feedback_table.c.vote == "up", 1), else_=0)),
+                0,
+            ),
+            func.count(),
+        ).where(
+            chat_message_feedback_table.c.created_at_utc >= start,
+            chat_message_feedback_table.c.created_at_utc <= end,
+        )
+    ).one()
+    if int(total) == 0:
+        return {"value": None, "sparkline": []}
+    value = round(int(up) / int(total), 4)
+    return {"value": value, "sparkline": [value]}
+
+
+def department_question_rows(
+    connection: Connection, *, start: datetime, end: datetime
+) -> list[Mapping[str, Any]]:
+    rows = connection.execute(
+        select(
+            func.coalesce(identity_department_table.c.name, "未分配"),
+            func.count(),
+        )
+        .select_from(
+            chat_message_table.join(
+                identity_user_table,
+                identity_user_table.c.id == chat_message_table.c.owner_user_id,
+            ).outerjoin(
+                identity_department_table,
+                identity_department_table.c.id == identity_user_table.c.department_id,
+            )
+        )
+        .where(
+            chat_message_table.c.role == "user",
+            chat_message_table.c.created_at_utc >= start,
+            chat_message_table.c.created_at_utc <= end,
+        )
+        .group_by(identity_department_table.c.name)
+        .order_by(func.count().desc(), func.coalesce(identity_department_table.c.name, "未分配"))
+    ).all()
+    return [{"label": str(label), "count": int(count)} for label, count in rows]
+
+
+def _space_count_rows(connection: Connection, counts: Mapping[str, int]) -> list[Mapping[str, Any]]:
+    if not counts:
+        return []
+    names = dict(
+        connection.execute(
+            select(identity_space_table.c.id, identity_space_table.c.name).where(
+                identity_space_table.c.id.in_(counts)
+            )
+        ).all()
+    )
+    labels = {str(space_id): str(name) for space_id, name in names}
+    rows = [
+        {"label": labels.get(space_id, space_id), "count": count}
+        for space_id, count in counts.items()
+    ]
+    rows.sort(key=lambda row: (-int(row["count"]), str(row["label"])))
+    return rows
+
+
+def space_usage_rows(
+    connection: Connection, *, start: datetime, end: datetime
+) -> list[Mapping[str, Any]]:
+    rows = connection.execute(
+        select(chat_generation_table.c.request_scope_json).where(
+            chat_generation_table.c.created_at_utc >= start,
+            chat_generation_table.c.created_at_utc <= end,
+        )
+    ).all()
+    counts: dict[str, int] = {}
+    for (scope,) in rows:
+        if not isinstance(scope, Mapping):
+            continue
+        space_ids = scope.get("space_ids")
+        if not isinstance(space_ids, (list, tuple)):
+            continue
+        for space_id in space_ids:
+            if isinstance(space_id, str) and space_id:
+                counts[space_id] = counts.get(space_id, 0) + 1
+    return _space_count_rows(connection, counts)
+
+
+def space_citation_rows(
+    connection: Connection, *, start: datetime, end: datetime
+) -> list[Mapping[str, Any]]:
+    rows = connection.execute(
+        select(chat_message_table.c.citations_json).where(
+            chat_message_table.c.role == "assistant",
+            chat_message_table.c.created_at_utc >= start,
+            chat_message_table.c.created_at_utc <= end,
+        )
+    ).all()
+    counts: dict[str, int] = {}
+    for (citations,) in rows:
+        if not isinstance(citations, (list, tuple)):
+            continue
+        for citation in citations:
+            if not isinstance(citation, Mapping):
+                continue
+            space_id = citation.get("space_id")
+            if isinstance(space_id, str) and space_id:
+                counts[space_id] = counts.get(space_id, 0) + 1
+    return _space_count_rows(connection, counts)
+
+
+def quota_consumption_rows(
+    connection: Connection, *, start: datetime, end: datetime
+) -> list[Mapping[str, Any]]:
+    rows = connection.execute(
+        select(
+            quota_debit_table.c.quota_subject_user_id,
+            quota_debit_table.c.page_delta,
+        ).where(
+            quota_debit_table.c.entry_kind == "debit",
+            quota_debit_table.c.effective_at_utc >= start,
+            quota_debit_table.c.effective_at_utc <= end,
+        )
+    ).all()
+    subject_ids = {str(user_id) for user_id, _pages in rows if user_id is not None}
+    users = (
+        {
+            str(row["id"]): row
+            for row in connection.execute(
+                select(
+                    identity_user_table.c.id,
+                    identity_user_table.c.department_id,
+                    identity_user_table.c.role,
+                ).where(identity_user_table.c.id.in_(subject_ids))
+            ).mappings()
+        }
+        if subject_ids
+        else {}
+    )
+    department_ids = {
+        str(row["department_id"])
+        for row in users.values()
+        if isinstance(row["department_id"], str) and row["department_id"]
+    }
+    departments = (
+        {
+            str(row[0]): str(row[1])
+            for row in connection.execute(
+                select(identity_department_table.c.id, identity_department_table.c.name).where(
+                    identity_department_table.c.id.in_(department_ids)
+                )
+            ).all()
+        }
+        if department_ids
+        else {}
+    )
+    totals: dict[str, int] = {}
+    for user_id, pages in rows:
+        if not isinstance(pages, int) or isinstance(pages, bool) or pages <= 0:
+            continue
+        user = users.get(str(user_id)) if user_id is not None else None
+        department_id = user["department_id"] if user is not None else None
+        label = departments.get(str(department_id), "无部门")
+        totals[label] = totals.get(label, 0) + pages
+    return [
+        {"label": label, "count": pages}
+        for label, pages in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 def active_user_count(connection: Connection) -> int:

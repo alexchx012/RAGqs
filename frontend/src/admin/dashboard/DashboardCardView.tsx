@@ -123,7 +123,13 @@ function DistributionRows({ card }: { readonly card: DistributionDashboardCard }
   );
 }
 
-function UserRankRows({ card }: { readonly card: UserRankDashboardCard }) {
+function UserRankRows({
+  card,
+  onExpand,
+}: {
+  readonly card: UserRankDashboardCard;
+  readonly onExpand?: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const rows = expanded
     ? card.rows.slice(0, USER_RANK_LIMIT)
@@ -142,8 +148,16 @@ function UserRankRows({ card }: { readonly card: UserRankDashboardCard }) {
           </li>
         ))}
       </ul>
-      {card.rows.length > USER_RANK_COLLAPSED && (
-        <TextLink className="mt-2" onClick={() => setExpanded((current) => !current)}>
+      {card.total_count > USER_RANK_COLLAPSED && (
+        <TextLink
+          className="mt-2"
+          onClick={() => {
+            if (!expanded && onExpand !== undefined && card.rows.length < card.total_count) {
+              onExpand();
+            }
+            setExpanded((current) => !current);
+          }}
+        >
           {expanded ? copy.admin.dashboard.collapse : copy.admin.dashboard.expandAll}
         </TextLink>
       )}
@@ -162,6 +176,7 @@ export interface DashboardCardViewProps {
   /** 本卡已点重试：卡内骨架呼吸直到本次重拉完成。 */
   readonly retrying?: boolean;
   readonly onRetry?: () => void;
+  readonly onExpand?: () => void;
 }
 
 export function DashboardCardView({
@@ -171,6 +186,7 @@ export function DashboardCardView({
   error = false,
   retrying = false,
   onRetry,
+  onExpand,
 }: DashboardCardViewProps) {
   const navigate = useNavigate();
   const reducedMotion = useReducedMotion();
@@ -274,7 +290,7 @@ export function DashboardCardView({
         content = <DistributionRows card={card} />;
         break;
       case 'user_rank':
-        content = <UserRankRows card={card} />;
+        content = <UserRankRows card={card} onExpand={onExpand} />;
         break;
     }
     body = (

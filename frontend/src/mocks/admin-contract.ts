@@ -293,10 +293,16 @@ export class MockAdminController {
 
   /* ---------- §9.1 dashboard（后端按角色组包） ---------- */
 
-  getDashboard(auth: string | null, window: MetricsWindow): DashboardResponse {
+  getDashboard(
+    auth: string | null,
+    window: MetricsWindow,
+    expand: 'user_rank' | null = null,
+  ): DashboardResponse {
     const user = this.requireOpsOrAdmin(auth, 'metrics_forbidden');
     this.requireWindow(window);
-    return user.role === 'ops' ? this.buildOpsDashboard(window) : this.buildAdminDashboard(window);
+    return user.role === 'ops'
+      ? this.buildOpsDashboard(window)
+      : this.buildAdminDashboard(window, expand === 'user_rank');
   }
 
   /* ---------- §9.2 指标看板（两端内容相同） ---------- */
@@ -1401,7 +1407,7 @@ export class MockAdminController {
     };
   }
 
-  private buildAdminDashboard(window: MetricsWindow): DashboardResponse {
+  private buildAdminDashboard(window: MetricsWindow, expandUserRank = false): DashboardResponse {
     const scale = windowScale(window);
     const rankRows = Array.from({ length: 15 }, (_unused, index) => {
       const value = Math.round((900 - index * 52) * scale);
@@ -1430,7 +1436,7 @@ export class MockAdminController {
               link: null,
             },
             {
-              key: 'questions_trend',
+              key: 'question_trend',
               title: '提问量趋势',
               kind: 'stat',
               value: Math.round(342 * scale),
@@ -1519,7 +1525,7 @@ export class MockAdminController {
               key: 'user_cost_rank',
               title: '按用户分摊',
               kind: 'user_rank',
-              rows: rankRows,
+              rows: expandUserRank ? rankRows : rankRows.slice(0, 10),
               total_count: rankRows.length,
               threshold: null,
               link: null,
