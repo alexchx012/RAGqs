@@ -146,6 +146,8 @@ class AuthSettings(_StrictModel):
     login_max_attempts: int = Field(default=5, ge=1, le=20)
     login_lock_seconds: int = Field(default=60, ge=1, le=3600)
     user_deletion_retention_days: int = Field(default=30, ge=1, le=3650)
+    # 物理归档包目录；生产必须显式配置，开发缺省回退到本地数据目录。
+    user_deletion_archive_dir: str | None = None
     secret_key: SecretStr | None = None
     allowed_origins: tuple[str, ...] = ()
     admin_roster: tuple[str, ...] = ()
@@ -476,6 +478,7 @@ def load_platform_settings(
                 "user_deletion_retention_days": _int(
                     env, "USER_DELETION_RETENTION_DAYS"
                 ),
+                "user_deletion_archive_dir": _optional(env, "USER_DELETION_ARCHIVE_DIR"),
                 "secret_key": _optional(env, "RAG_AUTH_SECRET_KEY"),
                 "allowed_origins": _csv(env, "RAG_AUTH_ALLOWED_ORIGINS"),
                 "admin_roster": _csv(env, "RAG_AUTH_ADMIN_ROSTER"),
@@ -535,3 +538,56 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production auth allowed origins are required")
         if not settings.auth.admin_roster:
             raise ValueError("production auth admin roster is required")
+        _precheck_user_deletion_archive_dir(settings)
+
+
+# 归档目录不得落入 Web 静态资源、上传目录或其他业务接口可直接读取的目录。
+_FORBIDDEN_ARCHIVE_DIR_PARTS = frozenset({"static", "uploads", "frontend", "public"})
+
+
+def resolve_user_deletion_archive_dir(settings: PlatformSettings) -> str:
+    """Return the effective account-deletion archive directory as an absolute path."""
+
+    return _resolve_user_deletion_archive_dir(
+        settings.auth, settings.profile
+    )
+
+
+def _resolve_user_deletion_archive_dir(auth: AuthSettings, profile: str) -> str:
+    configured = auth.user_deletion_archive_dir
+    if configured is None or not configured.strip():
+        if profile == "production":
+            raise ValueError(
+                "production requires USER_DELETION_ARCHIVE_DIR to be configured"
+            )
+        return os.path.abspath(os.path.join("data", "user-deletion-archives"))
+    path = os.path.abspath(os.path.expanduser(configured.strip()))
+    if not os.path.isabs(path):
+        raise ValueError("USER_DELETION_ARCHIVE_DIR must be an absolute path")
+    lowered = {part.lower() for part in path.replace("\\", "/").split("/")}
+    if lowered & _FORBIDDEN_ARCHIVE_DIR_PARTS:
+        raise ValueError(
+            "USER_DELETION_ARCHIVE_DIR must not live in a web-static, upload or "
+            "otherwise business-readable directory"
+        )
+    return path
+
+
+def _precheck_user_deletion_archive_dir(settings: PlatformSettings) -> None:
+    path = resolve_user_deletion_archive_dir(settings)
+    if settings.profile != "production":
+        return
+    os.makedirs(path, exist_ok=True)
+    probe = os.path.join(path, ".rag-precheck")
+    try:
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("ok")
+    except OSError as exc:
+        raise ValueError(
+            "USER_DELETION_ARCHIVE_DIR must be writable by the backend process"
+        ) from exc
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass

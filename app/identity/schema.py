@@ -55,8 +55,34 @@ identity_deletion_workflow_table = Table(
     Column("cleanup_completed_at_utc", DateTime(timezone=True), nullable=True),
     Column("archive_ref", String(512), nullable=True),
     Column("archive_checksum", String(128), nullable=True),
+    Column("archive_dir_snapshot", String(1024), nullable=True),
+    Column("archive_file_name", String(256), nullable=True),
+    Column("archive_size_bytes", Integer, nullable=True),
+    Column("archive_sha256", String(128), nullable=True),
+    Column("archive_completed_at_utc", DateTime(timezone=True), nullable=True),
+    Column("archive_failed_at_utc", DateTime(timezone=True), nullable=True),
+    Column("archive_alert", String(64), nullable=True),
     Column("retirement_receipt_id", String(128), nullable=True),
     Column("completed_at_utc", DateTime(timezone=True), nullable=True),
+)
+
+
+identity_account_cleanup_target_table = Table(
+    "identity_account_cleanup_target",
+    identity_metadata,
+    Column(
+        "deletion_id",
+        String(128),
+        primary_key=True,
+    ),
+    Column("backend_kind", String(64), primary_key=True),
+    Column("resource_id", String(256), primary_key=True),
+    Column("status", String(32), nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("last_error", String(512), nullable=True),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    Column("completed_at_utc", DateTime(timezone=True), nullable=True),
+    Column("updated_at_utc", DateTime(timezone=True), nullable=False),
 )
 
 

@@ -144,6 +144,52 @@ class AccountRetirementRequest:
     mode: str
 
 
+class PersonalDocumentDeletionPort(Protocol):
+    """Documents-owned boundary for §9.2.1 personal-space document deletion.
+
+    Creates or reuses one document permanent-deletion workflow per personal
+    document with the deterministic key ``(user_deletion_id, document_id)``
+    and reports how many personal documents are not yet in the ``deleted``
+    tombstone state.
+    """
+
+    def pending_personal_documents(
+        self,
+        connection: Connection,
+        *,
+        user_id: str,
+        user_deletion_id: str,
+    ) -> int: ...
+
+
+class UnavailablePersonalDocumentDeletionPort:
+    """Fail closed until the documents domain is wired into the runtime."""
+
+    def pending_personal_documents(
+        self,
+        connection: Connection,
+        *,
+        user_id: str,
+        user_deletion_id: str,
+    ) -> int:
+        del connection, user_id, user_deletion_id
+        raise RuntimeError("Personal document deletion is not configured")
+
+
+class NoopPersonalDocumentDeletionPort:
+    """Explicit test adapter for a deployment with no personal documents."""
+
+    def pending_personal_documents(
+        self,
+        connection: Connection,
+        *,
+        user_id: str,
+        user_deletion_id: str,
+    ) -> int:
+        del connection, user_id, user_deletion_id
+        return 0
+
+
 @dataclass(frozen=True, slots=True)
 class AccountRetirementConfirmation:
     state: str

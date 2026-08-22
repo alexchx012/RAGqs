@@ -22,7 +22,11 @@ from app.chat.worker import ChatGenerationWorker
 from app.documents.preview import ProcessingReceiptPreviewRenderer
 from app.documents.public_graph import PublicGraphSourceService
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
-from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
+from app.documents.service import (
+    DocumentsDepartmentWorkCheckPort,
+    DocumentsPersonalDocumentDeletion,
+    DocumentsService,
+)
 from app.documents.submissions import DocumentsSubmissionInvalidationPort
 from app.evaluation import (
     CalibrationCloseWorker,
@@ -58,6 +62,7 @@ from app.identity.ports import (
     AccountRetirementConfirmation,
     AccountRetirementRequest,
     UnavailableAccountRetirementGateway,
+    UnavailablePersonalDocumentDeletionPort,
 )
 from app.identity.service import IdentityAccessService
 from app.indexing import (
@@ -305,6 +310,7 @@ def build_runtime(
         identity_access._account_retirement_gateway, UnavailableAccountRetirementGateway
     ):
         identity_access._account_retirement_gateway = account_retirement_gateway
+    identity_access._profile = settings.profile
     retention_maintenance = configured.get("notification_retention_maintenance") or (
         NotificationRetentionMaintenance(
             engine,
@@ -556,6 +562,12 @@ def build_runtime(
         if documents_service._message_citation_preview_port is None:
             documents_service._message_citation_preview_port = message_citation_preview_port
     configured.setdefault("documents_service", documents_service)
+    if identity_access._personal_document_deletion is None or isinstance(
+        identity_access._personal_document_deletion, UnavailablePersonalDocumentDeletionPort
+    ):
+        identity_access._personal_document_deletion = DocumentsPersonalDocumentDeletion(
+            documents_service
+        )
     graph_build_outbox_port = configured.get("graph_build_outbox_port") or (
         SqlAlchemyGraphBuildOutboxAdapter(outbox_publisher)
     )
