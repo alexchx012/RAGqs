@@ -8,6 +8,7 @@ from app.documents.schema import (
     knowledge_submissions_table,
     submission_execution_grants_table,
 )
+from app.platform.database import core_metadata
 from app.documents.submissions import DocumentsSubmissionInvalidationPort
 from app.identity.ports import PendingSubmissionInvalidationCommand
 from app.platform.errors import PlatformError

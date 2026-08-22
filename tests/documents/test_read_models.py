@@ -9,6 +9,7 @@ from sqlalchemy import insert, select, update
 from app.documents.preview import PreviewContent, ProcessingReceiptPreviewRenderer
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.schema import document_versions_table, documents_table, publications_table
+from app.platform.database import core_metadata
 from app.documents.service import DocumentUpload
 from app.indexing import IndexChunk
 from app.outbox.ports import DocumentNotificationRedactionReceipt
@@ -110,7 +111,7 @@ def test_content_returns_a_persisted_word_tree(service, principal) -> None:
         files=[
             DocumentUpload(
                 filename="guide.docx",
-                content=b"original Word source",
+                content=b"PK original Word source",
                 media_kind="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
         ],

@@ -10,6 +10,7 @@ from app.documents.schema import (
     document_deletion_cleanup_targets_table,
     document_version_cleanup_targets_table,
 )
+from app.platform.database import core_metadata
 from app.outbox.ports import DocumentNotificationRedactionReceipt
 
 from .test_commands import _accept, _upload

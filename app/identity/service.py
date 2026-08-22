@@ -249,6 +249,12 @@ class IdentityAccessService:
     def _current_time(self) -> datetime:
         return _utc(self._now())
 
+    def _configured_work_check(self) -> DepartmentWorkCheckPort | None:
+        """Directory counts need the documents adapter; deployments without it keep zeros."""
+        if isinstance(self._department_work_check, UnavailableDepartmentWorkCheckPort):
+            return None
+        return self._department_work_check
+
     def prune_completed_history(self, *, limit: int = 100) -> dict[str, int]:
         if limit < 1:
             raise PlatformError("validation_error", "History cleanup limit is invalid", {}, 422)
@@ -839,7 +845,7 @@ class IdentityAccessService:
                 "admin_roster_invalid", "The admin roster must contain a seat", {}, 503
             )
         now = self._current_time()
-        purge_after = now + timedelta(days=30)
+        purge_after = now + timedelta(days=self._settings.user_deletion_retention_days)
         reconciled: list[str] = []
         with self._engine.begin() as connection:
             admins = (
@@ -1404,7 +1410,7 @@ class IdentityAccessService:
         if expected_version < 1:
             raise PlatformError("validation_error", "Expected version is invalid", {}, 422)
         now = self._current_time()
-        purge_after = now + timedelta(days=30)
+        purge_after = now + timedelta(days=self._settings.user_deletion_retention_days)
         endpoint = "DELETE:/admin/users/{id}"
         request_hash = self._idempotency_hash({"expected_version": expected_version})
         with self._idempotency_operation(
@@ -1855,6 +1861,15 @@ class IdentityAccessService:
                 .mappings()
                 .all()
             )
+            work_check = self._configured_work_check()
+            document_counts = (
+                work_check.user_document_counts(
+                    [str(record[identity_user_table.c.id]) for record in records],
+                    connection=connection,
+                )
+                if work_check is not None and records
+                else {}
+            )
         items: list[dict[str, object]] = []
         for record in records:
             user_id = record[identity_user_table.c.id]
@@ -1879,7 +1894,7 @@ class IdentityAccessService:
                         if isinstance(last_active_at, datetime)
                         else None
                     ),
-                    "document_count": 0,
+                    "document_count": document_counts.get(str(user_id), 0),
                     "version": record[identity_user_table.c.version],
                     "lifecycle_status": record[identity_user_table.c.lifecycle_status],
                     "deletion_requested_at": (
@@ -1918,21 +1933,29 @@ class IdentityAccessService:
         )
         if status != "all":
             statement = statement.where(identity_department_table.c.status == status)
+        work_check = self._configured_work_check()
         with self._engine.connect() as connection:
             departments = connection.execute(statement).mappings().all()
+            work_states = {
+                department["id"]: work_check.directory_counts(
+                    str(department["id"]), connection=connection
+                )
+                for department in departments
+            } if work_check is not None else {}
         items: list[dict[str, object]] = []
         for department in departments:
             active = department["status"] == "active"
+            work_state = work_states.get(department["id"], DepartmentWorkState())
             items.append(
                 {
                     "id": department["id"],
                     "name": department["name"],
                     "status": department["status"],
                     "version": department["version"],
-                    "document_count": 0,
+                    "document_count": work_state.document_count,
                     "member_count": int(department["member_count"]),
-                    "nonterminal_job_count": 0,
-                    "pending_submission_count": 0,
+                    "nonterminal_job_count": work_state.nonterminal_job_count,
+                    "pending_submission_count": work_state.pending_submission_count,
                     "deactivated_at": (
                         _utc(department["deactivated_at_utc"]).isoformat()
                         if department["deactivated_at_utc"]

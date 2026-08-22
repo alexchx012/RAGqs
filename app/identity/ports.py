@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
@@ -9,6 +10,7 @@ from sqlalchemy.engine import Connection
 
 @dataclass(frozen=True, slots=True)
 class DepartmentWorkState:
+    document_count: int = 0
     nonterminal_job_count: int = 0
     pending_submission_count: int = 0
 
@@ -18,6 +20,14 @@ class DepartmentWorkCheckPort(Protocol):
 
     def inspect(self, department_id: str, *, connection: Connection) -> DepartmentWorkState: ...
 
+    def directory_counts(
+        self, department_id: str, *, connection: Connection
+    ) -> DepartmentWorkState: ...
+
+    def user_document_counts(
+        self, user_ids: Sequence[str], *, connection: Connection
+    ) -> dict[str, int]: ...
+
 
 class NoopDepartmentWorkCheckPort:
     """Explicit test adapter for a deployment with verified empty work state."""
@@ -25,6 +35,18 @@ class NoopDepartmentWorkCheckPort:
     def inspect(self, department_id: str, *, connection: Connection) -> DepartmentWorkState:
         del department_id, connection
         return DepartmentWorkState()
+
+    def directory_counts(
+        self, department_id: str, *, connection: Connection
+    ) -> DepartmentWorkState:
+        del department_id, connection
+        return DepartmentWorkState()
+
+    def user_document_counts(
+        self, user_ids: Sequence[str], *, connection: Connection
+    ) -> dict[str, int]:
+        del user_ids, connection
+        return {}
 
 
 class UnavailableDepartmentWorkCheckPort:

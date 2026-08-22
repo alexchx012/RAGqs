@@ -19,6 +19,7 @@ from app.outbox.publisher import (
     SqlAlchemyPublicGraphSourceOutboxAdapter,
 )
 from app.outbox.schema import outbox_delivery_table, outbox_event_table, outbox_metadata
+from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore
 
@@ -57,6 +58,8 @@ class _RecordingSourceOutbox:
 @pytest.fixture()
 def source():
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     return PublicGraphSourceService(
         engine,
@@ -67,6 +70,8 @@ def source():
 
 def test_public_source_change_emits_a_transactional_outbox_event() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     outbox = _RecordingSourceOutbox()
     source = PublicGraphSourceService(engine, outbox_port=outbox)
@@ -90,6 +95,8 @@ def test_public_source_change_emits_a_transactional_outbox_event() -> None:
 
 def test_public_source_change_persists_one_outbox_fact_without_notification_delivery() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
     publisher = SqlAlchemyOutboxPublisher(engine, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
@@ -284,6 +291,8 @@ def test_unknown_consumer_is_rejected_and_stale_release_cannot_activate(source) 
 
 def test_public_snapshot_contains_every_current_active_publication() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     source_outbox = _RecordingSourceOutbox()
     source = PublicGraphSourceService(engine, outbox_port=source_outbox)

@@ -23,6 +23,7 @@ from app.documents.schema import documents_metadata, publications_table
 from app.documents.service import DocumentsService, DocumentUpload
 from app.identity.service import AuthPrincipal
 from app.platform.http_contract import register_exception_handlers
+from app.platform.database import core_metadata
 from app.platform.storage import MemoryObjectStore
 
 from .test_commands import _accept
@@ -54,6 +55,8 @@ def preview_api() -> tuple[TestClient, DocumentsService, AuthPrincipal, _Message
         poolclass=StaticPool,
         future=True,
     )
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     principal = AuthPrincipal(
         user_id="user_1",
@@ -129,7 +132,7 @@ def test_preview_returns_renderer_metadata_and_message_hits(preview_api) -> None
         service,
         principal,
         filename="guide.pdf",
-        content=b"test",
+        content=b"%PDF-1.7 test",
         media_kind="application/pdf",
         key="pdf-upload-1",
     )
@@ -161,7 +164,7 @@ def test_preview_without_processing_summary_keeps_the_rich_wire_shape(preview_ap
         service,
         principal,
         filename="guide.txt",
-        content=b"test",
+        content=b"%PDF-1.7 test",
         media_kind="text/plain",
         key="text-upload-1",
     )
@@ -190,7 +193,7 @@ def test_preview_uses_the_real_owned_message_adapter_and_hides_foreign_messages(
         service,
         principal,
         filename="guide.pdf",
-        content=b"test",
+        content=b"%PDF-1.7 test",
         media_kind="application/pdf",
         key="pdf-upload-real-message-1",
     )
@@ -281,7 +284,7 @@ def test_pdf_content_honors_single_byte_ranges_and_head(preview_api) -> None:
         service,
         principal,
         filename="guide.pdf",
-        content=b"test",
+        content=b"%PDF-1.7 test",
         media_kind="application/pdf",
         key="pdf-upload-1",
     )
@@ -291,27 +294,27 @@ def test_pdf_content_honors_single_byte_ranges_and_head(preview_api) -> None:
     partial = client.get(url, params=params, headers={"Range": "bytes=0-3"})
     suffix = client.get(url, params=params, headers={"Range": "bytes=-2"})
     open_ended = client.get(url, params=params, headers={"Range": "bytes=2-"})
-    invalid = client.get(url, params=params, headers={"Range": "bytes=4-5"})
+    invalid = client.get(url, params=params, headers={"Range": "bytes=20-25"})
     multiple = client.get(url, params=params, headers={"Range": "bytes=0-1,2-3"})
     head = client.head(url, params=params, headers={"Range": "bytes=0-3"})
 
     assert partial.status_code == 206
     assert partial.headers["accept-ranges"] == "bytes"
-    assert partial.headers["content-range"] == "bytes 0-3/4"
+    assert partial.headers["content-range"] == "bytes 0-3/13"
     assert partial.headers["content-length"] == "4"
-    assert partial.content == b"test"
+    assert partial.content == b"%PDF"
     assert suffix.status_code == 206
-    assert suffix.headers["content-range"] == "bytes 2-3/4"
+    assert suffix.headers["content-range"] == "bytes 11-12/13"
     assert suffix.content == b"st"
     assert open_ended.status_code == 206
-    assert open_ended.headers["content-range"] == "bytes 2-3/4"
-    assert open_ended.content == b"st"
+    assert open_ended.headers["content-range"] == "bytes 2-12/13"
+    assert open_ended.content == b"DF-1.7 test"
     assert invalid.status_code == 416
-    assert invalid.headers["content-range"] == "bytes */4"
+    assert invalid.headers["content-range"] == "bytes */13"
     assert multiple.status_code == 416
-    assert multiple.headers["content-range"] == "bytes */4"
+    assert multiple.headers["content-range"] == "bytes */13"
     assert head.status_code == 206
-    assert head.headers["content-range"] == "bytes 0-3/4"
+    assert head.headers["content-range"] == "bytes 0-3/13"
     assert head.headers["content-length"] == "4"
     assert head.content == b""
 
@@ -330,7 +333,7 @@ def test_content_keeps_text_readable_and_images_raw(preview_api) -> None:
         service,
         principal,
         filename="diagram.png",
-        content=b"image bytes",
+        content=b"\x89PNG\r\n\x1a\n image bytes",
         media_kind="image/png",
         key="image-upload-1",
     )
@@ -347,7 +350,7 @@ def test_content_keeps_text_readable_and_images_raw(preview_api) -> None:
     assert text_response.headers["content-type"].startswith("text/plain")
     assert text_response.text == "hello"
     assert image_response.headers["content-type"] == "image/png"
-    assert image_response.content == b"image bytes"
+    assert image_response.content == b"\x89PNG\r\n\x1a\n image bytes"
 
 
 def test_content_returns_structured_word_and_selected_sheets(preview_api) -> None:
@@ -356,7 +359,7 @@ def test_content_returns_structured_word_and_selected_sheets(preview_api) -> Non
         service,
         principal,
         filename="guide.docx",
-        content=b"original Word source",
+        content=b"PK original Word source",
         media_kind="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         key="word-upload-1",
     )
