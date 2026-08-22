@@ -45,6 +45,7 @@ import secrets
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
@@ -139,6 +140,7 @@ class LocalMeasurement:
     gpu_milliseconds: int | None
     cpu_milliseconds: int | None
     peak_vram_bytes: int | None
+    measurement_sources: dict[str, str] = dataclass_field(default_factory=dict)
 
 
 def _utc(value: datetime) -> datetime:
@@ -952,6 +954,7 @@ class UsageLedger:
         ownership: OwnershipSnapshot,
         result: str,
         extra_values: dict[str, Any],
+        connection: Connection | None = None,
     ) -> str:
         """追加式 adjustment：继承被引用事件的 effective 事实；recorded 用当前时间。
 
@@ -964,10 +967,54 @@ class UsageLedger:
         只允许引用原始 event_kind（禁止 adjustment chain）、meter 与引用事件类别兼容、
         cost_adjustment 的 currency 与被引用 provider usage 一致。
         """
+        if connection is not None:
+            return self._append_adjustment_in_transaction(
+                connection,
+                event_kind=event_kind,
+                referenced_event_id=referenced_event_id,
+                adjustment_source_namespace=adjustment_source_namespace,
+                adjustment_source_id=adjustment_source_id,
+                adjustment_allocation_key=adjustment_allocation_key,
+                ownership=ownership,
+                result=result,
+                extra_values=extra_values,
+            )
+        with self._engine.begin() as owned_connection:
+            return self._append_adjustment_in_transaction(
+                owned_connection,
+                event_kind=event_kind,
+                referenced_event_id=referenced_event_id,
+                adjustment_source_namespace=adjustment_source_namespace,
+                adjustment_source_id=adjustment_source_id,
+                adjustment_allocation_key=adjustment_allocation_key,
+                ownership=ownership,
+                result=result,
+                extra_values=extra_values,
+            )
+
+    def _append_adjustment_in_transaction(
+        self,
+        connection: Connection,
+        *,
+        event_kind: str,
+        referenced_event_id: str,
+        adjustment_source_namespace: str,
+        adjustment_source_id: str,
+        adjustment_allocation_key: str,
+        ownership: OwnershipSnapshot,
+        result: str,
+        extra_values: dict[str, Any],
+    ) -> str:
+        """Append an adjustment using a caller-owned transaction when required."""
         referenced_event_id = _require_text(referenced_event_id, "referenced_event_id", 64)
+        adjustment_source_namespace = _require_text(
+            adjustment_source_namespace, "adjustment_source_namespace", 64
+        )
+        adjustment_source_id = _require_text(adjustment_source_id, "adjustment_source_id", 128)
+        adjustment_allocation_key = _require_text(
+            adjustment_allocation_key, "adjustment_allocation_key", 64
+        )
         allowed_kinds = _ALLOWED_REFERENCE_KINDS[event_kind]
-        # canonical fingerprint 只依赖调用方事实，不依赖引用行：先于引用语义校验计算，
-        # 使同四元组重放/冲突判定不需要引用事件存在或合法。
         fingerprint = self._event_fingerprint(
             event_kind,
             {
@@ -994,87 +1041,86 @@ class UsageLedger:
             "adjustment_source_id": adjustment_source_id,
             "adjustment_allocation_key": adjustment_allocation_key,
         }
-        with self._engine.begin() as connection:
-            now = self.clock.now_utc(connection)
-            lock = self.calendar.lock_or_verify(connection)
-            # 1) 四元组幂等判定（先于引用事件语义校验）：同指纹复用 persisted ID，
-            #    异指纹 409（不同 referenced_event_id/ownership/result/currency/extra
-            #    均落入异指纹分支）。
-            existing = (
-                connection.execute(
-                    select(usage_event_table).where(
-                        _matches(usage_event_table, index_elements, index_values)
-                    )
+        now = self.clock.now_utc(connection)
+        lock = self.calendar.lock_or_verify(connection)
+        # 1) 四元组幂等判定（先于引用事件语义校验）：同指纹复用 persisted ID，
+        #    异指纹 409（不同 referenced_event_id/ownership/result/currency/extra
+        #    均落入异指纹分支）。
+        existing = (
+            connection.execute(
+                select(usage_event_table).where(
+                    _matches(usage_event_table, index_elements, index_values)
                 )
-                .mappings()
-                .one_or_none()
             )
-            if existing is not None:
-                if existing["event_fingerprint"] != fingerprint:
-                    raise PlatformError(
-                        "ledger_invariant_conflict",
-                        "Usage event fingerprint does not match the existing ledger row",
-                        {"index": index_elements},
-                        409,
-                    )
-                return str(existing["usage_event_id"])
-            # 2) 首次插入：引用事件语义校验（存在性/kind/meter/currency）。
-            ref = (
-                connection.execute(
-                    select(usage_event_table).where(
-                        usage_event_table.c.usage_event_id == referenced_event_id
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if ref is None:
+            .mappings()
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing["event_fingerprint"] != fingerprint:
                 raise PlatformError(
-                    "usage_event_not_found", "Referenced usage event was not found", {}, 404
+                    "ledger_invariant_conflict",
+                    "Usage event fingerprint does not match the existing ledger row",
+                    {"index": index_elements},
+                    409,
                 )
-            if ref["event_kind"] not in allowed_kinds:
-                raise PlatformError(
-                    "validation_error",
-                    f"{event_kind} may only reference original "
-                    f"{sorted(allowed_kinds)} events (got {ref['event_kind']!r})",
-                    {},
-                    422,
+            return str(existing["usage_event_id"])
+        # 2) 首次插入：引用事件语义校验（存在性/kind/meter/currency）。
+        ref = (
+            connection.execute(
+                select(usage_event_table).where(
+                    usage_event_table.c.usage_event_id == referenced_event_id
                 )
-            self._validate_reference_compatibility(event_kind, dict(ref), extra_values)
-            event_id = f"ue_{secrets.token_urlsafe(9)}"
-            persisted_id = self._insert_usage_once(
-                connection,
-                index_elements=index_elements,
-                values={
-                    "usage_event_id": event_id,
-                    "event_kind": event_kind,
-                    "adjustment_source_namespace": adjustment_source_namespace,
-                    "adjustment_source_id": adjustment_source_id,
-                    "adjustment_allocation_key": adjustment_allocation_key,
-                    "referenced_usage_event_id": referenced_event_id,
-                    "execution_kind": ref["execution_kind"],
-                    "execution_id": ref["execution_id"],
-                    "attempt_id": ref["attempt_id"],
-                    "generation_id": ref["generation_id"],
-                    "resource_id": ref["resource_id"],
-                    "replay_generation": ref["replay_generation"],
-                    "cost_center_key": ownership.cost_center_key,
-                    "result": result,
-                    "event_fingerprint": fingerprint,
-                    "ownership_json": _ownership_json(ownership),
-                    "started_at_utc": ref["effective_at_utc"],
-                    "completed_at_utc": now,
-                    "effective_calendar_version_id": ref["effective_calendar_version_id"],
-                    "effective_at_utc": ref["effective_at_utc"],
-                    "effective_period": ref["effective_period"],
-                    "recorded_calendar_version_id": lock.version_id,
-                    "recorded_at_utc": now,
-                    "recorded_period": self.calendar.period_for(lock, now),
-                    "created_at_utc": now,
-                    **extra_values,
-                },
             )
-            return persisted_id
+            .mappings()
+            .one_or_none()
+        )
+        if ref is None:
+            raise PlatformError(
+                "usage_event_not_found", "Referenced usage event was not found", {}, 404
+            )
+        if ref["event_kind"] not in allowed_kinds:
+            raise PlatformError(
+                "validation_error",
+                f"{event_kind} may only reference original "
+                f"{sorted(allowed_kinds)} events (got {ref['event_kind']!r})",
+                {},
+                422,
+            )
+        self._validate_reference_compatibility(event_kind, dict(ref), extra_values)
+        event_id = f"ue_{secrets.token_urlsafe(9)}"
+        persisted_id = self._insert_usage_once(
+            connection,
+            index_elements=index_elements,
+            values={
+                "usage_event_id": event_id,
+                "event_kind": event_kind,
+                "adjustment_source_namespace": adjustment_source_namespace,
+                "adjustment_source_id": adjustment_source_id,
+                "adjustment_allocation_key": adjustment_allocation_key,
+                "referenced_usage_event_id": referenced_event_id,
+                "execution_kind": ref["execution_kind"],
+                "execution_id": ref["execution_id"],
+                "attempt_id": ref["attempt_id"],
+                "generation_id": ref["generation_id"],
+                "resource_id": ref["resource_id"],
+                "replay_generation": ref["replay_generation"],
+                "cost_center_key": ownership.cost_center_key,
+                "result": result,
+                "event_fingerprint": fingerprint,
+                "ownership_json": _ownership_json(ownership),
+                "started_at_utc": ref["effective_at_utc"],
+                "completed_at_utc": now,
+                "effective_calendar_version_id": ref["effective_calendar_version_id"],
+                "effective_at_utc": ref["effective_at_utc"],
+                "effective_period": ref["effective_period"],
+                "recorded_calendar_version_id": lock.version_id,
+                "recorded_at_utc": now,
+                "recorded_period": self.calendar.period_for(lock, now),
+                "created_at_utc": now,
+                **extra_values,
+            },
+        )
+        return persisted_id
 
     # ---- 公开 wrapper（自带短事务） ----
 
@@ -1448,14 +1494,18 @@ class UsageLedger:
             lock = self.calendar.lock_or_verify(connection)
             lock_period = self.calendar.period_for(lock, started)
             recorded_period = self.calendar.period_for(lock, now)
+            measurement_payload = asdict(measurement)
+            measurement_sources = measurement_payload.pop("measurement_sources", {})
             fingerprint_payload = {
                 "scope": (execution_kind, execution_id, stage, resource_kind),
                 "ownership": _ownership_json(ownership),
                 "started_at_utc": started,
-                "measurement": asdict(measurement),
+                "measurement": measurement_payload,
                 "result": result,
                 "effective_period": lock_period,
             }
+            if measurement_sources:
+                fingerprint_payload["measurement_sources"] = measurement_sources
             if replay_generation:
                 fingerprint_payload["replay_generation"] = replay_generation
             fingerprint = self._event_fingerprint("local_usage", fingerprint_payload)

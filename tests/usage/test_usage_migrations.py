@@ -421,9 +421,43 @@ def test_no_usage_idempotency_table_in_metadata() -> None:
 
     assert "usage_idempotency" not in meta.tables
     assert (
-        len(meta.tables) == 10
+        len(meta.tables) == 19
     )  # calendar + price_scope + price_catalog + price_line + provider_call
     # + usage_event + quota_debit + quota_projection + quota_request + reconciliation
+
+
+def test_provider_billing_source_record_is_immutable_at_head(tmp_path: Path) -> None:
+    engine = _upgraded_engine(tmp_path, "billing_immutable.sqlite3")
+    insert = text(
+        "INSERT INTO provider_billing_source_record"
+        " (provider_billing_source_record_id, provider, provider_account_id,"
+        " billing_source_record_id, model, operation, service_month, measurements, amount,"
+        " currency_code, source_status, source_metadata, content_fingerprint, created_at_utc)"
+        " VALUES ('pbs-1', 'dashscope', 'account-1', 'bill-1', 'qwen-plus', 'generate',"
+        " '2026-08', '{}', 1.0, 'USD', 'billed', '{}', 'fp-1',"
+        " '2026-08-05T00:00:00+00:00')"
+    )
+    try:
+        with engine.begin() as connection:
+            connection.execute(insert)
+        with pytest.raises(Exception, match="immutable"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE provider_billing_source_record SET amount = 2.0"
+                        " WHERE provider_billing_source_record_id = 'pbs-1'"
+                    )
+                )
+        with pytest.raises(Exception, match="immutable"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "DELETE FROM provider_billing_source_record"
+                        " WHERE provider_billing_source_record_id = 'pbs-1'"
+                    )
+                )
+    finally:
+        engine.dispose()
 
 
 # ---------------------------------------------------------------------------

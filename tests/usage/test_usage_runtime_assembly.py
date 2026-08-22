@@ -36,7 +36,9 @@ from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
 from app.platform.runtime import PlatformRuntime, build_runtime, ensure_business_calendar_locked
 from app.usage import maintenance as maintenance_module
+from app.usage.billing import ProviderBillingService
 from app.usage.calendar import BusinessCalendarService
+from app.usage.metering import LocalUsageMeterService
 from app.usage.ports import UnavailableOutboxEnqueuePort
 from app.usage.requests import QuotaRequestService
 from app.usage.schema import (
@@ -118,6 +120,8 @@ def assert_usage_service_graph(runtime: PlatformRuntime) -> None:
     quota = runtime.resolve("quota_service")
     outbox = runtime.resolve("outbox_enqueue_port")
     requests = runtime.resolve("quota_request_service")
+    local_meter = runtime.resolve("local_usage_meter")
+    provider_billing = runtime.resolve("provider_billing")
 
     assert ledger.calendar is calendar
     assert ledger.prices is prices
@@ -126,6 +130,10 @@ def assert_usage_service_graph(runtime: PlatformRuntime) -> None:
     assert requests.calendar is calendar
     assert requests._quota is quota
     assert requests._outbox is outbox
+    assert isinstance(local_meter, LocalUsageMeterService)
+    assert isinstance(provider_billing, ProviderBillingService)
+    assert local_meter.ledger is ledger
+    assert provider_billing.ledger is ledger
 
 
 def test_build_runtime_registers_all_usage_services() -> None:
@@ -139,6 +147,8 @@ def test_build_runtime_registers_all_usage_services() -> None:
         assert runtime.resolve("business_calendar") is not None
         assert runtime.resolve("price_catalog") is not None
         assert runtime.resolve("usage_ledger") is not None
+        assert runtime.resolve("local_usage_meter") is not None
+        assert runtime.resolve("provider_billing") is not None
         assert runtime.resolve("quota_service") is not None
         assert isinstance(runtime.resolve("quota_request_service"), QuotaRequestService)
         assert not isinstance(runtime.resolve("outbox_enqueue_port"), UnavailableOutboxEnqueuePort)

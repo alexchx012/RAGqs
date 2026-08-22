@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
+
 from sqlalchemy import create_engine, select
 
 import app.evaluation as evaluation_module
@@ -17,6 +20,7 @@ from app.outbox.schema import outbox_metadata, outbox_redaction_receipt_table
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.runtime import build_runtime
+from app.usage.budget import BudgetEffortPolicy, BudgetMeterPolicy, BudgetMeterService
 from app.usage.schema import usage_metadata
 
 
@@ -110,7 +114,33 @@ def _production_adapters(engine):
         "indexing_image_ocr": lambda content, context: "ocr",
         "indexing_image_describer": lambda content, context: "description",
         "graph_build_extractor": _ExplicitGraphExtractor(),
+        "generation_budget_meter": _budget_meter(engine),
     }
+
+
+class _FixedClock:
+    def now_utc(self, connection=None) -> datetime:
+        del connection
+        return datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+
+
+def _budget_meter(engine) -> BudgetMeterService:
+    policy = BudgetMeterPolicy.production(
+        efforts={
+            effort: BudgetEffortPolicy(
+                max_rag_calls=1,
+                max_wall_seconds=20,
+                max_total_tokens=12000,
+                max_estimated_cost_amount=Decimal("1.0000000000"),
+                candidate_document_limit=5,
+            )
+            for effort in ("quick", "think", "deep")
+        },
+        price_version_id="price-test",
+        currency_code="USD",
+        cost_estimator=lambda operation, tokens: Decimal("0.001"),
+    )
+    return BudgetMeterService(engine, _FixedClock(), policy)
 
 
 def _production_settings(*, judge_base_url: str | None, judge_api_key: str | None):
@@ -268,6 +298,7 @@ def test_production_runtime_requires_explicit_retrieval_backends() -> None:
             "indexing_image_describer": lambda content, context: "description",
             "graph_build_extractor": _ExplicitGraphExtractor(),
             "judge_provider": _ExplicitJudgeProvider(),
+            "generation_budget_meter": _budget_meter(engine),
         },
     )
     runtime.close()
