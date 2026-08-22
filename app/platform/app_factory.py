@@ -21,6 +21,7 @@ from .errors import map_exception
 from .http_contract import register_exception_handlers, request_error_payload
 from .observability import ObservabilityMetricsError, ObservabilitySample, sample_success
 from .runtime import PlatformRuntime, build_runtime
+from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,9 @@ def create_platform_app(
                         original_route = getattr(context, "original_route", None)
                         if original_route is not None:
                             route_template_by_route_id[id(original_route)] = context_path
+        # Internal sparse exact-match sampling rides the same read path as API
+        # routes; keep its template registered alongside them.
+        route_templates.append(SPARSE_EXACT_MATCH_ROUTE)
         configure_route_templates(route_templates)
 
     @app.middleware("http")

@@ -45,6 +45,7 @@ class IndexingService:
         token_counter: Any | None = None,
         object_store: ObjectStorePort | None = None,
         embedding: EmbeddingProvider | None = None,
+        exact_match_metrics: Any | None = None,
     ) -> None:
         if environment == "production":
             if (
@@ -88,6 +89,7 @@ class IndexingService:
             graph_router=graph_router,
             graph_reader=self.graph,
             token_counter=token_counter,
+            exact_match_metrics=exact_match_metrics,
         )
         self.citations = (
             CitationService(

@@ -246,7 +246,6 @@ class ChatGenerationWorker:
                     checkpoint_json=None,
                     next_attempt_at_utc=now,
                     last_error_classification=None,
-                    provider_reconciliation_state=None,
                     created_at_utc=now,
                     updated_at_utc=now,
                 )

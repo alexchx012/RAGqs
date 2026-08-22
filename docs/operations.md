@@ -154,10 +154,10 @@ When correctness is uncertain, preserve PostgreSQL and object storage, stop deri
 
 **Trigger:** a generation execution has a provider call in `dispatching` or `unknown` after a connection failure, timeout, or worker restart.
 
-1. Stop automatic re-dispatch for that stage and mark the execution `provider_reconciling` through the worker protocol.
-2. Query the provider's supported request-status API, provider logs, or billing record using the immutable `provider_call_id` and idempotency key.
-3. If the provider confirms completion, reuse the original result. If it confirms not-sent, reissue only the same business stage under the same persisted execution.
-4. If the result remains unknown at the reconciliation deadline, commit one `failed` generation with `provider_result_unknown` and keep the reconciliation task for audit. Do not create a new user-visible generation automatically.
+1. Chat provider reconciliation is **not implemented**: there is no `provider_reconciling` execution status and no worker protocol to enter one. Never report or record a reconciled outcome for a chat generation; that state does not exist.
+2. If the provider result is unknown, let the existing execution protocol run its course: the attempt either completes on the persisted execution or transitions to `retry_wait`/`failed` with the recorded error classification. Do not mark an unknown outcome as completed.
+3. Optional manual forensics: query the provider's supported request-status API, provider logs, or billing record using the immutable `provider_call_id` and idempotency key. Findings inform incident review only; they must not mutate the generation's terminal state.
+4. If the result remains unknown at the deadline, the execution fails with the recorded classification and the usage ledger keeps the original outbound attempt exactly once. Do not create a new user-visible generation automatically.
 
 **Verify:** the generation has at most one terminal event, the user can use the normal failed-generation retry flow if permitted, and the usage ledger contains the original outbound attempt exactly once.
 

@@ -142,7 +142,6 @@ chat_generation_table = Table(
     Column("window_kind", String(32), nullable=True),
     Column("disconnect_deadline_at_utc", DateTime(timezone=True), nullable=True),
     Column("last_error_code", String(64), nullable=True),
-    Column("provider_reconciliation_state", String(32), nullable=True),
     Column("version", Integer, nullable=False),
     *_timestamps(),
     CheckConstraint(
@@ -197,10 +196,9 @@ chat_generation_execution_table = Table(
     Column("checkpoint_json", JSON, nullable=True),
     Column("next_attempt_at_utc", DateTime(timezone=True), nullable=True),
     Column("last_error_classification", String(64), nullable=True),
-    Column("provider_reconciliation_state", String(32), nullable=True),
     *_timestamps(),
     CheckConstraint(
-        "status IN ('queued','running','retry_wait','provider_reconciling','expired',"
+        "status IN ('queued','running','retry_wait','expired',"
         "'completed','failed','cancelled')",
         name="ck_chat_generation_execution_status",
     ),

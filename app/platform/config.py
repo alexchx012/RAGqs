@@ -106,6 +106,7 @@ class IndexSettings(_StrictModel):
     sparse_data_path: str | None = None
     text_chunk_max_chars: int = Field(default=8_000, ge=1)
     xlsx_merged_cells_max: int = Field(default=10_000, ge=1)
+    ocr_confidence_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
 
 
 class DocumentsSettings(_StrictModel):
@@ -247,6 +248,7 @@ _ENV_KEYS = {
     "RAG_INDEX_SPARSE_DATA_PATH",
     "RAG_INDEX_TEXT_CHUNK_MAX_CHARS",
     "RAG_INDEX_XLSX_MERGED_CELLS_MAX",
+    "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD",
     "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
     "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS",
     "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
@@ -409,6 +411,7 @@ def load_platform_settings(
                 "sparse_data_path": _optional(env, "RAG_INDEX_SPARSE_DATA_PATH"),
                 "text_chunk_max_chars": _int(env, "RAG_INDEX_TEXT_CHUNK_MAX_CHARS"),
                 "xlsx_merged_cells_max": _int(env, "RAG_INDEX_XLSX_MERGED_CELLS_MAX"),
+                "ocr_confidence_threshold": _float(env, "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD"),
             }.items()
             if value is not None
         },

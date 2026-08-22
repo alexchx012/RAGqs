@@ -297,6 +297,7 @@ class ContentProcessor:
         image_ocr: Callable[[bytes, Mapping[str, Any]], str] | None = None,
         text_chunk_max_chars: int = 8_000,
         xlsx_merged_cells_max: int = 10_000,
+        ocr_confidence_threshold: float = 0.9,
     ) -> None:
         self._compressor = compressor or IdentityCompression()
         self._mineru = mineru
@@ -304,6 +305,7 @@ class ContentProcessor:
         self._image_ocr = image_ocr
         self._text_chunk_max_chars = text_chunk_max_chars
         self._xlsx_merged_cells_max = xlsx_merged_cells_max
+        self._ocr_confidence_threshold = float(ocr_confidence_threshold)
 
     def process(
         self,
@@ -399,8 +401,11 @@ class ContentProcessor:
             confidence = parsed.get("ocr_confidence")
             if confidence is not None:
                 ocr["confidence"] = float(confidence)
-                ocr["low_confidence"] = float(confidence) < 0.9
-                ocr["fact"] = {"threshold": 0.9, "confidence": float(confidence)}
+                ocr["low_confidence"] = float(confidence) < self._ocr_confidence_threshold
+                ocr["fact"] = {
+                    "threshold": self._ocr_confidence_threshold,
+                    "confidence": float(confidence),
+                }
             local_confidence = parsed.get("ocr_confidence_by_page", {})
             if isinstance(local_confidence, Mapping):
                 sample = OCRSamplePlan.for_page_count(page_count)
@@ -412,9 +417,9 @@ class ContentProcessor:
                 if sampled:
                     lowest = min(sampled.values())
                     ocr["local_confidence"] = sampled
-                    ocr["low_confidence"] = lowest < 0.9
+                    ocr["low_confidence"] = lowest < self._ocr_confidence_threshold
                     ocr["fact"] = {
-                        "threshold": 0.9,
+                        "threshold": self._ocr_confidence_threshold,
                         "sampled_pages": sampled,
                         "lowest_confidence": lowest,
                     }
