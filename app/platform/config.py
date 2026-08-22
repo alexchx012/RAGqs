@@ -143,6 +143,7 @@ class AuthSettings(_StrictModel):
     refresh_reuse_grace_seconds: int = Field(default=5, ge=1, le=60)
     login_max_attempts: int = Field(default=5, ge=1, le=20)
     login_lock_seconds: int = Field(default=60, ge=1, le=3600)
+    user_deletion_retention_days: int = Field(default=30, ge=1, le=3650)
     secret_key: SecretStr | None = None
     allowed_origins: tuple[str, ...] = ()
     admin_roster: tuple[str, ...] = ()
@@ -462,6 +463,9 @@ def load_platform_settings(
                 "refresh_reuse_grace_seconds": _int(env, "RAG_AUTH_REFRESH_REUSE_GRACE_SECONDS"),
                 "login_max_attempts": _int(env, "RAG_AUTH_LOGIN_MAX_ATTEMPTS"),
                 "login_lock_seconds": _int(env, "RAG_AUTH_LOGIN_LOCK_SECONDS"),
+                "user_deletion_retention_days": _int(
+                    env, "USER_DELETION_RETENTION_DAYS"
+                ),
                 "secret_key": _optional(env, "RAG_AUTH_SECRET_KEY"),
                 "allowed_origins": _csv(env, "RAG_AUTH_ALLOWED_ORIGINS"),
                 "admin_roster": _csv(env, "RAG_AUTH_ADMIN_ROSTER"),

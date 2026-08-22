@@ -15,6 +15,7 @@ from app.documents.schema import (
 )
 from app.documents.service import DocumentsService
 from app.identity.service import AuthPrincipal
+from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore
 
@@ -360,6 +361,8 @@ def test_lease_expiry_resets_retry_budget_per_replay_cycle(service, principal) -
 
 def test_public_space_with_corrupt_manifest_row_still_publishes_and_deletes() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     source_outbox = _RecordingSourceOutbox()
     source = PublicGraphSourceService(engine, outbox_port=source_outbox)
@@ -432,6 +435,8 @@ def test_public_space_with_corrupt_manifest_row_still_publishes_and_deletes() ->
 
 def test_list_approvals_filters_spaces_in_sql() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
 
     class _PermissiveIdentity:

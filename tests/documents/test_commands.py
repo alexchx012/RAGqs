@@ -15,6 +15,7 @@ from app.documents.schema import (
 )
 from app.documents.service import DocumentsService, DocumentUpload
 from app.identity.service import AuthPrincipal
+from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore
 
@@ -30,6 +31,8 @@ class _Identity:
 @pytest.fixture()
 def service():
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     return DocumentsService(
         engine,
@@ -299,7 +302,7 @@ def test_replace_requires_expected_version_and_keeps_old_publication(service, pr
         principal=principal,
         document_id=item["document_id"],
         expected_version=1,
-        file=DocumentUpload(filename="revised.pdf", content=b"new", media_kind="application/pdf"),
+        file=DocumentUpload(filename="revised.pdf", content=b"%PDF-1.7 new", media_kind="application/pdf"),
         idempotency_key="replace-1",
     )
     assert replacement["job_id"]

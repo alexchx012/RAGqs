@@ -157,6 +157,8 @@ def test_runtime_exposes_documents_service_and_department_work_adapter() -> None
         core_metadata.create_all(engine)
         identity_metadata.create_all(engine)
         usage_metadata.create_all(engine)
+        core_metadata.create_all(engine)
+
         documents_metadata.create_all(engine)
         assert isinstance(runtime.resolve("documents_service"), DocumentsService)
         assert isinstance(

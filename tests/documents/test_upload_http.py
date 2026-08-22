@@ -92,6 +92,8 @@ def _make_app() -> tuple[object, object, MemoryObjectStore]:
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
     usage_metadata.create_all(engine)
+    core_metadata.create_all(engine)
+
     documents_metadata.create_all(engine)
     indexing_metadata.create_all(engine)
     outbox_metadata.create_all(engine)

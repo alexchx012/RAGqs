@@ -110,7 +110,7 @@ def test_content_returns_a_persisted_word_tree(service, principal) -> None:
         files=[
             DocumentUpload(
                 filename="guide.docx",
-                content=b"original Word source",
+                content=b"PK original Word source",
                 media_kind="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
         ],

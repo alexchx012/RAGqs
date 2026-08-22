@@ -13,6 +13,7 @@ from sqlalchemy.engine import URL, make_url
 from app.documents.schema import documents_metadata, documents_table, upload_dedup_claims_table
 from app.documents.service import DocumentsService, DocumentUpload
 from app.identity.service import AuthPrincipal
+from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore, ObjectMetadata
 
@@ -79,6 +80,8 @@ def pg_documents_service():
         with base_engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         scoped_engine = create_engine(_schema_url(base_url, schema))
+        core_metadata.create_all(scoped_engine)
+
         documents_metadata.create_all(scoped_engine)
         service = DocumentsService(
             scoped_engine,

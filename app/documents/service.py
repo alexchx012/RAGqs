@@ -11,9 +11,11 @@ from typing import Any
 from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.engine import Connection, Engine
 
+from app.documents.upload_security import validate_upload_security
 from app.identity.ports import DepartmentWorkState
 from app.outbox.ports import DocumentNotificationRedactionCommand
-from app.platform.database import _insert_do_nothing
+from app.platform.context import current_context
+from app.platform.database import _insert_do_nothing, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH
 from app.platform.storage import MemoryObjectStore, ObjectMetadata, ObjectStorePort, StorageKeyError
@@ -139,6 +141,43 @@ class DocumentsDepartmentWorkCheckPort:
             nonterminal_job_count=pending_jobs,
             pending_submission_count=submissions,
         )
+
+    def directory_counts(self, department_id: str, *, connection: Connection) -> DepartmentWorkState:
+        work = self.inspect(department_id, connection=connection)
+        documents = int(
+            connection.execute(
+                select(func.count())
+                .select_from(documents_table)
+                .where(
+                    and_(
+                        documents_table.c.space_id == f"department:{department_id}",
+                        documents_table.c.lifecycle_status != "deleted",
+                    )
+                )
+            ).scalar_one()
+        )
+        return DepartmentWorkState(
+            document_count=documents,
+            nonterminal_job_count=work.nonterminal_job_count,
+            pending_submission_count=work.pending_submission_count,
+        )
+
+    def user_document_counts(
+        self, user_ids: Sequence[str], *, connection: Connection
+    ) -> dict[str, int]:
+        if not user_ids:
+            return {}
+        rows = connection.execute(
+            select(documents_table.c.created_by_user_id, func.count())
+            .where(
+                and_(
+                    documents_table.c.created_by_user_id.in_(list(user_ids)),
+                    documents_table.c.lifecycle_status != "deleted",
+                )
+            )
+            .group_by(documents_table.c.created_by_user_id)
+        ).all()
+        return {str(user_id): int(count) for user_id, count in rows}
 
 
 class DocumentsService:
@@ -1112,6 +1151,7 @@ class DocumentsService:
         )
 
     def _file_fingerprint(self, file: DocumentUpload) -> dict[str, Any]:
+        validate_upload_security(media_kind=file.media_kind, content=file.content)
         if len(file.content) > self._max_upload_bytes:
             raise PlatformError(
                 "upload_too_large",
@@ -1662,6 +1702,29 @@ class DocumentsService:
                 "document_operation_in_progress", "A document operation is active", {}, 409
             )
 
+    @staticmethod
+    def _audit(
+        connection: Connection,
+        *,
+        actor_id: str,
+        resource_type: str,
+        resource_id: str,
+        result: str,
+        occurred_at: datetime,
+    ) -> None:
+        context = current_context()
+        connection.execute(
+            platform_audit_table.insert().values(
+                actor_id=actor_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                request_id=context.request_id if context is not None else "req_documents",
+                occurred_at_utc=occurred_at,
+                result=result,
+                details_json={},
+            )
+        )
+
     def list_documents(
         self,
         *,
@@ -1753,6 +1816,17 @@ class DocumentsService:
                     "usage": {"pages": pages, "images": images},
                 }
             )
+        if space_id.startswith("personal:") and space_id != f"personal:{principal.user_id}":
+            # Directory-privileged view of another user's personal library: observable read.
+            with self._engine.begin() as connection:
+                self._audit(
+                    connection,
+                    actor_id=str(principal.user_id),
+                    resource_type="documents.personal_library_view",
+                    resource_id=space_id,
+                    result="succeeded",
+                    occurred_at=self._current_time(),
+                )
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     def list_versions(self, *, principal: Any, document_id: str) -> dict[str, Any]:
@@ -1996,6 +2070,14 @@ class DocumentsService:
                 "version": next_version,
                 "status": "pending",
             }
+            self._audit(
+                connection,
+                actor_id=actor_id,
+                resource_type="documents.version_restore",
+                resource_id=document_id,
+                result="succeeded",
+                occurred_at=now,
+            )
             self._complete_idempotency(
                 connection,
                 actor_id=actor_id,
@@ -2699,6 +2781,14 @@ class DocumentsService:
                 "lifecycle_status": DocumentLifecycle.PENDING_DELETE.value,
                 "deletion_requested_at": _timestamp(now),
             }
+            self._audit(
+                connection,
+                actor_id=actor_id,
+                resource_type="documents.delete",
+                resource_id=document_id,
+                result="succeeded",
+                occurred_at=now,
+            )
             self._complete_idempotency(
                 connection,
                 actor_id=actor_id,

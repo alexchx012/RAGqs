@@ -917,6 +917,14 @@ class SubmissionService:
                     occurred_at=now,
                 )
             if deferred_conflict is None:
+                self._service._audit(
+                    connection,
+                    actor_id=actor_id,
+                    resource_type="documents.submission_review",
+                    resource_id=submission_id,
+                    result=str(response.get("status", "reviewed")),
+                    occurred_at=now,
+                )
                 self._service._complete_idempotency(
                     connection,
                     actor_id=actor_id,
@@ -1000,6 +1008,14 @@ class SubmissionService:
                 self._service._object_store.delete(str(row["private_object_key"]))
             except (StorageKeyError, KeyError):
                 pass
+            self._service._audit(
+                connection,
+                actor_id=actor_id,
+                resource_type="documents.submission_delete",
+                resource_id=submission_id,
+                result="succeeded",
+                occurred_at=self._service._current_time(),
+            )
             self._service._complete_idempotency(
                 connection,
                 actor_id=actor_id,
