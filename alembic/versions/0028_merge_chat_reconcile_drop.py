@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from alembic import op
-
 revision: str = "0028_merge_chat_reconcile_drop"
 down_revision: tuple[str, str] | Sequence[str] | None = (
     "0027_merge_ab_vote_idempotency",
