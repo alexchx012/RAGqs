@@ -347,7 +347,6 @@ class GenerationService:
             "window_kind": window.window_kind if window else None,
             "disconnect_deadline_at_utc": None,
             "last_error_code": None,
-            "provider_reconciliation_state": None,
             "version": 1,
             "created_at_utc": now,
             "updated_at_utc": now,
@@ -367,7 +366,6 @@ class GenerationService:
                 checkpoint_json=None,
                 next_attempt_at_utc=now,
                 last_error_classification=None,
-                provider_reconciliation_state=None,
                 created_at_utc=now,
                 updated_at_utc=now,
             )

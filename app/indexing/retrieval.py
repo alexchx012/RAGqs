@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from app.platform.errors import PlatformError
+from app.platform.observability import ObservabilitySample, sample_success
 
 from .generation import GenerationManager
 from .models import (
@@ -106,6 +109,7 @@ _EFFORT_LIMITS = {
     "deep": (10, 9),
 }
 _VECTOR_CANDIDATE_RATIO = 0.7
+SPARSE_EXACT_MATCH_ROUTE = "sparse_exact_match"
 
 
 def allocate_candidate_quotas(limit: int, kinds: Sequence[str]) -> tuple[int, ...]:
@@ -328,6 +332,7 @@ class RetrievalService:
         graph_router: GraphRouter | None = None,
         graph_reader: GraphReader | None = None,
         token_counter: TokenCounter | None = None,
+        exact_match_metrics: Any = None,
     ) -> None:
         if not providers:
             raise ValueError("at least one retrieval provider is required")
@@ -341,6 +346,7 @@ class RetrievalService:
         self._graph_router = graph_router
         self._graph_reader = graph_reader
         self._token_counter = token_counter or _conservative_token_count
+        self._exact_match_metrics = exact_match_metrics
 
     def open_request(self) -> RetrievalRequest:
         return RetrievalRequest(self, self._generation.acquire_reference_lease())
@@ -448,6 +454,53 @@ class RetrievalService:
             "reason": error.code if isinstance(error, PlatformError) else "unavailable",
         }
 
+    def _observe_sparse_exact_match(
+        self,
+        query: str,
+        generation_id: str,
+        hits: Sequence[RetrievalHit],
+    ) -> None:
+        """Sample sparse exact-text matches into the shared observability read path.
+
+        Best-effort only: recording must never alter, delay, or fail retrieval, and
+        the sample carries no query or chunk text — only a stable hash decides
+        sampling, and the recorded route template identifies the signal.
+        """
+
+        metrics = self._exact_match_metrics
+        if metrics is None or not hits:
+            return
+        rate = float(getattr(metrics, "success_sample_rate", 0.0) or 0.0)
+        if rate <= 0:
+            return
+        normalized_query = query.strip().casefold()
+        if not normalized_query:
+            return
+        try:
+            observed_at = datetime.now(UTC)
+            for hit in hits:
+                if hit.chunk.text.strip().casefold() != normalized_query:
+                    continue
+                stable_key = hashlib.sha256(
+                    f"{generation_id}:{hit.chunk.dedupe_key}:{normalized_query}".encode()
+                ).hexdigest()
+                selected, weight = sample_success(stable_key, rate)
+                if not selected:
+                    continue
+                metrics.record(
+                    ObservabilitySample(
+                        observed_at_utc=observed_at,
+                        route_template=SPARSE_EXACT_MATCH_ROUTE,
+                        method="POST",
+                        outcome_class="success",
+                        status_family="2xx",
+                        latency_ms=0,
+                        sample_weight=weight,
+                    )
+                )
+        except Exception:
+            return
+
     def _collect_provider_hits(
         self,
         provider: Any,
@@ -548,6 +601,8 @@ class RetrievalService:
                 failures.append(kind)
                 continue
             collected.append((kind, payload))
+            if kind == "sparse":
+                self._observe_sparse_exact_match(query, generation_id, payload)
         if not collected:
             raise PlatformError(
                 "retrieval_failed",

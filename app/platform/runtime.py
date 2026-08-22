@@ -408,6 +408,7 @@ def build_runtime(
         image_ocr=configured.get("indexing_image_ocr"),
         text_chunk_max_chars=settings.index.text_chunk_max_chars,
         xlsx_merged_cells_max=settings.index.xlsx_merged_cells_max,
+        ocr_confidence_threshold=settings.index.ocr_confidence_threshold,
     )
     configured.setdefault("indexing_processor", processor)
     embedding = configured.get("indexing_embedding")
@@ -479,6 +480,7 @@ def build_runtime(
         token_counter=token_counter,
         object_store=object_store,
         embedding=embedding,
+        exact_match_metrics=observability_metrics,
     )
     configured.setdefault("indexing_service", indexing_service)
     if _index_configuration_staging_table_exists(engine, "index_generations"):
