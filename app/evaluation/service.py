@@ -305,7 +305,7 @@ class EvaluationService:
             if policy is None:
                 policy = default_policy_snapshot(now=self._now_utc(connection))
             validate_policy(policy)
-            entries = self._build_entries(connection, actor=actor)
+            entries = self._build_entries(connection, actor=actor, policy=policy)
             shadow_entries = self._build_shadow_entries(connection, policy, actor=actor)
             return {
                 "entries": [entry.to_json() for entry in entries],
@@ -323,6 +323,7 @@ class EvaluationService:
         connection: Connection,
         *,
         actor: Any,
+        policy: EvaluationPolicySnapshot,
     ) -> list[LeaderboardEntry]:
         rows = connection.execute(select(evaluation_active_default_table)).mappings().all()
         visible = self._visible_space_ids(actor)
@@ -333,16 +334,34 @@ class EvaluationService:
                 # Aggregation only happens over spaces the principal may
                 # retrieve from (A24).
                 continue
-            entries.append(
-                LeaderboardEntry(
-                    rank=0,
-                    name=str(row["candidate_config_version"]),
-                    score=0.0,
-                    metrics={},
-                    eligible=True,
-                    is_active=True,
-                )
+            name = str(row["candidate_config_version"])
+            source_run_id = row["source_run_id"]
+            results = (
+                [
+                    result
+                    for result in self._repository.list_results(
+                        connection, run_id=str(source_run_id)
+                    )
+                    if str(result["candidate_config_version"]) == name
+                ]
+                if source_run_id is not None
+                else []
             )
+            if results:
+                metrics = self._aggregate_result_metrics(results)
+                eligible = threshold_eligibility(metrics, policy)
+                score = weighted_score(metrics) if eligible else 0.0
+                entries.append(
+                    LeaderboardEntry(
+                        rank=0,
+                        name=name,
+                        score=score,
+                        metrics=metrics,
+                        eligible=eligible,
+                        is_active=True,
+                    )
+                )
+        entries.sort(key=lambda item: (-item.score, item.name))
         return [
             LeaderboardEntry(
                 rank=index,

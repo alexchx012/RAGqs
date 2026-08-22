@@ -126,6 +126,8 @@ export function fakeAdminApi(overrides: Partial<AdminApi> = {}): AdminApi {
   return {
     getDashboard: vi.fn(async () => ({ window: '7d' as const, packs: [] })),
     getOperationsMetrics: vi.fn(async () => ({ window: '7d' as const, cards: [] })),
+    listUserDocuments: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 20 })),
+    listDepartmentDocuments: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 20 })),
     getApprovalSummary: vi.fn(async () => ({ quota_pending: 0, submission_pending: 0 })),
     listQuotaRequests: vi.fn(async () => ({ items: [] })),
     approveQuotaRequest: vi.fn(unexpectedWrite),

@@ -36,7 +36,14 @@ export const METRICS_WINDOW_OPTIONS: readonly SegmentedOption[] = [
 
 export function DashboardModule() {
   const { api, metricsWindow, setMetricsWindow } = useAdmin();
-  const read = useAdminRead(() => api.getDashboard(metricsWindow), [api, metricsWindow]);
+  const [expandUserRank, setExpandUserRank] = useState(false);
+  const read = useAdminRead(
+    () =>
+      expandUserRank
+        ? api.getDashboard(metricsWindow, 'user_rank')
+        : api.getDashboard(metricsWindow),
+    [api, expandUserRank, metricsWindow],
+  );
   /** 已点重试的卡 key：该卡先回骨架，本次重拉完成后清除。 */
   const [retryingKeys, setRetryingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const copyDashboard = copy.admin.dashboard;
@@ -101,6 +108,7 @@ export function DashboardModule() {
                       error={read.error}
                       retrying={read.loading && retryingKeys.has(card.key)}
                       onRetry={() => retryCard(card.key)}
+                      onExpand={card.kind === 'user_rank' ? () => setExpandUserRank(true) : undefined}
                     />
                   );
                 })}

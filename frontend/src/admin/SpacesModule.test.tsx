@@ -111,6 +111,12 @@ function contractAdminApi(token: string, overrides: Partial<AdminApi> = {}): Adm
     listDepartments: vi.fn((status?: DepartmentStatusFilter) =>
       call(() => mockAdmin.listDepartments(token, status)),
     ),
+    listUserDocuments: vi.fn((userId: string, page: number, pageSize: number) =>
+      call(() => mockKnowledge.listDocuments(token, `personal:${userId}`, undefined, page, pageSize)),
+    ),
+    listDepartmentDocuments: vi.fn((departmentId: string, page: number, pageSize: number) =>
+      call(() => mockKnowledge.listDocuments(token, `department:${departmentId}`, undefined, page, pageSize)),
+    ),
     ...overrides,
   });
 }

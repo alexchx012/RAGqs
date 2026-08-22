@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.documents.service import DocumentsService
 from app.identity.service import AuthPrincipal, IdentityAccessService
+from app.platform.errors import PlatformError
 from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal, identity_access_service
@@ -67,6 +69,61 @@ def list_users(
         q=q,
         department_id=department_id,
         role=role,
+        page=page,
+        page_size=page_size,
+    )
+
+
+def document_service(request: Request) -> DocumentsService:
+    service = request.app.state.platform_runtime.resolve("documents_service")
+    if not isinstance(service, DocumentsService):
+        raise RuntimeError("documents service is not configured")
+    return service
+
+
+def _require_management_reader(principal: AuthPrincipal) -> None:
+    if principal.role not in {"ops", "admin"}:
+        raise PlatformError(
+            "forbidden_target",
+            "Management document access requires ops or admin",
+            {},
+            403,
+        )
+
+
+@router.get("/users/{user_id}/documents")
+def list_user_documents(
+    user_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    q: Annotated[str | None, Query(max_length=256)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict[str, object]:
+    _require_management_reader(principal)
+    return document_service(request).list_documents(
+        principal=principal,
+        space_id=f"personal:{user_id}",
+        q=q,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/departments/{department_id}/documents")
+def list_department_documents(
+    department_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    q: Annotated[str | None, Query(max_length=256)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict[str, object]:
+    _require_management_reader(principal)
+    return document_service(request).list_documents(
+        principal=principal,
+        space_id=f"department:{department_id}",
+        q=q,
         page=page,
         page_size=page_size,
     )
