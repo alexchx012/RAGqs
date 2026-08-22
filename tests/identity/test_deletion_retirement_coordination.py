@@ -12,14 +12,14 @@ from datetime import UTC, datetime
 from _helpers import build_engine, fixed_now, make_publisher, make_settings
 from sqlalchemy import select, update
 
+from app.chat.schema import chat_metadata
+from app.documents.schema import documents_metadata
 from app.identity.schema import (
     identity_deletion_workflow_table,
     identity_metadata,
     identity_user_table,
 )
 from app.identity.worker import IdentityDeletionWorker
-from app.chat.schema import chat_metadata
-from app.documents.schema import documents_metadata
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer

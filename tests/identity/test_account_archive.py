@@ -6,19 +6,17 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import insert, select, update
-from sqlalchemy.engine import Connection
 
 from app.chat.schema import chat_conversation_table, chat_metadata
 from app.documents.schema import document_versions_table, documents_metadata, documents_table
-from app.outbox.schema import outbox_metadata
 from app.identity.ports import NoopAccountRetirementGateway
 from app.identity.schema import (
     identity_account_cleanup_target_table,
     identity_deletion_workflow_table,
     identity_metadata,
-    identity_space_table,
     identity_user_table,
 )
+from app.outbox.schema import outbox_metadata
 from app.platform.config import load_platform_settings, resolve_user_deletion_archive_dir
 from app.platform.database import core_metadata, platform_audit_table
 from app.platform.errors import PlatformError
@@ -152,7 +150,6 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
         tmp_path, {"USER_DELETION_ARCHIVE_DIR": str(archive_dir)}
     )
     service = runtime.resolve("identity_access")
-    documents_service = runtime.resolve("documents_service")
     admin, target = _admin_and_target(service)
     user_id = target["id"]
 

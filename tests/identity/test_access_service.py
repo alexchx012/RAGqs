@@ -6,9 +6,9 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
-from app.identity.archive import IdentityArchiveProofIssuer
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata
+from app.identity.archive import IdentityArchiveProofIssuer
 from app.identity.ports import (
     DepartmentWorkState,
     NoopAccountDeletionCleanupPort,
@@ -16,10 +16,10 @@ from app.identity.ports import (
     NoopDepartmentWorkCheckPort,
     NoopPersonalDocumentDeletionPort,
 )
-from app.outbox.schema import outbox_metadata
 from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationRevocationPort
 from app.identity.schema import identity_deletion_workflow_table, identity_metadata
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
 from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
