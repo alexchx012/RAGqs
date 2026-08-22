@@ -266,3 +266,69 @@ def test_application_startup_reconciles_the_declared_admin_roster() -> None:
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "session_revoked"
+
+
+def _cookie_secure_env() -> dict[str, str]:
+    return {
+        "RAG_PLATFORM_PROFILE": "development",
+        "RAG_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+        "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+        "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+        "RAG_PROVIDER_NAME": "fake",
+        "RAG_AUTH_SECRET_KEY": "test-secret-that-is-long-enough",
+    }
+
+
+def _login_client(env: dict[str, str]) -> TestClient:
+    configured = load_platform_settings(env)
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        configured.auth,
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    runtime = build_runtime(
+        configured,
+        adapters={"database_engine": engine, "identity_access": service},
+    )
+    app = create_platform_app(configured, runtime=runtime)
+    client = TestClient(app)
+    client.__enter__()
+    return client
+
+
+def test_cookie_secure_follows_explicit_configuration() -> None:
+    with _login_client(_cookie_secure_env() | {"RAG_AUTH_COOKIE_SECURE": "true"}) as client:
+        login = client.post("/v1/auth/login", json={"username": "alice", "password": "Password1"})
+        assert login.status_code == 200
+        cookies = "; ".join(login.headers.get_list("set-cookie"))
+        assert "Secure" in cookies
+
+    with _login_client(_cookie_secure_env() | {"RAG_AUTH_COOKIE_SECURE": "false"}) as client:
+        login = client.post("/v1/auth/login", json={"username": "alice", "password": "Password1"})
+        assert login.status_code == 200
+        cookies = "; ".join(login.headers.get_list("set-cookie"))
+        assert "Secure" not in cookies
+
+
+def test_cookie_secure_defaults_to_profile_in_development() -> None:
+    with _login_client(_cookie_secure_env()) as client:
+        login = client.post("/v1/auth/login", json={"username": "alice", "password": "Password1"})
+        assert login.status_code == 200
+        cookies = "; ".join(login.headers.get_list("set-cookie"))
+        assert "Secure" not in cookies

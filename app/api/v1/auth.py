@@ -51,8 +51,15 @@ def _settings(request: Request) -> PlatformSettings:
     return request.app.state.platform_runtime.settings
 
 
+def _cookie_secure(settings: PlatformSettings) -> bool:
+    """Explicit cookie Secure policy; profile-derived when unset (production=True)."""
+    if settings.auth.cookie_secure is not None:
+        return settings.auth.cookie_secure
+    return settings.profile == "production"
+
+
 def _set_auth_cookies(response: Response, result: AuthResult, settings: PlatformSettings) -> None:
-    secure = settings.profile == "production"
+    secure = _cookie_secure(settings)
     response.set_cookie(
         "refresh_token",
         result.refresh_token,
@@ -74,7 +81,7 @@ def _set_auth_cookies(response: Response, result: AuthResult, settings: Platform
 
 
 def _clear_auth_cookies(response: Response, settings: PlatformSettings) -> None:
-    secure = settings.profile == "production"
+    secure = _cookie_secure(settings)
     response.delete_cookie("refresh_token", path="/", secure=secure, httponly=True, samesite="lax")
     response.delete_cookie("csrf_token", path="/", secure=secure, httponly=False, samesite="lax")
 

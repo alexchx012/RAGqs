@@ -141,6 +141,8 @@ class AuthSettings(_StrictModel):
     access_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     refresh_ttl_seconds: int = Field(default=604800, ge=3600, le=2592000)
     refresh_reuse_grace_seconds: int = Field(default=5, ge=1, le=60)
+    # 显式 Cookie Secure 策略；None 时按 profile 推导（production=True）。
+    cookie_secure: bool | None = None
     login_max_attempts: int = Field(default=5, ge=1, le=20)
     login_lock_seconds: int = Field(default=60, ge=1, le=3600)
     user_deletion_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -267,6 +269,7 @@ _ENV_KEYS = {
     "RAG_AUTH_REFRESH_REUSE_GRACE_SECONDS",
     "RAG_AUTH_LOGIN_MAX_ATTEMPTS",
     "RAG_AUTH_LOGIN_LOCK_SECONDS",
+    "RAG_AUTH_COOKIE_SECURE",
     "RAG_AUTH_SECRET_KEY",
     "RAG_AUTH_ALLOWED_ORIGINS",
     "RAG_AUTH_ADMIN_ROSTER",
@@ -301,6 +304,12 @@ def _parse_bool(value: str, key: str) -> bool:
 def _optional(env: Mapping[str, str], key: str) -> str | None:
     value = env.get(key)
     return value if value not in (None, "") else None
+
+
+def _optional_bool(env: Mapping[str, str], key: str) -> bool | None:
+    if key not in env or env[key] == "":
+        return None
+    return _parse_bool(env[key], key)
 
 
 def _optional_secret(env: Mapping[str, str], key: str) -> str | None:
@@ -461,6 +470,7 @@ def load_platform_settings(
                 "access_ttl_seconds": _int(env, "RAG_AUTH_ACCESS_TTL_SECONDS"),
                 "refresh_ttl_seconds": _int(env, "RAG_AUTH_REFRESH_TTL_SECONDS"),
                 "refresh_reuse_grace_seconds": _int(env, "RAG_AUTH_REFRESH_REUSE_GRACE_SECONDS"),
+                "cookie_secure": _optional_bool(env, "RAG_AUTH_COOKIE_SECURE"),
                 "login_max_attempts": _int(env, "RAG_AUTH_LOGIN_MAX_ATTEMPTS"),
                 "login_lock_seconds": _int(env, "RAG_AUTH_LOGIN_LOCK_SECONDS"),
                 "user_deletion_retention_days": _int(

@@ -626,6 +626,15 @@ export class MockKnowledgeController {
       if (this.permissionOf(user, space) !== 'manage') {
         throw new MockHttpError(403, 'space_upload_forbidden');
       }
+      // 单文件上传与整批上传共用文件校验：不支持类型 415，内容/类型不符 422。
+      const uploadError = this.uploadErrorFor(file);
+      if (uploadError !== null) {
+        throw new MockHttpError(
+          uploadError.code === 'unsupported_media_type' ? 415 : 422,
+          uploadError.code,
+          uploadError.details,
+        );
+      }
       if (doc.version !== expectedVersion) {
         throw new MockHttpError(409, 'document_version_conflict');
       }
@@ -881,7 +890,11 @@ export class MockKnowledgeController {
         throw new MockHttpError(404, 'document_version_not_found');
       }
       if (version.status === 'purging' || version.status === 'purged' || !version.contentAvailable) {
-        throw new MockHttpError(410, 'document_version_purged');
+        // 恢复源已清理：版本恢复规范约定 409（区别于内容读取的 410）。
+        throw new MockHttpError(409, 'document_version_purged', {
+          document_id: doc.id,
+          document_version_id: versionId,
+        });
       }
       if (version.status === 'failed' || version.status === 'cancelled') {
         throw new MockHttpError(409, 'document_version_not_restorable');
