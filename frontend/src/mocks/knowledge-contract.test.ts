@@ -1009,3 +1009,61 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
     );
   });
 });
+
+describe('knowledge contract mock：单文件上传错误码与恢复 409（fix-frontend-contract-misc）', () => {
+  it('上传新版本：不支持的媒体类型返回 415 unsupported_media_type envelope', async () => {
+    const token = bearerOf('zhangsan');
+    const docs = (await (await listDocuments(token, 'personal:u_user')).json()) as {
+      items: { id: string; version: number }[];
+    };
+    const target = docs.items[0];
+    const response = await uploadNewVersionRequest(
+      token,
+      target.id,
+      target.version,
+      { name: '演示视频.mp4', type: 'video/mp4', content: 'x' },
+      'idem-new-version-415',
+    );
+    expect(response.status).toBe(415);
+    const error = (await response.json()) as { error: { code: string } };
+    expect(error.error.code).toBe('unsupported_media_type');
+  });
+
+  it('上传新版本：声明类型与内容不符返回 422 upload_content_type_mismatch envelope', async () => {
+    const token = bearerOf('zhangsan');
+    const docs = (await (await listDocuments(token, 'personal:u_user')).json()) as {
+      items: { id: string; version: number }[];
+    };
+    const target = docs.items[0];
+    const response = await uploadNewVersionRequest(
+      token,
+      target.id,
+      target.version,
+      { name: '伪装文本.pdf', type: 'text/plain', content: 'plain' },
+      'idem-new-version-422',
+    );
+    expect(response.status).toBe(422);
+    const error = (await response.json()) as { error: { code: string } };
+    expect(error.error.code).toBe('upload_content_type_mismatch');
+  });
+
+  it('恢复已清理版本：409 document_version_purged（区别于内容读取 410）', async () => {
+    const token = bearerOf('zhangsan');
+    const docs = (await (await listDocuments(token, 'personal:u_user')).json()) as {
+      items: { id: string; version: number; document_version_id: string }[];
+    };
+    const target = docs.items[0];
+    mockKnowledge.purgeVersion(token, target.id, target.document_version_id);
+    const restore = await fetch(
+      resolveUrl(`/v1/documents/${target.id}/versions/${target.document_version_id}/restore`),
+      {
+        method: 'POST',
+        headers: { Authorization: token, 'Content-Type': 'application/json', 'Idempotency-Key': 'idem-restore-purged-1' },
+        body: JSON.stringify({ expected_version: target.version }),
+      },
+    );
+    expect(restore.status).toBe(409);
+    const error = (await restore.json()) as { error: { code: string } };
+    expect(error.error.code).toBe('document_version_purged');
+  });
+});

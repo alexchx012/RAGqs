@@ -67,6 +67,28 @@ class DocumentUpload:
             raise PlatformError("validation_error", "media_kind is invalid", {}, 422)
 
 
+# Supported upload media kinds, mirroring the frontend upload contract
+# (frontend/src/mocks/knowledge-contract.ts MEDIA_KIND_BY_TYPE + extensions).
+_UPLOAD_MEDIA_KINDS_BY_TYPE: dict[str, str] = {
+    "application/pdf": "pdf",
+    "application/msword": "word",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "word",
+    "text/markdown": "md",
+    "text/plain": "txt",
+    "application/vnd.ms-excel": "excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "excel",
+}
+_UPLOAD_MEDIA_KINDS_BY_EXTENSION: dict[str, str] = {
+    "pdf": "pdf",
+    "doc": "word",
+    "docx": "word",
+    "md": "md",
+    "txt": "txt",
+    "xls": "excel",
+    "xlsx": "excel",
+}
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
@@ -1083,6 +1105,33 @@ class DocumentsService:
             .values(state=state, updated_at_utc=now)
         )
 
+    def _validate_upload_media(self, filename: str, media_kind: str) -> None:
+        """Single-file upload contract: unsupported media -> 415, declared/content
+        mismatch -> 422 (mirrors the frontend upload contract)."""
+        declared = media_kind.strip()
+        by_type = _UPLOAD_MEDIA_KINDS_BY_TYPE.get(declared.lower())
+        extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        by_extension = _UPLOAD_MEDIA_KINDS_BY_EXTENSION.get(extension)
+        if by_type is not None and by_extension is not None and by_type != by_extension:
+            raise PlatformError(
+                "upload_content_type_mismatch",
+                "File content does not match the declared media type",
+                {"file": filename},
+                422,
+            )
+        if (
+            declared
+            and declared != "application/octet-stream"
+            and by_type is None
+            and by_extension is None
+        ):
+            raise PlatformError(
+                "unsupported_media_type",
+                "Media type is not supported",
+                {"file": filename},
+                415,
+            )
+
     def _file_fingerprint(self, file: DocumentUpload) -> dict[str, Any]:
         if len(file.content) > self._max_upload_bytes:
             raise PlatformError(
@@ -1444,6 +1493,7 @@ class DocumentsService:
         key = self._required_key(idempotency_key)
         if expected_version < 1:
             raise PlatformError("validation_error", "expected_version is invalid", {}, 422)
+        self._validate_upload_media(file.filename, file.media_kind)
         info = self._file_fingerprint(file)
         with self._engine.begin() as connection:
             document = self._locked_document(connection, document_id)
@@ -1847,7 +1897,14 @@ class DocumentsService:
                 and _utc(source["purge_after_at_utc"]) <= now
             ):
                 raise PlatformError(
-                    "document_version_purged", "Document version content was purged", {}, 410
+                    "document_version_purged",
+                    "Document version content was purged",
+                    {
+                        "document_id": document_id,
+                        "document_version_id": document_version_id,
+                        "purge_after_at_utc": _utc(source["purge_after_at_utc"]).isoformat(),
+                    },
+                    409,
                 )
             version_id = _new_id("version")
             job_id = _new_id("job")
@@ -1857,7 +1914,10 @@ class DocumentsService:
                 self._object_store.copy(str(source["original_object_key"]), object_key)
             except (StorageKeyError, KeyError) as exc:
                 raise PlatformError(
-                    "document_version_purged", "Document version content was purged", {}, 410
+                    "document_version_purged",
+                    "Document version content was purged",
+                    {"document_id": document_id, "document_version_id": document_version_id},
+                    409,
                 ) from exc
             content_hash = str(source["content_hash_sha256"])
             restored_size = int(source["size_bytes"])
@@ -2021,7 +2081,9 @@ class DocumentsService:
             raw_receipt_attempt_id = (
                 receipt.attempt_id
                 if isinstance(receipt, IndexProcessingReceipt)
-                else receipt.get("attempt_id") if isinstance(receipt, Mapping) else None
+                else receipt.get("attempt_id")
+                if isinstance(receipt, Mapping)
+                else None
             )
             if (
                 not isinstance(raw_receipt_attempt_id, str)

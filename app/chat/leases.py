@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, select, update
 from sqlalchemy.engine import Connection
 
 from .schema import chat_generation_table, chat_subscription_lease_table
+
+
+def _utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
 
 DEFAULT_SUBSCRIPTION_LEASE_SECONDS = 90
 DEFAULT_HEARTBEAT_SECONDS = 30
@@ -55,12 +62,17 @@ def renew_lease(
             select(
                 chat_subscription_lease_table.c.id,
                 chat_subscription_lease_table.c.generation_id,
+                chat_subscription_lease_table.c.expires_at_utc,
             ).where(chat_subscription_lease_table.c.lease_token == lease_token)
         )
         .mappings()
         .one_or_none()
     )
     if row is None:
+        return False
+    # Conditional renewal: an expired lease can never be resurrected, and a
+    # holder whose token no longer matches a live lease cannot renew it.
+    if _utc(row["expires_at_utc"]) <= now:
         return False
     connection.execute(
         update(chat_subscription_lease_table)
