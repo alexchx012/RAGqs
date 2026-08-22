@@ -429,6 +429,287 @@ quota_request_pending_unique = Index(
     postgresql_where=quota_request_table.c.status == "pending",
 )
 
+# 7.5) 本地昂贵阶段 meter：可恢复的工作状态；最终事实仍只落在 usage_event。
+local_usage_meter_table = Table(
+    "local_usage_meter",
+    usage_metadata,
+    Column("meter_id", String(64), primary_key=True),
+    Column("execution_kind", String(32), nullable=False),
+    Column("execution_id", String(128), nullable=False),
+    Column("stage", String(64), nullable=False),
+    Column("resource_kind", String(32), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("ownership_json", JSON, nullable=False),
+    Column("started_at_utc", DateTime(timezone=True), nullable=False),
+    Column("completed_at_utc", DateTime(timezone=True), nullable=True),
+    Column("abandoned_at_utc", DateTime(timezone=True), nullable=True),
+    Column("lease_expires_at_utc", DateTime(timezone=True), nullable=False),
+    Column("checkpoint_sequence", Integer, nullable=False, server_default="0"),
+    Column("item_count", BigInteger, nullable=True),
+    Column("page_count", BigInteger, nullable=True),
+    Column("input_bytes", BigInteger, nullable=True),
+    Column("gpu_milliseconds", BigInteger, nullable=True),
+    Column("cpu_milliseconds", BigInteger, nullable=True),
+    Column("peak_vram_bytes", BigInteger, nullable=True),
+    Column("measurement_sources", JSON, nullable=True),
+    Column("tail_estimated", Integer, nullable=False, server_default="0"),
+    Column("result", String(32), nullable=True),
+    Column("error_code", String(64), nullable=True),
+    Column("usage_event_id", String(64), nullable=True),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    Column("updated_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "execution_kind", "execution_id", "stage", "resource_kind", name="uq_local_meter_scope"
+    ),
+    UniqueConstraint("usage_event_id", name="uq_local_meter_usage_event"),
+    CheckConstraint("status IN ('running','completed','abandoned')", name="ck_local_meter_status"),
+    CheckConstraint(
+        "NOT (status = 'running' AND (completed_at_utc IS NOT NULL OR abandoned_at_utc IS NOT NULL"
+        " OR usage_event_id IS NOT NULL))",
+        name="ck_local_meter_running_clean",
+    ),
+    CheckConstraint(
+        "NOT (status = 'completed' AND (completed_at_utc IS NULL OR usage_event_id IS NULL"
+        " OR abandoned_at_utc IS NOT NULL))",
+        name="ck_local_meter_completed_shape",
+    ),
+    CheckConstraint(
+        "NOT (status = 'abandoned' AND (abandoned_at_utc IS NULL OR usage_event_id IS NULL"
+        " OR completed_at_utc IS NOT NULL))",
+        name="ck_local_meter_abandoned_shape",
+    ),
+    CheckConstraint("checkpoint_sequence >= 0", name="ck_local_meter_checkpoint_sequence"),
+    CheckConstraint("tail_estimated IN (0, 1)", name="ck_local_meter_tail_estimated"),
+)
+
+# 7.5.1) 本地 usage 投影：可重建派生表；与 meter finalize 同事务更新。
+local_usage_projection_table = Table(
+    "local_usage_projection",
+    usage_metadata,
+    Column("local_usage_projection_id", String(64), primary_key=True),
+    Column("usage_event_id", String(64), nullable=False),
+    Column("execution_kind", String(32), nullable=False),
+    Column("execution_id", String(128), nullable=False),
+    Column("stage", String(64), nullable=False),
+    Column("resource_kind", String(32), nullable=False),
+    Column("item_count", BigInteger, nullable=True),
+    Column("page_count", BigInteger, nullable=True),
+    Column("input_bytes", BigInteger, nullable=True),
+    Column("gpu_milliseconds", BigInteger, nullable=True),
+    Column("cpu_milliseconds", BigInteger, nullable=True),
+    Column("peak_vram_bytes", BigInteger, nullable=True),
+    Column("result", String(32), nullable=False),
+    Column("error_code", String(64), nullable=True),
+    Column("tail_estimated", Integer, nullable=False),
+    Column("measurement_sources", JSON, nullable=True),
+    Column("ownership_json", JSON, nullable=False),
+    Column("effective_calendar_version_id", String(64), nullable=False),
+    Column("effective_at_utc", DateTime(timezone=True), nullable=False),
+    Column("effective_period", String(7), nullable=False),
+    Column("recorded_calendar_version_id", String(64), nullable=False),
+    Column("recorded_at_utc", DateTime(timezone=True), nullable=False),
+    Column("recorded_period", String(7), nullable=False),
+    Column("updated_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("usage_event_id", name="uq_local_projection_event"),
+    UniqueConstraint(
+        "execution_kind", "execution_id", "stage", "resource_kind", name="uq_local_projection_scope"
+    ),
+)
+
+# 7.6) provider 账单源记录与月级对账分组。源记录不可变；分组/分摊也是可审计事实。
+provider_billing_source_record_table = Table(
+    "provider_billing_source_record",
+    usage_metadata,
+    Column("provider_billing_source_record_id", String(64), primary_key=True),
+    Column("provider", String(64), nullable=False),
+    Column("provider_account_id", String(128), nullable=False),
+    Column("billing_source_record_id", String(128), nullable=False),
+    Column("model", String(128), nullable=False),
+    Column("operation", String(64), nullable=False),
+    Column("provider_request_id", String(256), nullable=True),
+    Column("service_start_utc", DateTime(timezone=True), nullable=True),
+    Column("service_end_utc", DateTime(timezone=True), nullable=True),
+    Column("service_month", String(7), nullable=True),
+    Column("measurements", JSON, nullable=False),
+    Column("amount", Numeric(30, 10), nullable=False),
+    Column("currency_code", String(8), nullable=False),
+    Column("source_status", String(32), nullable=False),
+    Column("source_metadata", JSON, nullable=False),
+    Column("content_fingerprint", String(128), nullable=False),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "provider",
+        "provider_account_id",
+        "billing_source_record_id",
+        name="uq_provider_billing_source_identity",
+    ),
+    CheckConstraint(
+        "service_start_utc IS NOT NULL OR service_end_utc IS NOT NULL OR service_month IS NOT NULL",
+        name="ck_provider_billing_service_period",
+    ),
+    CheckConstraint("amount >= 0", name="ck_provider_billing_amount_nonnegative"),
+)
+
+provider_billing_reconciliation_group_table = Table(
+    "provider_billing_reconciliation_group",
+    usage_metadata,
+    Column("provider_billing_reconciliation_group_id", String(64), primary_key=True),
+    Column("group_key", String(512), nullable=False),
+    Column("provider", String(64), nullable=False),
+    Column("provider_account_id", String(128), nullable=False),
+    Column("model", String(128), nullable=False),
+    Column("operation", String(64), nullable=False),
+    Column("service_start_utc", DateTime(timezone=True), nullable=True),
+    Column("service_end_utc", DateTime(timezone=True), nullable=True),
+    Column("service_month", String(7), nullable=True),
+    Column("currency_code", String(8), nullable=False),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("group_key", name="uq_billing_group_key"),
+    Index("ix_billing_group_scope", "provider", "provider_account_id", "model", "operation"),
+)
+
+provider_billing_source_group_table = Table(
+    "provider_billing_source_group",
+    usage_metadata,
+    Column("provider_billing_source_group_id", String(64), primary_key=True),
+    Column("provider_billing_source_record_id", String(64), nullable=False),
+    Column("provider_billing_reconciliation_group_id", String(64), nullable=False),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "provider_billing_source_record_id",
+        "provider_billing_reconciliation_group_id",
+        name="uq_billing_source_group_pair",
+    ),
+    Index("ix_billing_source_group_group", "provider_billing_reconciliation_group_id"),
+)
+
+provider_billing_cost_adjustment_table = Table(
+    "provider_billing_cost_adjustment",
+    usage_metadata,
+    Column("provider_billing_cost_adjustment_id", String(64), primary_key=True),
+    Column("provider_billing_reconciliation_group_id", String(64), nullable=False),
+    Column("event_kind", String(32), nullable=False),
+    Column("adjustment_source_namespace", String(64), nullable=False),
+    Column("adjustment_source_id", String(128), nullable=False),
+    Column("adjustment_allocation_key", String(64), nullable=False),
+    Column("amount_delta", Numeric(30, 10), nullable=False),
+    Column("currency_code", String(8), nullable=False),
+    Column("effective_calendar_version_id", String(64), nullable=False),
+    Column("effective_at_utc", DateTime(timezone=True), nullable=False),
+    Column("effective_period", String(7), nullable=False),
+    Column("recorded_calendar_version_id", String(64), nullable=False),
+    Column("recorded_at_utc", DateTime(timezone=True), nullable=False),
+    Column("recorded_period", String(7), nullable=False),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "event_kind",
+        "adjustment_source_namespace",
+        "adjustment_source_id",
+        "adjustment_allocation_key",
+        name="uq_provider_billing_cost_adjustment_source",
+    ),
+    CheckConstraint("event_kind = 'cost_adjustment'", name="ck_provider_billing_event_kind"),
+)
+
+# 7.6.1) 成本投影：可重建派生表；对账在同一事务内同步目标 event/group 投影。
+usage_cost_projection_table = Table(
+    "usage_cost_projection",
+    usage_metadata,
+    Column("usage_cost_projection_id", String(64), primary_key=True),
+    Column("target_kind", String(32), nullable=False),
+    Column("target_id", String(128), nullable=False),
+    Column("provider_billing_source_record_id", String(64), nullable=True),
+    Column("currency_code", String(8), nullable=True),
+    Column("estimated_amount", Numeric(30, 10), nullable=True),
+    Column("adjustment_amount", Numeric(30, 10), nullable=True),
+    Column("projected_amount", Numeric(30, 10), nullable=True),
+    Column("cost_status", String(32), nullable=False),
+    Column("effective_calendar_version_id", String(64), nullable=False),
+    Column("effective_at_utc", DateTime(timezone=True), nullable=False),
+    Column("effective_period", String(7), nullable=False),
+    Column("recorded_calendar_version_id", String(64), nullable=False),
+    Column("recorded_at_utc", DateTime(timezone=True), nullable=False),
+    Column("recorded_period", String(7), nullable=False),
+    Column("rebuilt_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "target_kind",
+        "target_id",
+        "effective_period",
+        "provider_billing_source_record_id",
+        name="uq_usage_cost_projection_target",
+    ),
+    CheckConstraint(
+        "target_kind IN ('provider_event','local_usage','reconciliation_group')",
+        name="ck_usage_cost_projection_target",
+    ),
+    CheckConstraint(
+        "cost_status IN ('provisional','reconciled','billing_period_unallocated')",
+        name="ck_usage_cost_projection_status",
+    ),
+)
+
+# 7.7) generation 预算 meter 与 reservation：出网前在同一行锁内保守预留。
+generation_budget_meter_table = Table(
+    "generation_budget_meter",
+    usage_metadata,
+    Column("generation_budget_meter_id", String(64), primary_key=True),
+    Column("generation_id", String(128), nullable=False),
+    Column("policy_version", String(64), nullable=False),
+    Column("requested_effort_level", String(16), nullable=False),
+    Column("effort_level", String(16), nullable=False),
+    Column("price_version_id", String(64), nullable=False),
+    Column("currency_code", String(8), nullable=False),
+    Column("deadline_at_utc", DateTime(timezone=True), nullable=False),
+    Column("max_rag_calls", Integer, nullable=False),
+    Column("max_wall_seconds", Integer, nullable=False),
+    Column("max_total_tokens", BigInteger, nullable=False),
+    Column("max_estimated_cost_amount", Numeric(30, 10), nullable=False),
+    Column("candidate_document_limit", Integer, nullable=False),
+    Column("rag_calls_used", Integer, nullable=False, server_default="0"),
+    Column("total_tokens_used", BigInteger, nullable=False, server_default="0"),
+    Column("reserved_tokens", BigInteger, nullable=False, server_default="0"),
+    Column("settled_cost_amount", Numeric(30, 10), nullable=False, server_default="0"),
+    Column("reserved_cost_amount", Numeric(30, 10), nullable=False, server_default="0"),
+    Column("upgrade_count", Integer, nullable=False, server_default="0"),
+    Column("status", String(16), nullable=False, server_default="active"),
+    Column("exhausted_reason", String(32), nullable=True),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    Column("updated_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("generation_id", name="uq_generation_budget_generation"),
+    CheckConstraint(
+        "requested_effort_level IN ('quick','think','deep')"
+        " AND effort_level IN ('quick','think','deep')",
+        name="ck_generation_budget_effort",
+    ),
+    CheckConstraint("status IN ('active','exhausted')", name="ck_generation_budget_status"),
+    CheckConstraint(
+        "status = 'active' OR exhausted_reason IS NOT NULL",
+        name="ck_generation_budget_exhausted_reason",
+    ),
+)
+
+generation_budget_reservation_table = Table(
+    "generation_budget_reservation",
+    usage_metadata,
+    Column("reservation_id", String(128), primary_key=True),
+    Column("generation_id", String(128), nullable=False),
+    Column("operation_kind", String(64), nullable=False),
+    Column("request_fingerprint", String(128), nullable=False),
+    Column("estimated_tokens", BigInteger, nullable=False),
+    Column("estimated_cost_amount", Numeric(30, 10), nullable=False),
+    Column("is_rag", Integer, nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("actual_tokens", BigInteger, nullable=True),
+    Column("actual_cost_amount", Numeric(30, 10), nullable=True),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    Column("settled_at_utc", DateTime(timezone=True), nullable=True),
+    UniqueConstraint("generation_id", "request_fingerprint", name="uq_budget_reservation_replay"),
+    CheckConstraint("is_rag IN (0, 1)", name="ck_budget_reservation_is_rag"),
+    CheckConstraint(
+        "status IN ('reserved','settled','released')", name="ck_budget_reservation_status"
+    ),
+)
+
 # 8) 对账分组（H3：仅金额/未知项的对账事实，不伪造 usage）
 usage_reconciliation_table = Table(
     "usage_reconciliation",

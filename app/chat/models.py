@@ -233,6 +233,7 @@ class RetrievalHitOutcome:
     space_id: str
     locator: Mapping[str, Any]
     snippet: str | None
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

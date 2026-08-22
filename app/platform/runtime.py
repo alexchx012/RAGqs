@@ -100,8 +100,12 @@ from app.outbox.publisher import (
     SqlAlchemySubmissionOutboxAdapter,
 )
 from app.outbox.service import NotificationService
+from app.usage.billing import ProviderBillingService
+from app.usage.budget import BudgetMeterService
 from app.usage.calendar import CalendarLock, get_calendar_service
 from app.usage.ledger import UsageLedger
+from app.usage.metering import LocalUsageMeterService
+from app.usage.observability import UsageResourceMetrics
 from app.usage.price import PriceCatalogService
 from app.usage.quota import QuotaService
 from app.usage.requests import QuotaRequestService
@@ -498,6 +502,14 @@ def build_runtime(
     )
     prices = configured.get("price_catalog") or PriceCatalogService(engine, clock)
     ledger = configured.get("usage_ledger") or UsageLedger(engine, clock, calendar, prices)
+    usage_metrics = configured.get("usage_resource_metrics") or UsageResourceMetrics()
+    configured.setdefault("usage_resource_metrics", usage_metrics)
+    local_usage_meter = configured.get("local_usage_meter") or LocalUsageMeterService(
+        ledger, clock, usage_metrics
+    )
+    provider_billing = configured.get("provider_billing") or ProviderBillingService(
+        ledger, clock, usage_metrics
+    )
     quota_service = configured.get("quota_service") or QuotaService(engine, clock, calendar)
     outbox_port = configured.get("outbox_enqueue_port") or (
         SqlAlchemyQuotaOutboxEnqueueAdapter(outbox_publisher)
@@ -518,6 +530,8 @@ def build_runtime(
     configured.setdefault("business_calendar", calendar)
     configured.setdefault("price_catalog", prices)
     configured.setdefault("usage_ledger", ledger)
+    configured.setdefault("local_usage_meter", local_usage_meter)
+    configured.setdefault("provider_billing", provider_billing)
     configured.setdefault("quota_service", quota_service)
     configured.setdefault("outbox_enqueue_port", outbox_port)
     configured.setdefault("submission_outbox_port", submission_outbox_port)
@@ -632,6 +646,12 @@ def build_runtime(
         UsageLedgerSubmissionAdapter(ledger)
     )
     configured.setdefault("chat_usage_submission", chat_usage)
+    generation_budget_meter = configured.get("generation_budget_meter")
+    if settings.profile == "production":
+        if not isinstance(generation_budget_meter, BudgetMeterService):
+            raise RuntimeError("production requires an explicit generation budget meter")
+        generation_budget_meter.policy.validate(production=True)
+    configured.setdefault("generation_budget_meter", generation_budget_meter)
     chat_conversation_service = configured.get("chat_conversation_service") or (
         ConversationService(engine, now=clock)
     )
@@ -642,6 +662,7 @@ def build_runtime(
             clock=clock,
             authorization=chat_authorization,
             calibration=chat_calibration,
+            budget_meter=generation_budget_meter,
         )
     )
     configured.setdefault("chat_generation_service", chat_generation_service)
@@ -660,6 +681,7 @@ def build_runtime(
         provider=chat_provider,
         usage=chat_usage,
         calibration=chat_calibration,
+        budget_meter=generation_budget_meter,
     )
     configured.setdefault("chat_generation_worker", chat_worker)
     evaluation_repository = configured.get("evaluation_repository") or (
