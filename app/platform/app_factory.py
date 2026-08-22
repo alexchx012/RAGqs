@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from app.api.v1 import router as v1_router
 from app.identity.service import IdentityAccessService
+from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 
 from . import runtime as platform_runtime_module
 from .config import PlatformSettings, load_platform_settings
@@ -21,7 +22,6 @@ from .errors import map_exception
 from .http_contract import register_exception_handlers, request_error_payload
 from .observability import ObservabilityMetricsError, ObservabilitySample, sample_success
 from .runtime import PlatformRuntime, build_runtime
-from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 
 logger = logging.getLogger(__name__)
 

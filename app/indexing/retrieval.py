@@ -482,7 +482,7 @@ class RetrievalService:
                 if hit.chunk.text.strip().casefold() != normalized_query:
                     continue
                 stable_key = hashlib.sha256(
-                    f"{generation_id}:{hit.chunk.dedupe_key}:{normalized_query}".encode("utf-8")
+                    f"{generation_id}:{hit.chunk.dedupe_key}:{normalized_query}".encode()
                 ).hexdigest()
                 selected, weight = sample_success(stable_key, rate)
                 if not selected:

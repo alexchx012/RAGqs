@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 from sqlalchemy import CheckConstraint
 
+from alembic import command
+from alembic.config import Config
 from app.chat.schema import chat_generation_execution_table, chat_generation_table
+from app.documents.indexing import IndexStagingRequest
 from app.documents.service import _metered_pages
 from app.indexing import (
     ContentProcessor,
@@ -21,7 +24,6 @@ from app.indexing import (
     RetrievalService,
 )
 from app.indexing.models import IndexChunk
-from app.documents.indexing import IndexStagingRequest
 from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 
 
@@ -124,8 +126,8 @@ def test_metered_pages_ignores_invalid_counts() -> None:
 
 
 def test_publication_quota_debit_folds_image_count_into_pages() -> None:
-    from tests.documents.test_jobs_and_fences import _Quota
     from app.documents.service import DocumentsService
+    from tests.documents.test_jobs_and_fences import _Quota
 
     quota = _Quota()
     service = DocumentsService.__new__(DocumentsService)
@@ -157,21 +159,24 @@ def test_publication_quota_debit_rejects_zero_pages_for_image_only_receipt() -> 
 
     service = DocumentsService.__new__(DocumentsService)
     service._quota_service = None
-    assert service._record_publication_quota(
-        None,
-        job={
-            "id": "job_1",
-            "created_by_user_id": "user_1",
-            "quota_role_snapshot": "user",
-            "quota_department_id_snapshot": None,
-            "quota_exempt_reason": None,
-            "replay_generation": 0,
-        },
-        publication={"id": "publication_1"},
-        document={"space_id": "space_1"},
-        receipt={"processing_summary": {"page_count": 0, "image_count": 0}},
-        published_at=datetime(2026, 8, 22, tzinfo=UTC),
-    ) is None
+    assert (
+        service._record_publication_quota(
+            None,
+            job={
+                "id": "job_1",
+                "created_by_user_id": "user_1",
+                "quota_role_snapshot": "user",
+                "quota_department_id_snapshot": None,
+                "quota_exempt_reason": None,
+                "replay_generation": 0,
+            },
+            publication={"id": "publication_1"},
+            document={"space_id": "space_1"},
+            receipt={"processing_summary": {"page_count": 0, "image_count": 0}},
+            published_at=datetime(2026, 8, 22, tzinfo=UTC),
+        )
+        is None
+    )
 
 
 # --- A3: 稀疏检索精确匹配抽样 ---
@@ -307,9 +312,8 @@ def test_worker_recovery_row_has_no_reconciliation_state() -> None:
 def test_migrations_head_rejects_reconciliation_placeholder_status(
     tmp_path: Path,
 ) -> None:
-    from alembic import command
-    from alembic.config import Config
-    from sqlalchemy import create_engine, inspect as sa_inspect, text
+    from sqlalchemy import create_engine, inspect, text
+    from sqlalchemy.exc import IntegrityError
 
     database_url = f"sqlite:///{tmp_path / 'chat-reconcile.sqlite3'}"
     config = Config("alembic.ini")
@@ -318,11 +322,11 @@ def test_migrations_head_rejects_reconciliation_placeholder_status(
     engine = create_engine(database_url)
     try:
         columns = {
-            item["name"] for item in sa_inspect(engine).get_columns("chat_generation_execution")
+            item["name"] for item in inspect(engine).get_columns("chat_generation_execution")
         }
         assert "provider_reconciliation_state" not in columns
         with engine.begin() as connection:
-            with pytest.raises(Exception):
+            with pytest.raises(IntegrityError):
                 connection.execute(
                     text(
                         "INSERT INTO chat_generation_execution ("
