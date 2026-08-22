@@ -214,8 +214,19 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
     assert "token" not in " ".join(names)
 
     _expire_retention(engine, user_id)
+    avatar_key = None
+    with engine.connect() as connection:
+        avatar_key = (
+            connection.execute(
+                select(identity_user_table.c.avatar_url).where(
+                    identity_user_table.c.id == user_id
+                )
+            ).scalar_one()
+        ).removeprefix("object://")
     finalized = service.finalize_pending_deletion(user_id=user_id)
     assert finalized["lifecycle_status"] == "deleted"
+    # object_store.avatar target removed the current avatar object (A29)
+    assert not object_store.exists(avatar_key)
 
     with engine.connect() as connection:
         user = connection.execute(
@@ -230,6 +241,7 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
         backend_kinds = {row["backend_kind"] for row in targets}
         assert "postgres.chat_conversations" in backend_kinds
         assert "postgres.identity_spaces" in backend_kinds
+        assert "object_store.avatar" in backend_kinds
         assert all(row["status"] == "completed" for row in targets)
         assert True
         audit_results = set(

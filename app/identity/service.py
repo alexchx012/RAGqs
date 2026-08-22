@@ -1735,6 +1735,29 @@ class IdentityAccessService:
         # persisted by finalize_pending_deletion after the outer rollback.
         raise _ArchiveRestoreRequired()
 
+    def _is_cleanup_target_completed(
+        self,
+        connection: Connection,
+        *,
+        deletion_id: str,
+        backend_kind: str,
+        resource_id: str,
+    ) -> bool:
+        status = (
+            connection.execute(
+                select(identity_account_cleanup_target_table.c.status)
+                .where(
+                    and_(
+                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                        identity_account_cleanup_target_table.c.resource_id == resource_id,
+                    )
+                )
+            )
+            .scalar_one_or_none()
+        )
+        return status == "completed"
+
     def _record_cleanup_target(
         self,
         connection: Connection,
@@ -1802,6 +1825,59 @@ class IdentityAccessService:
     ) -> None:
         """Run the idempotent non-document cleanup targets (§9.2.1 §3)."""
 
+        # object_store.avatar: the tombstone write below clears avatar_url, so
+        # the current avatar object must be removed (and recorded as a target)
+        # while the row still carries it. Replaced avatars are already handled
+        # by the identity object-cleanup queue above.
+        avatar_url = (
+            connection.execute(
+                select(identity_user_table.c.avatar_url).where(
+                    identity_user_table.c.id == user_id
+                )
+            ).scalar_one_or_none()
+        )
+        if self._is_cleanup_target_completed(
+            connection, deletion_id=deletion_id, backend_kind="object_store.avatar", resource_id=user_id
+        ):
+            pass
+        else:
+            avatar_error: str | None = None
+            if (
+                isinstance(avatar_url, str)
+                and avatar_url.startswith("object://")
+                and self._object_store is not None
+            ):
+                avatar_key = avatar_url.removeprefix("object://")
+                try:
+                    if self._object_store.exists(avatar_key):
+                        self._object_store.delete(avatar_key)
+                except Exception as exc:  # noqa: BLE001 - recorded per target
+                    avatar_error = str(exc)[:512]
+            self._record_cleanup_target(
+                connection,
+                deletion_id=deletion_id,
+                backend_kind="object_store.avatar",
+                resource_id=user_id,
+                status="failed" if avatar_error else "completed",
+                last_error=avatar_error,
+                now=now,
+            )
+            if avatar_error:
+                self._audit(
+                    connection,
+                    actor_id="system:deletion-worker",
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_cleanup_retried",
+                    occurred_at=now,
+                )
+                raise PlatformError(
+                    "account_cleanup_target_failed",
+                    "A cleanup target failed and will be retried",
+                    {"retryable": True},
+                    503,
+                    True,
+                )
         targets: tuple[tuple[str, str], ...] = (
             ("postgres.chat_conversation_groups", "DELETE FROM chat_conversation_group WHERE owner_user_id = :user_id"),
             ("postgres.chat_conversations", "DELETE FROM chat_conversation WHERE owner_user_id = :user_id"),
