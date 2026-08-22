@@ -92,6 +92,26 @@ _UPLOAD_MEDIA_KINDS_BY_EXTENSION: dict[str, str] = {
 }
 
 
+def _metered_pages(*, page_count: Any, image_count: Any) -> int:
+    """Metering folds images in at one page per image (1 image = 1 page).
+
+    Storage, parsing, and retrieval keep their own counts; this only converts
+    the summary counts into the page figure used by quota debits and reports.
+    """
+
+    pages = (
+        page_count
+        if isinstance(page_count, int) and not isinstance(page_count, bool) and page_count > 0
+        else 0
+    )
+    images = (
+        image_count
+        if isinstance(image_count, int) and not isinstance(image_count, bool) and image_count > 0
+        else 0
+    )
+    return pages + images
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
@@ -317,8 +337,11 @@ class DocumentsService:
         if not callable(recorder) or calendar is None:
             return None
         summary = receipt.get("processing_summary") or {}
-        pages = receipt.get("page_count", summary.get("page_count", summary.get("pages", 1)))
-        if isinstance(pages, bool) or not isinstance(pages, int) or pages < 1:
+        pages = _metered_pages(
+            page_count=receipt.get("page_count", summary.get("page_count", summary.get("pages", 1))),
+            image_count=summary.get("image_count", summary.get("images", 0)),
+        )
+        if pages < 1:
             raise PlatformError(
                 "validation_error", "Processing receipt page count is invalid", {}, 422
             )
@@ -1854,6 +1877,10 @@ class DocumentsService:
                 pages = 0
             if isinstance(images, bool) or not isinstance(images, int) or images < 0:
                 images = 0
+            metered_pages = _metered_pages(
+                page_count=pages,
+                image_count=images,
+            )
             items.append(
                 {
                     "id": row["id"],
@@ -1864,7 +1891,7 @@ class DocumentsService:
                     "version_status": row["version_status"],
                     "active_operation": operation,
                     "uploaded_at": _timestamp(row["uploaded_at_utc"]),
-                    "usage": {"pages": pages, "images": images},
+                    "usage": {"pages": metered_pages, "images": images},
                 }
             )
         if space_id.startswith("personal:") and space_id != f"personal:{principal.user_id}":

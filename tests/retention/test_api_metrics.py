@@ -77,6 +77,9 @@ def test_window_and_view_validation_use_stable_envelope() -> None:
         assert bad_view.status_code == 422
         assert bad_view.json()["error"]["code"] == "validation_error"
         assert bad_view.json()["error"]["details"]["field"] == "view"
+        bad_expand = client.get("/v1/metrics/dashboard?expand=unknown", headers=headers)
+        assert bad_expand.status_code == 422
+        assert bad_expand.json()["error"]["details"]["field"] == "expand"
 
 
 def test_ops_dashboard_and_operations_shapes() -> None:
@@ -123,6 +126,44 @@ def test_admin_dashboard_is_read_only_and_admin_jobs_have_no_actions() -> None:
         assert jobs.status_code == 200
         for item in jobs.json()["items"]:
             assert item["allowed_actions"] == []
+
+
+def test_admin_document_drilldown_rejects_non_management_principals() -> None:
+    app, admin, _ops, user = _runtime_and_app()
+    with TestClient(app) as client:
+        response = client.get(
+            f"/v1/admin/users/{admin['record']['id']}/documents",
+            headers={"Authorization": f"Bearer {user['token']}"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden_target"
+
+
+def test_admin_document_drilldown_exposes_paginated_read_models_to_ops_and_admin() -> None:
+    app, admin, ops, _user = _runtime_and_app()
+    admin_headers = {"Authorization": f"Bearer {admin['token']}"}
+    ops_headers = {"Authorization": f"Bearer {ops['token']}"}
+    with TestClient(app) as client:
+        personal = client.get(
+            f"/v1/admin/users/{admin['record']['id']}/documents?page=1&page_size=20",
+            headers=admin_headers,
+        )
+        department = client.post(
+            "/v1/admin/departments",
+            headers={**admin_headers, "Idempotency-Key": "drilldown-department"},
+            json={"name": "Drilldown"},
+        )
+        department_documents = client.get(
+            f"/v1/admin/departments/{department.json()['id']}/documents",
+            headers=ops_headers,
+        )
+
+    assert personal.status_code == 200
+    assert personal.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
+    assert department.status_code == 201
+    assert department_documents.status_code == 200
+    assert department_documents.json() == {"items": [], "total": 0, "page": 1, "page_size": 50}
 
 
 def test_ops_jobs_views_and_item_shape() -> None:

@@ -27,7 +27,7 @@ from app.platform.observability import (
 )
 from app.retention.facts import ingestion_quality_facts
 from app.retention.readers import DashboardReadModels, OpsJobsReadModel
-from app.usage.schema import quota_request_table, usage_metadata
+from app.usage.schema import quota_request_table, usage_event_table, usage_metadata
 
 
 class FakeObservabilityPort:
@@ -548,6 +548,100 @@ def test_operations_has_exactly_three_cards_and_never_calls_port() -> None:
         "ocr_confidence_dist": "distribution",
         "graph_basic_split": "distribution",
     }
+
+
+def test_admin_dashboard_uses_provider_facts_and_expands_real_user_rank() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    now = fixed_now()
+    with engine.begin() as connection:
+        for index in range(12):
+            user_id = f"u_cost_{index}"
+            connection.execute(
+                identity_user_table.insert().values(
+                    id=user_id,
+                    username=user_id,
+                    normalized_username=user_id,
+                    password_hash="x",
+                    real_name=user_id,
+                    display_name=f"用户 {index}",
+                    directory_search_text=user_id,
+                    department_id=None,
+                    role="user",
+                    lifecycle_status="active",
+                    version=1,
+                    avatar_url=None,
+                    preferences_json={},
+                    transition_version=1,
+                    created_at_utc=now,
+                    updated_at_utc=now,
+                )
+            )
+            completed = now - timedelta(hours=index + 1)
+            connection.execute(
+                usage_event_table.insert().values(
+                    usage_event_id=f"usage_{index}",
+                    event_kind="provider_usage",
+                    provider_call_id=f"call_{index}",
+                    provider="fake",
+                    model="fake-model",
+                    operation="chat",
+                    price_version_id="price_1",
+                    currency_code="CNY",
+                    estimated_cost_amount=10 + index,
+                    estimated_cost_status="complete",
+                    input_tokens=100,
+                    prompt_cache_hit_tokens=80 if index < 6 else 20,
+                    prompt_cache_miss_tokens=20 if index < 6 else 80,
+                    output_tokens=10,
+                    execution_kind="chat",
+                    execution_id=f"execution_{index}",
+                    cost_center_key=f"user:{user_id}",
+                    result="succeeded",
+                    measurement_sources={},
+                    event_fingerprint=f"fingerprint_{index}",
+                    ownership_json={
+                        "actor_user_id": user_id,
+                        "actor_role_snapshot": "user",
+                        "quota_subject_user_id": user_id,
+                    },
+                    started_at_utc=completed,
+                    completed_at_utc=completed,
+                    effective_calendar_version_id="calendar_1",
+                    effective_at_utc=completed,
+                    effective_period="2026-08",
+                    recorded_calendar_version_id="calendar_1",
+                    recorded_at_utc=completed,
+                    recorded_period="2026-08",
+                    created_at_utc=completed,
+                )
+            )
+
+    reader = _reader(engine, FakeObservabilityPort())
+    compact = reader.dashboard(role="admin", window="7d")
+    expanded = reader.dashboard(role="admin", window="7d", expand="user_rank")
+
+    compact_cards = {card["key"]: card for pack in compact["packs"] for card in pack["cards"]}
+    expanded_cards = {card["key"]: card for pack in expanded["packs"] for card in pack["cards"]}
+    assert compact_cards["user_cost_rank"]["total_count"] == 12
+    assert len(compact_cards["user_cost_rank"]["rows"]) == 10
+    assert len(expanded_cards["user_cost_rank"]["rows"]) == 12
+    assert compact_cards["monthly_llm_cost"]["value"] == 186.0
+
+    ops = reader.dashboard(role="ops", window="7d")
+    tasks_health = next(pack for pack in ops["packs"] if pack["key"] == "tasks_health")
+    cache = next(
+        card
+        for card in next(pack for pack in ops["packs"] if pack["key"] == "cost_sentinel")["cards"]
+        if card["key"] == "cache_hit_rate"
+    )
+    assert cache["value"] == 0.5
+    assert cache["sparkline"]
+    assert tasks_health["cards"]
 
 
 def test_window_bounds_cover_today_week_and_month() -> None:

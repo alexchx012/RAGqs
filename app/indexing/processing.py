@@ -307,6 +307,7 @@ class ContentProcessor:
         image_ocr: Callable[[bytes, Mapping[str, Any]], str] | None = None,
         text_chunk_max_chars: int = 8_000,
         xlsx_merged_cells_max: int = 10_000,
+        ocr_confidence_threshold: float = 0.9,
     ) -> None:
         self._compressor = compressor or IdentityCompression()
         self._mineru = mineru
@@ -314,6 +315,7 @@ class ContentProcessor:
         self._image_ocr = image_ocr
         self._text_chunk_max_chars = text_chunk_max_chars
         self._xlsx_merged_cells_max = xlsx_merged_cells_max
+        self._ocr_confidence_threshold = float(ocr_confidence_threshold)
 
     def process(
         self,
@@ -409,10 +411,11 @@ class ContentProcessor:
             confidence = parsed.get("ocr_confidence")
             if confidence is not None:
                 ocr["confidence"] = float(confidence)
-                ocr["low_confidence"] = float(confidence) < OCR_LOW_CONFIDENCE_THRESHOLD
+                ocr["low_confidence"] = float(confidence) < self._ocr_confidence_threshold
                 ocr["reason"] = "low_confidence"
                 ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
                 ocr["fact"] = _machine_low_confidence_fact(float(confidence), None)
+                ocr["threshold"] = self._ocr_confidence_threshold
             local_confidence = parsed.get("ocr_confidence_by_page", {})
             if isinstance(local_confidence, Mapping):
                 sample = OCRSamplePlan.for_page_count(page_count)
@@ -427,10 +430,11 @@ class ContentProcessor:
                         int(page) for page, value in sampled.items() if value == lowest
                     )
                     ocr["local_confidence"] = sampled
-                    ocr["low_confidence"] = lowest < OCR_LOW_CONFIDENCE_THRESHOLD
+                    ocr["low_confidence"] = lowest < self._ocr_confidence_threshold
                     ocr["reason"] = "low_confidence"
                     ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
                     ocr["fact"] = _machine_low_confidence_fact(lowest, worst_page)
+                    ocr["threshold"] = self._ocr_confidence_threshold
             summary["ocr"] = ocr
             parsed_chunks = parsed.get("chunks", ())
             locations = tuple(parsed_chunks) if isinstance(parsed_chunks, Sequence) else ()

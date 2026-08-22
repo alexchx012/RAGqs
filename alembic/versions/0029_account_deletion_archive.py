@@ -1,7 +1,7 @@
 """Account-deletion archive and cleanup-target bookkeeping.
 
-Revision ID: 0028_account_deletion_archive
-Revises: 0027_merge_ab_vote_idempotency
+Revision ID: 0029_account_deletion_archive
+Revises: 0028_merge_chat_reconcile_drop
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0028_account_deletion_archive"
-down_revision: str | None = "0027_merge_ab_vote_idempotency"
+revision: str = "0029_account_deletion_archive"
+down_revision: str | None = "0028_merge_chat_reconcile_drop"
 branch_labels: tuple[str, ...] | Sequence[str] | None = None
 depends_on: tuple[str, ...] | Sequence[str] | None = None
 

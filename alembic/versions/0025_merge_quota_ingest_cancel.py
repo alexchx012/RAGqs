@@ -1,10 +1,10 @@
 """Merge quota-transaction and ingestion-cancel migration heads.
 
-Revision ID: 0025_merge_quota_ingestion_cancel
+Revision ID: 0025_merge_quota_ingest_cancel
 Revises: 0024_fix_quota_transaction, 0024_ingestion_cancel_operator
 """
 
-revision: str = "0025_merge_quota_ingestion_cancel"
+revision: str = "0025_merge_quota_ingest_cancel"
 down_revision: tuple[str, str] = (
     "0024_fix_quota_transaction",
     "0024_ingestion_cancel_operator",

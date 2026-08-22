@@ -45,8 +45,10 @@ class RetentionOpsService:
 
     # ---- HTTP read models ----
 
-    def dashboard(self, *, role: str, window: str) -> dict[str, Any]:
-        return self._dashboard.dashboard(role=role, window=window)
+    def dashboard(self, *, role: str, window: str, expand: str | None = None) -> dict[str, Any]:
+        if expand is None:
+            return self._dashboard.dashboard(role=role, window=window)
+        return self._dashboard.dashboard(role=role, window=window, expand=expand)
 
     def operations(self, *, window: str) -> dict[str, Any]:
         return self._dashboard.operations(window=window)

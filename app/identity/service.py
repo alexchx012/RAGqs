@@ -403,6 +403,59 @@ class IdentityAccessService:
             raise PlatformError("authentication_required", "The account is not active", {}, 401)
         return self._user_response(dict(user))
 
+    def _managed_user_response_for_id(
+        self, connection: Connection, user_id: str
+    ) -> dict[str, object]:
+        response = self._user_response_for_id(connection, user_id)
+        response["document_count"] = self._user_document_count(connection, str(user_id))
+        return response
+
+    def _user_document_count(self, connection: Connection, user_id: str) -> int:
+        work_check = self._configured_work_check()
+        if work_check is None:
+            return 0
+        try:
+            counts = work_check.user_document_counts([str(user_id)], connection=connection)
+        except Exception:
+            return 0
+        return int(counts.get(str(user_id), 0))
+
+    def _department_read_counts(
+        self,
+        connection: Connection,
+        department_id: str,
+        *,
+        tolerate_work_errors: bool = False,
+    ) -> dict[str, int]:
+        work_check = self._configured_work_check()
+        if work_check is None:
+            work_state = DepartmentWorkState()
+        else:
+            try:
+                work_state = work_check.directory_counts(department_id, connection=connection)
+            except Exception:
+                if not tolerate_work_errors:
+                    raise
+                work_state = DepartmentWorkState()
+        return {
+            "document_count": int(work_state.document_count),
+            "nonterminal_job_count": int(work_state.nonterminal_job_count),
+            "pending_submission_count": int(work_state.pending_submission_count),
+        }
+
+    @staticmethod
+    def _member_count_for_department(connection: Connection, department_id: str) -> int:
+        return int(
+            connection.execute(
+                select(func.count(identity_user_table.c.id)).where(
+                    and_(
+                        identity_user_table.c.department_id == department_id,
+                        identity_user_table.c.lifecycle_status.in_(("active", "pending_delete")),
+                    )
+                )
+            ).scalar_one()
+        )
+
     def _new_user_record(
         self,
         *,
@@ -980,15 +1033,18 @@ class IdentityAccessService:
                     created_at_utc=now,
                 )
             )
+            counts = self._department_read_counts(
+                connection, str(department["id"]), tolerate_work_errors=True
+            )
             response = {
                 "id": department["id"],
                 "name": department["name"],
                 "status": "active",
                 "version": 1,
-                "document_count": 0,
+                "document_count": counts["document_count"],
                 "member_count": 0,
-                "nonterminal_job_count": 0,
-                "pending_submission_count": 0,
+                "nonterminal_job_count": counts["nonterminal_job_count"],
+                "pending_submission_count": counts["pending_submission_count"],
                 "deactivated_at": None,
                 "allowed_actions": ["rename", "deactivate"],
             }
@@ -1060,7 +1116,7 @@ class IdentityAccessService:
                 return operation.replay
             connection = operation.connection
             self._insert_user_record(connection, record)
-            response = self._user_response_for_id(connection, str(record["id"]))
+            response = self._managed_user_response_for_id(connection, str(record["id"]))
             response["version"] = 1
             self._complete_idempotency(
                 connection,
@@ -1220,7 +1276,7 @@ class IdentityAccessService:
                     revoked_at=now,
                     transition_version=next_transition,
                 )
-            result = self._user_response_for_id(connection, user_id)
+            result = self._managed_user_response_for_id(connection, user_id)
             result["version"] = next_version
             self._complete_idempotency(
                 connection,
@@ -1383,7 +1439,9 @@ class IdentityAccessService:
                     "name": department["name"],
                     "status": "inactive",
                     "version": next_version,
-                    "document_count": 0,
+                    "document_count": self._department_read_counts(connection, department_id)[
+                        "document_count"
+                    ],
                     "member_count": 0,
                     "nonterminal_job_count": work_state.nonterminal_job_count,
                     "pending_submission_count": work_state.pending_submission_count,
@@ -2455,12 +2513,16 @@ class IdentityAccessService:
         work_check = self._configured_work_check()
         with self._engine.connect() as connection:
             departments = connection.execute(statement).mappings().all()
-            work_states = {
-                department["id"]: work_check.directory_counts(
-                    str(department["id"]), connection=connection
-                )
-                for department in departments
-            } if work_check is not None else {}
+            work_states = (
+                {
+                    department["id"]: work_check.directory_counts(
+                        str(department["id"]), connection=connection
+                    )
+                    for department in departments
+                }
+                if work_check is not None
+                else {}
+            )
         items: list[dict[str, object]] = []
         for department in departments:
             active = department["status"] == "active"
@@ -2569,15 +2631,18 @@ class IdentityAccessService:
                 .where(identity_space_table.c.id == f"department:{department_id}")
                 .values(name=normalized_name)
             )
+            counts = self._department_read_counts(
+                connection, department_id, tolerate_work_errors=True
+            )
             result = {
                 "id": department_id,
                 "name": normalized_name,
                 "status": "active",
                 "version": next_version,
-                "document_count": 0,
-                "member_count": 0,
-                "nonterminal_job_count": 0,
-                "pending_submission_count": 0,
+                "document_count": counts["document_count"],
+                "member_count": self._member_count_for_department(connection, department_id),
+                "nonterminal_job_count": counts["nonterminal_job_count"],
+                "pending_submission_count": counts["pending_submission_count"],
                 "deactivated_at": None,
                 "allowed_actions": ["rename", "deactivate"],
             }
@@ -2608,11 +2673,26 @@ class IdentityAccessService:
                 "forbidden_target", "Permission matrix requires admin access", {}, 403
             )
         capabilities = (
-            ("spaces_manage", "Knowledge spaces", (True, True, True, True)),
-            ("user_manage", "User account management", (False, False, True, True)),
-            ("department_manage", "Department management", (False, False, False, True)),
-            ("permission_matrix_read", "Permission matrix", (False, False, False, True)),
-            ("operations", "Operations", (False, False, True, False)),
+            ("query_personal_space", "查询自己的个人库", (True, True, True, True)),
+            ("query_public_space", "查询公共库", (True, True, True, True)),
+            ("query_own_department_space", "查询本部门的部门库", (True, True, True, True)),
+            ("query_other_department_space", "查询其他部门的部门库", (False, False, True, True)),
+            ("upload_personal_space", "上传文档到自己的个人库", (True, True, True, True)),
+            ("contribute_own_department", "向本部门部门库添加内容", (True, True, True, True)),
+            ("contribute_other_department", "向其他部门部门库添加内容", (False, False, True, True)),
+            ("manage_own_department_space", "管理本部门的部门库", (False, True, True, True)),
+            ("manage_other_department_space", "管理其他部门的部门库", (False, False, True, True)),
+            ("view_others_personal_space", "查看他人个人库", (False, False, True, True)),
+            ("contribute_public_space", "向公共库添加内容", (True, True, True, True)),
+            ("review_department_submissions", "审核部门库投稿", (False, True, False, True)),
+            ("review_public_submissions", "审核公共库投稿", (False, False, True, True)),
+            ("chat_qa", "使用聊天问答", (True, True, True, True)),
+            ("manage_user_accounts", "用户账号管理", (False, False, True, True)),
+            ("read_department_directory", "读取部门目录", (False, False, True, True)),
+            ("manage_department_directory", "管理部门目录", (False, False, False, True)),
+            ("build_public_graph", "构建或重建公共库图谱", (False, False, True, False)),
+            ("instance_operations", "实例运维操作", (False, False, True, True)),
+            ("read_permission_matrix", "读取角色与能力矩阵", (False, False, False, True)),
         )
         return {
             "capabilities": [

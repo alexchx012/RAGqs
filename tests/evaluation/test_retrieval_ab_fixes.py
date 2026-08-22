@@ -12,7 +12,6 @@ from app.evaluation.schema import evaluation_run_command_table, shadow_evaluatio
 from .conftest import NOW, build_test_env, provision_and_login
 from .test_worker_flow import AttributionJudge, _insert_run, _sample, _worker
 
-
 # ------------------------------------------------------- metric split (A4)
 
 
@@ -158,17 +157,13 @@ def test_claims_do_not_repeat_samples_and_break_ties_stably() -> None:
     )
     with env["engine"].begin() as connection:
         connection.execute(
-            shadow_evaluation_run_table.update().values(
-                created_at_utc=NOW, next_attempt_at_utc=NOW
-            )
+            shadow_evaluation_run_table.update().values(created_at_utc=NOW, next_attempt_at_utc=NOW)
         )
     repo = env["runtime"].resolve("evaluation_repository")
     claimed: list[str] = []
     with env["engine"].begin() as connection:
         for owner in ("worker_1", "worker_2"):
-            record = repo.claim_next(
-                connection, owner=owner, lease_ttl_seconds=60, now=NOW
-            )
+            record = repo.claim_next(connection, owner=owner, lease_ttl_seconds=60, now=NOW)
             if record is not None:
                 claimed.append(record.run_id)
     # Identical timestamps: the run_id tie-break fixes the order and each

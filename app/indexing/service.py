@@ -52,6 +52,7 @@ class IndexingService:
         object_store: ObjectStorePort | None = None,
         embedding: EmbeddingProvider | None = None,
         now: Callable[[], datetime] | None = None,
+        exact_match_metrics: Any | None = None,
     ) -> None:
         if environment == "production":
             if (
@@ -96,6 +97,7 @@ class IndexingService:
             graph_router=graph_router,
             graph_reader=self.graph,
             token_counter=token_counter,
+            exact_match_metrics=exact_match_metrics,
         )
         self.citations = (
             CitationService(

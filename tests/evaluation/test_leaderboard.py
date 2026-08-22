@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.evaluation.schema import shadow_evaluation_result_table, shadow_evaluation_run_table
 from app.evaluation.service import EvaluationService
 
 from .conftest import NOW, build_test_env, provision_and_login
@@ -60,11 +61,58 @@ def test_leaderboard_entries_come_from_active_default() -> None:
             source_run_id="run_1",
             now=NOW,
         )
+        connection.execute(
+            shadow_evaluation_run_table.insert().values(
+                run_id="run_1",
+                space_id="space_1",
+                state="succeeded",
+                attempt=1,
+                lease_owner=None,
+                lease_expires_at_utc=None,
+                heartbeat_at_utc=None,
+                fencing_token=None,
+                next_attempt_at_utc=None,
+                failure_class=None,
+                progress_json={"total": 1, "completed": 1, "failed": 0},
+                report_ref=None,
+                policy_version="eval-v1",
+                comparator_key="cmp_1",
+                candidate_config_versions_json=["default"],
+                index_generation_id="generation_1",
+                index_revision=1,
+                frozen_snapshot_json={},
+                created_at_utc=NOW,
+                started_at_utc=NOW,
+                completed_at_utc=NOW,
+                version=1,
+            )
+        )
+        connection.execute(
+            shadow_evaluation_result_table.insert().values(
+                run_id="run_1",
+                sample_item_id="sample_1",
+                candidate_config_version="default",
+                session_id="session_1",
+                metrics_json={
+                    "faithfulness": 0.9,
+                    "answer_relevancy": 0.9,
+                    "refusal_rate": 0.9,
+                    "hit_at_k_final": 0.9,
+                    "mrr": 0.9,
+                    "p95_latency_ms": 100.0,
+                    "cost_per_query": 0.01,
+                },
+                weak_signals_json={},
+                judged_at_utc=NOW,
+            )
+        )
     token, _, _ = provision_and_login(env["identity"], "ops1", role="ops")
     body = _leaderboard(env, token).json()
     assert len(body["entries"]) == 1
     assert body["entries"][0]["name"] == "default"
     assert body["entries"][0]["is_active"] is True
+    assert body["entries"][0]["metrics"]["faithfulness"] == 0.9
+    assert body["entries"][0]["score"] > 0
 
 
 def test_leaderboard_filters_spaces_by_acl() -> None:

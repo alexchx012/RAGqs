@@ -123,9 +123,9 @@ describe('admin contract：dashboard（§9.1）', () => {
     expect(cardValue(today, 'failure_rate')).not.toBe(cardValue(month, 'failure_rate'));
   });
 
-  it('admin 组包：结构不同、threshold/link 恒 null、user_rank 15 行', async () => {
+  it('admin 组包：结构不同、threshold/link 恒 null；expand=user_rank 返回完整排行', async () => {
     const admin = bearerOf('admin');
-    const response = await jsonRequest(admin, '/v1/metrics/dashboard?window=7d');
+    const response = await jsonRequest(admin, '/v1/metrics/dashboard?window=7d&expand=user_rank');
     expect(response.status).toBe(200);
     const body = (await response.json()) as DashboardResponse;
     expect(body.packs.map((pack) => pack.key)).not.toContain('todo');

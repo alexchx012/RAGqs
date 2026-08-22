@@ -307,6 +307,33 @@ describe('总览 dashboard：四卡型结构', () => {
     await user.click(within(card).getByText(copyDashboard.collapse));
     expect(card.querySelectorAll('ul li').length).toBe(10);
   });
+
+  it('user_rank 默认精简读取；点击「展开全部」请求 expand=user_rank 后显示完整排行', async () => {
+    const getDashboard = vi.fn(async (_window: MetricsWindow, expand?: 'user_rank') => {
+      const response = adminDashboard();
+      if (expand === 'user_rank') {
+        return response;
+      }
+      return {
+        ...response,
+        packs: response.packs.map((pack) => ({
+          ...pack,
+          cards: pack.cards.map((card) =>
+            card.kind === 'user_rank' ? { ...card, rows: card.rows.slice(0, 10) } : card,
+          ),
+        })),
+      };
+    });
+    const { container } = renderDashboard(fakeAdminApi({ getDashboard }));
+    await screen.findByText('成本分摊');
+    const card = cardElement(container, 'rank');
+    expect(card.querySelectorAll('ul li').length).toBe(10);
+
+    const user = userEvent.setup();
+    await user.click(within(card).getByText(copyDashboard.expandAll));
+    expect(getDashboard).toHaveBeenLastCalledWith('7d', 'user_rank');
+    expect(await within(card).findAllByRole('listitem')).toHaveLength(15);
+  });
 });
 
 describe('总览 dashboard：超阈与整卡跳转', () => {

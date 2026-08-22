@@ -21,8 +21,16 @@ from app.platform.observability import (
 from . import facts
 
 
-def _ratio(value: int, total: int) -> float:
+def _ratio(value: float, total: float) -> float:
     return round(value / total, 4) if total > 0 else 0.0
+
+
+def _number(value: Any) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if isinstance(value, int):
+        return value
+    return round(value, 4)
 
 
 def _stat(
@@ -75,7 +83,7 @@ def _distribution(
     threshold: Mapping[str, Any] | None = None,
     link: str | None = None,
 ) -> dict[str, Any]:
-    total = sum(int(row["value"]) for row in rows)
+    total = sum(float(_number(row["value"])) for row in rows)
     return {
         "key": key,
         "title": title,
@@ -83,9 +91,9 @@ def _distribution(
         "rows": [
             {
                 "label": str(row["label"]),
-                "value": int(row["value"]),
-                "ratio": _ratio(int(row["value"]), total),
-                **({"tone": str(row["tone"])} if row.get("tone") in {"normal", "warning"} else {}),
+                "value": _number(row["value"]),
+                "ratio": _ratio(float(_number(row["value"])), total),
+                "tone": str(row.get("tone", "normal")),
             }
             for row in rows
         ],
@@ -103,7 +111,7 @@ def _user_rank(
     threshold: Mapping[str, Any] | None = None,
     link: str | None = None,
 ) -> dict[str, Any]:
-    total = sum(int(row["value"]) for row in rows)
+    total = sum(float(_number(row["value"])) for row in rows)
     return {
         "key": key,
         "title": title,
@@ -111,8 +119,8 @@ def _user_rank(
         "rows": [
             {
                 "label": str(row["label"]),
-                "value": int(row["value"]),
-                "ratio": _ratio(int(row["value"]), total),
+                "value": _number(row["value"]),
+                "ratio": _ratio(float(_number(row["value"])), total),
             }
             for row in rows
         ],
@@ -134,7 +142,7 @@ class DashboardReadModels:
         self._now = now
         self._observability = observability_metrics
 
-    def dashboard(self, *, role: str, window: str) -> dict[str, Any]:
+    def dashboard(self, *, role: str, window: str, expand: str | None = None) -> dict[str, Any]:
         with self._engine.connect() as connection:
             now = self._now(connection)
             start, end = facts.window_bounds(window, now)
@@ -145,6 +153,7 @@ class DashboardReadModels:
             quota_pending = facts.quota_pending_count(connection)
             submissions_pending = facts.submission_pending_count(connection)
             usage = facts.provider_usage_trend(connection, start=start, end=end)
+            cache_hit_rate = facts.cache_hit_rate_facts(connection, start=start, end=end)
             packs: list[dict[str, Any]]
             if role == "ops":
                 packs = self._ops_packs(
@@ -156,22 +165,31 @@ class DashboardReadModels:
                     quota_pending=quota_pending,
                     submissions_pending=submissions_pending,
                     usage=usage,
+                    cache_hit_rate=cache_hit_rate,
                 )
             else:
                 active_users = facts.active_user_count(connection)
                 questions = facts.question_count(connection, start=start, end=end)
-                thumbs = facts.feedback_up_count(connection, start=start, end=end)
                 extra_quota = facts.quota_approved_facts(connection, start=start, end=end)
-                departments = facts.department_user_rows(connection)
-                spaces = facts.space_document_rows(connection)
+                department_usage = facts.department_question_rows(connection, start=start, end=end)
+                retrieval_usage = facts.space_usage_rows(connection, start=start, end=end)
+                citation_usage = facts.space_citation_rows(connection, start=start, end=end)
+                usage_breakdown = facts.provider_usage_breakdown(connection, start=start, end=end)
+                quota_consumption = facts.quota_consumption_rows(connection, start=start, end=end)
+                feedback = facts.feedback_ratio_facts(connection, start=start, end=end)
                 packs = self._admin_packs(
                     active_users=active_users,
                     questions=questions,
-                    thumbs=thumbs,
                     extra_quota=extra_quota,
-                    departments=departments,
-                    spaces=spaces,
                     usage=usage,
+                    department_usage=department_usage,
+                    retrieval_usage=retrieval_usage,
+                    citation_usage=citation_usage,
+                    department_cost=usage_breakdown["department_rows"],
+                    user_cost=usage_breakdown["user_rows"],
+                    quota_consumption=quota_consumption,
+                    feedback=feedback,
+                    expand_user_rank=expand == "user_rank",
                 )
         return {"window": window, "packs": packs}
 
@@ -186,6 +204,7 @@ class DashboardReadModels:
         quota_pending: int,
         submissions_pending: int,
         usage: Mapping[str, Any],
+        cache_hit_rate: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         api_error_rate = None
         api_latency_p95 = None
@@ -269,7 +288,8 @@ class DashboardReadModels:
                     _stat(
                         "cache_hit_rate",
                         "缓存命中率",
-                        value=None,
+                        value=cache_hit_rate["value"],
+                        sparkline=cache_hit_rate["sparkline"],
                         threshold={"value": 0.6, "direction": "below"},
                         link="ops.metrics",
                     ),
@@ -312,32 +332,52 @@ class DashboardReadModels:
         *,
         active_users: int,
         questions: int,
-        thumbs: int,
         extra_quota: Mapping[str, int],
-        departments: list[Mapping[str, Any]],
-        spaces: list[Mapping[str, Any]],
         usage: Mapping[str, Any],
+        department_usage: list[Mapping[str, Any]],
+        retrieval_usage: list[Mapping[str, Any]],
+        citation_usage: list[Mapping[str, Any]],
+        department_cost: list[Mapping[str, Any]],
+        user_cost: list[Mapping[str, Any]],
+        quota_consumption: list[Mapping[str, Any]],
+        feedback: Mapping[str, Any],
+        expand_user_rank: bool,
     ) -> list[dict[str, Any]]:
-        department_rows = [{"label": row["label"], "value": row["count"]} for row in departments]
-        space_rows = [{"label": row["label"], "value": row["count"]} for row in spaces]
+        department_rows = [
+            {"label": row["label"], "value": row["count"]} for row in department_usage
+        ]
+        retrieval_rows = [{"label": row["label"], "value": row["count"]} for row in retrieval_usage]
+        citation_rows = [{"label": row["label"], "value": row["count"]} for row in citation_usage]
+        department_cost_rows = list(department_cost)
+        user_cost_rows = list(user_cost)
+        rank_rows = user_cost_rows[: (50 if expand_user_rank else 10)]
+        quota_consumption_rows = [
+            {"label": row["label"], "value": row["count"]} for row in quota_consumption
+        ]
+        grant_rows = [
+            {"label": "追加次数", "value": extra_quota["requests"], "tone": "normal"},
+            {"label": "追加页数", "value": extra_quota["pages"], "tone": "normal"},
+        ]
+        for row in grant_rows:
+            row["ratio"] = 1.0
         return [
             {
                 "key": "usage_overview",
                 "title": "使用概览",
                 "description": "活跃用户、提问趋势与部门使用分布",
                 "cards": [
-                    _stat("active_users", "活跃用户", value=active_users),
-                    _stat("question_trend", "提问趋势", value=questions),
+                    _stat("active_users", "活跃用户数", value=active_users),
+                    _stat("question_trend", "提问量趋势", value=questions),
                     _distribution("department_usage", "部门使用分布", department_rows),
                 ],
             },
             {
                 "key": "asset_usage",
-                "title": "资产使用",
+                "title": "知识资产使用率",
                 "description": "各空间文档与检索/引用频次",
                 "cards": [
-                    _distribution("space_usage", "各空间文档分布", space_rows),
-                    _distribution("space_citation", "各空间检索/引用频次分布", []),
+                    _distribution("retrieval_freq", "各空间被检索频次分布", retrieval_rows),
+                    _distribution("citation_freq", "各空间被引用频次分布", citation_rows),
                 ],
             },
             {
@@ -345,9 +385,14 @@ class DashboardReadModels:
                 "title": "成本分摊",
                 "description": "月度 LLM 成本与分摊",
                 "cards": [
-                    _stat("monthly_cost", "月度 LLM 总成本", value=usage["cost"]),
-                    _distribution("department_share", "按部门分摊", []),
-                    _user_rank("top_users", "成本前十用户", [], total_count=0),
+                    _stat("monthly_llm_cost", "月度 LLM 总成本", value=usage["cost"]),
+                    _distribution("department_cost", "按部门分摊", department_cost_rows),
+                    _user_rank(
+                        "user_cost_rank",
+                        "按用户分摊",
+                        rank_rows,
+                        total_count=len(user_cost_rows),
+                    ),
                 ],
             },
             {
@@ -355,9 +400,21 @@ class DashboardReadModels:
                 "title": "质量与配额",
                 "description": "反馈趋势、配额消耗与追加额度",
                 "cards": [
-                    _stat("thumbs_trend", "👍 趋势", value=thumbs),
-                    _distribution("quota_consumption", "配额消耗分布", []),
-                    _stat("extra_quota", "追加额度次数", value=extra_quota["requests"]),
+                    _stat(
+                        "thumbs_up_ratio",
+                        "点赞比例趋势",
+                        value=feedback["value"],
+                        sparkline=feedback["sparkline"],
+                    ),
+                    _distribution("quota_consumption", "配额消耗分布", quota_consumption_rows),
+                    {
+                        "key": "quota_grants",
+                        "title": "追加额度发放",
+                        "kind": "distribution",
+                        "rows": grant_rows,
+                        "threshold": None,
+                        "link": None,
+                    },
                 ],
             },
         ]
@@ -367,6 +424,7 @@ class DashboardReadModels:
             now = self._now(connection)
             start, end = facts.window_bounds(window, now)
             quality = facts.ingestion_quality_facts(connection, start=start, end=end)
+            cache_hit_rate = facts.cache_hit_rate_facts(connection, start=start, end=end)
         ocr_rows = [
             (
                 {"label": row["label"], "value": row["count"], "tone": "warning"}
@@ -380,7 +438,8 @@ class DashboardReadModels:
             _stat(
                 "cache_hit_rate",
                 "缓存命中率",
-                value=None,
+                value=cache_hit_rate["value"],
+                sparkline=cache_hit_rate["sparkline"],
                 threshold={"value": 0.6, "direction": "below"},
             ),
             _distribution("ocr_confidence_dist", "OCR 置信度分布", ocr_rows),

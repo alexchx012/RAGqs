@@ -27,8 +27,8 @@ from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, create_en
 from sqlalchemy.engine import Connection
 from sqlalchemy.pool import StaticPool
 
-from app.identity.revocation import NoopGenerationRevocationPort
 from app.documents.schema import documents_metadata
+from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import AuthPrincipal, IdentityAccessService
 from app.platform.app_factory import create_platform_app
