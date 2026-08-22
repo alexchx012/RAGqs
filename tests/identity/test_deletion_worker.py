@@ -5,10 +5,13 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import update
 
+from app.chat.schema import chat_metadata
+from app.documents.schema import documents_metadata
 from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
 from app.identity.ports import NoopAccountRetirementGateway
 from app.identity.schema import identity_deletion_workflow_table, identity_metadata
 from app.identity.worker import IdentityDeletionWorker
+from app.outbox.schema import outbox_metadata
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata, platform_lease_table
 from app.platform.errors import PlatformError
@@ -59,6 +62,9 @@ def test_default_runtime_worker_finalizes_due_deletions_and_cleans_avatar() -> N
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     service.provision_user(
         username="admin",
@@ -98,7 +104,8 @@ def test_default_runtime_worker_finalizes_due_deletions_and_cleans_avatar() -> N
     worker_runtime = create_worker_runtime(configured, runtime=runtime)
     stats = IdentityDeletionWorker(worker_runtime).run_once(owner="worker-1")
 
-    assert stats.completed == 1
+    # archive build + finalization are two separate leased tasks
+    assert stats.completed == 2
     assert stats.deferred == 0
     with pytest.raises(StorageKeyError):
         object_store.get(avatar_url.removeprefix("object://"))
@@ -131,6 +138,9 @@ def test_deletion_worker_processes_pending_avatar_cleanup() -> None:
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     user = service.provision_user(
         username="alice",
@@ -180,6 +190,9 @@ def test_account_finalization_waits_for_replaced_avatar_cleanup() -> None:
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     service.provision_user(
         username="admin",
@@ -218,6 +231,7 @@ def test_account_finalization_waits_for_replaced_avatar_cleanup() -> None:
             .values(purge_after_at_utc=datetime(2000, 1, 1, tzinfo=UTC))
         )
 
+    service.build_deletion_archive(user_id=user["id"])
     with pytest.raises(PlatformError) as exc_info:
         service.finalize_pending_deletion(user_id=user["id"])
 
@@ -251,6 +265,9 @@ def test_deletion_worker_retries_cleanup_after_a_fenced_transaction_rolls_back()
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     service.provision_user(
         username="admin",
@@ -290,8 +307,8 @@ def test_deletion_worker_retries_cleanup_after_a_fenced_transaction_rolls_back()
     worker_runtime = create_worker_runtime(configured, runtime=runtime)
     first = IdentityDeletionWorker(worker_runtime).run_once(owner="worker-1")
 
-    assert first.completed == 0
-    assert first.deferred == 1
+    assert first.completed == 1  # archive package built
+    assert first.deferred == 1  # finalization deferred by the expired fence
     with pytest.raises(StorageKeyError):
         object_store.get(avatar_url.removeprefix("object://"))
     with engine.connect() as connection:

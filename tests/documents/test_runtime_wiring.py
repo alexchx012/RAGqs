@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import tempfile
+
 from sqlalchemy import create_engine, select
 
 import app.evaluation as evaluation_module
@@ -125,6 +128,9 @@ def _production_settings(*, judge_base_url: str | None, judge_api_key: str | Non
         "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
         "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
         "RAG_AUTH_ADMIN_ROSTER": "admin",
+        "USER_DELETION_ARCHIVE_DIR": os.environ.get(
+            "TEST_USER_DELETION_ARCHIVE_DIR", tempfile.mkdtemp(prefix="rag-archive-")
+        ),
     }
     if judge_base_url is not None:
         values["RAG_EVALUATION_JUDGE_BASE_URL"] = judge_base_url
@@ -245,6 +251,7 @@ def test_production_runtime_requires_explicit_retrieval_backends() -> None:
             "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
             "RAG_AUTH_ADMIN_ROSTER": "admin",
+            "USER_DELETION_ARCHIVE_DIR": tempfile.mkdtemp(prefix="rag-archive-"),
         }
     )
 

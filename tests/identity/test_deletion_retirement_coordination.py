@@ -18,6 +18,8 @@ from app.identity.schema import (
     identity_user_table,
 )
 from app.identity.worker import IdentityDeletionWorker
+from app.chat.schema import chat_metadata
+from app.documents.schema import documents_metadata
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
@@ -42,6 +44,8 @@ def build_runtime_with_outbox(**adapter_overrides):
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
     adapters = {"database_engine": engine, "object_store": MemoryObjectStore()}
     adapters.update(adapter_overrides)
     runtime = build_runtime(configured, adapters=adapters)
@@ -104,6 +108,8 @@ def setup_deletion(runtime, engine, *, user_id: str) -> None:
             .where(identity_deletion_workflow_table.c.user_id == user_id)
             .values(purge_after_at_utc=datetime(2000, 1, 1, tzinfo=UTC))
         )
+    # §9.2.1: the physical archive package must exist before finalization.
+    runtime.resolve("identity_access").build_deletion_archive(user_id=user_id)
 
 
 def test_deletion_worker_obtains_completed_retirement_before_deleting_account() -> None:

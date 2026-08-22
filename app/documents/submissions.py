@@ -23,6 +23,13 @@ from .schema import (
 from .service import DocumentsService, DocumentUpload
 
 
+def _now_on_connection(now_callable, connection):
+    try:
+        return now_callable(connection)
+    except TypeError:
+        return now_callable()
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
@@ -164,7 +171,10 @@ class SubmissionService:
             .mappings()
             .all()
         )
-        now = self._service._current_time()
+        # Read the clock through the caller's connection: opening a second
+        # engine connection inside the caller's transaction corrupts pooled
+        # (StaticPool) SQLite test engines with savepoint mismatches.
+        now = _now_on_connection(self._service._now, connection)
         invalidated = 0
         for submission in rows:
             if self._can_contribute(

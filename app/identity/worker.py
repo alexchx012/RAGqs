@@ -42,6 +42,19 @@ class IdentityDeletionWorker:
             raise ValueError("worker owner must not be empty")
         completed = 0
         deferred = 0
+        for user_id in self._identity_access.list_deletion_workflows_pending_archive(
+            limit=limit
+        ):
+            try:
+                self._worker_runtime.run_task(
+                    f"identity-deletion-archive:{user_id}",
+                    normalized_owner,
+                    partial(self._build_archive, user_id=user_id),
+                )
+            except (FenceViolation, LeaseUnavailable, PlatformError):
+                deferred += 1
+            else:
+                completed += 1
         for operation_id in self._identity_access.list_pending_object_cleanup_operations(
             limit=limit
         ):
@@ -67,6 +80,16 @@ class IdentityDeletionWorker:
             else:
                 completed += 1
         return IdentityDeletionWorkerStats(completed=completed, deferred=deferred)
+
+    def _build_archive(
+        self,
+        context: TaskContext,
+        connection: Connection,
+        *,
+        user_id: str,
+    ) -> dict[str, object]:
+        del context, connection
+        return self._identity_access.build_deletion_archive(user_id=user_id)
 
     def _finalize(
         self,
