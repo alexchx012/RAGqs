@@ -1651,81 +1651,94 @@ class IdentityAccessService:
         from .archive_package import AccountArchivePackageBuilder
 
         now = self._current_time()
-        with self._engine.connect() as read_connection:
-            with read_connection.begin():
-                workflow = (
-                    read_connection.execute(
-                        select(identity_deletion_workflow_table)
-                        .where(identity_deletion_workflow_table.c.user_id == user_id)
-                    )
-                    .mappings()
-                    .one_or_none()
+        from .archive_package import AccountArchiveRecord
+
+        builder: AccountArchivePackageBuilder | None = None
+        deletion_id = ""
+        record: AccountArchiveRecord | None = None
+        build_error: Exception | None = None
+        # One sequential transaction on the pooled connection: read the
+        # workflow, snapshot the user's rows into the zip, and record the
+        # archive. A second transaction is only opened after a rollback to
+        # persist the failure marker.
+        with self._engine.begin() as connection:
+            workflow = (
+                connection.execute(
+                    select(identity_deletion_workflow_table)
+                    .where(identity_deletion_workflow_table.c.user_id == user_id)
                 )
-                if workflow is None:
-                    raise PlatformError(
-                        "deletion_workflow_not_found", "Deletion workflow was not found", {}, 404
-                    )
-                if workflow["status"] != "pending" or workflow["archive_completed_at_utc"] is not None:
-                    return {"user_id": user_id, "archive_status": "already_archived"}
-                snapshot_dir = str(
-                    workflow["archive_dir_snapshot"] or self._effective_archive_dir()
-                )
-                deletion_id = str(workflow["cleanup_operation_id"])
-                builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
-                try:
-                    # Frozen online data: a consistent snapshot of the user's rows.
-                    record = builder.build(
-                        read_connection, user_id=user_id, deletion_id=deletion_id, now=now
-                    )
-                except Exception as exc:
-                    with self._engine.begin() as failure_connection:
-                        failure_connection.execute(
-                            update(identity_deletion_workflow_table)
-                            .where(identity_deletion_workflow_table.c.user_id == user_id)
-                            .values(archive_failed_at_utc=now)
-                        )
-                        self._audit(
-                            failure_connection,
-                            actor_id="system:deletion-worker",
-                            resource_type="user",
-                            resource_id=user_id,
-                            result="user_archive_failed",
-                            occurred_at=now,
-                        )
-                    raise PlatformError(
-                        "account_archive_failed",
-                        "Account archive package could not be built",
-                        {"retryable": True},
-                        503,
-                        True,
-                    ) from exc
-        with self._engine.begin() as record_connection:
-            record_connection.execute(
-                update(identity_deletion_workflow_table)
-                .where(
-                    and_(
-                        identity_deletion_workflow_table.c.user_id == user_id,
-                        identity_deletion_workflow_table.c.status == "pending",
-                        identity_deletion_workflow_table.c.archive_completed_at_utc.is_(None),
-                    )
-                )
-                .values(
-                    archive_file_name=record.file_name,
-                    archive_size_bytes=record.size_bytes,
-                    archive_sha256=record.sha256,
-                    archive_completed_at_utc=now,
-                    archive_failed_at_utc=None,
-                    archive_alert=None,
-                )
+                .mappings()
+                .one_or_none()
             )
-            self._audit(
-                record_connection,
-                actor_id="system:deletion-worker",
-                resource_type="user",
-                resource_id=user_id,
-                result="user_archive_completed",
-                occurred_at=now,
+            if workflow is None:
+                raise PlatformError(
+                    "deletion_workflow_not_found", "Deletion workflow was not found", {}, 404
+                )
+            if workflow["status"] != "pending" or workflow["archive_completed_at_utc"] is not None:
+                return {"user_id": user_id, "archive_status": "already_archived"}
+            snapshot_dir = str(
+                workflow["archive_dir_snapshot"] or self._effective_archive_dir()
             )
+            deletion_id = str(workflow["cleanup_operation_id"])
+            builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
+            try:
+                # Frozen online data: a consistent snapshot of the user's rows.
+                record = builder.build(
+                    connection, user_id=user_id, deletion_id=deletion_id, now=now
+                )
+                connection.execute(
+                    update(identity_deletion_workflow_table)
+                    .where(
+                        and_(
+                            identity_deletion_workflow_table.c.user_id == user_id,
+                            identity_deletion_workflow_table.c.status == "pending",
+                            identity_deletion_workflow_table.c.archive_completed_at_utc.is_(None),
+                        )
+                    )
+                    .values(
+                        archive_file_name=record.file_name,
+                        archive_size_bytes=record.size_bytes,
+                        archive_sha256=record.sha256,
+                        archive_completed_at_utc=now,
+                        archive_failed_at_utc=None,
+                        archive_alert=None,
+                    )
+                )
+                self._audit(
+                    connection,
+                    actor_id="system:deletion-worker",
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_archive_completed",
+                    occurred_at=now,
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised below
+                build_error = exc
+        if build_error is not None:
+            # The read transaction is closed before the failure is recorded,
+            # so pooled connections are never nested.
+            with self._engine.begin() as failure_connection:
+                failure_connection.execute(
+                    update(identity_deletion_workflow_table)
+                    .where(identity_deletion_workflow_table.c.user_id == user_id)
+                    .values(archive_failed_at_utc=now)
+                )
+                self._audit(
+                    failure_connection,
+                    actor_id="system:deletion-worker",
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_archive_failed",
+                    occurred_at=now,
+                )
+            raise PlatformError(
+                "account_archive_failed",
+                "Account archive package could not be built",
+                {"retryable": True},
+                503,
+                True,
+            ) from build_error
+        assert record is not None
         return {
             "user_id": user_id,
             "archive_status": "archived",
