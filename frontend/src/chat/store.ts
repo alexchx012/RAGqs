@@ -174,6 +174,8 @@ export class ChatStore {
   private abKeys = new Map<string, string>();
   private openSeq = 0;
   private listSeq = 0;
+  /** 新会话入口单飞（openOrCreateNewConversation）：连点/多入口并发共享同一在飞请求，禁止重复创建。 */
+  private newConversationInflight: Promise<ConversationSummary | null> | null = null;
 
   constructor(private readonly deps: ChatStoreDeps) {
     this.serverSearchThreshold = deps.serverSearchThreshold ?? DEFAULT_SERVER_SEARCH_THRESHOLD;
@@ -293,6 +295,29 @@ export class ChatStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 新会话唯一入口（新登录落地 / 侧栏「新建会话」 / 空会话首问）。
+   * 已有未命名会话（title === ''，首条提问生成标题前）→ 指向它（已在该会话则无操作）；
+   * 没有 → 创建并打开。任何时刻最多一个新会话；并发调用单飞，禁止重复创建。
+   */
+  openOrCreateNewConversation(): Promise<ConversationSummary | null> {
+    this.newConversationInflight ??= this.doOpenOrCreateNewConversation().finally(() => {
+      this.newConversationInflight = null;
+    });
+    return this.newConversationInflight;
+  }
+
+  private async doOpenOrCreateNewConversation(): Promise<ConversationSummary | null> {
+    const fresh = this.state.conversations.find((item) => item.title === '');
+    if (fresh !== undefined) {
+      if (this.state.conversationId !== fresh.id) {
+        await this.openConversation(fresh.id);
+      }
+      return fresh;
+    }
+    return this.createConversation();
   }
 
   async patchConversation(id: string, patch: { title?: string; pinned?: boolean; group_id?: string | null }): Promise<void> {

@@ -106,6 +106,87 @@ def test_conversation_and_group_crud_with_ownership() -> None:
     assert removed.status_code == 204
 
 
+def test_patch_conversation_group_id_null_moves_out_of_group() -> None:
+    """显式 group_id=null 移出分组；未提交 group_id 保持原分组；patch 不动 last_active_at。"""
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    client = env["client"]
+
+    created = client.post("/v1/conversations", json={}, headers=headers)
+    assert created.status_code == 201
+    conversation_id = created.json()["id"]
+    last_active_at = created.json()["last_active_at"]
+
+    group = client.post("/v1/conversation-groups", json={"name": "work"}, headers=headers)
+    group_id = group.json()["id"]
+    moved = client.patch(
+        f"/v1/conversations/{conversation_id}", json={"group_id": group_id}, headers=headers
+    )
+    assert moved.status_code == 200
+    assert moved.json()["group_id"] == group_id
+
+    # 未提交 group_id 的 patch（如重命名）不影响分组归属
+    renamed = client.patch(
+        f"/v1/conversations/{conversation_id}", json={"title": "planning"}, headers=headers
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["group_id"] == group_id
+
+    cleared = client.patch(
+        f"/v1/conversations/{conversation_id}", json={"group_id": None}, headers=headers
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["group_id"] is None
+    # 移出后按原最后对话时间排序（patch 不刷新 last_active_at）
+    assert cleared.json()["last_active_at"] == last_active_at
+
+    listing = client.get("/v1/conversations", headers=headers).json()
+    item = next(item for item in listing["items"] if item["id"] == conversation_id)
+    assert item["group_id"] is None
+
+    # 空字符串不是合法分组 id（也不作移出语义）
+    blank = client.patch(
+        f"/v1/conversations/{conversation_id}", json={"group_id": ""}, headers=headers
+    )
+    assert blank.status_code == 422
+
+
+def test_empty_group_is_deleted_after_last_conversation_moved_out() -> None:
+    """分组内最后一个会话被移出/转移后，空分组自动删除；分组仍有会话时保留。"""
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    client = env["client"]
+
+    c1 = client.post("/v1/conversations", json={}, headers=headers).json()["id"]
+    c2 = client.post("/v1/conversations", json={}, headers=headers).json()["id"]
+    group_a = client.post("/v1/conversation-groups", json={"name": "a"}, headers=headers).json()["id"]
+    group_b = client.post("/v1/conversation-groups", json={"name": "b"}, headers=headers).json()["id"]
+
+    def group_ids() -> set[str]:
+        listing = client.get("/v1/conversations", headers=headers).json()
+        return {item["id"] for item in listing["groups"]}
+
+    client.patch(f"/v1/conversations/{c1}", json={"group_id": group_a}, headers=headers)
+    client.patch(f"/v1/conversations/{c2}", json={"group_id": group_a}, headers=headers)
+
+    # 移出一个但分组仍有会话：分组保留
+    client.patch(f"/v1/conversations/{c1}", json={"group_id": None}, headers=headers)
+    assert group_a in group_ids()
+
+    # 最后一个会话转移到其他分组：原分组自动删除
+    client.patch(f"/v1/conversations/{c2}", json={"group_id": group_b}, headers=headers)
+    assert group_a not in group_ids()
+    assert group_b in group_ids()
+
+    # 移出最后一个会话（null）：分组自动删除
+    client.patch(f"/v1/conversations/{c2}", json={"group_id": None}, headers=headers)
+    client.patch(f"/v1/conversations/{c1}", json={"group_id": group_b}, headers=headers)
+    client.patch(f"/v1/conversations/{c1}", json={"group_id": None}, headers=headers)
+    assert group_b not in group_ids()
+
+
 def test_message_creation_requires_streaming_accept_and_idempotency_key() -> None:
     env = build_test_env()
     token, _ = provision_and_login(env["identity"], "alice")

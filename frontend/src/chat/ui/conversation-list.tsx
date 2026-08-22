@@ -1,7 +1,7 @@
 /*
  * 会话列表（共用基座 §3.2；spec §2）。
  * 分组顺序：置顶 → 自定义分组（可折叠）→ 今天/本周/更早；条目 40px、hover/当前态/focus；
- * ⋯ 菜单（重命名/置顶|取消置顶/移入分组/删除），重命名就地输入、移入分组子菜单列已有分组+新建分组、
+ * ⋯ 菜单（重命名/置顶|取消置顶/移入分组/移出分组（仅分组内会话）/删除），重命名就地输入、移入分组子菜单列已有分组+新建分组、
  * 删除二次确认（danger）；自定义分组头可折叠 + 分组重命名/删除（会话分组 CRUD）。
  * ⋯ 入口桌面 hover/focus 淡入、触屏（hover: none）常显（chat.css）；触屏长按条目唤起同一菜单（use-long-press）。
  */
@@ -129,6 +129,11 @@ function sectionKey(section: ConversationSection): string {
     return `group:${section.group.id}`;
   }
   return section.kind;
+}
+
+/** 未命名会话展示标题：首条消息生成标题前 title 为 ''，条目/菜单 aria/删除确认统一显示「新会话」。 */
+function displayTitle(title: string): string {
+  return title.trim() === '' ? copy.chat.sidebar.untitledConversation : title;
 }
 
 function Section({
@@ -395,16 +400,17 @@ function ConversationItem({
           (current ? 'bg-mist-gray font-w480' : 'hover:bg-mist-gray')
         }
       >
-        <span className="min-w-0 flex-1 truncate text-[15px] font-normal text-ink-black">{item.title}</span>
+        <span className="min-w-0 flex-1 truncate text-[15px] font-normal text-ink-black">{displayTitle(item.title)}</span>
         {/* M4：会话条目相对时间（§3.2 标题+相对时间） */}
         <span className="ml-2 shrink-0 text-[13px] text-ash-gray">{formatRelativeTime(item.last_active_at)}</span>
       </button>
-      <div className="absolute top-1 right-1">
+      {/* ⋯ 入口垂直居中对齐条目（40px）hover/选中态背景高度 */}
+      <div className="absolute top-1/2 right-1 -translate-y-1/2">
         <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen} modal={false}>
           <DropdownMenu.Trigger asChild>
             <button
               type="button"
-              aria-label={copy.chat.sidebar.itemMenuAria(item.title)}
+              aria-label={copy.chat.sidebar.itemMenuAria(displayTitle(item.title))}
               className="chat-item-menu-trigger inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] text-ink-black transition-opacity duration-[var(--duration-fast)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
             >
               <Ellipsis aria-hidden="true" className="h-4 w-4" />
@@ -468,6 +474,14 @@ function ConversationItem({
                   </DropdownMenu.SubContent>
                 </DropdownMenu.Portal>
               </DropdownMenu.Sub>
+              {item.group_id !== null && (
+                <DropdownMenu.Item
+                  onSelect={() => onMoveToGroup(item.id, null)}
+                  className="flex h-9 cursor-pointer items-center rounded-[var(--radius-images)] px-3 text-[15px] text-ink-black outline-none select-none data-[highlighted]:bg-mist-gray"
+                >
+                  {copy.chat.sidebar.menuMoveOutOfGroup}
+                </DropdownMenu.Item>
+              )}
               <DropdownMenu.Item
                 onSelect={() => setConfirmOpen(true)}
                 className="flex h-9 cursor-pointer items-center rounded-[var(--radius-images)] px-3 text-[15px] text-danger outline-none select-none data-[highlighted]:bg-mist-gray"
@@ -482,7 +496,7 @@ function ConversationItem({
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         title={copy.chat.sidebar.deleteDialogTitle}
-        description={copy.chat.sidebar.deleteDialogDesc(item.title)}
+        description={copy.chat.sidebar.deleteDialogDesc(displayTitle(item.title))}
         confirmLabel={copy.chat.sidebar.deleteConfirm}
         danger
         onConfirm={() => {

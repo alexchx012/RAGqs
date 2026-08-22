@@ -142,16 +142,30 @@ test('motion degrades to instant under prefers-reduced-motion', async ({ page })
 test('keyboard focus shows a 2px focus-visible outline', async ({ page }) => {
   await page.goto('/login');
   await page.waitForSelector('#login-username');
+
+  // 首个 Tab 落在用户名输入框：文本输入以 border 变色表焦点，不叠加描边（styles/base.css 约定）。
   await page.keyboard.press('Tab');
-  const outline = await page.evaluate(() => {
+  const inputOutline = await page.evaluate(() => {
     const element = document.activeElement;
     if (!element) {
       return null;
     }
-    const style = getComputedStyle(element);
+    return { tag: element.tagName, style: getComputedStyle(element).outlineStyle };
+  });
+  expect(inputOutline).not.toBeNull();
+  expect(inputOutline!.tag).toBe('INPUT');
+  expect(inputOutline!.style).toBe('none');
+
+  // 按钮等非输入元素仍由基线描边兜底：Tab 至密码可见性切换按钮（提交按钮在表单为空时 disabled，不在 Tab 序内）。
+  const toggle = page.getByRole('button', { name: copy.login.showPassword });
+  for (let i = 0; i < 8 && !(await toggle.evaluate((el) => el === document.activeElement)); i += 1) {
+    await page.keyboard.press('Tab');
+  }
+  await expect(toggle).toBeFocused();
+  const outline = await toggle.evaluate((el) => {
+    const style = getComputedStyle(el);
     return { width: style.outlineWidth, style: style.outlineStyle };
   });
-  expect(outline).not.toBeNull();
-  expect(outline!.width).toBe('2px');
-  expect(outline!.style).toBe('solid');
+  expect(outline.width).toBe('2px');
+  expect(outline.style).toBe('solid');
 });

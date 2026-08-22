@@ -96,6 +96,28 @@ describe('认证状态层（规格 §2–§3）', () => {
       expect(received).toEqual(['login']);
     });
 
+    it('新登录落地标记：仅交互式 login 置位，refresh 恢复与跨标签同步不置位，clear 一次性消费', async () => {
+      const store = new AuthSessionStore({ api: fakeApi(), bus: createMemoryAuthHub().createBus() });
+      // bootstrap（静默 refresh 恢复）不是新登录，不置位
+      await store.bootstrap();
+      expect(store.peekFreshLoginLanding()).toBe(false);
+
+      await store.login('zhangsan', 'password123');
+      expect(store.peekFreshLoginLanding()).toBe(true);
+      // peek 不清除（StrictMode 双调用安全）；clear 才消费
+      expect(store.peekFreshLoginLanding()).toBe(true);
+      store.clearFreshLoginLanding();
+      expect(store.peekFreshLoginLanding()).toBe(false);
+
+      // 跨标签页 bus 同步的 login 不是本标签页的新登录，不置位
+      const hub = createMemoryAuthHub();
+      const storeA = new AuthSessionStore({ api: fakeApi(), bus: hub.createBus() });
+      const storeB = new AuthSessionStore({ api: fakeApi(), bus: hub.createBus() });
+      await storeA.login('zhangsan', 'password123');
+      expect(storeB.getState().status).toBe('authenticated');
+      expect(storeB.peekFreshLoginLanding()).toBe(false);
+    });
+
     it('logout 清理状态并广播；服务端失败不阻塞本地清理', async () => {
       const hub = createMemoryAuthHub();
       const received: string[] = [];

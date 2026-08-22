@@ -125,6 +125,7 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
       <div className="mb-4">
         <button
           type="button"
+          data-drill-row="approvals"
           onClick={() => drillApprovals()}
           className="flex h-10 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray"
         >

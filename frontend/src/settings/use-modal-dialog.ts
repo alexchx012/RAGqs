@@ -7,7 +7,7 @@
  * 返回 dialogRef 挂到模态容器（容器应带 tabIndex={-1} 与 outline-none）。
  */
 
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useEscShield } from '../lib/esc-stack-provider';
 
 const FOCUSABLE_SELECTOR =
@@ -86,4 +86,29 @@ export function useModalDialog(open: boolean, onOpenChange: (open: boolean) => v
   }, [open]);
 
   return dialogRef;
+}
+
+/**
+ * 模态进出动画的挂载编排（共用基座 §5.6；keyframes 在 ui.css）：
+ * 打开即挂载（data-state='open' 播 opacity 0→1 + scale 0.97→1，--duration-base --ease-out）；
+ * 关闭时保留挂载 150ms（data-state='closed' 播反向，--duration-fast --ease-in-out）再卸载。
+ * 返回的 state 同时挂到遮罩（ui-dialog-overlay）与内容卡（ui-dialog-content）。
+ */
+export function useModalPresence(open: boolean): { mounted: boolean; state: 'open' | 'closed' } {
+  const [present, setPresent] = useState<'closed' | 'open' | 'exiting'>(open ? 'open' : 'closed');
+  useEffect(() => {
+    if (open) {
+      setPresent('open');
+    } else {
+      setPresent((current) => (current === 'closed' ? current : 'exiting'));
+    }
+  }, [open]);
+  useEffect(() => {
+    if (present !== 'exiting') {
+      return;
+    }
+    const timer = setTimeout(() => setPresent('closed'), 150); // --duration-fast
+    return () => clearTimeout(timer);
+  }, [present]);
+  return { mounted: present !== 'closed', state: present === 'open' ? 'open' : 'closed' };
 }

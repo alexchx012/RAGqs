@@ -142,9 +142,20 @@ describe('下钻、返回与 Esc 逐层', () => {
     // 知识库层：渲染真实模块内容（配额计数器 + 我的投稿入口）
     expect(await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge');
+    // 顶层→模块按 §5.2 播 150ms 同层切换交叉淡变，from/to 双层渲染、结束时内容子树重建；
+    // 等 from 侧占位文案卸载后再抓下钻入口，避免真实时钟负载下点击落在已卸载节点上
+    await waitFor(() =>
+      expect(within(dialog).queryByText(drawerCopy.topPlaceholderBody)).not.toBeInTheDocument(),
+    );
     await user.click(within(dialog).getByRole('button', { name: modules.submissions }));
     expect(await within(dialog).findByText(copy.settings.knowledge.submissions.title)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge/submissions');
+    // 同理：五步下钻动画（550ms）结束、from 侧知识库内容卸载后再抓返回按钮
+    await waitFor(() =>
+      expect(
+        within(dialog).queryByText(copy.settings.knowledge.uploads.historyEntry),
+      ).not.toBeInTheDocument(),
+    );
     // 返回按钮回到知识库层
     await user.click(
       within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),

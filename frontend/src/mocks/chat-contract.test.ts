@@ -422,6 +422,33 @@ describe('会话与问答契约 mock', () => {
       expectHttpError(() => mockChat.deleteGroup(auth, group.id), 404, 'not_found');
     });
 
+    it('移出分组：group_id=null 清除归属；最后一个会话移出后空分组自动删除（与真实后端一致）', () => {
+      const auth = bearerOf('zhangsan');
+      const group = mockChat.createGroup(auth, '临时分组');
+      mockChat.patchConversation(auth, 'c_1', { group_id: group.id });
+      expect(
+        mockChat.listConversations(auth).groups.some((item) => item.id === group.id),
+      ).toBe(true);
+
+      // c_1 是组内唯一成员：移出（null）后空分组自动删除
+      mockChat.patchConversation(auth, 'c_1', { group_id: null });
+      const after = mockChat.listConversations(auth);
+      expect(after.items.find((item) => item.id === 'c_1')?.group_id).toBeNull();
+      expect(after.groups.some((item) => item.id === group.id)).toBe(false);
+    });
+
+    it('分组仍有其他会话时，移出一个不删组', () => {
+      const auth = bearerOf('zhangsan');
+      const group = mockChat.createGroup(auth, '多成员分组');
+      mockChat.patchConversation(auth, 'c_1', { group_id: group.id });
+      mockChat.patchConversation(auth, 'c_ab', { group_id: group.id });
+
+      mockChat.patchConversation(auth, 'c_1', { group_id: null });
+      const after = mockChat.listConversations(auth);
+      expect(after.groups.some((item) => item.id === group.id)).toBe(true);
+      expect(after.items.find((item) => item.id === 'c_ab')?.group_id).toBe(group.id);
+    });
+
     it('PATCH 三合一：title / pinned / group_id 分别或组合生效；q 按标题过滤', () => {
       const auth = bearerOf('zhangsan');
       mockChat.patchConversation(auth, 'c_1', { title: '置顶标题', pinned: true });

@@ -41,10 +41,9 @@ async function openAdminDrawer(page: Page): Promise<void> {
 }
 
 /**
- * 五步下钻动画窗口（DrawerHost TOTAL_DRILL_MS = 550ms）：窗口内内容区并存 exit/enter 两份
- * 拷贝，且动画结束内容层整棵重挂载（过渡态 absolute 双拷贝 → 稳态单拷贝）。先等目标层
- * 内容出现（证明过渡已开始），再等过渡包装（仅过渡中渲染的 .relative.h-full）消失，
- * 之后交互的才是最终拷贝；重挂载拷贝重新拉取数据由后续 expect 自动重试覆盖。
+ * 抽屉过渡窗口（五步下钻 550ms / 同层切换交叉淡变 150ms）：窗口内内容区并存 from/to 两份
+ * 拷贝（过渡态 .relative.h-full 包装 + absolute 双拷贝），断言/交互须等包装消失、
+ * 只剩稳态单拷贝后进行，否则可能命中严格模式重复匹配或点到淡出中的 from 侧。
  */
 async function waitDrillSettled(drawer: Locator): Promise<void> {
   await expect(drawer.locator('.relative.h-full')).toHaveCount(0);
@@ -67,6 +66,8 @@ test('ops approves a quota request with adjusted pages: row fades out, notice sh
   await approvalsModule.click();
   await expect(page).toHaveURL(/\/admin\/approvals$/);
   const approvalsDialog = page.getByRole('dialog', { name: modules.approvals });
+  // 同层切换交叉淡变（150ms）窗口内总览内容并存，等过渡收尾后再断言徽标
+  await waitDrillSettled(approvalsDialog);
   const quotaRow = approvalsDialog.getByRole('button', { name: new RegExp(modules.quotaRequests) });
   await expect(quotaRow.getByText('3', { exact: true })).toBeVisible();
   await quotaRow.click();

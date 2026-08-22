@@ -3,13 +3,13 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EscStackProvider } from '../../lib/esc-stack-provider';
 import { copy } from '../../copy';
-import type { ConversationSummary } from '../types';
+import type { ConversationGroup, ConversationSummary } from '../types';
 import { ConversationList } from './conversation-list';
 
 /*
  * 会话条目触屏操作测试（共用基座 §3.2；R8/A1）：
  * 触屏（hover: none）⋯ 入口常显（class 钩子 + chat.css 媒体查询承载）；
- * 触屏长按条目唤起与 ⋯ 完全相同的菜单（重命名/置顶/移入分组/删除），松手 click 不误开会话；
+ * 触屏长按条目唤起与 ⋯ 完全相同的菜单（重命名/置顶/移入分组/移出分组（仅分组内会话）/删除），松手 click 不误开会话；
  * 位移超阈值/短按/mouse 指针不触发长按（滚动、侧滑与桌面行为不变）。
  */
 
@@ -24,7 +24,10 @@ function conversation(id: string, title: string): ConversationSummary {
   return { id, title, pinned: false, group_id: null, last_active_at: '2026-08-16T00:00:00Z' };
 }
 
-function renderList() {
+function renderList(
+  item: ConversationSummary = conversation('c1', '项目周报'),
+  groupList: readonly ConversationGroup[] = [],
+) {
   const handlers = {
     onOpen: vi.fn(),
     onRename: vi.fn(),
@@ -39,8 +42,8 @@ function renderList() {
   render(
     <EscStackProvider>
       <ConversationList
-        items={[conversation('c1', '项目周报')]}
-        groups={[]}
+        items={[item]}
+        groups={groupList}
         listStatus="ready"
         currentId={null}
         searchQuery=""
@@ -159,5 +162,29 @@ describe('ConversationList 触屏操作（R8/A1）', () => {
   it('⋯ 入口带触屏常显钩子 chat-item-menu-trigger（hover: none 常显由 chat.css 承载）', () => {
     renderList();
     expect(menuTrigger()).toHaveClass('chat-item-menu-trigger');
+  });
+});
+
+describe('移出分组', () => {
+  it('分组内会话的 ⋯ 菜单显示「移出分组」，点击移出（onMoveToGroup(id, null)）', async () => {
+    const user = userEvent.setup();
+    const grouped: ConversationSummary = { ...conversation('c1', '项目周报'), group_id: 'g1' };
+    const { onMoveToGroup } = renderList(grouped, [{ id: 'g1', name: '工作' }]);
+
+    await user.click(menuTrigger());
+    await user.click(screen.getByRole('menuitem', { name: copy.chat.sidebar.menuMoveOutOfGroup }));
+
+    expect(onMoveToGroup).toHaveBeenCalledWith('c1', null);
+  });
+
+  it('未分组会话的 ⋯ 菜单不显示「移出分组」', async () => {
+    const user = userEvent.setup();
+    renderList();
+
+    await user.click(menuTrigger());
+
+    expect(
+      screen.queryByRole('menuitem', { name: copy.chat.sidebar.menuMoveOutOfGroup }),
+    ).not.toBeInTheDocument();
   });
 });
