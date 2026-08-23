@@ -23,6 +23,11 @@ from .models import (
     RetrievalResult,
     RetrievalScope,
 )
+from .observability import (
+    CANDIDATE_FILTER_ROUTE,
+    CANDIDATE_REPLENISH_ROUTE,
+    record_index_observation,
+)
 from .providers import SparseIndexProvider
 
 
@@ -515,6 +520,7 @@ class RetrievalService:
         cursor: str | None = None
         cursors_seen: set[str | None] = set()
         provider_seen = 0
+        page_number = 0
         while provider_seen < quota:
             if cursor in cursors_seen:
                 raise PlatformError(
@@ -539,9 +545,11 @@ class RetrievalService:
             facts = self._visibility_facts(
                 tuple(candidate for candidate, _ in candidates), principal
             )
+            rejected = 0
             for candidate, provider_score in candidates:
                 fact = facts.get((candidate.space_id, candidate.document_id))
                 if not self._visible(candidate, fact, scope, generation_id):
+                    rejected += 1
                     continue
                 provider_seen += 1
                 hits.append(
@@ -549,9 +557,23 @@ class RetrievalService:
                 )
                 if provider_seen >= quota:
                     break
+            record_index_observation(
+                self._exact_match_metrics,
+                CANDIDATE_FILTER_ROUTE,
+                success=True,
+                count=rejected,
+            )
+            if page_number > 0:
+                record_index_observation(
+                    self._exact_match_metrics,
+                    CANDIDATE_REPLENISH_ROUTE,
+                    success=True,
+                    count=len(candidates),
+                )
             if page.cursor is None:
                 break
             cursor = page.cursor
+            page_number += 1
         return hits
 
     def _collect_hybrid_hits(

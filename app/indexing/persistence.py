@@ -28,6 +28,12 @@ from .models import (
     GenerationReferenceLease,
     IndexGenerationGcReceipt,
 )
+from .observability import (
+    COMPONENT_GC_FAILURE_ROUTE,
+    COMPONENT_PUBLISH_FAILURE_ROUTE,
+    COMPONENT_ROLLBACK_FAILURE_ROUTE,
+    record_index_observation,
+)
 from .schema import (
     index_chunks_table,
     index_generation_changes_table,
@@ -127,6 +133,7 @@ class SqlAlchemyIndexingRepository:
         now: Callable[[], datetime] | None = None,
         rollback_days: int = 7,
         generation_configuration: Mapping[str, Any] | None = None,
+        operational_metrics: Any | None = None,
     ) -> None:
         self._engine = engine
         self._now = now or (lambda: datetime.now(UTC))
@@ -141,6 +148,7 @@ class SqlAlchemyIndexingRepository:
         ] = {}
         self._retrieval_release_gate: Callable[[str, Connection], bool] | None = None
         self._generation_configuration = dict(generation_configuration or {})
+        self._operational_metrics = operational_metrics
 
     def set_generation_builder(
         self, builder: Callable[[Generation, Mapping[str, Any], Connection], None]
@@ -164,6 +172,18 @@ class SqlAlchemyIndexingRepository:
 
     def set_retrieval_release_gate(self, gate: Callable[[str, Connection], bool]) -> None:
         self._retrieval_release_gate = gate
+
+    def record_component_failure(self, operation: str) -> None:
+        routes = {
+            "publish": COMPONENT_PUBLISH_FAILURE_ROUTE,
+            "rollback": COMPONENT_ROLLBACK_FAILURE_ROUTE,
+            "gc": COMPONENT_GC_FAILURE_ROUTE,
+        }
+        try:
+            route = routes[operation]
+        except KeyError as error:
+            raise ValueError("component lifecycle operation is invalid") from error
+        record_index_observation(self._operational_metrics, route, success=False)
 
     def _configuration_manifest(
         self, configuration_source: Mapping[str, Any] | None = None
@@ -1245,6 +1265,28 @@ class SqlAlchemyIndexingRepository:
         release_gate: Callable[[Generation], bool] | None = None,
         connection: Connection | None = None,
     ) -> Generation:
+        try:
+            return self._release(
+                generation_id,
+                expected_active_generation_id=expected_active_generation_id,
+                current_revision=current_revision,
+                release_gate=release_gate,
+                connection=connection,
+            )
+        except Exception:
+            if connection is None:
+                self.record_component_failure("publish")
+            raise
+
+    def _release(
+        self,
+        generation_id: str,
+        *,
+        expected_active_generation_id: str | None = None,
+        current_revision: int | None = None,
+        release_gate: Callable[[Generation], bool] | None = None,
+        connection: Connection | None = None,
+    ) -> Generation:
         with self._connection(connection) as conn:
             authoritative_revision = self._current_revision(conn, lock=True)
             revision = authoritative_revision if current_revision is None else current_revision
@@ -1360,14 +1402,19 @@ class SqlAlchemyIndexingRepository:
         release_gate: Callable[[Generation], bool] | None = None,
         connection: Connection | None = None,
     ) -> Generation:
-        return self._rollback(
-            candidate_generation_id,
-            current_revision=current_revision,
-            source_receipt=source_receipt,
-            release_gate=release_gate,
-            graph_source_validation=None,
-            connection=connection,
-        )
+        try:
+            return self._rollback(
+                candidate_generation_id,
+                current_revision=current_revision,
+                source_receipt=source_receipt,
+                release_gate=release_gate,
+                graph_source_validation=None,
+                connection=connection,
+            )
+        except Exception:
+            if connection is None:
+                self.record_component_failure("rollback")
+            raise
 
     def _rollback_after_graph_source_validation(
         self,
@@ -1380,14 +1427,17 @@ class SqlAlchemyIndexingRepository:
         connection: Connection,
     ) -> Generation:
         """Rollback command reserved for graph coordination after source validation."""
-        return self._rollback(
-            candidate_generation_id,
-            current_revision=current_revision,
-            source_receipt=source_receipt,
-            release_gate=release_gate,
-            graph_source_validation=graph_source_validation,
-            connection=connection,
-        )
+        try:
+            return self._rollback(
+                candidate_generation_id,
+                current_revision=current_revision,
+                source_receipt=source_receipt,
+                release_gate=release_gate,
+                graph_source_validation=graph_source_validation,
+                connection=connection,
+            )
+        except Exception:
+            raise
 
     def _rollback(
         self,
@@ -1915,6 +1965,7 @@ class SqlAlchemyIndexingRepository:
             state="failed",
             error=reason,
         )
+        self.record_component_failure("gc")
         return IndexGenerationGcReceipt(
             operation_id, candidate_generation_id, "blocked", (reason,), True
         )
@@ -2113,6 +2164,7 @@ class SqlAlchemyIndexingRepository:
                     error="cleanup_failed",
                     connection=connection,
                 )
+                self.record_component_failure("gc")
                 return IndexGenerationGcReceipt(
                     operation_id,
                     candidate_generation_id,

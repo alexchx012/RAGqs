@@ -90,6 +90,7 @@ from app.indexing.image_vlm import (
     NoneImageDescriber,
 )
 from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
+from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.prefix_cache import PrefixCacheManager
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
@@ -227,6 +228,9 @@ def build_runtime(
         success_sample_rate=settings.observability.success_sample_rate,
         max_route_templates=settings.observability.max_route_templates,
     )
+    configure_metric_routes = getattr(observability_metrics, "configure_route_templates", None)
+    if callable(configure_metric_routes):
+        configure_metric_routes(INDEX_INTERNAL_OBSERVABILITY_ROUTES)
     secret_key = (
         settings.object_storage.secret_key.get_secret_value()
         if settings.object_storage.secret_key is not None
@@ -389,6 +393,7 @@ def build_runtime(
             engine,
             now=clock.now_utc,
             rollback_days=settings.index.generation_rollback_days,
+            operational_metrics=observability_metrics,
             generation_configuration={
                 "provider": settings.index.sparse_provider,
                 "engine": (
@@ -572,7 +577,7 @@ def build_runtime(
             raise RuntimeError("production sparse backend must provide BM25 search")
         if not callable(getattr(reranker, "rerank", None)):
             raise RuntimeError("production reranker does not implement the rerank port")
-    probe_configured_backends(dense_writer, sparse_provider)
+    probe_configured_backends(dense_writer, sparse_provider, metrics=observability_metrics)
     indexing_service = configured.get("indexing_service") or IndexingService(
         processor=processor,
         dense_writer=dense_writer,

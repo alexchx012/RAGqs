@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from app.api.v1 import router as v1_router
 from app.identity.service import IdentityAccessService
+from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 
 from . import runtime as platform_runtime_module
@@ -106,6 +107,7 @@ def create_platform_app(
         # Internal sparse exact-match sampling rides the same read path as API
         # routes; keep its template registered alongside them.
         route_templates.append(SPARSE_EXACT_MATCH_ROUTE)
+        route_templates.extend(INDEX_INTERNAL_OBSERVABILITY_ROUTES)
         configure_route_templates(route_templates)
 
     @app.middleware("http")

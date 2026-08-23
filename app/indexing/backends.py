@@ -14,6 +14,7 @@ from .embedding import (
 )
 from .meilisearch import HttpMeilisearchClient, MeilisearchSparseIndexProvider
 from .milvus import HttpMilvusClient, MilvusIndexWriter
+from .observability import PROVIDER_ANALYZER_PROBE_ROUTE, record_index_observation
 from .opensearch import HttpOpenSearchClient, OpenSearchSparseIndexProvider
 from .providers import InMemoryIndexWriter, InMemorySparseIndexProvider, build_sparse_provider
 
@@ -112,11 +113,24 @@ def build_configured_sparse_provider(settings: PlatformSettings, *, allow_create
     return build_sparse_provider(settings.index.sparse_provider)
 
 
-def probe_configured_backends(*backends: Any) -> None:
+def probe_configured_backends(*backends: Any, metrics: Any | None = None) -> None:
     for backend in backends:
         probe = getattr(backend, "probe", None)
         if callable(probe):
-            probe()
+            try:
+                probe()
+            except Exception:
+                record_index_observation(
+                    metrics,
+                    PROVIDER_ANALYZER_PROBE_ROUTE,
+                    success=False,
+                )
+                raise
+            record_index_observation(
+                metrics,
+                PROVIDER_ANALYZER_PROBE_ROUTE,
+                success=True,
+            )
 
 
 def is_memory_indexing_adapter(value: Any) -> bool:

@@ -900,6 +900,8 @@ class GraphComponentCoordinator:
                         receipt,
                         operation_id=f"{operation_id}:source-changed-discard",
                     )
+                if repository is not None:
+                    repository.record_component_failure("publish")
                 raise
             self._release_receipts[operation_id] = result
             return result
@@ -1071,16 +1073,20 @@ class GraphComponentCoordinator:
                 "operation_id": receipt.operation_id,
             }
 
-        with self._lock:
-            with repository._engine.begin() as connection:
-                return repository._rollback_after_graph_source_validation(
-                    candidate_generation_id,
-                    source_receipt=source_receipt,
-                    graph_source_validation=lambda source_identity: validate_graph_source(
-                        source_identity, connection=connection
-                    ),
-                    connection=connection,
-                )
+        try:
+            with self._lock:
+                with repository._engine.begin() as connection:
+                    return repository._rollback_after_graph_source_validation(
+                        candidate_generation_id,
+                        source_receipt=source_receipt,
+                        graph_source_validation=lambda source_identity: validate_graph_source(
+                            source_identity, connection=connection
+                        ),
+                        connection=connection,
+                    )
+        except Exception:
+            repository.record_component_failure("rollback")
+            raise
 
     RollbackGeneration = rollback_generation
 
