@@ -24,6 +24,7 @@ from .models import (
     RetrievalScope,
 )
 from .providers import SparseIndexProvider
+from .routing import MetadataPrefilter, RuleQueryRouter
 
 
 def intersect_scopes(
@@ -226,7 +227,13 @@ class NoopReranker:
                 {},
                 503,
             )
-        return tuple(hits), {"code": "rerank_degraded", "provider": "none"}
+        return tuple(hits), {
+            "code": "rerank_degraded",
+            "kind": "rerank_degraded",
+            "provider": "none",
+            "fallback": "preserve_candidate_order",
+            "threshold": "not_applied",
+        }
 
 
 class ScoreReranker:
@@ -328,6 +335,7 @@ class RetrievalService:
         reranker: Reranker | None = None,
         environment: str = "test",
         profile_resolver: Callable[[RetrievalProfile, str], RetrievalProfile] | None = None,
+        query_router: RuleQueryRouter | None = None,
         tree_router: TreeRouter | None = None,
         graph_router: GraphRouter | None = None,
         graph_reader: GraphReader | None = None,
@@ -342,6 +350,7 @@ class RetrievalService:
         self._visibility = visibility_facts
         self._reranker = reranker or NoopReranker(environment=environment)
         self._profile_resolver = profile_resolver
+        self._query_router = query_router or RuleQueryRouter()
         self._tree_router = tree_router
         self._graph_router = graph_router
         self._graph_reader = graph_reader
@@ -510,6 +519,7 @@ class RetrievalService:
         scope: RetrievalScope,
         quota: int,
         principal: Any,
+        metadata_prefilter: MetadataPrefilter | None = None,
     ) -> list[RetrievalHit]:
         hits: list[RetrievalHit] = []
         cursor: str | None = None
@@ -543,6 +553,10 @@ class RetrievalService:
                 fact = facts.get((candidate.space_id, candidate.document_id))
                 if not self._visible(candidate, fact, scope, generation_id):
                     continue
+                if metadata_prefilter is not None and not metadata_prefilter.matches(
+                    candidate.metadata
+                ):
+                    continue
                 provider_seen += 1
                 hits.append(
                     RetrievalHit(candidate, provider_score, getattr(provider, "provider_name", ""))
@@ -561,6 +575,7 @@ class RetrievalService:
         scope: RetrievalScope,
         profile: RetrievalProfile,
         principal: Any,
+        metadata_prefilter: MetadataPrefilter | None,
     ) -> tuple[list[RetrievalHit], list[Mapping[str, Any]]]:
         kinds = tuple(
             _backend_kind(provider, fallback="dense" if index == 0 else "sparse")
@@ -570,6 +585,7 @@ class RetrievalService:
         degradations: list[Mapping[str, Any]] = []
         collected: list[tuple[str, list[RetrievalHit]]] = []
         failures: list[str] = []
+        failure_reasons: dict[str, str] = {}
 
         def run(index: int) -> tuple[int, str, list[RetrievalHit] | Exception]:
             provider = self._providers[index]
@@ -585,6 +601,7 @@ class RetrievalService:
                         scope=scope,
                         quota=quotas[index],
                         principal=principal,
+                        metadata_prefilter=metadata_prefilter,
                     ),
                 )
             except Exception as error:
@@ -599,6 +616,9 @@ class RetrievalService:
         for _index, kind, payload in outcomes:
             if isinstance(payload, Exception):
                 failures.append(kind)
+                failure_reasons[kind] = (
+                    payload.code if isinstance(payload, PlatformError) else "unavailable"
+                )
                 continue
             collected.append((kind, payload))
             if kind == "sparse":
@@ -607,11 +627,29 @@ class RetrievalService:
             raise PlatformError(
                 "retrieval_failed",
                 "dense and sparse retrieval failed",
-                {"failed": failures},
+                {
+                    "failed": failures,
+                    "failed_libraries": failures,
+                    "failure_reasons": failure_reasons,
+                    "retryable": True,
+                    "query_failure": {
+                        "code": "retrieval_query_failed",
+                        "failed_libraries": failures,
+                        "retryable": True,
+                    },
+                },
                 503,
             )
         if failures:
-            degradations.append({"code": "retrieval_degraded", "failed": tuple(failures)})
+            degradations.append(
+                {
+                    "code": "retrieval_degraded",
+                    "kind": "retrieval_degraded",
+                    "failed": tuple(failures),
+                    "failed_libraries": tuple(failures),
+                    "failure_reasons": dict(failure_reasons),
+                }
+            )
         hits: list[RetrievalHit] = []
         seen_keys: set[tuple[str, str, str]] = set()
         for _kind, provider_hits in collected:
@@ -649,6 +687,7 @@ class RetrievalService:
     ) -> RetrievalResult:
         if not isinstance(query, str) or not query.strip():
             raise PlatformError("validation_error", "query is required", {}, 422)
+        route = self._query_router.route(query)
         selected = profile or RetrievalProfile()
         if self._profile_resolver is not None:
             selected = self._profile_resolver(
@@ -657,43 +696,142 @@ class RetrievalService:
             )
         scope = intersect_scopes(self._allowed_scope(principal), narrowing_scope)
         if scope.is_empty:
-            return RetrievalResult((), lease.generation_id, selected)
-        hits, degradations = self._collect_hybrid_hits(
-            query,
-            lease.generation_id,
-            scope,
-            selected,
-            principal,
-        )
+            return RetrievalResult(
+                (), lease.generation_id, selected, route_output=route.to_mapping()
+            )
+        hits: list[RetrievalHit] = []
+        degradations: list[Mapping[str, Any]] = []
+        seen_route_keys: set[tuple[str, str, str]] = set()
+        # Every route output keeps the default hybrid retrieval running. Split
+        # questions are additive logical retrieval units, never exclusive routes.
+        for search_query in route.search_queries():
+            query_hits, query_degradations = self._collect_hybrid_hits(
+                search_query,
+                lease.generation_id,
+                scope,
+                selected,
+                principal,
+                route.metadata_prefilter,
+            )
+            degradations.extend(query_degradations)
+            for hit in query_hits:
+                if hit.chunk.dedupe_key in seen_route_keys:
+                    continue
+                seen_route_keys.add(hit.chunk.dedupe_key)
+                hits.append(hit)
         candidate_hits = tuple(hits)
+        rerank_degraded = False
         try:
             reranked, degradation = self._reranker.rerank(query, hits, selected)
         except Exception:
             reranked = tuple(hits)
-            degradation = {"code": "rerank_degraded"}
+            degradation = {
+                "code": "rerank_degraded",
+                "kind": "rerank_degraded",
+                "reason": "provider_unavailable",
+                "fallback": "preserve_candidate_order",
+                "threshold": "not_applied",
+            }
         if degradation is not None:
             degradations.append(degradation)
+            rerank_degraded = True
         # Deterministic order across rerankers: equal scores fall back to a
         # stable chunk_id tie-break (A6).
-        reranked = tuple(
-            sorted(
-                reranked,
-                key=lambda hit: (
-                    -(hit.rerank_score if hit.rerank_score is not None else hit.score),
-                    hit.chunk.chunk_id,
-                ),
+        if not rerank_degraded:
+            reranked = tuple(
+                sorted(
+                    reranked,
+                    key=lambda hit: (
+                        -(hit.rerank_score if hit.rerank_score is not None else hit.score),
+                        hit.chunk.chunk_id,
+                    ),
+                )
             )
-        )
+        # Re-read lifecycle/publication/ACL facts after reranking. A document can
+        # be retired while an upstream provider or cross-encoder is running.
+        if self._visibility is not None and reranked:
+            final_facts = self._visibility_facts(tuple(hit.chunk for hit in reranked), principal)
+            reranked = tuple(
+                hit
+                for hit in reranked
+                if self._visible(
+                    hit.chunk,
+                    final_facts.get((hit.chunk.space_id, hit.chunk.document_id)),
+                    scope,
+                    lease.generation_id,
+                )
+            )
         rag_call_limit, tree_document_limit = _EFFORT_LIMITS[selected.effort]
         tree_candidates = self._document_candidates(reranked, tree_document_limit)
-        if selected.route_tree and selected.effort != "quick" and self._tree_router is not None:
+        has_final_scores = bool(tree_candidates) and all(
+            hit.rerank_score is not None for hit in tree_candidates
+        )
+        if not has_final_scores and not rerank_degraded:
+            degradations.append(
+                {
+                    "code": "rerank_degraded",
+                    "kind": "rerank_degraded",
+                    "reason": "final_score_unavailable",
+                    "fallback": "preserve_candidate_order",
+                    "threshold": "not_applied",
+                }
+            )
+        if (
+            selected.route_tree
+            and selected.effort != "quick"
+            and self._tree_router is not None
+            and has_final_scores
+        ):
             try:
-                self._tree_router(
+                tree_outcome = self._tree_router(
                     query,
                     tree_candidates,
                     max_documents=tree_document_limit,
                     rag_call_limit=rag_call_limit,
                 )
+                if tree_outcome is not None:
+                    skipped = bool(getattr(tree_outcome, "skipped", False))
+                    reason = getattr(tree_outcome, "reason", None)
+                    if skipped and reason:
+                        if str(reason) in {"budget_exhausted", "cost_unavailable"}:
+                            degradations.append(
+                                {
+                                    "code": "retrieval_degraded",
+                                    "kind": "retrieval_degraded",
+                                    "detail": {"reason": str(reason)},
+                                }
+                            )
+                        else:
+                            degradations.append(
+                                {
+                                    "code": "retrieval_degraded",
+                                    "kind": "retrieval_degraded",
+                                    "reason": str(reason),
+                                    "stage": "tree",
+                                }
+                            )
+                    for document in tuple(getattr(tree_outcome, "documents", ())):
+                        status = str(getattr(document, "status", ""))
+                        if status == "missing_document_identity":
+                            degradations.append(
+                                {
+                                    "code": "retrieval_degraded",
+                                    "kind": "retrieval_degraded",
+                                    "reason": "missing_document_identity",
+                                    "stage": "tree",
+                                }
+                            )
+                        elif status == "degraded":
+                            degradations.append(
+                                {
+                                    "code": "retrieval_degraded",
+                                    "kind": "retrieval_degraded",
+                                    "reason": str(
+                                        getattr(document, "reason", None) or "unavailable"
+                                    ),
+                                    "stage": "tree",
+                                }
+                            )
             except Exception as error:
                 degradations.append(self._routing_degradation("tree", error))
         if selected.route_graph and self._graph_router is not None:
@@ -721,10 +859,15 @@ class RetrievalService:
             finally:
                 if graph_lease is not None:
                     self._graph_reader.release_reader_lease(graph_lease)
+        # A reranker fallback has no final score, so a profile threshold is not
+        # applicable. Thresholding a fallback would silently turn a degraded
+        # retrieval into an empty context.
         filtered = [
             hit
             for hit in reranked
-            if selected.score_threshold is None or hit.score >= selected.score_threshold
+            if rerank_degraded
+            or selected.score_threshold is None
+            or (hit.rerank_score is not None and hit.rerank_score >= selected.score_threshold)
         ]
         budgeted: list[RetrievalHit] = []
         deferred: list[RetrievalHit] = []
@@ -755,13 +898,24 @@ class RetrievalService:
             return True
 
         selected_per_space: dict[str, int] = {}
+        selected_per_library: dict[str, int] = {}
+        library_quota_enabled = len({hit.source or "unknown" for hit in filtered}) > 1
         for hit in filtered:
+            library = hit.source or "unknown"
+            library_count = selected_per_library.get(library, 0)
+            if (
+                library_quota_enabled
+                and library_count >= selected.retrieval_context_items_per_space
+            ):
+                deferred.append(hit)
+                continue
             count = selected_per_space.get(hit.chunk.space_id, 0)
-            if count >= selected.retrieval_context_items_per_space:
+            if not library_quota_enabled and count >= selected.retrieval_context_items_per_space:
                 deferred.append(hit)
                 continue
             if include(hit):
                 selected_per_space[hit.chunk.space_id] = count + 1
+                selected_per_library[library] = library_count + 1
         if any(
             selected_per_space.get(space_id, 0) < selected.retrieval_context_items_per_space
             for space_id in scope.space_ids
@@ -769,13 +923,22 @@ class RetrievalService:
             for hit in deferred:
                 if len(budgeted) >= selected.top_k:
                     break
-                include(hit)
+                library = hit.source or "unknown"
+                if (
+                    library_quota_enabled
+                    and selected_per_library.get(library, 0)
+                    >= selected.retrieval_context_items_per_space
+                ):
+                    continue
+                if include(hit):
+                    selected_per_library[library] = selected_per_library.get(library, 0) + 1
         return RetrievalResult(
             tuple(budgeted[: selected.top_k]),
             lease.generation_id,
             selected,
             tuple(degradations),
             candidate_hits,
+            route.to_mapping(),
         )
 
 

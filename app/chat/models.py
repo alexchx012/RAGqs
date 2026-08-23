@@ -233,9 +233,11 @@ class RetrievalHitOutcome:
     space_id: str
     locator: Mapping[str, Any]
     snippet: str | None
+    library: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
 class RetrievalOutcome:
     hits: tuple[RetrievalHitOutcome, ...]
     degradations: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    route_output: Mapping[str, Any] | None = None

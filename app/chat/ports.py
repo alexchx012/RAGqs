@@ -47,6 +47,7 @@ class ChatProviderRequest:
     effort_level: str
     candidate: int | None
     context_items: tuple[Mapping[str, Any], ...]
+    source_conflict_contract: Mapping[str, Any] | None = None
 
 
 class ChatAuthorizationPort(Protocol):
@@ -269,10 +270,15 @@ class IndexingChatRetrievalPort:
                 space_id=hit.chunk.space_id,
                 locator=dict(hit.chunk.locator),
                 snippet=hit.chunk.snippet,
+                library=hit.source or "unknown",
             )
             for hit in result.hits
         )
-        return RetrievalOutcome(hits=hits, degradations=tuple(result.degradations))
+        return RetrievalOutcome(
+            hits=hits,
+            degradations=tuple(result.degradations),
+            route_output=result.route_output,
+        )
 
     def resolve_citations(
         self,

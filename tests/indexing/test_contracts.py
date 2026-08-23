@@ -46,7 +46,7 @@ from app.indexing import (
 )
 from app.indexing.models import RetrievalHit
 from app.indexing.processing import _xlsx_merged_ranges
-from app.indexing.retrieval import CitationService
+from app.indexing.retrieval import CitationService, ScoreReranker
 from app.indexing.schema import index_chunks_table, index_generation_heads_table
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore, ObjectMetadata
@@ -319,7 +319,11 @@ def test_retrieval_keeps_hybrid_before_rerank_and_routes_tree_afterwards() -> No
         def rerank(self, query, hits, profile):
             del query, profile
             events.append(("rerank", tuple(hit.chunk.chunk_id for hit in hits)))
-            return tuple(reversed(hits)), None
+            scored = tuple(
+                RetrievalHit(hit.chunk, hit.score, hit.source, rerank_score=hit.score)
+                for hit in reversed(hits)
+            )
+            return scored, None
 
     def tree_router(query, candidates, *, max_documents, rag_call_limit):
         del query
@@ -412,10 +416,31 @@ def test_retrieval_effort_sets_routing_budgets(
 ) -> None:
     tree_calls: list[tuple[int, int]] = []
     graph_calls: list[int] = []
+    provider = InMemorySparseIndexProvider()
+    budget_chunk = _chunk("budget_chunk")
+    provider.stage_chunks(
+        "budget_attempt",
+        budget_chunk.publication_id,
+        budget_chunk.document_id,
+        budget_chunk.document_version_id,
+        [budget_chunk],
+    )
+    provider.publish_staged("budget_attempt", budget_chunk.publication_id)
     service = RetrievalService(
         GenerationManager(),
-        [InMemorySparseIndexProvider()],
+        [provider],
         identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=lambda candidate, principal: DocumentVisibilityFact(
+            candidate.document_id,
+            candidate.space_id,
+            "active",
+            candidate.document_version_id,
+            candidate.publication_id,
+            "active",
+            candidate.manifest_hash,
+            True,
+        ),
+        reranker=ScoreReranker(),
         graph_reader=type(
             "Reader",
             (),

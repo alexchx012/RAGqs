@@ -569,6 +569,15 @@ class ChatGenerationWorker:
                 effort=budget.effort_level,
             )
             hits = outcome.hits
+            self._emit_stage(
+                generation_id=generation_id,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                phase="retrieval_routed",
+                generation=generation,
+                detail={"route": dict(outcome.route_output or {"kind": "no_rewrite"})},
+            )
             budget.record_rag_round()
             for item in outcome.degradations:
                 code = str(item.get("code") or "")
@@ -701,8 +710,14 @@ class ChatGenerationWorker:
                 "document_version_id": hit.document_version_id,
                 "publication_id": hit.publication_id,
                 "chunk_id": hit.chunk_id,
+                "space_id": hit.space_id,
+                "library": hit.library,
                 "locator": dict(hit.locator),
                 "snippet": hit.snippet,
+                "claim_contract": {
+                    "annotate": ["library", "space_id"],
+                    "conflicts": "state_each_claim_separately_with_own_citation",
+                },
             }
             for hit in hits
         )
@@ -732,6 +747,10 @@ class ChatGenerationWorker:
                 effort_level=str(generation["effective_effort_level"]),
                 candidate=None if pair is None else candidate,
                 context_items=context,
+                source_conflict_contract={
+                    "required_fields": ("library", "space_id", "publication/version", "locator"),
+                    "conflict_policy": "present_each_claim_and_citation_no_system_adjudication",
+                },
             )
             response = self._provider_call(
                 request,
@@ -1275,6 +1294,7 @@ class ChatGenerationWorker:
         control_version: int,
         phase: str,
         generation: Mapping[str, Any],
+        detail: Mapping[str, Any] | None = None,
     ) -> None:
         del generation
         with self._engine.begin() as connection:
@@ -1295,7 +1315,7 @@ class ChatGenerationWorker:
                 connection,
                 generation_id=generation_id,
                 event_type="stage",
-                data={"phase": phase},
+                data={"phase": phase, **(dict(detail) if detail is not None else {})},
                 now=self._now(connection),
             )
 
@@ -1496,6 +1516,7 @@ def _hit_mapping(hit: RetrievalHitOutcome) -> Mapping[str, Any]:
         "publication_id": hit.publication_id,
         "chunk_id": hit.chunk_id,
         "space_id": hit.space_id,
+        "library": hit.library,
         "locator": dict(hit.locator),
         "snippet": hit.snippet,
     }
