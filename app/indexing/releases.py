@@ -57,13 +57,33 @@ def _acceptance_suite(value: Mapping[str, Any]) -> dict[str, Any]:
             "validation_error", "retrieval acceptance thresholds are incomplete", {}, 422
         )
     samples = dict(value["samples"])
-    if not _REQUIRED_SAMPLES <= samples.keys() or any(
-        isinstance(samples[name], bool) or not isinstance(samples[name], int) or samples[name] < 1
-        for name in _REQUIRED_SAMPLES
-    ):
+    if not _REQUIRED_SAMPLES <= samples.keys():
         raise PlatformError(
             "validation_error", "retrieval acceptance samples are incomplete", {}, 422
         )
+    frozen_samples: dict[str, list[dict[str, str]]] = {}
+    for name in _REQUIRED_SAMPLES:
+        entries = samples[name]
+        if not isinstance(entries, list) or not entries:
+            raise PlatformError(
+                "validation_error", "retrieval acceptance samples are incomplete", {}, 422
+            )
+        normalized: list[dict[str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                raise PlatformError(
+                    "validation_error", "retrieval acceptance sample is invalid", {}, 422
+                )
+            item = {
+                field: str(entry.get(field, "")).strip()
+                for field in ("sample_id", "input", "expected")
+            }
+            if any(not value for value in item.values()):
+                raise PlatformError(
+                    "validation_error", "retrieval acceptance sample is invalid", {}, 422
+                )
+            normalized.append(item)
+        frozen_samples[name] = normalized
     quality_thresholds = dict(value["quality_thresholds"])
     if not _REQUIRED_QUALITY_METRICS <= quality_thresholds.keys() or any(
         not isinstance(quality_thresholds[name], (int, float)) for name in _REQUIRED_QUALITY_METRICS
@@ -75,7 +95,7 @@ def _acceptance_suite(value: Mapping[str, Any]) -> dict[str, Any]:
         "acl_assertions": dict(value["acl_assertions"]),
         "hardware_profile": dict(value["hardware_profile"]),
         "thresholds": thresholds,
-        "samples": samples,
+        "samples": frozen_samples,
         "quality_thresholds": quality_thresholds,
     }
 
@@ -161,6 +181,8 @@ class RetrievalReleaseService:
                         "acl_assertions",
                         "hardware_profile",
                         "thresholds",
+                        "samples",
+                        "quality_thresholds",
                         "component_manifest",
                         "component_manifest_hash",
                         "generation_config",

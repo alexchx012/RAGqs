@@ -127,13 +127,16 @@ def _release_suite() -> dict[str, object]:
             "vram_mb": 100,
         },
         "samples": {
-            "phrase_query": 2,
-            "proper_noun_query": 2,
-            "quoted_exact_query": 2,
-            "real_question": 2,
-            "acl_filter": 2,
-            "sparse_exact_hit": 2,
-            "refusal": 2,
+            name: [{"sample_id": f"{name}-1", "input": name, "expected": "pass"}]
+            for name in (
+                "phrase_query",
+                "proper_noun_query",
+                "quoted_exact_query",
+                "real_question",
+                "acl_filter",
+                "sparse_exact_hit",
+                "refusal",
+            )
         },
         "quality_thresholds": {"hit_at_k": 0.8, "mrr": 0.8, "ndcg": 0.8, "refusal": 0.9},
     }

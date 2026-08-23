@@ -249,21 +249,35 @@ def _validate_payload(event_type: str, schema_version: int, payload: Mapping[str
                 {"event_type": event_type},
                 422,
             )
-        if status == "succeeded" and payload.get("graph_generation_id") is None:
+        if status == "succeeded" and (
+            payload.get("graph_generation_id") is None or payload.get("index_generation_id") is None
+        ):
             raise PlatformError(
                 "invalid_event_payload",
-                "succeeded graph build events require the external graph_generation_id",
+                "succeeded graph build events require both generation identifiers",
                 {"event_type": event_type},
                 422,
             )
-        if status != "succeeded" and payload.get("graph_generation_id") is not None:
+        if status != "succeeded" and (
+            payload.get("graph_generation_id") is not None
+            or payload.get("index_generation_id") is not None
+        ):
             raise PlatformError(
                 "invalid_event_payload",
-                "non-succeeded graph build events must not carry a graph_generation_id",
+                "non-succeeded graph build events must not carry generation identifiers",
                 {"event_type": event_type},
                 422,
             )
         failure_class = payload.get("failure_class")
+        if (status == "succeeded" and failure_class is not None) or (
+            status != "succeeded" and failure_class is None
+        ):
+            raise PlatformError(
+                "invalid_event_payload",
+                "graph_build_completed failure_class does not match status",
+                {"event_type": event_type},
+                422,
+            )
         if failure_class is not None and failure_class not in {
             "staging_error",
             "index_error",
@@ -274,6 +288,7 @@ def _validate_payload(event_type: str, schema_version: int, payload: Mapping[str
             "graph_release_failed",
             "graph_provider_failed",
             "graph_worker_unexpected",
+            "cancel_requested",
         }:
             raise PlatformError(
                 "invalid_event_payload",

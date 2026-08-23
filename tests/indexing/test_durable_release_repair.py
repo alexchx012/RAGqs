@@ -57,13 +57,16 @@ def _acceptance_suite() -> dict[str, object]:
         "hardware_profile": {"accelerator": "test"},
         "thresholds": {"p50_ms": 10, "p95_ms": 20, "p99_ms": 30, "error_rate": 1, "vram_mb": 10},
         "samples": {
-            "phrase_query": 1,
-            "proper_noun_query": 1,
-            "quoted_exact_query": 1,
-            "real_question": 1,
-            "acl_filter": 1,
-            "sparse_exact_hit": 1,
-            "refusal": 1,
+            name: [{"sample_id": f"{name}-1", "input": name, "expected": "pass"}]
+            for name in (
+                "phrase_query",
+                "proper_noun_query",
+                "quoted_exact_query",
+                "real_question",
+                "acl_filter",
+                "sparse_exact_hit",
+                "refusal",
+            )
         },
         "quality_thresholds": {"hit_at_k": 0.8, "mrr": 0.8, "ndcg": 0.8, "refusal": 0.9},
     }
@@ -140,7 +143,7 @@ def test_retrieval_release_rejects_an_incomplete_frozen_chinese_suite() -> None:
     SqlAlchemyIndexingRepository(engine).active_generation_id()
     releases = RetrievalReleaseService(engine)
     suite = _acceptance_suite()
-    suite["samples"]["phrase_query"] = 0
+    suite["samples"]["phrase_query"] = []
 
     with pytest.raises(PlatformError) as error:
         releases.stage(

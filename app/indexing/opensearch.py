@@ -66,7 +66,9 @@ class OpenSearchClient(Protocol):
 
     def ensure_index(self, name: str) -> None: ...
 
-    def bulk(self, operations: Sequence[tuple[str, str, Mapping[str, Any] | None]]) -> None: ...
+    def bulk(
+        self, index: str, operations: Sequence[tuple[str, str, Mapping[str, Any] | None]]
+    ) -> None: ...
 
     def delete_by_query(self, index: str, query: Mapping[str, Any]) -> int: ...
 
@@ -237,14 +239,18 @@ class HttpOpenSearchClient:
             },
         )
 
-    def bulk(self, operations: Sequence[tuple[str, str, Mapping[str, Any] | None]]) -> None:
+    def bulk(
+        self, index: str, operations: Sequence[tuple[str, str, Mapping[str, Any] | None]]
+    ) -> None:
         lines: list[str] = []
         for action, identifier, document in operations:
             lines.append(json.dumps({action: {"_id": identifier}}, separators=(",", ":")))
             if document is not None:
                 lines.append(json.dumps(document, ensure_ascii=True, separators=(",", ":")))
         body = self._request(
-            "POST", "/_bulk?refresh=true", ndjson="".join(f"{line}\n" for line in lines)
+            "POST",
+            f"/{quote(index, safe='')}/_bulk?refresh=true",
+            ndjson="".join(f"{line}\n" for line in lines),
         )
         items = dict(body or {}).get("items") or ()
         failed = len(items) != len(operations) or any(
@@ -514,7 +520,9 @@ class OpenSearchSparseIndexProvider:
             )
             for chunk in prepared.chunks
         ]
-        self._client.bulk([("index", document["id"], document) for document in documents])
+        self._client.bulk(
+            self._index, [("index", document["id"], document) for document in documents]
+        )
         return StageResult(
             "staged",
             attempt_id,
@@ -596,7 +604,7 @@ class OpenSearchSparseIndexProvider:
         ]
         operations = [("index", document["id"], document) for document in published]
         operations.extend(("delete", str(document.get("id", "")), None) for document in staged)
-        self._client.bulk(operations)
+        self._client.bulk(self._index, operations)
         return StageResult(
             "published",
             attempt_id,
@@ -699,10 +707,9 @@ class OpenSearchSparseIndexProvider:
         normalized_query = query.strip()
         if not normalized_query:
             text_query = {"match_all": {}}
-        elif (
-            len(normalized_query) >= 2
-            and normalized_query[0] == normalized_query[-1]
-            and (normalized_query[0] in {'"', "'", "“", "”"})
+        elif len(normalized_query) >= 2 and (
+            (normalized_query[0], normalized_query[-1])
+            in {('"', '"'), ("'", "'"), ("“", "”"), ("「", "」"), ("『", "』")}
         ):
             text_query = {
                 "match_phrase": {
@@ -733,10 +740,10 @@ class OpenSearchSparseIndexProvider:
         items = tuple(
             {
                 **_chunk(document).to_mapping(),
-                "score": 0.0,
+                "score": score,
                 "publication_id": document.get("publication_id"),
             }
-            for document, _score in page
+            for document, score in page
         )
         next_cursor = _cursor_encode(offset + len(page)) if len(hits) > top_k else None
         return ProviderSearchPage(items, next_cursor)

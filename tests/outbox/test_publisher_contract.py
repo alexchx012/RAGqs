@@ -217,7 +217,7 @@ def test_graph_succeeded_requires_generation_and_failed_forbids_it() -> None:
             )
     assert missing.value.code == "invalid_event_payload"
 
-    # failed must not carry graph_generation_id but may carry failure_class.
+    # failed must not carry graph_generation_id and requires a stable failure class.
     with pytest.raises(PlatformError) as forbidden:
         with engine.begin() as connection:
             publisher.publish(
@@ -237,17 +237,70 @@ def test_graph_succeeded_requires_generation_and_failed_forbids_it() -> None:
             )
     assert forbidden.value.code == "invalid_event_payload"
 
-    # succeeded without index_generation_id is valid (optional).
-    publisher.publish(
-        make_command(
-            caller_principal="knowledge_graph",
-            event_type="graph_build_completed",
-            aggregate_type="graph_build_run",
-            payload={**base, "graph_generation_id": "gen_1"},
-            recipients=graph_recipients,
-        ),
-        connection=engine.connect().__enter__(),
+    with pytest.raises(PlatformError) as missing_index:
+        with engine.begin() as connection:
+            publisher.publish(
+                make_command(
+                    caller_principal="knowledge_graph",
+                    event_type="graph_build_completed",
+                    aggregate_type="graph_build_run",
+                    payload={**base, "graph_generation_id": "gen_1"},
+                    recipients=graph_recipients,
+                ),
+                connection=connection,
+            )
+    assert missing_index.value.code == "invalid_event_payload"
+
+    with engine.begin() as connection:
+        publisher.publish(
+            make_command(
+                caller_principal="knowledge_graph",
+                event_type="graph_build_completed",
+                aggregate_type="graph_build_run",
+                payload={
+                    **base,
+                    "graph_generation_id": "gen_1",
+                    "index_generation_id": "index_gen_1",
+                    "failure_class": None,
+                },
+                recipients=graph_recipients,
+            ),
+            connection=connection,
+        )
+
+
+def test_graph_failed_and_cancelled_events_require_stable_failure_class() -> None:
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+    publisher = make_publisher(
+        engine,
+        now=lambda: fixed_now(),
+        graph_activated_receipt_port=_AcceptingGraphReceipt(),
     )
+    from app.outbox.ports import RecipientSelection as RS
+
+    for status in ("failed", "cancelled"):
+        with pytest.raises(PlatformError) as missing_failure:
+            with engine.begin() as connection:
+                publisher.publish(
+                    make_command(
+                        caller_principal="knowledge_graph",
+                        event_type="graph_build_completed",
+                        aggregate_type="graph_build_run",
+                        payload={
+                            "graph_build_id": f"gb_{status}",
+                            "status": status,
+                            "source_revision": "rev_1",
+                            "graph_generation_id": None,
+                            "index_generation_id": None,
+                            "failure_class": None,
+                        },
+                        recipients=(RS(recipient_user_id=alice),),
+                    ),
+                    connection=connection,
+                )
+        assert missing_failure.value.code == "invalid_event_payload"
 
 
 def test_calibration_requires_active_ops_role_snapshot_recipients() -> None:

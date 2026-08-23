@@ -54,6 +54,7 @@ from app.graph import (
     RepositoryActivatedReceiptVerifier,
     SqlAlchemyGraphBuildOutboxAdapter,
     SqlAlchemyGraphRepository,
+    SqlAlchemyPublicGraphStore,
     UsageLedgerSubmissionAdapter,
 )
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
@@ -379,6 +380,10 @@ def build_runtime(
         )
     )
     configured.setdefault("public_graph_source_service", public_graph_source_service)
+    public_graph_store = configured.get("public_graph_store") or SqlAlchemyPublicGraphStore(
+        engine, now=clock.now_utc
+    )
+    configured.setdefault("public_graph_store", public_graph_store)
     generation_repository = configured.get("indexing_generation_repository") or (
         SqlAlchemyIndexingRepository(
             engine,
@@ -581,7 +586,8 @@ def build_runtime(
         visibility_facts=visibility_facts,
         source_service=public_graph_source_service,
         tree_router=configured.get("indexing_tree_router"),
-        graph_router=configured.get("indexing_graph_router"),
+        graph_router=configured.get("indexing_graph_router") or public_graph_store.route,
+        graph_store=public_graph_store,
         token_counter=token_counter,
         object_store=object_store,
         embedding=embedding,
@@ -709,6 +715,7 @@ def build_runtime(
         outbox=graph_build_outbox_port,
         verifier=graph_activated_receipt_verifier,
         configuration=graph_build_configuration,
+        store=public_graph_store,
         now=clock.now_utc,
     )
     configured.setdefault("graph_build_service", graph_build_service)

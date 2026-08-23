@@ -37,6 +37,7 @@ from .ports import (
     PublicGraphSourcePort,
 )
 from .repository import SqlAlchemyGraphRepository
+from .store import SqlAlchemyPublicGraphStore
 
 GRAPH_CONSUMER_ID = "public_graph"
 CREATE_OP_PREFIX = "gb_create"
@@ -86,6 +87,7 @@ class GraphBuildService:
         outbox: GraphBuildOutboxPort,
         verifier: GraphActivatedReceiptVerifierPort,
         configuration: GraphBuildConfiguration | None = None,
+        store: SqlAlchemyPublicGraphStore | None = None,
         gc_authorizer: Callable[[str], bool] | None = None,
         now: Callable[[], datetime] = _now,
         grant_ttl: timedelta = timedelta(minutes=10),
@@ -100,6 +102,7 @@ class GraphBuildService:
         self._outbox = outbox
         self._verifier = verifier
         self._configuration = configuration or GraphBuildConfiguration()
+        self._store = store or SqlAlchemyPublicGraphStore(engine, now=now)
         self._gc_authorizer = gc_authorizer or (lambda caller: caller == "retention-ops")
         self._now = now
         self._grant_ttl = grant_ttl
@@ -457,6 +460,7 @@ class GraphBuildService:
                 "lease_expires_at_utc": None,
                 "heartbeat_at_utc": None,
                 "fencing_token": new_fence,
+                "failure_class": "cancel_requested",
             },
         )
         self._repository.write_audit(
@@ -476,6 +480,7 @@ class GraphBuildService:
             transition_version=run.version + 1,
             occurred_at=now,
             recipient_user_id=run.initiator_identity_id,
+            failure_class="cancel_requested",
             connection=connection,
         )
         self._repository.delete_staging_resources(
@@ -768,6 +773,21 @@ class GraphBuildService:
                     "index_generation_id": str(release_receipt.active_generation_id),
                     "activation_receipt_id": str(release_receipt.activation_receipt_id),
                 },
+            )
+            resources = self._repository.list_staging_payloads(
+                connection=connection,
+                run_id=run.graph_build_id,
+                attempt=run.current_attempt,
+            )
+            self._store.activate(
+                connection=connection,
+                graph_build_id=run.graph_build_id,
+                graph_generation_id=str(release_receipt.graph_generation_id),
+                index_generation_id=str(release_receipt.active_generation_id),
+                source_revision=run.source_revision,
+                source_head_fence=run.source_head_fence,
+                publications=run.publications,
+                resources=resources,
             )
             self._source.acknowledge_consumption(
                 consumer_kind=GRAPH_CONSUMER_ID,

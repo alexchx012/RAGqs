@@ -18,6 +18,8 @@ from app.platform.errors import PlatformError
 class _FakeOpenSearchClient:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
+        self.bulk_indexes: list[str] = []
+        self.last_query: Mapping[str, Any] | None = None
         self.index_created = False
         self.health_status = "green"
         self.plugin_names = {"analysis-ik"}
@@ -51,7 +53,8 @@ class _FakeOpenSearchClient:
         del name
         self.index_created = True
 
-    def bulk(self, operations: list[tuple[str, str, Mapping[str, Any] | None]]) -> None:
+    def bulk(self, index: str, operations: list[tuple[str, str, Mapping[str, Any] | None]]) -> None:
+        self.bulk_indexes.append(index)
         for action, identifier, document in operations:
             if action == "delete":
                 self.documents.pop(identifier, None)
@@ -78,7 +81,8 @@ class _FakeOpenSearchClient:
         offset: int,
         limit: int,
     ) -> tuple[tuple[Mapping[str, Any], float], ...]:
-        del index, query
+        del index
+        self.last_query = query
         selected = list(self.documents.values())
         for condition in filters:
             for name, values in condition["terms"].items():
@@ -159,6 +163,31 @@ def test_http_opensearch_client_sends_authenticated_requests() -> None:
     assert client.health() == {"status": "green"}
 
 
+def test_http_opensearch_bulk_targets_the_index_in_the_request_path() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/ragqs_chunks/_bulk"
+        assert request.headers["Content-Type"] == "application/x-ndjson"
+        lines = request.content.decode("utf-8").splitlines()
+        assert lines[0] == '{"index":{"_id":"chunk_1"}}'
+        assert lines[2] == '{"delete":{"_id":"chunk_2"}}'
+        return httpx.Response(
+            200,
+            json={"items": [{"index": {"status": 201}}, {"delete": {"status": 200}}]},
+        )
+
+    client = HttpOpenSearchClient(
+        "https://127.0.0.1:9200",
+        username="admin",
+        password="secret",
+        ca_path=certifi.where(),
+        transport=httpx.MockTransport(handler),
+    )
+    client.bulk(
+        "ragqs_chunks",
+        [("index", "chunk_1", {"text": "知识图谱"}), ("delete", "chunk_2", None)],
+    )
+
+
 def test_opensearch_startup_probe_rejects_each_failed_gate() -> None:
     client = _FakeOpenSearchClient()
     provider = OpenSearchSparseIndexProvider(client, allow_create_index=True)
@@ -212,7 +241,13 @@ def test_opensearch_provider_shares_sparse_stage_publish_discard_search_contract
     page = provider.search("知识图谱", ("space_1",), 10, None, generation_id="generation_1")
     assert page.cursor is None
     assert page.items[0]["chunk_id"] == "chunk_1"
-    assert page.items[0]["score"] == 0.0
+    assert page.items[0]["score"] == 1.0
+    assert client.bulk_indexes == ["ragqs_chunks", "ragqs_chunks"]
+
+    provider.search("“知识图谱”", ("space_1",), 10, None, generation_id="generation_1")
+    assert client.last_query == {
+        "match_phrase": {"text": {"query": "知识图谱", "analyzer": "ik_smart"}}
+    }
 
     discarded = provider.discard_staged("attempt_1", "publication_1", fencing_token=7)
     assert discarded.state == "discarded"

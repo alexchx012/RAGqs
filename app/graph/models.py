@@ -16,6 +16,7 @@ GraphFailureClass = Literal[
     "graph_release_failed",
     "graph_provider_failed",
     "graph_worker_unexpected",
+    "cancel_requested",
 ]
 
 
