@@ -126,3 +126,12 @@ body {
     opacity: 1;
   }
 }
+
+/* 全站滚动条隐藏（保留滚动能力）：滚动列表不再显示右侧滚动条。 */
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+}
