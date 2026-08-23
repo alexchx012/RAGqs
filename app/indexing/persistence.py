@@ -101,6 +101,9 @@ class SqlAlchemyIndexingRepository:
             "provider": str(source.get("provider", "memory")),
             "engine": str(source.get("engine", "memory")),
             "analyzer": str(source.get("analyzer", "default")),
+            "engine_revision": str(source.get("engine_revision", "v1")),
+            "analyzer_revision": str(source.get("analyzer_revision", "v1")),
+            "tokenizer_revision": str(source.get("tokenizer_revision", "v1")),
             "pretokenizer_version": str(source.get("pretokenizer_version", "v1")),
             "schema_version": str(source.get("schema_version", "index-chunks-v1")),
             "reranker_provider": str(source.get("reranker_provider", "configured")),
@@ -115,6 +118,8 @@ class SqlAlchemyIndexingRepository:
         return {
             **configuration,
             "schema_hash": _fingerprint({"schema_version": configuration["schema_version"]}),
+            "sparse_schema_hash": _fingerprint({"schema_version": configuration["schema_version"]}),
+            "implementation_config_hash": _fingerprint(configuration),
             "config_hash": _fingerprint(configuration),
         }
 
@@ -245,6 +250,21 @@ class SqlAlchemyIndexingRepository:
                 "applied_revision": current_revision,
                 "manifest_json": {
                     "indexing_configuration": configuration,
+                    "provider": configuration["provider"],
+                    "engine_revision": configuration["engine_revision"],
+                    "analyzer_revision": configuration["analyzer_revision"],
+                    "tokenizer_revision": configuration["tokenizer_revision"],
+                    "sparse_schema_hash": configuration["sparse_schema_hash"],
+                    "implementation_config_hash": configuration["implementation_config_hash"],
+                    "dimension": configuration.get("embedding_dimension"),
+                    "metric": configuration.get("embedding_metric"),
+                    "model_revision": configuration.get("embedding_revision"),
+                    "last_applied_index_change_id": None,
+                    "published_at": now.isoformat(),
+                    "rollback_candidate_until": None,
+                    "gc_state": "active",
+                    "base_revision": current_revision,
+                    "applied_revision": current_revision,
                     "components": {
                         "dense": {
                             "state": "ready",
@@ -259,9 +279,19 @@ class SqlAlchemyIndexingRepository:
                             "provider": configuration["provider"],
                             "engine": configuration["engine"],
                             "analyzer": configuration["analyzer"],
+                            "engine_revision": configuration["engine_revision"],
+                            "analyzer_revision": configuration["analyzer_revision"],
+                            "tokenizer_revision": configuration["tokenizer_revision"],
                             "pretokenizer_version": configuration["pretokenizer_version"],
                             "schema_hash": configuration["schema_hash"],
+                            "sparse_schema_hash": configuration["sparse_schema_hash"],
                             "config_hash": configuration["config_hash"],
+                            "implementation_config_hash": configuration[
+                                "implementation_config_hash"
+                            ],
+                            "dimension": configuration.get("embedding_dimension"),
+                            "metric": configuration.get("embedding_metric"),
+                            "model_revision": configuration.get("embedding_revision"),
                         },
                     },
                     "base_snapshot": [],
@@ -608,12 +638,39 @@ class SqlAlchemyIndexingRepository:
                     "provider": configuration["provider"],
                     "engine": configuration["engine"],
                     "analyzer": configuration["analyzer"],
+                    "engine_revision": configuration["engine_revision"],
+                    "analyzer_revision": configuration["analyzer_revision"],
+                    "tokenizer_revision": configuration["tokenizer_revision"],
                     "pretokenizer_version": configuration["pretokenizer_version"],
                     "schema_hash": configuration["schema_hash"],
+                    "sparse_schema_hash": configuration["sparse_schema_hash"],
                     "config_hash": configuration["config_hash"],
+                    "implementation_config_hash": configuration["implementation_config_hash"],
+                    "dimension": configuration.get("embedding_dimension"),
+                    "metric": configuration.get("embedding_metric"),
+                    "model_revision": configuration.get("embedding_revision"),
                 },
             )
             payload["components"] = components
+            payload.update(
+                {
+                    "provider": configuration["provider"],
+                    "engine_revision": configuration["engine_revision"],
+                    "analyzer_revision": configuration["analyzer_revision"],
+                    "tokenizer_revision": configuration["tokenizer_revision"],
+                    "sparse_schema_hash": configuration["sparse_schema_hash"],
+                    "implementation_config_hash": configuration["implementation_config_hash"],
+                    "dimension": configuration.get("embedding_dimension"),
+                    "metric": configuration.get("embedding_metric"),
+                    "model_revision": configuration.get("embedding_revision"),
+                    "last_applied_index_change_id": None,
+                    "published_at": None,
+                    "rollback_candidate_until": None,
+                    "gc_state": "staging",
+                    "base_revision": revision,
+                    "applied_revision": revision,
+                }
+            )
             payload["base_snapshot"] = [dict(item) for item in (base_snapshot or snapshot)]
             now = self._timestamp(conn)
             conn.execute(
@@ -682,6 +739,7 @@ class SqlAlchemyIndexingRepository:
             changes = list(manifest.get("index_changes", []))
             changes.append(payload)
             manifest["index_changes"] = changes
+            manifest["last_applied_index_change_id"] = payload.get("change_id")
             conn.execute(
                 update(index_generations_table)
                 .where(index_generations_table.c.id == generation_id)
@@ -710,6 +768,7 @@ class SqlAlchemyIndexingRepository:
                 conn.execute(
                     select(
                         index_revisions_table.c.revision,
+                        index_changes_table.c.id,
                         index_changes_table.c.change_type,
                         index_changes_table.c.document_id,
                         index_changes_table.c.document_version_id,
@@ -756,6 +815,7 @@ class SqlAlchemyIndexingRepository:
                     generation_id,
                     revision,
                     {
+                        "change_id": str(row["id"]),
                         "change_type": str(row["change_type"]),
                         "document_id": str(row["document_id"]),
                         "document_version_id": (
@@ -1112,9 +1172,14 @@ class SqlAlchemyIndexingRepository:
                 "provider",
                 "engine",
                 "analyzer",
+                "engine_revision",
+                "analyzer_revision",
+                "tokenizer_revision",
                 "pretokenizer_version",
                 "schema_hash",
                 "config_hash",
+                "sparse_schema_hash",
+                "implementation_config_hash",
             )
         ):
             raise PlatformError(
@@ -1206,27 +1271,48 @@ class SqlAlchemyIndexingRepository:
                     )
                 self._validate_generation_content(generation, connection=conn)
             except PlatformError:
+                failed_manifest = dict(generation.manifest)
+                failed_manifest["gc_state"] = "failed"
                 conn.execute(
                     update(index_generations_table)
                     .where(index_generations_table.c.id == generation_id)
-                    .values(status="failed")
+                    .values(status="failed", manifest_json=failed_manifest)
                 )
                 raise
             now = self._timestamp(conn)
+            rollback_until = now + timedelta(days=self._rollback_days)
+            active_manifest = dict(self.get_generation(active_id, connection=conn).manifest)
+            active_manifest.update(
+                {"rollback_candidate_until": rollback_until.isoformat(), "gc_state": "retired"}
+            )
             conn.execute(
                 update(index_generations_table)
                 .where(index_generations_table.c.id == active_id)
                 .values(
                     status="retired",
                     retired_at_utc=now,
-                    rollback_until_utc=now + timedelta(days=self._rollback_days),
+                    rollback_until_utc=rollback_until,
                     rollback_applied_revision=revision,
+                    manifest_json=active_manifest,
                 )
+            )
+            released_manifest = dict(generation.manifest)
+            released_manifest.update(
+                {
+                    "published_at": now.isoformat(),
+                    "rollback_candidate_until": None,
+                    "gc_state": "active",
+                }
             )
             conn.execute(
                 update(index_generations_table)
                 .where(index_generations_table.c.id == generation_id)
-                .values(status="active", activated_at_utc=now, retired_at_utc=None)
+                .values(
+                    status="active",
+                    activated_at_utc=now,
+                    retired_at_utc=None,
+                    manifest_json=released_manifest,
+                )
             )
             conn.execute(
                 update(index_generation_heads_table)
@@ -1384,19 +1470,32 @@ class SqlAlchemyIndexingRepository:
                     )
             active_id = str(head["active_generation_id"])
             now = self._timestamp(conn)
+            rollback_until = now + timedelta(days=self._rollback_days)
+            active_manifest = dict(self.get_generation(active_id, connection=conn).manifest)
+            active_manifest.update(
+                {"rollback_candidate_until": rollback_until.isoformat(), "gc_state": "retired"}
+            )
             conn.execute(
                 update(index_generations_table)
                 .where(index_generations_table.c.id == active_id)
                 .values(
                     status="retired",
                     retired_at_utc=now,
-                    rollback_until_utc=now + timedelta(days=self._rollback_days),
+                    rollback_until_utc=rollback_until,
+                    manifest_json=active_manifest,
                 )
             )
+            restored_manifest = dict(candidate.manifest)
+            restored_manifest.update({"rollback_candidate_until": None, "gc_state": "active"})
             conn.execute(
                 update(index_generations_table)
                 .where(index_generations_table.c.id == candidate_generation_id)
-                .values(status="active", activated_at_utc=now, retired_at_utc=None)
+                .values(
+                    status="active",
+                    activated_at_utc=now,
+                    retired_at_utc=None,
+                    manifest_json=restored_manifest,
+                )
             )
             conn.execute(
                 update(index_generation_heads_table)
@@ -1667,6 +1766,14 @@ class SqlAlchemyIndexingRepository:
                 },
                 ["operation_id"],
             )
+            if state == "accepted":
+                manifest = dict(generation.manifest)
+                manifest["gc_state"] = "purging"
+                conn.execute(
+                    update(index_generations_table)
+                    .where(index_generations_table.c.id == candidate_generation_id)
+                    .values(manifest_json=manifest)
+                )
             return IndexGenerationGcReceipt(
                 operation_id,
                 candidate_generation_id,
@@ -1859,6 +1966,7 @@ class SqlAlchemyIndexingRepository:
             )
             if eligibility.state != "accepted":
                 return eligibility
+            candidate = self.get_generation(candidate_generation_id, connection=conn)
             publications = tuple(
                 (str(row["document_id"]), str(row["document_version_id"]))
                 for row in conn.execute(
@@ -1880,7 +1988,10 @@ class SqlAlchemyIndexingRepository:
             conn.execute(
                 update(index_generations_table)
                 .where(index_generations_table.c.id == candidate_generation_id)
-                .values(status="purged", manifest_json={})
+                .values(
+                    status="purged",
+                    manifest_json={**dict(candidate.manifest), "gc_state": "purged"},
+                )
             )
             payload["state"] = "already_purged"
             conn.execute(

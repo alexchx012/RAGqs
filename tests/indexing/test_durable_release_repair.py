@@ -38,7 +38,17 @@ def _engine():
 
 
 def _metrics() -> dict[str, float]:
-    return {"p50_ms": 1, "p95_ms": 2, "p99_ms": 3, "error_rate": 0, "vram_mb": 1}
+    return {
+        "p50_ms": 1,
+        "p95_ms": 2,
+        "p99_ms": 3,
+        "error_rate": 0,
+        "vram_mb": 1,
+        "hit_at_k": 0.9,
+        "mrr": 0.9,
+        "ndcg": 0.9,
+        "refusal": 1.0,
+    }
 
 
 def _acceptance_suite() -> dict[str, object]:
@@ -46,6 +56,16 @@ def _acceptance_suite() -> dict[str, object]:
         "acl_assertions": {"space_isolation": "passed"},
         "hardware_profile": {"accelerator": "test"},
         "thresholds": {"p50_ms": 10, "p95_ms": 20, "p99_ms": 30, "error_rate": 1, "vram_mb": 10},
+        "samples": {
+            "phrase_query": 1,
+            "proper_noun_query": 1,
+            "quoted_exact_query": 1,
+            "real_question": 1,
+            "acl_filter": 1,
+            "sparse_exact_hit": 1,
+            "refusal": 1,
+        },
+        "quality_thresholds": {"hit_at_k": 0.8, "mrr": 0.8, "ndcg": 0.8, "refusal": 0.9},
     }
 
 
@@ -113,6 +133,23 @@ def _insert_active_publication(engine) -> str:
             )
         )
     return content_hash
+
+
+def test_retrieval_release_rejects_an_incomplete_frozen_chinese_suite() -> None:
+    engine = _engine()
+    SqlAlchemyIndexingRepository(engine).active_generation_id()
+    releases = RetrievalReleaseService(engine)
+    suite = _acceptance_suite()
+    suite["samples"]["phrase_query"] = 0
+
+    with pytest.raises(PlatformError) as error:
+        releases.stage(
+            generation_id="generation_initial",
+            profile=RetrievalProfile(),
+            acceptance_suite=suite,
+        )
+
+    assert error.value.code == "validation_error"
 
 
 def test_generation_release_rejects_a_missing_active_publication_chunk() -> None:

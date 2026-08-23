@@ -392,7 +392,22 @@ def build_runtime(
                     else "meilisearch"
                 ),
                 "analyzer": (
-                    "ik" if settings.index.sparse_provider == "opensearch+ik" else "jieba"
+                    "ik" if settings.index.sparse_provider.startswith("opensearch") else "jieba"
+                ),
+                "engine_revision": (
+                    "opensearch-rest-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "meilisearch-http-v1"
+                ),
+                "analyzer_revision": (
+                    "ik-smart-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "jieba-v1"
+                ),
+                "tokenizer_revision": (
+                    "ik-smart-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "jieba-v1"
                 ),
                 "pretokenizer_version": "v1",
                 "schema_version": "index-chunks-v1",

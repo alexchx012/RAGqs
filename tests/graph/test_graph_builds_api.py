@@ -280,7 +280,7 @@ def test_cancel_contract_over_http() -> None:
         json={"expected_version": 1},
         headers={"Authorization": ops_token, "Idempotency-Key": "c2-success"},
     )
-    assert cancelled.status_code == 200
+    assert cancelled.status_code == 202
     assert cancelled.json()["state"] == "cancelled"
     assert cancelled.json()["version"] == 2
     not_cancellable = client.post(

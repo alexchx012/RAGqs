@@ -34,14 +34,18 @@ from .models import (
     RetrievalResult,
     RetrievalScope,
 )
+from .opensearch import (
+    HttpOpenSearchClient,
+)
+from .opensearch import OpenSearchSparseIndexProvider as RealOpenSearchSparseIndexProvider
 from .persistence import SqlAlchemyGenerationManager, SqlAlchemyIndexingRepository
 from .prefix_cache import PrefixCacheManager
 from .processing import ContentProcessor, IdentityCompression, OCRSamplePlan, ProcessingOutput
 from .providers import (
     IndexWriter,
     InMemoryIndexWriter,
+    InMemoryOpenSearchSparseIndexProvider,
     InMemorySparseIndexProvider,
-    OpenSearchSparseIndexProvider,
     SparseIndexProvider,
     StageResult,
     build_sparse_provider,
@@ -56,6 +60,8 @@ from .retrieval import (
 )
 from .schema import INDEXING_TABLE_NAMES, indexing_metadata
 from .service import IndexingService
+
+OpenSearchSparseIndexProvider = RealOpenSearchSparseIndexProvider
 
 __all__ = [
     "AllowedRetrievalScope",
@@ -77,10 +83,12 @@ __all__ = [
     "GraphComponentReleaseReceipt",
     "GraphComponentStageGrant",
     "GraphComponentStageReceipt",
+    "HttpOpenSearchClient",
     "IdentityCompression",
     "INDEXING_TABLE_NAMES",
     "InMemoryEmbeddingProvider",
     "IndexChunk",
+    "InMemoryOpenSearchSparseIndexProvider",
     "IndexGenerationComponentInput",
     "IndexGenerationGcReceipt",
     "IndexGenerationService",

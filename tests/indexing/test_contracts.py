@@ -115,6 +115,44 @@ def _chunk(
     )
 
 
+def _release_suite() -> dict[str, object]:
+    return {
+        "acl_assertions": {"space_isolation": "passed"},
+        "hardware_profile": {"accelerator": "test"},
+        "thresholds": {
+            "p50_ms": 10,
+            "p95_ms": 20,
+            "p99_ms": 30,
+            "error_rate": 0.01,
+            "vram_mb": 100,
+        },
+        "samples": {
+            "phrase_query": 2,
+            "proper_noun_query": 2,
+            "quoted_exact_query": 2,
+            "real_question": 2,
+            "acl_filter": 2,
+            "sparse_exact_hit": 2,
+            "refusal": 2,
+        },
+        "quality_thresholds": {"hit_at_k": 0.8, "mrr": 0.8, "ndcg": 0.8, "refusal": 0.9},
+    }
+
+
+def _release_metrics() -> dict[str, float]:
+    return {
+        "p50_ms": 1,
+        "p95_ms": 2,
+        "p99_ms": 3,
+        "error_rate": 0,
+        "vram_mb": 1,
+        "hit_at_k": 0.9,
+        "mrr": 0.9,
+        "ndcg": 0.9,
+        "refusal": 1.0,
+    }
+
+
 def _insert_active_publication(
     connection,
     *,
@@ -893,6 +931,17 @@ def test_configuration_change_creates_a_new_staging_generation_with_immutable_ma
     assert next_generation.generation_id != configured.generation_id
     assert next_generation.status == "staging"
     assert next_generation.manifest["indexing_configuration"]["provider"] == "opensearch"
+    assert next_generation.manifest["provider"] == "opensearch"
+    assert next_generation.manifest["dimension"] is None
+    assert next_generation.manifest["metric"] == "cosine"
+    assert next_generation.manifest["model_revision"] == "configured"
+    assert next_generation.manifest["sparse_schema_hash"]
+    assert next_generation.manifest["implementation_config_hash"]
+    assert next_generation.manifest["last_applied_index_change_id"] is None
+    assert next_generation.manifest["published_at"] is None
+    assert next_generation.manifest["rollback_candidate_until"] is None
+    assert next_generation.manifest["gc_state"] == "staging"
+    assert next_generation.manifest["components"]["sparse"]["tokenizer_revision"]
 
 
 def test_generation_catch_up_removes_chunks_for_a_documents_delete_change() -> None:
@@ -1341,22 +1390,9 @@ def test_retrieval_release_resolves_only_for_its_generation() -> None:
     staged = releases.stage(
         generation_id="generation_initial",
         profile=RetrievalProfile(),
-        acceptance_suite={
-            "acl_assertions": {"space_isolation": "passed"},
-            "hardware_profile": {"accelerator": "test"},
-            "thresholds": {
-                "p50_ms": 10,
-                "p95_ms": 20,
-                "p99_ms": 30,
-                "error_rate": 0.01,
-                "vram_mb": 100,
-            },
-        },
+        acceptance_suite=_release_suite(),
     )
-    releases.release(
-        str(staged["id"]),
-        metrics={"p50_ms": 1, "p95_ms": 2, "p99_ms": 3, "error_rate": 0, "vram_mb": 1},
-    )
+    releases.release(str(staged["id"]), metrics=_release_metrics())
 
     with pytest.raises(PlatformError) as error:
         releases.resolve(RetrievalProfile(), generation_id="generation_next")
@@ -1373,23 +1409,13 @@ def test_retrieval_release_rejects_metrics_outside_the_staged_acceptance_suite()
     staged = releases.stage(
         generation_id="generation_initial",
         profile=RetrievalProfile(),
-        acceptance_suite={
-            "acl_assertions": {"space_isolation": "passed"},
-            "hardware_profile": {"accelerator": "test"},
-            "thresholds": {
-                "p50_ms": 10,
-                "p95_ms": 20,
-                "p99_ms": 30,
-                "error_rate": 0.01,
-                "vram_mb": 100,
-            },
-        },
+        acceptance_suite=_release_suite(),
     )
 
     with pytest.raises(PlatformError) as error:
         releases.release(
             str(staged["id"]),
-            metrics={"p50_ms": 11, "p95_ms": 20, "p99_ms": 30, "error_rate": 0, "vram_mb": 1},
+            metrics={**_release_metrics(), "p50_ms": 11},
         )
 
     assert error.value.code == "release_gate_failed"

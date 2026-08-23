@@ -14,6 +14,7 @@ from .embedding import (
 )
 from .meilisearch import HttpMeilisearchClient, MeilisearchSparseIndexProvider
 from .milvus import HttpMilvusClient, MilvusIndexWriter
+from .opensearch import HttpOpenSearchClient, OpenSearchSparseIndexProvider
 from .providers import InMemoryIndexWriter, InMemorySparseIndexProvider, build_sparse_provider
 
 
@@ -71,6 +72,27 @@ def build_dense_writer(
 
 
 def build_configured_sparse_provider(settings: PlatformSettings, *, allow_create: bool) -> Any:
+    if settings.index.sparse_provider.startswith("opensearch"):
+        if not settings.index.sparse_url:
+            raise RuntimeError("OpenSearch requires RAG_INDEX_SPARSE_URL")
+        username = settings.index.sparse_username
+        password = _secret(settings.index.sparse_password)
+        ca_path = settings.index.sparse_ca_path
+        if not username or not password or not ca_path:
+            raise RuntimeError(
+                "OpenSearch requires username, password, and RAG_INDEX_SPARSE_CA_PATH"
+            )
+        return OpenSearchSparseIndexProvider(
+            HttpOpenSearchClient(
+                settings.index.sparse_url,
+                username=username,
+                password=password,
+                ca_path=ca_path,
+            ),
+            index_name=settings.index.sparse_index,
+            allow_create_index=allow_create,
+            jvm_heap_min_bytes=int(settings.index.sparse_jvm_heap_min_gb * 1024**3),
+        )
     if settings.index.sparse_url:
         if settings.index.sparse_provider != "meilisearch":
             raise PlatformError(

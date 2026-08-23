@@ -516,7 +516,7 @@ class InMemorySparseIndexProvider(InMemoryIndexWriter):
     backend_kind = "sparse"
 
 
-class OpenSearchSparseIndexProvider(InMemorySparseIndexProvider):
+class InMemoryOpenSearchSparseIndexProvider(InMemorySparseIndexProvider):
     provider_name = "opensearch"
     backend_kind = "sparse"
 
@@ -526,15 +526,15 @@ def build_sparse_provider(provider_name: str | None = None) -> SparseIndexProvid
     if configured == "meilisearch":
         return InMemorySparseIndexProvider(provider_name="meilisearch")
     if configured in {"opensearch", "opensearch+ik"}:
-        return OpenSearchSparseIndexProvider(provider_name="opensearch")
+        return InMemoryOpenSearchSparseIndexProvider(provider_name="opensearch")
     raise PlatformError("provider_not_supported", "Sparse index provider is not supported", {}, 422)
 
 
 __all__ = [
     "IndexWriter",
     "InMemoryIndexWriter",
+    "InMemoryOpenSearchSparseIndexProvider",
     "InMemorySparseIndexProvider",
-    "OpenSearchSparseIndexProvider",
     "PreparedStage",
     "SparseIndexProvider",
     "StageResult",
