@@ -389,17 +389,25 @@ class GraphComponentCoordinator:
         connection: Any | None,
         acknowledge_source: bool,
     ) -> None:
+        if self._graph_store is not None:
+            self._graph_store.purge_generation(
+                receipt.target_generation_id,
+                connection=connection,
+            )
+        manifest: dict[str, Any] = {
+            "graph_resource_manifest_hash": "",
+            "graph_resource_ids": [],
+            "stage_receipt_id": None,
+            "component_stage_id": None,
+            "build_receipt_hash": None,
+        }
+        if state == "stale":
+            manifest["stale_since_at"] = self._now().isoformat()
         self._generation.set_component_state(
             receipt.target_generation_id,
             "public_graph",
             state,
-            manifest={
-                "graph_resource_manifest_hash": "",
-                "graph_resource_ids": [],
-                "stage_receipt_id": None,
-                "component_stage_id": None,
-                "build_receipt_hash": None,
-            },
+            manifest=manifest,
             **({"connection": connection} if connection is not None else {}),
         )
         if not acknowledge_source:
@@ -428,7 +436,11 @@ class GraphComponentCoordinator:
             generation.generation_id,
             "public_graph",
             "stale",
-            manifest={"graph_resource_manifest_hash": "", "graph_resource_ids": []},
+            manifest={
+                "graph_resource_manifest_hash": "",
+                "graph_resource_ids": [],
+                "stale_since_at": self._now().isoformat(),
+            },
         )
 
     def _graph_component(
@@ -750,7 +762,11 @@ class GraphComponentCoordinator:
                             grant.target_generation_id,
                             "public_graph",
                             "stale",
-                            manifest={"graph_resource_manifest_hash": "", "graph_resource_ids": []},
+                            manifest={
+                                "graph_resource_manifest_hash": "",
+                                "graph_resource_ids": [],
+                                "stale_since_at": self._now().isoformat(),
+                            },
                         )
                         self._acknowledge(
                             source_revision=int(grant.source_snapshot.source_revision),
@@ -855,6 +871,14 @@ class GraphComponentCoordinator:
                     )
                     if lease_guard is not None:
                         lease_guard(connection)
+                    if self._graph_store is not None:
+                        self._graph_store.validate_generation(
+                            graph_generation_id=target_generation_id,
+                            index_generation_id=target_generation_id,
+                            source_revision=source_revision,
+                            source_head_fence=source_head_fence,
+                            connection=connection,
+                        )
                     self._acknowledge(
                         source_revision=source_revision,
                         source_manifest_hash=source_manifest_hash,
@@ -867,7 +891,10 @@ class GraphComponentCoordinator:
                         target_generation_id,
                         "public_graph",
                         "ready",
-                        manifest={"component_stage_id": component_stage_id},
+                        manifest={
+                            "component_stage_id": component_stage_id,
+                            "stale_since_at": None,
+                        },
                         **({"connection": connection} if connection is not None else {}),
                     )
                     if lease_guard is not None:
@@ -911,6 +938,15 @@ class GraphComponentCoordinator:
     def acquire_current_reader_lease(self, *, generation_id: str) -> GenerationComponentReaderLease:
         active = self._generation.get_generation(generation_id)
         component = active.manifest.get("components", {}).get("public_graph", {})
+        if component.get("state") == "stale":
+            stale_since = datetime.fromisoformat(str(component["stale_since_at"]))
+            stale_duration_ms = max(0, int((self._now() - stale_since).total_seconds() * 1000))
+            raise PlatformError(
+                "graph_stale",
+                "public graph component is stale",
+                {"stale_duration_ms": stale_duration_ms},
+                409,
+            )
         return self.acquire_reader_lease(
             generation_id=generation_id,
             source_revision=int(component.get("source_revision", 0)),

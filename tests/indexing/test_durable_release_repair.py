@@ -243,7 +243,11 @@ def test_generation_activation_requires_a_released_matching_retrieval_profile() 
         profile=RetrievalProfile(config_snapshot={"analyzer": "default"}),
         acceptance_suite=_acceptance_suite(),
     )
-    releases.release(str(staged["id"]), metrics=_metrics())
+    releases.release(
+        str(staged["id"]),
+        metrics=_metrics(),
+        hardware_profile=_acceptance_suite()["hardware_profile"],
+    )
 
     assert repository.release(candidate.generation_id).generation_id == candidate.generation_id
 
@@ -258,7 +262,11 @@ def test_retrieval_release_freezes_metrics_and_rejects_changed_component_binding
         profile=RetrievalProfile(config_snapshot={"analyzer": "default"}),
         acceptance_suite=_acceptance_suite(),
     )
-    releases.release(str(staged["id"]), metrics=_metrics())
+    releases.release(
+        str(staged["id"]),
+        metrics=_metrics(),
+        hardware_profile=_acceptance_suite()["hardware_profile"],
+    )
     with engine.connect() as connection:
         evidence = dict(
             connection.execute(

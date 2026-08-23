@@ -26,6 +26,8 @@ from .models import (
 from .observability import (
     CANDIDATE_FILTER_ROUTE,
     CANDIDATE_REPLENISH_ROUTE,
+    GRAPH_QUERY_SKIP_ROUTE,
+    GRAPH_STALE_DURATION_ROUTE,
     record_index_observation,
 )
 from .providers import SparseIndexProvider
@@ -343,6 +345,11 @@ class RetrievalService:
             raise ValueError("at least one retrieval provider is required")
         self._generation = generation_manager
         self._providers = tuple(providers)
+        self._sparse_sources = frozenset(
+            str(getattr(provider, "provider_name", ""))
+            for provider in self._providers
+            if _backend_kind(provider, fallback="sparse") == "sparse"
+        )
         self._identity = identity_access
         self._visibility = visibility_facts
         self._reranker = reranker or NoopReranker(environment=environment)
@@ -552,9 +559,13 @@ class RetrievalService:
                     rejected += 1
                     continue
                 provider_seen += 1
-                hits.append(
-                    RetrievalHit(candidate, provider_score, getattr(provider, "provider_name", ""))
+                source = str(getattr(provider, "provider_name", ""))
+                score = (
+                    0.0
+                    if _backend_kind(provider, fallback="sparse") == "sparse"
+                    else provider_score
                 )
+                hits.append(RetrievalHit(candidate, score, source))
                 if provider_seen >= quota:
                     break
             record_index_observation(
@@ -747,13 +758,29 @@ class RetrievalService:
                     )
             except Exception as error:
                 degradations.append(self._routing_degradation("graph", error))
+                record_index_observation(
+                    self._exact_match_metrics,
+                    GRAPH_QUERY_SKIP_ROUTE,
+                    success=False,
+                )
+                if isinstance(error, PlatformError) and error.code == "graph_stale":
+                    stale_duration_ms = error.details.get("stale_duration_ms", 0)
+                    if isinstance(stale_duration_ms, int):
+                        record_index_observation(
+                            self._exact_match_metrics,
+                            GRAPH_STALE_DURATION_ROUTE,
+                            success=True,
+                            latency_ms=stale_duration_ms,
+                        )
             finally:
                 if graph_lease is not None:
                     self._graph_reader.release_reader_lease(graph_lease)
         filtered = [
             hit
             for hit in reranked
-            if selected.score_threshold is None or hit.score >= selected.score_threshold
+            if selected.score_threshold is None
+            or hit.source in self._sparse_sources
+            or hit.score >= selected.score_threshold
         ]
         budgeted: list[RetrievalHit] = []
         deferred: list[RetrievalHit] = []

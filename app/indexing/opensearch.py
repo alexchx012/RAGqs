@@ -228,6 +228,7 @@ class HttpOpenSearchClient:
                         "status": {"type": "keyword"},
                         "content_hash": {"type": "keyword"},
                         "fencing_token": {"type": "long"},
+                        "stage_resource_ids": {"type": "keyword", "index": False},
                         "text": {
                             "type": "text",
                             "analyzer": _OPENSEARCH_ANALYZER,
@@ -306,6 +307,7 @@ def _document(
     chunk: IndexChunk,
     content_hash: str,
     fencing_token: int,
+    resource_ids: Sequence[str],
 ) -> dict[str, Any]:
     identifier = (
         f"{status}:{attempt_id}:{chunk.publication_id}:{chunk.chunk_id}"
@@ -324,6 +326,7 @@ def _document(
         "status": status,
         "content_hash": content_hash,
         "fencing_token": fencing_token,
+        "stage_resource_ids": list(resource_ids),
         "text": chunk.sparse_text or chunk.text,
         "payload": json.dumps(chunk.to_mapping(), ensure_ascii=True, separators=(",", ":")),
     }
@@ -350,12 +353,18 @@ def _result_from_docs(
     documents: Sequence[Mapping[str, Any]],
 ) -> StageResult:
     chunks = tuple(_chunk(document) for document in documents)
+    stored_resource_ids = documents[0].get("stage_resource_ids")
+    resource_ids = (
+        tuple(str(item) for item in stored_resource_ids)
+        if isinstance(stored_resource_ids, list) and stored_resource_ids
+        else tuple(f"{attempt_id}:{publication_id}:{chunk.chunk_id}" for chunk in chunks)
+    )
     return StageResult(
         state,
         attempt_id,
         publication_id,
         str(documents[0].get("generation_id") or chunks[0].generation_id),
-        tuple(f"{attempt_id}:{publication_id}:{chunk.chunk_id}" for chunk in chunks),
+        resource_ids,
         str(documents[0].get("content_hash") or ""),
         int(documents[0].get("fencing_token") or 1),
     )
@@ -517,6 +526,7 @@ class OpenSearchSparseIndexProvider:
                 chunk=chunk,
                 content_hash=prepared.content_hash,
                 fencing_token=fencing_token,
+                resource_ids=prepared.resource_ids,
             )
             for chunk in prepared.chunks
         ]
@@ -599,6 +609,7 @@ class OpenSearchSparseIndexProvider:
                 chunk=chunk,
                 content_hash=content_hash,
                 fencing_token=token,
+                resource_ids=result.resource_ids,
             )
             for chunk in chunks
         ]
@@ -740,10 +751,10 @@ class OpenSearchSparseIndexProvider:
         items = tuple(
             {
                 **_chunk(document).to_mapping(),
-                "score": score,
+                "score": 0.0,
                 "publication_id": document.get("publication_id"),
             }
-            for document, score in page
+            for document, _score in page
         )
         next_cursor = _cursor_encode(offset + len(page)) if len(hits) > top_k else None
         return ProviderSearchPage(items, next_cursor)

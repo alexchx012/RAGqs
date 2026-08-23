@@ -11,6 +11,8 @@ CANDIDATE_REPLENISH_ROUTE = "index_candidate_replenish"
 COMPONENT_PUBLISH_FAILURE_ROUTE = "index_component_publish_failure"
 COMPONENT_ROLLBACK_FAILURE_ROUTE = "index_component_rollback_failure"
 COMPONENT_GC_FAILURE_ROUTE = "index_component_gc_failure"
+GRAPH_QUERY_SKIP_ROUTE = "index_graph_query_skip"
+GRAPH_STALE_DURATION_ROUTE = "index_graph_stale_duration"
 
 INDEX_INTERNAL_OBSERVABILITY_ROUTES = frozenset(
     {
@@ -20,6 +22,8 @@ INDEX_INTERNAL_OBSERVABILITY_ROUTES = frozenset(
         COMPONENT_PUBLISH_FAILURE_ROUTE,
         COMPONENT_ROLLBACK_FAILURE_ROUTE,
         COMPONENT_GC_FAILURE_ROUTE,
+        GRAPH_QUERY_SKIP_ROUTE,
+        GRAPH_STALE_DURATION_ROUTE,
     }
 )
 
@@ -30,6 +34,7 @@ def record_index_observation(
     *,
     success: bool,
     count: int = 1,
+    latency_ms: int = 0,
 ) -> None:
     if metrics is None or count < 1:
         return
@@ -41,7 +46,7 @@ def record_index_observation(
                 method="POST",
                 outcome_class="success" if success else "server_error",
                 status_family="2xx" if success else "5xx",
-                latency_ms=0,
+                latency_ms=max(0, latency_ms),
                 sample_weight=float(count),
             )
         )
@@ -55,6 +60,8 @@ __all__ = [
     "COMPONENT_GC_FAILURE_ROUTE",
     "COMPONENT_PUBLISH_FAILURE_ROUTE",
     "COMPONENT_ROLLBACK_FAILURE_ROUTE",
+    "GRAPH_QUERY_SKIP_ROUTE",
+    "GRAPH_STALE_DURATION_ROUTE",
     "INDEX_INTERNAL_OBSERVABILITY_ROUTES",
     "PROVIDER_ANALYZER_PROBE_ROUTE",
     "record_index_observation",

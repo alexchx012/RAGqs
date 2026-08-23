@@ -679,15 +679,36 @@ class GraphBuildService:
             }
         )
         grant = _grant_from_record(run)
-        receipt = self._coordinator.stage_public_graph_component(
-            grant=grant,
-            graph_resource_manifest_hash=manifest_hash,
-            graph_resource_ids=resource_ids,
-            build_receipt_hash=build_receipt_hash,
-            lease_guard=lambda connection: self._require_current_lease(
-                run=run, connection=connection
-            ),
-        )
+        with self._engine.begin() as connection:
+            self._require_current_lease(run=run, connection=connection)
+            resources = self._repository.list_staging_payloads(
+                connection=connection,
+                run_id=run.graph_build_id,
+                attempt=run.current_attempt,
+            )
+            self._store.activate(
+                connection=connection,
+                graph_build_id=run.graph_build_id,
+                graph_generation_id=run.target_generation_id,
+                index_generation_id=run.target_generation_id,
+                source_revision=run.source_revision,
+                source_head_fence=run.source_head_fence,
+                publications=run.publications,
+                resources=resources,
+            )
+        try:
+            receipt = self._coordinator.stage_public_graph_component(
+                grant=grant,
+                graph_resource_manifest_hash=manifest_hash,
+                graph_resource_ids=resource_ids,
+                build_receipt_hash=build_receipt_hash,
+                lease_guard=lambda connection: self._require_current_lease(
+                    run=run, connection=connection
+                ),
+            )
+        except Exception:
+            self._store.purge_generation(run.target_generation_id)
+            raise
         try:
             with self._engine.begin() as connection:
                 self._repository.set_stage_receipt(
@@ -773,21 +794,6 @@ class GraphBuildService:
                     "index_generation_id": str(release_receipt.active_generation_id),
                     "activation_receipt_id": str(release_receipt.activation_receipt_id),
                 },
-            )
-            resources = self._repository.list_staging_payloads(
-                connection=connection,
-                run_id=run.graph_build_id,
-                attempt=run.current_attempt,
-            )
-            self._store.activate(
-                connection=connection,
-                graph_build_id=run.graph_build_id,
-                graph_generation_id=str(release_receipt.graph_generation_id),
-                index_generation_id=str(release_receipt.active_generation_id),
-                source_revision=run.source_revision,
-                source_head_fence=run.source_head_fence,
-                publications=run.publications,
-                resources=resources,
             )
             self._source.acknowledge_consumption(
                 consumer_kind=GRAPH_CONSUMER_ID,

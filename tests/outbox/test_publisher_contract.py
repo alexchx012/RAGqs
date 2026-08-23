@@ -197,7 +197,7 @@ def test_graph_succeeded_requires_generation_and_failed_forbids_it() -> None:
     base = {
         "graph_build_id": "gb_1",
         "status": "succeeded",
-        "source_revision": "rev_1",
+        "source_revision": 1,
     }
     from app.outbox.ports import RecipientSelection as RS
 
@@ -267,6 +267,27 @@ def test_graph_succeeded_requires_generation_and_failed_forbids_it() -> None:
             ),
             connection=connection,
         )
+    with engine.connect() as connection:
+        payload = connection.execute(
+            select(outbox_event_table.c.payload_json).where(
+                outbox_event_table.c.event_id == "evt_1"
+            )
+        ).scalar_one()
+    assert payload == {
+        "schema_version": 1,
+        "event_id": "evt_1",
+        "event_type": "graph_build_completed",
+        "aggregate_type": "graph_build_run",
+        "aggregate_id": "job_1",
+        "transition_version": 1,
+        "graph_build_id": "gb_1",
+        "status": "succeeded",
+        "source_revision": 1,
+        "graph_generation_id": "gen_1",
+        "index_generation_id": "index_gen_1",
+        "failure_class": None,
+        "occurred_at": fixed_now().isoformat(),
+    }
 
 
 def test_graph_failed_and_cancelled_events_require_stable_failure_class() -> None:
@@ -291,7 +312,7 @@ def test_graph_failed_and_cancelled_events_require_stable_failure_class() -> Non
                         payload={
                             "graph_build_id": f"gb_{status}",
                             "status": status,
-                            "source_revision": "rev_1",
+                            "source_revision": 1,
                             "graph_generation_id": None,
                             "index_generation_id": None,
                             "failure_class": None,
@@ -362,7 +383,7 @@ def test_graph_requires_a_single_identity_recipient() -> None:
                     payload={
                         "graph_build_id": "gb_1",
                         "status": "succeeded",
-                        "source_revision": "rev_1",
+                        "source_revision": 1,
                         "graph_generation_id": "gen_1",
                     },
                     recipients=(

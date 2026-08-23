@@ -6,6 +6,7 @@ import zipfile
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from types import SimpleNamespace
 
 import pytest
 from openpyxl import Workbook
@@ -483,6 +484,8 @@ def test_retrieval_effort_sets_routing_budgets(
 
 
 def test_graph_route_degradation_keeps_hybrid_retrieval_result() -> None:
+    samples: list[object] = []
+    metrics = SimpleNamespace(record=lambda sample: samples.append(sample))
     provider = InMemorySparseIndexProvider()
     provider.stage_chunks(
         "attempt_1",
@@ -516,7 +519,8 @@ def test_graph_route_degradation_keeps_hybrid_retrieval_result() -> None:
         )(),
         graph_router=lambda query, candidates, *, rag_call_limit, reader_lease: (
             _ for _ in ()
-        ).throw(PlatformError("graph_stale", "graph is stale", {}, 409)),
+        ).throw(PlatformError("graph_stale", "graph is stale", {"stale_duration_ms": 2500}, 409)),
+        exact_match_metrics=metrics,
     )
 
     result = service.search(
@@ -527,6 +531,11 @@ def test_graph_route_degradation_keeps_hybrid_retrieval_result() -> None:
 
     assert [hit.chunk.chunk_id for hit in result.hits] == ["chunk_1"]
     assert result.degradations[-1] == {"code": "graph_degraded", "reason": "graph_stale"}
+
+    assert [(sample.route_template, sample.latency_ms) for sample in samples] == [
+        ("index_graph_query_skip", 0),
+        ("index_graph_stale_duration", 2500),
+    ]
 
 
 def test_missing_graph_router_is_an_explicit_degradation() -> None:
@@ -1434,7 +1443,11 @@ def test_retrieval_release_resolves_only_for_its_generation() -> None:
         profile=RetrievalProfile(),
         acceptance_suite=_release_suite(),
     )
-    releases.release(str(staged["id"]), metrics=_release_metrics())
+    releases.release(
+        str(staged["id"]),
+        metrics=_release_metrics(),
+        hardware_profile=_release_suite()["hardware_profile"],
+    )
 
     with pytest.raises(PlatformError) as error:
         releases.resolve(RetrievalProfile(), generation_id="generation_next")
@@ -1458,6 +1471,29 @@ def test_retrieval_release_rejects_metrics_outside_the_staged_acceptance_suite()
         releases.release(
             str(staged["id"]),
             metrics={**_release_metrics(), "p50_ms": 11},
+            hardware_profile=_release_suite()["hardware_profile"],
+        )
+
+    assert error.value.code == "release_gate_failed"
+
+
+def test_retrieval_release_rejects_hardware_profile_mismatch() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    documents_metadata.create_all(engine)
+    indexing_metadata.create_all(engine)
+    SqlAlchemyIndexingRepository(engine).active_generation_id()
+    releases = RetrievalReleaseService(engine)
+    staged = releases.stage(
+        generation_id="generation_initial",
+        profile=RetrievalProfile(),
+        acceptance_suite=_release_suite(),
+    )
+
+    with pytest.raises(PlatformError) as error:
+        releases.release(
+            str(staged["id"]),
+            metrics=_release_metrics(),
+            hardware_profile={"accelerator": "different"},
         )
 
     assert error.value.code == "release_gate_failed"
@@ -2083,6 +2119,10 @@ def test_graph_reader_lease_rechecks_current_source_head() -> None:
     assert stale.graph_component_state == "stale"
     assert stale.manifest["components"]["public_graph"]["graph_resource_ids"] == []
     assert lease.lease_id not in manager._leases
+    with pytest.raises(PlatformError) as stale_error:
+        coordinator.acquire_current_reader_lease(generation_id=manager.active_generation_id)
+    assert stale_error.value.code == "graph_stale"
+    assert stale_error.value.details["stale_duration_ms"] >= 0
 
 
 def test_invalid_graph_release_receipt_discards_staged_graph_resources() -> None:

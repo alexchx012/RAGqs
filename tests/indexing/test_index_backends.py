@@ -135,12 +135,17 @@ def _milvus_match(row: Mapping[str, Any], expr: str) -> bool:
 class FakeMeili:
     def __init__(self) -> None:
         self.indexes: dict[str, list[dict[str, Any]]] = {}
+        self.version_calls = 0
 
     def health(self) -> None:
         return None
 
     def authorized(self) -> None:
         return None
+
+    def version(self) -> Mapping[str, Any]:
+        self.version_calls += 1
+        return {"pkgVersion": "1.15.2"}
 
     def has_index(self, name: str) -> bool:
         return name in self.indexes
@@ -377,6 +382,99 @@ def test_meilisearch_volume_probe_requires_mounted_directory(tmp_path: Path) -> 
         probe_meilisearch_volume(str(tmp_path / "missing"))
     assert error.value.code == "meilisearch_volume_missing"
     probe_meilisearch_volume(str(tmp_path))
+
+
+def test_meilisearch_volume_probe_rejects_unwritable_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_open = Path.open
+
+    def deny_probe_file(path: Path, *args: Any, **kwargs: Any):
+        if path.parent == tmp_path:
+            raise PermissionError("read only mount")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_probe_file)
+    with pytest.raises(PlatformError) as error:
+        probe_meilisearch_volume(str(tmp_path))
+    assert error.value.code == "meilisearch_volume_unwritable"
+
+
+def test_meilisearch_probe_requires_readable_server_version(tmp_path: Path) -> None:
+    client = FakeMeili()
+    client.indexes["ragqs_chunks"] = []
+    provider = MeilisearchSparseIndexProvider(
+        client, index_name="ragqs_chunks", data_path=str(tmp_path)
+    )
+    provider.probe()
+    assert client.version_calls == 1
+
+    class MissingVersion(FakeMeili):
+        def version(self) -> Mapping[str, Any]:
+            return {}
+
+    missing = MissingVersion()
+    missing.indexes["ragqs_chunks"] = []
+    with pytest.raises(PlatformError) as error:
+        MeilisearchSparseIndexProvider(
+            missing, index_name="ragqs_chunks", data_path=str(tmp_path)
+        ).probe()
+    assert error.value.code == "meilisearch_version_unavailable"
+
+
+def test_http_meilisearch_client_reads_authenticated_version() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/version"
+        assert request.headers["Authorization"] == "Bearer test-key"
+        return httpx.Response(200, json={"pkgVersion": "1.15.2"})
+
+    client = HttpMeilisearchClient(
+        "http://127.0.0.1:7700",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    assert client.version() == {"pkgVersion": "1.15.2"}
+
+
+def test_meilisearch_replays_explicit_stage_resource_manifest() -> None:
+    client = FakeMeili()
+    provider = MeilisearchSparseIndexProvider(
+        client, index_name="ragqs_chunks", allow_create_index=True, tokenize=lambda text: text
+    )
+    manifest = ({"resource_id": "receipt-resource-1"},)
+    staged = provider.stage_chunks(
+        "attempt_manifest",
+        "publication_1",
+        "document_1",
+        "version_1",
+        (_chunk(),),
+        fencing_token=7,
+        stage_resource_manifest=manifest,
+    )
+    replay = provider.stage_chunks(
+        "attempt_manifest",
+        "publication_1",
+        "document_1",
+        "version_1",
+        (_chunk(),),
+        fencing_token=7,
+        stage_resource_manifest=manifest,
+    )
+    published = provider.publish_staged(
+        "attempt_manifest",
+        "publication_1",
+        fencing_token=7,
+        stage_resource_manifest=manifest,
+    )
+    republished = provider.publish_staged(
+        "attempt_manifest",
+        "publication_1",
+        fencing_token=7,
+        stage_resource_manifest=manifest,
+    )
+    assert staged == replay
+    assert published == republished
+    assert published.resource_ids == ("receipt-resource-1",)
 
 
 def test_pretokens_uses_jieba_when_available() -> None:

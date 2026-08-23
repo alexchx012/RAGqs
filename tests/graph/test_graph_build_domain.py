@@ -21,6 +21,7 @@ from app.graph import (
     GraphBuildWorker,
     RepositoryActivatedReceiptVerifier,
     SqlAlchemyGraphRepository,
+    SqlAlchemyPublicGraphStore,
 )
 from app.graph.models import GraphRunView
 from app.graph.models import _iso as graph_iso
@@ -131,6 +132,51 @@ class _ProviderFailingExtractor:
         raise PlatformError("graph_provider_call_failed", "provider failed", {}, 503)
 
 
+class _DanglingRelationExtractor:
+    def estimate_primary_model_calls(self, snapshot: Any) -> int:
+        return len(snapshot.publications)
+
+    def extract(self, snapshot: Any, session: Any) -> None:
+        publication = snapshot.publications[0]
+        session.staging.stage(
+            resource_kind="publication_graph",
+            resource_id=str(publication["publication_id"]),
+            payload={
+                "graph": {
+                    "source": {
+                        "document_id": publication["document_id"],
+                        "content_manifest_id": publication["content_manifest_id"],
+                    },
+                    "nodes": [
+                        {
+                            "canonical_key": "existing",
+                            "entity_type": "topic",
+                            "display_name": "Existing",
+                            "aliases": [],
+                            "chunk_locator": {"chunk": "1"},
+                            "extraction_model_revision": "model-v1",
+                            "prompt_revision": "prompt-v1",
+                            "confidence": 1.0,
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "source_key": "existing",
+                            "target_key": "missing",
+                            "relation_type": "references",
+                            "directed": True,
+                            "properties": {},
+                            "chunk_locator": {"chunk": "1"},
+                            "extraction_model_revision": "model-v1",
+                            "prompt_revision": "prompt-v1",
+                            "confidence": 0.9,
+                        }
+                    ],
+                }
+            },
+        )
+
+
 class _DeadlineAfterFirstFailure:
     def __init__(self) -> None:
         self.primary_calls = 0
@@ -184,7 +230,10 @@ def _build_env(now: FixedClock | None = None, *, extractor: object | None = None
         outbox_port=_RecordingSourceOutbox(),
     )
     manager = GenerationManager(now=clock)
-    coordinator = GraphComponentCoordinator(manager, source, consumer_id="indexing")
+    graph_store = SqlAlchemyPublicGraphStore(engine, now=clock)
+    coordinator = GraphComponentCoordinator(
+        manager, source, consumer_id="indexing", graph_store=graph_store
+    )
     repository = SqlAlchemyGraphRepository(engine, now=clock)
     usage = _RecordingUsage()
     outbox = _RecordingOutbox()
@@ -198,6 +247,7 @@ def _build_env(now: FixedClock | None = None, *, extractor: object | None = None
         extractor=extractor or DeterministicPublicGraphExtractor(),
         outbox=outbox,
         verifier=verifier,
+        store=graph_store,
         now=clock,
     )
     worker = GraphBuildWorker(
@@ -349,6 +399,26 @@ def test_worker_build_succeeds_and_publishes_single_event() -> None:
     assert created["graph_build_id"] == current["latest_run"]["graph_build_id"]
 
 
+def test_invalid_graph_payload_cannot_replace_active_generation() -> None:
+    _, source, coordinator, usage, _, service, worker, clock = _build_env()
+    _publish(source, count=1)
+    _create(service)
+    assert worker.run_once().runs_failed == 0
+    active_before = coordinator._generation.active_generation_id
+
+    source.record_source_change(
+        space_id="public",
+        document_id="doc_2",
+        change_type="publish",
+        publications=[_publication(2)],
+    )
+    _create(service, key="invalid-graph", revision=2)
+    invalid_worker = GraphBuildWorker(service, _DanglingRelationExtractor(), usage, now=clock)
+
+    assert invalid_worker.run_once().runs_failed == 1
+    assert coordinator._generation.active_generation_id == active_before
+
+
 def test_current_disabled_before_any_build() -> None:
     _, source, _, _, _, service, _, _ = _build_env()
     _publish(source)
@@ -424,7 +494,7 @@ def test_cancel_running_run_deletes_current_attempt_staging_before_replay() -> N
         run=run,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
 
     cancelled = service.cancel(
@@ -565,7 +635,7 @@ def test_expired_attempt_requeue_discards_its_staging_resources() -> None:
         run=run,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
 
     clock.tick(301)
@@ -593,7 +663,7 @@ def test_recovery_skips_an_attempt_that_renewed_after_the_expiry_scan() -> None:
         run=run,
         resource_kind="publication_graph",
         resource_id="staged-before-renewal",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     stale_recovery_time = clock.now + timedelta(seconds=301)
 
@@ -672,7 +742,7 @@ def test_stale_expiry_recovery_cannot_discard_reclaimed_attempt_component_stage(
             run=retry,
             resource_kind="publication_graph",
             resource_id="pub_1",
-            payload={"graph": {}},
+            payload=_empty_graph_payload(),
         )
         retry_stage_id = service.stage_component(run=retry)
 
@@ -953,7 +1023,7 @@ def test_expired_attempt_cannot_write_staging_or_usage() -> None:
             run=run,
             resource_kind="publication_graph",
             resource_id="pub_1",
-            payload={"graph": {}},
+            payload=_empty_graph_payload(),
         )
     with pytest.raises(PlatformError) as usage_error:
         service.record_usage(run=run, primary_model_calls=1, provider_calls=1)
@@ -994,7 +1064,7 @@ def test_stage_discards_component_when_lease_expires_before_receipt(
         run=run,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     original_stage = coordinator.stage_public_graph_component
 
@@ -1029,7 +1099,7 @@ def test_stale_stage_conflict_cannot_discard_the_reclaimed_component_stage(
         run=first,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     original_stage = coordinator.stage_public_graph_component
     retries: list[object] = []
@@ -1049,7 +1119,7 @@ def test_stale_stage_conflict_cannot_discard_the_reclaimed_component_stage(
                 run=retry,
                 resource_kind="publication_graph",
                 resource_id="pub_1",
-                payload={"graph": {}},
+                payload=_empty_graph_payload(),
             )
             retry_stage_ids.append(service.stage_component(run=retry))
         return original_stage(*args, **kwargs)
@@ -1081,7 +1151,7 @@ def test_release_rejects_lease_expiry_inside_the_coordinator(
         run=run,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     component_stage_id = service.stage_component(run=run)
     original_release = coordinator.release_graph_component

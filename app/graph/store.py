@@ -67,6 +67,8 @@ class SqlAlchemyPublicGraphStore:
         }
         entity_rows: list[dict[str, Any]] = []
         relation_rows: list[dict[str, Any]] = []
+        validated_resources: list[tuple[str, Mapping[str, str], list[Any], list[Any]]] = []
+        node_keys: set[str] = set()
         created_at = self._now()
         for resource in resources:
             if resource.get("resource_kind") != "publication_graph":
@@ -105,7 +107,6 @@ class SqlAlchemyPublicGraphStore:
                 raise PlatformError(
                     "graph_provider_schema_invalid", "Graph nodes and edges must be arrays", {}, 409
                 )
-            node_metadata: dict[str, tuple[Mapping[str, Any], str, str]] = {}
             for raw_node in nodes:
                 if not isinstance(raw_node, Mapping):
                     raise PlatformError(
@@ -128,7 +129,7 @@ class SqlAlchemyPublicGraphStore:
                     raw_node.get("extraction_model_revision"), "extraction_model_revision"
                 )
                 prompt_revision = _required(raw_node.get("prompt_revision"), "prompt_revision")
-                node_metadata[canonical_key] = (locator, model_revision, prompt_revision)
+                node_keys.add(canonical_key)
                 entity_rows.append(
                     {
                         "id": _stable_id(
@@ -159,17 +160,35 @@ class SqlAlchemyPublicGraphStore:
                         "created_at_utc": created_at,
                     }
                 )
-            fallback_metadata = next(iter(node_metadata.values()), None)
+            validated_resources.append((publication_id, publication, nodes, edges))
+
+        for publication_id, publication, _nodes, edges in validated_resources:
             for raw_edge in edges:
-                if not isinstance(raw_edge, Mapping) or fallback_metadata is None:
+                if not isinstance(raw_edge, Mapping):
                     raise PlatformError(
                         "graph_provider_schema_invalid", "Graph relation is invalid", {}, 409
                     )
                 source_key = _required(raw_edge.get("source_key"), "source_key")
                 target_key = _required(raw_edge.get("target_key"), "target_key")
-                locator, model_revision, prompt_revision = node_metadata.get(
-                    source_key, fallback_metadata
+                if source_key not in node_keys or target_key not in node_keys:
+                    raise PlatformError(
+                        "graph_provider_schema_invalid",
+                        "Graph relation endpoint is not present in the staged graph",
+                        {},
+                        409,
+                    )
+                locator = raw_edge.get("chunk_locator")
+                if not isinstance(locator, Mapping) or not locator:
+                    raise PlatformError(
+                        "graph_provider_schema_invalid",
+                        "Graph relation chunk locator is required",
+                        {},
+                        409,
+                    )
+                model_revision = _required(
+                    raw_edge.get("extraction_model_revision"), "extraction_model_revision"
                 )
+                prompt_revision = _required(raw_edge.get("prompt_revision"), "prompt_revision")
                 properties = raw_edge.get("properties", {})
                 if not isinstance(properties, Mapping) or not isinstance(
                     raw_edge.get("directed"), bool
@@ -228,6 +247,73 @@ class SqlAlchemyPublicGraphStore:
             connection.execute(graph_entities_table.insert(), entity_rows)
         if relation_rows:
             connection.execute(graph_relations_table.insert(), relation_rows)
+
+    def validate_generation(
+        self,
+        *,
+        graph_generation_id: str,
+        index_generation_id: str,
+        source_revision: int,
+        source_head_fence: int,
+        connection: Connection | None = None,
+    ) -> None:
+        if connection is None:
+            with self._engine.connect() as opened:
+                self.validate_generation(
+                    graph_generation_id=graph_generation_id,
+                    index_generation_id=index_generation_id,
+                    source_revision=source_revision,
+                    source_head_fence=source_head_fence,
+                    connection=opened,
+                )
+            return
+        entities = (
+            connection.execute(
+                select(graph_entities_table).where(
+                    graph_entities_table.c.graph_generation_id == graph_generation_id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        relations = (
+            connection.execute(
+                select(graph_relations_table).where(
+                    graph_relations_table.c.graph_generation_id == graph_generation_id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        expected = (index_generation_id, source_revision, source_head_fence, "public")
+        if any(
+            (
+                str(row["index_generation_id"]),
+                int(row["source_revision"]),
+                int(row["source_head_fence"]),
+                str(row["space_id"]),
+            )
+            != expected
+            for row in (*entities, *relations)
+        ):
+            raise PlatformError(
+                "release_gate_failed",
+                "Public graph facts do not match the staged generation",
+                {},
+                409,
+            )
+        entity_keys = {str(row["canonical_key"]) for row in entities}
+        if any(
+            str(row["source_canonical_key"]) not in entity_keys
+            or str(row["target_canonical_key"]) not in entity_keys
+            for row in relations
+        ):
+            raise PlatformError(
+                "release_gate_failed",
+                "Public graph relations contain an unknown endpoint",
+                {},
+                409,
+            )
 
     def route(
         self,

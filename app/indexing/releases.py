@@ -214,7 +214,13 @@ class RetrievalReleaseService:
                 "state": "staged",
             }
 
-    def release(self, release_id: str, *, metrics: Mapping[str, Any]) -> None:
+    def release(
+        self,
+        release_id: str,
+        *,
+        metrics: Mapping[str, Any],
+        hardware_profile: Mapping[str, Any],
+    ) -> None:
         if not _REQUIRED_METRICS <= metrics.keys() or any(
             not isinstance(metrics[name], (int, float)) for name in _REQUIRED_METRICS
         ):
@@ -242,6 +248,13 @@ class RetrievalReleaseService:
             ]
             binding = _generation_binding(connection, str(release["generation_id"]))
             frozen = dict(release["acceptance_suite_json"] or {})
+            if dict(hardware_profile) != dict(frozen.get("hardware_profile") or {}):
+                raise PlatformError(
+                    "release_gate_failed",
+                    "retrieval hardware profile does not match frozen acceptance evidence",
+                    {},
+                    409,
+                )
             if any(
                 frozen.get(key) != binding[key]
                 for key in (
@@ -270,6 +283,7 @@ class RetrievalReleaseService:
                 )
             evidence = frozen
             evidence["results"] = {
+                "hardware_profile": dict(hardware_profile),
                 "metrics": {
                     name: metrics[name]
                     for name in sorted(_REQUIRED_METRICS | _REQUIRED_QUALITY_METRICS)
@@ -358,6 +372,8 @@ class RetrievalReleaseService:
                 or evidence.get("profile_config_hash")
                 != _fingerprint(dict(release["profile_json"] or {}))
                 or results.get("passed") is not True
+                or dict(results.get("hardware_profile") or {})
+                != dict(evidence.get("hardware_profile") or {})
                 or not _REQUIRED_METRICS | _REQUIRED_QUALITY_METRICS <= metrics.keys()
                 or any(float(metrics[name]) > float(thresholds[name]) for name in _REQUIRED_METRICS)
                 or any(

@@ -211,6 +211,7 @@ def test_opensearch_provider_shares_sparse_stage_publish_discard_search_contract
     client = _FakeOpenSearchClient()
     provider = OpenSearchSparseIndexProvider(client, allow_create_index=True)
     chunk = _chunk()
+    manifest = ({"resource_id": "receipt-resource-1"},)
 
     staged = provider.stage_chunks(
         "attempt_1",
@@ -219,6 +220,7 @@ def test_opensearch_provider_shares_sparse_stage_publish_discard_search_contract
         "version_1",
         (chunk,),
         fencing_token=7,
+        stage_resource_manifest=manifest,
     )
     replay = provider.stage_chunks(
         "attempt_1",
@@ -227,21 +229,33 @@ def test_opensearch_provider_shares_sparse_stage_publish_discard_search_contract
         "version_1",
         (chunk,),
         fencing_token=7,
+        stage_resource_manifest=manifest,
     )
     assert staged == replay
     assert staged.state == "staged"
     assert staged.fencing_token == 7
 
-    published = provider.publish_staged("attempt_1", "publication_1", fencing_token=7)
-    republished = provider.publish_staged("attempt_1", "publication_1", fencing_token=7)
+    published = provider.publish_staged(
+        "attempt_1",
+        "publication_1",
+        fencing_token=7,
+        stage_resource_manifest=manifest,
+    )
+    republished = provider.publish_staged(
+        "attempt_1",
+        "publication_1",
+        fencing_token=7,
+        stage_resource_manifest=manifest,
+    )
     assert published == republished
     assert published.state == "published"
+    assert published.resource_ids == ("receipt-resource-1",)
     assert not any(item["status"] == "staged" for item in client.documents.values())
 
     page = provider.search("知识图谱", ("space_1",), 10, None, generation_id="generation_1")
     assert page.cursor is None
     assert page.items[0]["chunk_id"] == "chunk_1"
-    assert page.items[0]["score"] == 1.0
+    assert page.items[0]["score"] == 0.0
     assert client.bulk_indexes == ["ragqs_chunks", "ragqs_chunks"]
 
     provider.search("“知识图谱”", ("space_1",), 10, None, generation_id="generation_1")

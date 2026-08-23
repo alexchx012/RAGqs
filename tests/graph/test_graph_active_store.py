@@ -28,7 +28,17 @@ def _resource() -> dict[str, object]:
                         "extraction_model_revision": "model-v1",
                         "prompt_revision": "prompt-v1",
                         "confidence": 0.99,
-                    }
+                    },
+                    {
+                        "canonical_key": "retrieval",
+                        "entity_type": "capability",
+                        "display_name": "Retrieval",
+                        "aliases": [],
+                        "chunk_locator": {"content_manifest_id": "manifest_1", "chunk": "2"},
+                        "extraction_model_revision": "model-v1",
+                        "prompt_revision": "prompt-v1",
+                        "confidence": 0.95,
+                    },
                 ],
                 "edges": [
                     {
@@ -37,6 +47,9 @@ def _resource() -> dict[str, object]:
                         "relation_type": "uses",
                         "directed": True,
                         "properties": {},
+                        "chunk_locator": {"content_manifest_id": "manifest_1", "chunk": "1"},
+                        "extraction_model_revision": "model-v1",
+                        "prompt_revision": "prompt-v1",
                         "confidence": 0.8,
                     }
                 ],
@@ -72,7 +85,13 @@ def test_active_graph_store_materializes_provenance_queries_and_purges() -> None
             publications=(_publication(),),
             resources=(_resource(),),
         )
-        entity = connection.execute(select(graph_entities_table)).mappings().one()
+        entity = (
+            connection.execute(
+                select(graph_entities_table).where(graph_entities_table.c.canonical_key == "ragqs")
+            )
+            .mappings()
+            .one()
+        )
         relation = connection.execute(select(graph_relations_table)).mappings().one()
     assert entity["space_id"] == "public"
     assert entity["publication_id"] == "publication_1"
@@ -91,7 +110,7 @@ def test_active_graph_store_materializes_provenance_queries_and_purges() -> None
     assert "display_name" in result["entities"][0]
     assert "payload" not in result["entities"][0]
 
-    assert store.delete_document_version("generation_1", "document_1", "version_1") == 2
+    assert store.delete_document_version("generation_1", "document_1", "version_1") == 3
     assert store.purge_generation("generation_1") == 0
 
 
@@ -113,4 +132,51 @@ def test_active_graph_store_rejects_unprovenanced_provider_output() -> None:
             publications=(_publication(),),
             resources=(invalid,),
         )
+    assert error.value.code == "graph_provider_schema_invalid"
+
+
+@pytest.mark.parametrize("field", ("chunk_locator", "extraction_model_revision", "prompt_revision"))
+def test_active_graph_store_requires_relation_owned_provenance(field: str) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    graph_metadata.create_all(engine)
+    store = SqlAlchemyPublicGraphStore(engine)
+    invalid = _resource()
+    graph = invalid["payload"]  # type: ignore[assignment]
+    graph["graph"]["edges"][0].pop(field)  # type: ignore[index]
+
+    with pytest.raises(PlatformError) as error, engine.begin() as connection:
+        store.activate(
+            connection=connection,
+            graph_build_id="graph_build_1",
+            graph_generation_id="graph_generation_1",
+            index_generation_id="generation_1",
+            source_revision=7,
+            source_head_fence=9,
+            publications=(_publication(),),
+            resources=(invalid,),
+        )
+
+    assert error.value.code == "graph_provider_schema_invalid"
+
+
+def test_active_graph_store_rejects_dangling_relation_endpoint() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    graph_metadata.create_all(engine)
+    store = SqlAlchemyPublicGraphStore(engine)
+    invalid = _resource()
+    graph = invalid["payload"]  # type: ignore[assignment]
+    graph["graph"]["edges"][0]["target_key"] = "missing"  # type: ignore[index]
+
+    with pytest.raises(PlatformError) as error, engine.begin() as connection:
+        store.activate(
+            connection=connection,
+            graph_build_id="graph_build_1",
+            graph_generation_id="graph_generation_1",
+            index_generation_id="generation_1",
+            source_revision=7,
+            source_head_fence=9,
+            publications=(_publication(),),
+            resources=(invalid,),
+        )
+
     assert error.value.code == "graph_provider_schema_invalid"

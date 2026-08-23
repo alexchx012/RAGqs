@@ -16,6 +16,7 @@ import json
 import logging
 import secrets
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -91,12 +92,19 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
     "quota_rejected": {"request_id": str},
     "calibration_window_suggested": {"calibration_window_suggestion_id": str},
     "graph_build_completed": {
+        "schema_version": int,
+        "event_id": str,
+        "event_type": str,
+        "aggregate_type": str,
+        "aggregate_id": str,
+        "transition_version": int,
         "graph_build_id": str,
         "status": str,
-        "source_revision": str,
+        "source_revision": int,
         "graph_generation_id": (str, None),
         "index_generation_id": (str, None),
         "failure_class": (str, None),
+        "occurred_at": str,
     },
     "evaluation_judge_configuration_missing": {"missing_variable_names": list},
     "public_graph_source_changed": {
@@ -118,6 +126,28 @@ SINGLE_RECIPIENT_EVENT_TYPES: frozenset[str] = frozenset({"graph_build_completed
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _canonical_graph_payload(command: OutboxPublishCommand) -> dict[str, object]:
+    envelope = {
+        "schema_version": command.schema_version,
+        "event_id": command.event_id,
+        "event_type": command.event_type,
+        "aggregate_type": command.aggregate_type,
+        "aggregate_id": command.aggregate_id,
+        "transition_version": command.transition_version,
+        "occurred_at": _utc(command.occurred_at).isoformat(),
+    }
+    for field, expected in envelope.items():
+        supplied = command.payload.get(field)
+        if supplied is not None and supplied != expected:
+            raise PlatformError(
+                "invalid_event_payload",
+                "Graph event payload envelope does not match the outbox command",
+                {"event_type": command.event_type, "field": field},
+                422,
+            )
+    return {**command.payload, **envelope}
 
 
 def fingerprint_event(
@@ -403,6 +433,8 @@ class SqlAlchemyOutboxPublisher:
         caller: str,
     ) -> OutboxPublishReceipt:
         """Persist one already assembly-scoped command in the caller transaction."""
+        if command.event_type == "graph_build_completed":
+            command = replace(command, payload=_canonical_graph_payload(command))
         _validate_payload(command.event_type, command.schema_version, command.payload)
         if command.event_type not in NOTIFICATION_EVENT_TYPES | OUTBOX_ONLY_EVENT_TYPES:
             raise PlatformError(

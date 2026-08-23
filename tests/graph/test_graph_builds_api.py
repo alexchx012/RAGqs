@@ -360,7 +360,7 @@ def test_runtime_requeues_a_staged_attempt_and_completes_the_next_attempt() -> N
         run=first,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     service.stage_component(run=first)
     coordinator = runtime.resolve("indexing_service").graph
@@ -405,7 +405,7 @@ def test_runtime_does_not_expose_recovery_retry_before_stale_component_stage_cle
         run=first,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     service.stage_component(run=first)
     clock.now += timedelta(seconds=301)
@@ -458,7 +458,7 @@ def test_runtime_stale_recovery_cannot_discard_reclaimed_component_stage(
         run=first,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     clock.now += timedelta(seconds=301)
 
@@ -479,7 +479,7 @@ def test_runtime_stale_recovery_cannot_discard_reclaimed_component_stage(
                 run=retry,
                 resource_kind="publication_graph",
                 resource_id="pub_1",
-                payload={"graph": {}},
+                payload=_empty_graph_payload(),
             )
             retry_stage_ids.append(service.stage_component(run=retry))
         return original_discard(*args, **kwargs)
