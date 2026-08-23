@@ -1,6 +1,7 @@
 /*
  * 我的投稿层（settings-personal §8，仅 user/minister；知识库模块下钻子界面）。
- * - 六档筛选 chip（全部/待审核/已通过/已驳回/已撤回/已失效），切换即重新请求。
+ * - 六档筛选 chip（全部/待审核/已通过/已驳回/已撤回/已失效），切换即重新请求；
+ *   切换时当前视图向上滑出渐隐、新视图自下滑入渐显（ui-view-switch），不再闪骨架屏。
  * - 行 = 文件名 + 目标空间 + 投稿时间 + 状态 tag 五态着色；驳回原因填了才显示在 tag 下方；
  *   invalidated 显示固定机器原因提示，不展示原始机器码、不提供审核重试。
  * - 行操作按状态渲染：pending=查看内容+撤回；approved=查看内容；rejected/withdrawn/invalidated=查看内容+删除。
@@ -39,6 +40,9 @@ const FILTERS: readonly { readonly value: SubmissionStatus | 'all'; readonly lab
 /** 状态 tag 一次性淡入标记时长（--duration-fast 150ms + 余量；模式同 DepartmentsLayer RENAME_FADE_MS）。 */
 const STATUS_FADE_MS = 200;
 
+/** 筛选切换退出动画时长（= --duration-fast）：计时结束后提交暂存的新视图并转入进入动画。 */
+const SWITCH_EXIT_MS = 150;
+
 /** 五态 tag 着色（pending ash-gray / approved 成功绿 / rejected 危险红 / withdrawn slate-gray / invalidated 警告琥珀）。 */
 function statusClass(status: SubmissionStatus): string {
   switch (status) {
@@ -61,6 +65,8 @@ export function SubmissionsLayer() {
   const [submissions, setSubmissions] = useState<readonly Submission[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /** 筛选切换动效阶段：exit=当前视图向上滑出渐隐；enter=新视图自下滑入渐显。 */
+  const [switchPhase, setSwitchPhase] = useState<'idle' | 'exit' | 'enter'>('idle');
   const [pendingWithdraw, setPendingWithdraw] = useState<Submission | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Submission | null>(null);
   const [confirmingWithdraw, setConfirmingWithdraw] = useState(false);
@@ -74,36 +80,86 @@ export function SubmissionsLayer() {
   // filter/view generation（review A4）：切换 filter 使旧 mutation closure 失效；
   // 迟到成功/冲突不得用旧 filter 覆盖新筛选视图。
   const mutationEpochRef = useRef(0);
+  // 筛选切换动效：animated 标记本次加载走「暂存—滑出后提交」通道；
+  // pending 暂存新视图结果，exitDone 标记滑出动画是否已结束。
+  const animatedSwitchRef = useRef(false);
+  const pendingSwitchViewRef = useRef<{ items: readonly Submission[] } | { error: true } | null>(null);
+  const switchExitDoneRef = useRef(true);
+  const switchExitTimerRef = useRef<number | null>(null);
+
+  /** 提交暂存的新视图（若有）：成功/空/失败态随 enter 动画自下滑入渐显。 */
+  const commitSwitchView = useCallback(() => {
+    const pending = pendingSwitchViewRef.current;
+    if (pending === null) {
+      return;
+    }
+    pendingSwitchViewRef.current = null;
+    if ('error' in pending) {
+      setLoadError(true);
+    } else {
+      setSubmissions(pending.items);
+      setLoadError(false);
+    }
+    setSwitchPhase('enter');
+  }, []);
 
   const submissionsSeqRef = useRef(0);
   const loadSubmissions = useCallback(
     async (nextFilter: SubmissionStatus | 'all') => {
       // filter 切换即重新请求：旧 filter 响应不得覆盖当前结果（review Major 2）
       const seq = ++submissionsSeqRef.current;
-      setLoading(true);
-      setLoadError(false);
+      // 筛选切换动效：本次加载不闪骨架屏，结果暂存，待当前视图滑出渐隐后提交
+      const animated = animatedSwitchRef.current;
+      animatedSwitchRef.current = false;
+      if (!animated) {
+        setLoading(true);
+        setLoadError(false);
+      }
       try {
         const response = await api.listSubmissions(nextFilter);
         if (seq !== submissionsSeqRef.current) {
           return;
         }
-        setSubmissions(response.items);
+        if (animated) {
+          pendingSwitchViewRef.current = { items: response.items };
+          if (switchExitDoneRef.current) {
+            commitSwitchView();
+          }
+        } else {
+          setSubmissions(response.items);
+        }
       } catch {
         if (seq === submissionsSeqRef.current) {
-          setLoadError(true);
+          if (animated) {
+            pendingSwitchViewRef.current = { error: true };
+            if (switchExitDoneRef.current) {
+              commitSwitchView();
+            }
+          } else {
+            setLoadError(true);
+          }
         }
       } finally {
-        if (seq === submissionsSeqRef.current) {
+        if (!animated && seq === submissionsSeqRef.current) {
           setLoading(false);
         }
       }
     },
-    [api],
+    [api, commitSwitchView],
   );
 
   useEffect(() => {
     void loadSubmissions(filter);
   }, [filter, loadSubmissions]);
+
+  // 卸载时清理筛选切换的退出计时器
+  useEffect(() => {
+    return () => {
+      if (switchExitTimerRef.current !== null) {
+        window.clearTimeout(switchExitTimerRef.current);
+      }
+    };
+  }, []);
 
   const openContent = async (submission: Submission) => {
     setRowErrors((errors) => {
@@ -189,6 +245,17 @@ export function SubmissionsLayer() {
             : item,
         );
       });
+      // 筛选切换的暂存视图若尚未提交，同步该就地更新，避免提交时覆盖本次撤回结果
+      const pendingView = pendingSwitchViewRef.current;
+      if (pendingView !== null && 'items' in pendingView) {
+        pendingSwitchViewRef.current = {
+          items: pendingView.items.map((item) =>
+            item.submission_id === updated.submission_id
+              ? { ...item, version: updated.version, status: updated.status }
+              : item,
+          ),
+        };
+      }
       setPendingWithdraw(null);
     } catch (error) {
       if (epoch !== mutationEpochRef.current) {
@@ -282,6 +349,13 @@ export function SubmissionsLayer() {
       setPendingDelete(null);
       // 行 opacity→0 收拢移除（--duration-base；无回收站与恢复入口）
       setSubmissions((items) => items.filter((item) => item.submission_id !== submission.submission_id));
+      // 同步筛选切换的暂存视图：提交时不得带回已删除行
+      const pendingView = pendingSwitchViewRef.current;
+      if (pendingView !== null && 'items' in pendingView) {
+        pendingSwitchViewRef.current = {
+          items: pendingView.items.filter((item) => item.submission_id !== submission.submission_id),
+        };
+      }
     } catch (error) {
       if (epoch !== mutationEpochRef.current) {
         return; // 旧 mutation 已失效：不刷新旧 filter、不关闭新确认框、不覆盖当前错误
@@ -360,6 +434,19 @@ export function SubmissionsLayer() {
               // 视图切换：释放旧 mutation 的 confirming（受控 Dialog 不会自动回调 onOpenChange）
               setConfirmingWithdraw(false);
               setConfirmingDelete(false);
+              if (entry.value !== filter && !loading) {
+                // 切换动效：当前视图向上滑出渐隐（SWITCH_EXIT_MS），数据就绪后提交新视图滑入
+                animatedSwitchRef.current = true;
+                switchExitDoneRef.current = false;
+                if (switchExitTimerRef.current !== null) {
+                  window.clearTimeout(switchExitTimerRef.current);
+                }
+                switchExitTimerRef.current = window.setTimeout(() => {
+                  switchExitDoneRef.current = true;
+                  commitSwitchView();
+                }, SWITCH_EXIT_MS);
+                setSwitchPhase('exit');
+              }
               setFilter(entry.value);
             }}
             className={`inline-flex h-8 items-center rounded-[var(--radius-buttons)] border px-3 text-[14px] transition-colors duration-[var(--duration-fast)] ${
@@ -373,33 +460,36 @@ export function SubmissionsLayer() {
         ))}
       </div>
 
-      {loading ? (
-        <div className="mt-4">
-          <LoadingRows count={3} />
-        </div>
-      ) : loadError ? (
-        <div className="mt-4">
-          <ErrorState onRetry={() => void loadSubmissions(filter)} />
-        </div>
-      ) : submissions.length === 0 ? (
-        <div className="mt-4">
-          <EmptyState text={copy.settings.knowledge.submissions.empty} />
-        </div>
-      ) : (
-        <ul className="mt-4 divide-y divide-[var(--color-hairline)]">
-          {submissions.map((submission) => (
-            <SubmissionRow
-              key={submission.submission_id}
-              submission={submission}
-              error={rowErrors.get(submission.submission_id) ?? null}
-              statusChanged={statusChangedIds.has(submission.submission_id)}
-              onView={() => void openContent(submission)}
-              onWithdraw={() => setPendingWithdraw(submission)}
-              onDelete={() => setPendingDelete(submission)}
-            />
-          ))}
-        </ul>
-      )}
+      {/* 内容区整区切换动效：exit 向上滑出渐隐后提交新视图，enter 自下滑入渐显 */}
+      <div className="ui-view-switch" data-phase={switchPhase}>
+        {loading ? (
+          <div className="mt-4">
+            <LoadingRows count={3} />
+          </div>
+        ) : loadError ? (
+          <div className="mt-4">
+            <ErrorState onRetry={() => void loadSubmissions(filter)} />
+          </div>
+        ) : submissions.length === 0 ? (
+          <div className="mt-4">
+            <EmptyState text={copy.settings.knowledge.submissions.empty} />
+          </div>
+        ) : (
+          <ul className="mt-4 divide-y divide-[var(--color-hairline)]">
+            {submissions.map((submission) => (
+              <SubmissionRow
+                key={submission.submission_id}
+                submission={submission}
+                error={rowErrors.get(submission.submission_id) ?? null}
+                statusChanged={statusChangedIds.has(submission.submission_id)}
+                onView={() => void openContent(submission)}
+                onWithdraw={() => setPendingWithdraw(submission)}
+                onDelete={() => setPendingDelete(submission)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
       {actionError !== null && (
         <p role="alert" className="mt-4 text-caption text-danger">
           {actionError}
