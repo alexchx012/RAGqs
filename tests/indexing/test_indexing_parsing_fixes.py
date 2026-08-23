@@ -128,7 +128,21 @@ def test_metered_pages_ignores_invalid_counts() -> None:
 
 def test_publication_quota_debit_folds_image_count_into_pages() -> None:
     from app.documents.service import DocumentsService
-    from tests.documents.test_jobs_and_fences import _Quota
+
+    class _Calendar:
+        def lock_or_verify(self, connection):
+            del connection
+            return object()
+
+    class _Quota:
+        def __init__(self) -> None:
+            self.calendar = _Calendar()
+            self.recorded = []
+
+        def record(self, connection, **values) -> str:
+            del connection
+            self.recorded.append(values)
+            return "debit_1"
 
     quota = _Quota()
     service = DocumentsService.__new__(DocumentsService)
@@ -147,11 +161,19 @@ def test_publication_quota_debit_folds_image_count_into_pages() -> None:
         document={"space_id": "space_1"},
         receipt={
             "page_count": 2,
-            "processing_summary": {"page_count": 2, "image_count": 3},
+            "processing_summary": {
+                "page_count": 2,
+                "image_count": 3,
+                "processing_list": {
+                    "processing_list_id": "processing_list_1",
+                    "frozen": True,
+                },
+            },
         },
         published_at=datetime(2026, 8, 22, tzinfo=UTC),
     )
     assert result["pages"] == 5
+    assert result["processing_list_id"] == "processing_list_1"
     assert result["quota_debit_id"] == "debit_1"
     assert quota.recorded[-1]["pages"] == 5
 

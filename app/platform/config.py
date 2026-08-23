@@ -115,6 +115,15 @@ class IndexSettings(_StrictModel):
     mineru_provider: Literal["disabled", "local"] = "disabled"
     mineru_executable: str = Field(default="mineru", min_length=1, max_length=256)
     mineru_timeout_seconds: int = Field(default=900, ge=1, le=7200)
+    contextual_retrieval_provider: Literal["disabled", "dashscope"] = "disabled"
+    contextual_retrieval_base_url: str | None = None
+    contextual_retrieval_api_key: SecretStr | None = None
+    contextual_retrieval_model: Literal["ds-v4-flash"] = "ds-v4-flash"
+    contextual_retrieval_revision: str = Field(default="ds-v4-flash", min_length=1, max_length=128)
+    contextual_retrieval_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    contextual_retrieval_concurrency: int = Field(default=4, ge=1, le=32)
+    contextual_retrieval_prefix_token_limit: int = Field(default=30_000, ge=1_000, le=100_000)
+    contextual_prefix_cache_provider: Literal["memory", "disabled"] = "memory"
 
 
 class DocumentsSettings(_StrictModel):
@@ -271,6 +280,15 @@ _ENV_KEYS = {
     "RAG_INDEX_MINERU_PROVIDER",
     "RAG_INDEX_MINERU_EXECUTABLE",
     "RAG_INDEX_MINERU_TIMEOUT_SECONDS",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PROVIDER",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_BASE_URL",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_API_KEY",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_MODEL",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_REVISION",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_TIMEOUT_SECONDS",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_CONCURRENCY",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PREFIX_TOKEN_LIMIT",
+    "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER",
     "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
     "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS",
     "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
@@ -368,6 +386,22 @@ def load_platform_settings(
     environ: Mapping[str, str] | None = None,
 ) -> PlatformSettings:
     env = dict(os.environ if environ is None else environ)
+    profile = env.get("RAG_PLATFORM_PROFILE", "development")
+    global_provider_base_url = _optional(env, "RAG_PROVIDER_BASE_URL")
+    global_provider_api_key = _optional(env, "RAG_PROVIDER_API_KEY")
+    contextual_defaults: dict[str, str | None] = {}
+    if profile == "production":
+        contextual_defaults = {
+            "contextual_retrieval_provider": "dashscope",
+            "contextual_retrieval_base_url": (
+                _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_BASE_URL")
+                or global_provider_base_url
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            ),
+            "contextual_retrieval_api_key": (
+                _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_API_KEY") or global_provider_api_key
+            ),
+        }
     relevant = {
         key: value
         for key, value in env.items()
@@ -394,7 +428,7 @@ def load_platform_settings(
         "base_url": _optional(env, "RAG_PROVIDER_BASE_URL"),
     }
     data = {
-        "profile": env.get("RAG_PLATFORM_PROFILE", "development"),
+        "profile": profile,
         "database": {key: value for key, value in database.items() if value is not None},
         "object_storage": {
             key: value for key, value in object_storage.items() if value is not None
@@ -449,6 +483,37 @@ def load_platform_settings(
                 "mineru_provider": _optional(env, "RAG_INDEX_MINERU_PROVIDER") or "disabled",
                 "mineru_executable": _optional(env, "RAG_INDEX_MINERU_EXECUTABLE") or "mineru",
                 "mineru_timeout_seconds": _int(env, "RAG_INDEX_MINERU_TIMEOUT_SECONDS"),
+                "contextual_retrieval_provider": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PROVIDER")
+                    or contextual_defaults.get("contextual_retrieval_provider")
+                    or "disabled"
+                ),
+                "contextual_retrieval_base_url": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_BASE_URL")
+                    or contextual_defaults.get("contextual_retrieval_base_url")
+                ),
+                "contextual_retrieval_api_key": (
+                    _optional_secret(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_API_KEY")
+                    or contextual_defaults.get("contextual_retrieval_api_key")
+                ),
+                "contextual_retrieval_model": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_MODEL") or "ds-v4-flash"
+                ),
+                "contextual_retrieval_revision": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_REVISION") or "ds-v4-flash"
+                ),
+                "contextual_retrieval_timeout_seconds": _int(
+                    env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_TIMEOUT_SECONDS"
+                ),
+                "contextual_retrieval_concurrency": _int(
+                    env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_CONCURRENCY"
+                ),
+                "contextual_retrieval_prefix_token_limit": _int(
+                    env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PREFIX_TOKEN_LIMIT"
+                ),
+                "contextual_prefix_cache_provider": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER") or "memory"
+                ),
             }.items()
             if value is not None
         },
@@ -566,6 +631,13 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
                 raise ValueError("production InternVL image VLM requires a model ID")
         if settings.provider.api_key is None or not settings.provider.api_key.get_secret_value():
             raise ValueError("production provider api key is required")
+        if settings.index.contextual_retrieval_provider == "disabled":
+            raise ValueError("production contextual retrieval provider cannot be disabled")
+        if not settings.index.contextual_retrieval_base_url:
+            raise ValueError("production contextual retrieval provider requires a base URL")
+        contextual_key = settings.index.contextual_retrieval_api_key
+        if contextual_key is None or not contextual_key.get_secret_value():
+            raise ValueError("production contextual retrieval provider requires an API key")
         if settings.debug:
             raise ValueError("production debug must be disabled")
         if settings.auth.secret_key is None or not settings.auth.secret_key.get_secret_value():
@@ -575,6 +647,12 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
         if not settings.auth.admin_roster:
             raise ValueError("production auth admin roster is required")
         _precheck_user_deletion_archive_dir(settings)
+    if settings.index.contextual_retrieval_provider != "disabled":
+        if not settings.index.contextual_retrieval_base_url:
+            raise ValueError("contextual retrieval provider requires a base URL")
+        contextual_key = settings.index.contextual_retrieval_api_key
+        if contextual_key is None or not contextual_key.get_secret_value():
+            raise ValueError("contextual retrieval provider requires an API key")
 
 
 # 归档目录不得落入 Web 静态资源、上传目录或其他业务接口可直接读取的目录。

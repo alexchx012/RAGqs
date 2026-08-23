@@ -73,6 +73,11 @@ class GenerationManager:
             return self._active_generation_id
 
     @property
+    def rollback_candidate_id(self) -> str | None:
+        with self._lock:
+            return self._rollback_candidate_id
+
+    @property
     def current_revision(self) -> int:
         with self._lock:
             return self._current_revision
@@ -95,6 +100,12 @@ class GenerationManager:
                     "generation_not_found", "Index generation was not found", {}, 404
                 )
             return generation
+
+    def has_generation_lease(self, generation_id: str) -> bool:
+        with self._lock:
+            return any(
+                record.lease.generation_id == generation_id for record in self._leases.values()
+            )
 
     def list_generations(self) -> tuple[Generation, ...]:
         with self._lock:

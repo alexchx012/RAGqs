@@ -81,6 +81,7 @@ from app.indexing.backends import (
     is_memory_indexing_adapter,
     probe_configured_backends,
 )
+from app.indexing.contextual_provider import DashScopeContextualRetriever
 from app.indexing.embedding import InMemoryEmbeddingProvider
 from app.indexing.image_vlm import (
     BailianImageDescriber,
@@ -88,6 +89,7 @@ from app.indexing.image_vlm import (
     NoneImageDescriber,
 )
 from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
+from app.indexing.prefix_cache import PrefixCacheManager
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -436,6 +438,7 @@ def build_runtime(
         mineru_adapter = MinerUAdapter(
             executable=settings.index.mineru_executable,
             timeout_seconds=settings.index.mineru_timeout_seconds,
+            confidence_threshold=settings.index.ocr_confidence_threshold,
         )
         configured.setdefault("indexing_mineru", mineru_adapter)
     image_ocr = configured.get("indexing_image_ocr")
@@ -464,6 +467,24 @@ def build_runtime(
             image_describer = NoneImageDescriber(environment=settings.profile)
         if image_describer is not None:
             configured.setdefault("indexing_image_describer", image_describer)
+    token_counter = configured.get("indexing_token_counter")
+    contextual_provider = configured.get("indexing_contextual_provider")
+    if contextual_provider is None and settings.index.contextual_retrieval_provider == "dashscope":
+        contextual_api_key = settings.index.contextual_retrieval_api_key
+        contextual_provider = DashScopeContextualRetriever(
+            base_url=settings.index.contextual_retrieval_base_url or "",
+            api_key=(
+                contextual_api_key.get_secret_value() if contextual_api_key is not None else ""
+            ),
+            model=settings.index.contextual_retrieval_model,
+            revision=settings.index.contextual_retrieval_revision,
+            timeout_seconds=settings.index.contextual_retrieval_timeout_seconds,
+        )
+        configured.setdefault("indexing_contextual_provider", contextual_provider)
+    prefix_cache = configured.get("indexing_prefix_cache")
+    if prefix_cache is None and settings.index.contextual_prefix_cache_provider == "memory":
+        prefix_cache = PrefixCacheManager()
+        configured.setdefault("indexing_prefix_cache", prefix_cache)
     processor = configured.get("indexing_processor") or ContentProcessor(
         mineru=mineru_adapter,
         image_describer=image_describer,
@@ -472,6 +493,11 @@ def build_runtime(
         xlsx_merged_cells_max=settings.index.xlsx_merged_cells_max,
         ocr_confidence_threshold=settings.index.ocr_confidence_threshold,
         usage_submission=_LazyUsageSubmission(configured),
+        contextual_provider=contextual_provider,
+        contextual_cache=prefix_cache,
+        contextual_concurrency=settings.index.contextual_retrieval_concurrency,
+        contextual_prefix_token_limit=(settings.index.contextual_retrieval_prefix_token_limit),
+        contextual_token_counter=token_counter,
     )
     configured.setdefault("indexing_processor", processor)
     embedding = configured.get("indexing_embedding")
@@ -489,8 +515,9 @@ def build_runtime(
     if sparse_provider is None and settings.index.sparse_url:
         sparse_provider = build_configured_sparse_provider(settings, allow_create=allow_create)
         configured.setdefault("indexing_sparse_provider", sparse_provider)
-    token_counter = configured.get("indexing_token_counter")
     if settings.profile == "production":
+        if contextual_provider is None:
+            raise RuntimeError("production requires an explicit contextual retrieval provider")
         if not callable(configured.get("indexing_image_ocr")) or not callable(
             configured.get("indexing_image_describer")
         ):
@@ -544,6 +571,7 @@ def build_runtime(
         object_store=object_store,
         embedding=embedding,
         exact_match_metrics=observability_metrics,
+        prefix_cache=prefix_cache,
     )
     configured.setdefault("indexing_service", indexing_service)
     if _index_configuration_staging_table_exists(engine, "index_generations"):

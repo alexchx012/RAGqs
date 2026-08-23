@@ -14,6 +14,7 @@ from .embedding import EmbeddingProvider, EmbeddingUsageContext, InMemoryEmbeddi
 from .generation import GenerationManager
 from .graph import GraphComponentCoordinator
 from .models import NarrowingScope, RetrievalProfile, RetrievalResult
+from .prefix_cache import PrefixCacheManager
 from .processing import ContentProcessor, ProcessingOutput
 from .providers import (
     IndexWriter,
@@ -53,6 +54,7 @@ class IndexingService:
         embedding: EmbeddingProvider | None = None,
         now: Callable[[], datetime] | None = None,
         exact_match_metrics: Any | None = None,
+        prefix_cache: PrefixCacheManager | None = None,
     ) -> None:
         if environment == "production":
             if (
@@ -74,6 +76,7 @@ class IndexingService:
         self.embedding = embedding
         self._now = now or (lambda: datetime.now(UTC))
         self.processor = processor or ContentProcessor()
+        self._prefix_cache = prefix_cache
         self.dense_writer = dense_writer or InMemoryIndexWriter(provider_name="dense-memory")
         self.sparse_provider = sparse_provider or build_sparse_provider(sparse_provider_name)
         self.generation = generation_manager or GenerationManager()
@@ -118,6 +121,18 @@ class IndexingService:
     def _cleanup_generation_publication(
         self, generation_id: str, document_id: str, document_version_id: str | None
     ) -> None:
+        if self._prefix_cache is not None:
+            if document_version_id is None:
+                self._prefix_cache.invalidate_document(
+                    document_id=document_id,
+                    reason="index_change_delete",
+                )
+            else:
+                self._prefix_cache.invalidate_document_version(
+                    document_id=document_id,
+                    document_version_id=document_version_id,
+                    reason="index_change",
+                )
         for provider in (self.dense_writer, self.sparse_provider):
             if document_version_id is None:
                 provider.delete_document(document_id, generation_id=generation_id)
@@ -129,6 +144,8 @@ class IndexingService:
     def _purge_generation_resources(
         self, generation_id: str, publications: tuple[tuple[str, str], ...]
     ) -> None:
+        if self._prefix_cache is not None:
+            self._prefix_cache.delete_generation(generation_id=generation_id)
         for document_id, document_version_id in publications:
             self._cleanup_generation_publication(
                 generation_id,

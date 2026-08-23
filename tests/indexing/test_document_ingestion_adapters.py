@@ -230,7 +230,7 @@ def test_a3_structure_classification_fixtures_are_mutually_exclusive() -> None:
     assert all(chunk.locator == {} for chunk in basic.chunks)
 
 
-def test_a3_pipeline_failure_returns_mineru_parse_failed_without_receipt() -> None:
+def test_a3_pipeline_failure_degrades_to_raw_chunks_without_fake_empty_text() -> None:
     def failing_runner(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         raise subprocess.CalledProcessError(1, ["mineru"])
 
@@ -238,16 +238,23 @@ def test_a3_pipeline_failure_returns_mineru_parse_failed_without_receipt() -> No
     with pytest.raises(PlatformError) as error:
         adapter.parse(b"pdf", media_kind="application/pdf", page_count=2)
     assert error.value.code == "mineru_parse_failed"
-    with pytest.raises(PlatformError) as processor_error:
-        ContentProcessor(mineru=adapter).process(
-            _request(),
-            b"pdf",
-            media_kind="application/pdf",
-            content_manifest_id="manifest_1",
-            content_manifest_hash="manifest_hash_1",
-            page_count=2,
-        )
-    assert processor_error.value.code == "mineru_parse_failed"
+    output = ContentProcessor(mineru=adapter).process(
+        _request(),
+        b"pdf",
+        media_kind="application/pdf",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+        page_count=2,
+    )
+    assert output.chunks
+    assert output.receipt.failure is None
+    assert output.receipt.processing_summary["ocr"]["probe"] == "provider_unavailable"
+    assert output.receipt.processing_summary["ocr"]["sample_pages"] == [1, 2]
+    assert all(
+        degradation["kind"] == "contextual_retrieval_degraded"
+        and degradation["reason"] == "ocr_provider_unavailable"
+        for degradation in output.receipt.degradations
+    )
 
 
 def _capture_transport(payloads: list[dict[str, Any]], response: dict[str, Any]):
