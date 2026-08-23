@@ -1,5 +1,7 @@
 """Greenfield, rebuildable content processing and retrieval domain."""
 
+from .contextual import CONTEXTUAL_MODEL, ContextualDocument, ContextualRetrievalService
+from .contextual_provider import DashScopeContextualRetriever
 from .embedding import (
     EmbeddingConfig,
     EmbeddingProvider,
@@ -33,6 +35,7 @@ from .models import (
     RetrievalScope,
 )
 from .persistence import SqlAlchemyGenerationManager, SqlAlchemyIndexingRepository
+from .prefix_cache import PrefixCacheManager
 from .processing import ContentProcessor, IdentityCompression, OCRSamplePlan, ProcessingOutput
 from .providers import (
     IndexWriter,
@@ -57,7 +60,11 @@ from .service import IndexingService
 __all__ = [
     "AllowedRetrievalScope",
     "CitationService",
+    "CONTEXTUAL_MODEL",
     "ContentProcessor",
+    "ContextualDocument",
+    "ContextualRetrievalService",
+    "DashScopeContextualRetriever",
     "DocumentVisibilityFact",
     "EmbeddingConfig",
     "EmbeddingProvider",
@@ -88,6 +95,7 @@ __all__ = [
     "OCRSamplePlan",
     "OpenAICompatibleEmbedding",
     "OpenSearchSparseIndexProvider",
+    "PrefixCacheManager",
     "ProcessingOutput",
     "RetrievalHit",
     "RetrievalCandidate",

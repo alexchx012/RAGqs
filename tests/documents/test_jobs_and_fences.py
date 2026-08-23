@@ -808,7 +808,7 @@ def test_handoff_and_quota_are_part_of_publication_transaction(service, principa
     _accept(service, principal, item)
     assert len(handoff.published) == 1
     assert quota.checked == [{"quota_subject_user_id": "user_1", "pages": 1, "role": "user"}]
-    assert quota.recorded[0]["quota_operation_id"] == item["job_id"]
+    assert quota.recorded[0]["quota_operation_id"].startswith("processing_list:")
     assert quota.recorded[0]["publication_id"] == item["publication_id"]
 
     reindex = service.reindex(

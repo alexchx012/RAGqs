@@ -57,7 +57,8 @@ _MEDIA_SUFFIXES: tuple[tuple[frozenset[str], str], ...] = (
 )
 
 _HEADING = re.compile(r"^(#{1,6})\s+(\S.*)$")
-_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)([.)])\s+(\S.*)$")
+_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)(?:[.)]\s+|\s+)(\S.*)$")
+_SENTENCE_END = ("。", "！", "？", "；", "，", ",", ".", "!", "?", ";", ":")
 
 
 def media_suffix(media_kind: str) -> str:
@@ -104,15 +105,61 @@ def _page_scores(middle: Mapping[str, Any], page_count: int) -> dict[int, float]
     return result
 
 
+def _signal_text(line: str) -> str:
+    value = line.strip()
+    value = re.sub(r"^#{1,6}\s+", "", value)
+    value = re.sub(r"^(\d+(?:\.\d+)*)(?:[.)]\s+|\s+)", "", value)
+    return " ".join(value.casefold().split())
+
+
+def _has_title_shape(value: str) -> bool:
+    if any("\u4e00" <= character <= "\u9fff" for character in value):
+        return not any(character.isspace() for character in value) and len(value) <= 30
+    words = value.split()
+    return bool(words) and all(
+        word == word.upper() or (word[0].isalpha() and word[0].isupper()) for word in words
+    )
+
+
+def _walk_scored_text(value: Any) -> list[tuple[str, float]]:
+    scored: list[tuple[str, float]] = []
+    if isinstance(value, Mapping):
+        raw_score = value.get("score")
+        if isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool):
+            for field in ("text", "content"):
+                if isinstance(value.get(field), str) and value[field].strip():
+                    scored.append((_signal_text(str(value[field])), float(raw_score)))
+        for child in value.values():
+            scored.extend(_walk_scored_text(child))
+    elif isinstance(value, list):
+        for child in value:
+            scored.extend(_walk_scored_text(child))
+    return scored
+
+
+def signal_confidences(markdown: str, middle: Mapping[str, Any]) -> dict[str, float]:
+    """Map structure-line text to the local middle.json score that produced it."""
+
+    signal_text = {_signal_text(str(signal["text"])) for signal in structure_signals(markdown)}
+    return {text: score for text, score in _walk_scored_text(middle) if text in signal_text}
+
+
 def structure_signals(markdown: str) -> list[dict[str, Any]]:
     """Return machine-readable heading signals used by structure classification."""
 
     signals: list[dict[str, Any]] = []
-    for line_number, line in enumerate(markdown.splitlines(), start=1):
+    lines = markdown.splitlines()
+    for index, line in enumerate(lines):
+        line_number = index + 1
         heading = _HEADING.match(line.strip())
         if heading:
             signals.append(
-                {"line": line_number, "kind": "markdown_heading", "level": len(heading.group(1))}
+                {
+                    "line": line_number,
+                    "text": line.strip(),
+                    "kind": "markdown_heading",
+                    "level": len(heading.group(1)),
+                }
             )
             continue
         numbered = _NUMBERED.match(line.strip())
@@ -120,15 +167,43 @@ def structure_signals(markdown: str) -> list[dict[str, Any]]:
             signals.append(
                 {
                     "line": line_number,
+                    "text": line.strip(),
                     "kind": "numbered_section",
                     "number": numbered.group(1),
                     "level": numbered.group(1).count(".") + 1,
                 }
             )
+            continue
+        previous = lines[index - 1].strip() if index else ""
+        following = lines[index + 1].strip() if index + 1 < len(lines) else ""
+        value = line.strip()
+        if (
+            previous == ""
+            and following == ""
+            and 2 <= len(value) <= 80
+            and not value.endswith(_SENTENCE_END)
+            and not value.startswith(("#", "|", ">", "-", "*", "1.", "1)"))
+            and any(character.isalpha() for character in value)
+            and _has_title_shape(value)
+        ):
+            signals.append(
+                {
+                    "line": line_number,
+                    "text": value,
+                    "kind": "independent_title",
+                    "level": 1,
+                }
+            )
     return signals
 
 
-def classify_structure(markdown: str, *, sample_pages: Sequence[int]) -> dict[str, Any]:
+def classify_structure(
+    markdown: str,
+    *,
+    sample_pages: Sequence[int],
+    signal_scores: Mapping[str, float] | None = None,
+    confidence_threshold: float = 0.9,
+) -> dict[str, Any]:
     """Classify sampled markdown into ``tree`` / ``partial`` / ``basic``.
 
     A small number of signals is enough to count as structure. Full structure
@@ -143,7 +218,17 @@ def classify_structure(markdown: str, *, sample_pages: Sequence[int]) -> dict[st
             "signals": [],
             "sample_pages": list(sample_pages),
             "reason": "no_structure_signal",
+            "signal_confidence": {},
+            "signal_confidence_available": False,
+            "signal_low_confidence": False,
+            "confidence_threshold": float(confidence_threshold),
         }
+    scores = signal_scores or {}
+    normalized_scores = {
+        _signal_text(str(signal["text"])): scores.get(_signal_text(str(signal["text"])))
+        for signal in signals
+    }
+    known_scores = [value for value in normalized_scores.values() if value is not None]
     levels = [int(signal["level"]) for signal in signals]
     previous = 0
     hierarchy_ok = True
@@ -172,6 +257,12 @@ def classify_structure(markdown: str, *, sample_pages: Sequence[int]) -> dict[st
         "signals": signals,
         "sample_pages": list(sample_pages),
         "reason": "structure_signal" if structure_class == "tree" else "incomplete_hierarchy",
+        "signal_confidence": normalized_scores,
+        "signal_confidence_available": bool(known_scores),
+        "signal_low_confidence": any(
+            value < confidence_threshold for value in known_scores if value is not None
+        ),
+        "confidence_threshold": float(confidence_threshold),
     }
 
 
@@ -179,13 +270,14 @@ def _sample_ranges(plan: OCRSamplePlan) -> list[tuple[int, int]]:
     if not plan.pages:
         return []
     ranges: list[tuple[int, int]] = []
-    start = previous = plan.pages[0]
+    start = previous = plan.pages[0] - 1
     for page in plan.pages[1:]:
-        if page == previous + 1:
-            previous = page
+        zero_based = page - 1
+        if zero_based == previous + 1:
+            previous = zero_based
             continue
         ranges.append((start, previous))
-        start = previous = page
+        start = previous = zero_based
     ranges.append((start, previous))
     return ranges
 
@@ -231,11 +323,13 @@ class MinerUAdapter:
         *,
         executable: str = "mineru",
         timeout_seconds: int = 900,
+        confidence_threshold: float = 0.9,
         usage_sink: _UsageSink | None = None,
         runner: _Runner | None = None,
     ) -> None:
         self._executable = executable
         self._timeout_seconds = int(timeout_seconds)
+        self._confidence_threshold = float(confidence_threshold)
         self._usage_sink = usage_sink
         self._runner = runner or subprocess.run
 
@@ -300,13 +394,20 @@ class MinerUAdapter:
                 OCRSamplePlan.for_page_count(page_count) if page_count else OCRSamplePlan(1, (1,))
             )
             sample_markdown: list[str] = []
+            sample_scores: dict[str, float] = {}
             sample_started = time.monotonic()
             for start, end in _sample_ranges(plan):
                 run = self._run(source, sample_dir / f"{start}-{end}", start=start, end=end)
                 sample_markdown.append(run.markdown)
+                sample_scores.update(signal_confidences(run.markdown, run.middle))
             sample_ms = int((time.monotonic() - sample_started) * 1000)
             sampled = "\n\n".join(sample_markdown)
-            structure = classify_structure(sampled, sample_pages=list(plan.pages))
+            structure = classify_structure(
+                sampled,
+                sample_pages=list(plan.pages),
+                signal_scores=sample_scores,
+                confidence_threshold=self._confidence_threshold,
+            )
             full_started = time.monotonic()
             full = self._run(source, work_dir / "full")
             full_ms = int((time.monotonic() - full_started) * 1000)
@@ -374,5 +475,6 @@ __all__ = [
     "MinerUImageOCR",
     "classify_structure",
     "media_suffix",
+    "signal_confidences",
     "structure_signals",
 ]

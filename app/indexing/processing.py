@@ -12,26 +12,40 @@ import zipfile
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Protocol
 from xml.etree import ElementTree
 
 from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
 from app.platform.errors import PlatformError
-from app.usage.ledger import LocalMeasurement, OwnershipSnapshot
+from app.usage.ledger import LocalMeasurement, OwnershipSnapshot, ProviderMeasurement
 
+from .contextual import (
+    CONTEXTUAL_PREFIX_TOKEN_LIMIT,
+    CONTEXTUAL_PROMPT_SCHEMA_VERSION,
+    CONTEXTUAL_PROVIDER_ATTEMPTS,
+    CONTEXTUAL_TOKENIZATION_VERSION,
+    ContextualDocument,
+    ContextualRetrievalProvider,
+    ContextualRetrievalService,
+    ContextualUsageFact,
+    approximate_token_count,
+    contextual_target,
+)
 from .image_vlm import (
     image_dimensions,
     is_decorative,
     normalize_description,
 )
 from .models import IndexChunk
+from .prefix_cache import PrefixCacheManager
 
 # OCR pages below this confidence are flagged low-confidence in the processing
 # receipt; the value is a stable default, not per-document configuration.
 OCR_LOW_CONFIDENCE_THRESHOLD = 0.9
 CONTINUATION_HEADER_SIMILARITY = 0.7
+MINERU_PROVIDER_ATTEMPTS = 5
 
 
 class CompressionPort(Protocol):
@@ -99,6 +113,18 @@ def _machine_low_confidence_fact(confidence: float, page: int | None) -> dict[st
     """Outbox-closed OCR fact shape: only confidence, page and region."""
 
     return {"confidence": confidence, "page": int(page or 1), "region": []}
+
+
+def _group_chunks_by_tree_parent(
+    chunks: Sequence[IndexChunk],
+) -> list[tuple[str, list[IndexChunk]]]:
+    grouped: dict[str, list[IndexChunk]] = {}
+    for chunk in chunks:
+        if not contextual_target(chunk):
+            continue
+        path = str(chunk.metadata.get("section_path") or "").strip()
+        grouped.setdefault(path, []).append(chunk)
+    return list(grouped.items())
 
 
 def _sha256(value: bytes) -> str:
@@ -480,6 +506,12 @@ class ContentProcessor:
         xlsx_merged_cells_max: int = 10_000,
         ocr_confidence_threshold: float = 0.9,
         usage_submission: UsageSubmissionPort | None = None,
+        contextual_provider: ContextualRetrievalProvider | None = None,
+        contextual_cache: PrefixCacheManager | None = None,
+        contextual_concurrency: int = 4,
+        contextual_max_attempts: int = CONTEXTUAL_PROVIDER_ATTEMPTS,
+        contextual_prefix_token_limit: int = CONTEXTUAL_PREFIX_TOKEN_LIMIT,
+        contextual_token_counter: Callable[[str], int] | None = None,
     ) -> None:
         self._compressor = compressor or IdentityCompression()
         self._mineru = mineru
@@ -489,6 +521,12 @@ class ContentProcessor:
         self._xlsx_merged_cells_max = xlsx_merged_cells_max
         self._ocr_confidence_threshold = float(ocr_confidence_threshold)
         self._usage_submission = usage_submission
+        self._contextual_provider = contextual_provider
+        self._contextual_cache = contextual_cache
+        self._contextual_concurrency = contextual_concurrency
+        self._contextual_max_attempts = contextual_max_attempts
+        self._contextual_prefix_token_limit = contextual_prefix_token_limit
+        self._contextual_token_counter = contextual_token_counter
 
     def process(
         self,
@@ -512,6 +550,8 @@ class ContentProcessor:
         profile = processing_config_version or request.processing_profile_version or "default"
         route_adapter = "text"
         local_usage_facts: list[dict[str, Any]] = []
+        document_text = ""
+        mineru_probe_failed = False
         if not content_manifest_id or not content_manifest_hash:
             raise PlatformError(
                 "validation_error", "content manifest identity is required", {}, 422
@@ -524,12 +564,14 @@ class ContentProcessor:
                 409,
             )
         if kind in {"text/plain", "text/markdown", "txt", "md", "markdown"}:
+            document_text = _text(content)
             chunks, summary, degradations = self._text_chunks(
-                request, _text(content), media_kind, content_manifest_hash
+                request, document_text, media_kind, content_manifest_hash
             )
         elif kind in {"text/csv", "csv"} or kind.endswith("csv"):
+            document_text = _text(content)
             chunks, summary, degradations = self._csv_chunks(
-                request, _text(content), content_manifest_hash
+                request, document_text, content_manifest_hash
             )
         elif kind in {
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -551,12 +593,14 @@ class ContentProcessor:
             "text/xml",
             "xml",
         }:
+            document_text = _text(content)
             chunks, summary, degradations = self._structured_chunks(
-                request, _text(content), kind, content_manifest_hash
+                request, document_text, kind, content_manifest_hash
             )
         elif kind in {"text/x-python", "python", "code", "text/javascript", "javascript"}:
+            document_text = _text(content)
             chunks, summary, degradations = self._code_chunks(
-                request, _text(content), content_manifest_hash
+                request, document_text, content_manifest_hash
             )
         elif kind in {
             "application/pdf",
@@ -581,18 +625,40 @@ class ContentProcessor:
                     "processor_unavailable", "MinerU processor is not configured", {}, 503
                 )
             parse = getattr(self._mineru, "parse", None)
-            if callable(parse):
-                parsed = parse(
-                    raw,
-                    media_kind=media_kind,
-                    page_count=page_count,
-                    source_url=media_kind if kind in {"url", "web_url"} else None,
-                )
-            else:
-                parsed = self._mineru(raw)
+            try:
+                for _attempt in range(1, MINERU_PROVIDER_ATTEMPTS + 1):
+                    try:
+                        if callable(parse):
+                            parsed = parse(
+                                raw,
+                                media_kind=media_kind,
+                                page_count=page_count,
+                                source_url=media_kind if kind in {"url", "web_url"} else None,
+                            )
+                        else:
+                            parsed = self._mineru(raw)
+                        break
+                    except PlatformError as exc:
+                        if (
+                            exc.code != "mineru_parse_failed"
+                            or _attempt == MINERU_PROVIDER_ATTEMPTS
+                        ):
+                            raise
+            except PlatformError as exc:
+                if exc.code != "mineru_parse_failed":
+                    raise
+                mineru_probe_failed = True
+                parsed = {
+                    "text": raw.decode("latin-1"),
+                    "page_count": page_count or 1,
+                    "has_text_layer": False,
+                    "structure": {"class": "basic", "reason": "ocr_probe_unavailable"},
+                    "backend": "pipeline",
+                }
             parsed_text = str(parsed.get("text", ""))
             if not parsed_text.strip():
                 raise PlatformError("processing_failed", "MinerU returned no text", {}, 422)
+            document_text = parsed_text
             chunks, summary, degradations = self._text_chunks(
                 request, parsed_text, media_kind, content_manifest_hash
             )
@@ -642,6 +708,20 @@ class ContentProcessor:
             structure_class = (
                 str(structure.get("class", "tree")) if isinstance(structure, Mapping) else "tree"
             )
+            if isinstance(structure, Mapping) and structure.get("signal_low_confidence"):
+                signal_values = [
+                    float(value)
+                    for value in (structure.get("signal_confidence") or {}).values()
+                    if value is not None
+                ]
+                if signal_values:
+                    lowest_signal = min(signal_values)
+                    ocr["low_confidence"] = True
+                    ocr["reason"] = "structure_low_confidence"
+                    ocr["status"] = "degraded"
+                    ocr["fact"] = _machine_low_confidence_fact(lowest_signal, None)
+                    ocr["threshold"] = self._ocr_confidence_threshold
+                    ocr["threshold_version"] = f"ocr_threshold:{self._ocr_confidence_threshold}"
             if structure_class == "basic":
                 chunks = [
                     replace(
@@ -752,6 +832,37 @@ class ContentProcessor:
                 ]
                 summary["continuation_tables"] = table_summary["continuation_tables"]
                 degradations = (*degradations, *table_degradations)
+            if mineru_probe_failed:
+                sample = OCRSamplePlan.for_page_count(page_count or 1)
+                local_usage_facts.append(
+                    {
+                        "kind": "local_usage",
+                        "stage": "mineru_pipeline_probe",
+                        "resource_kind": "document",
+                        "item_count": len(sample.pages),
+                        "page_count": page_count or 1,
+                    }
+                )
+                summary["ocr"] = {
+                    **dict(summary.get("ocr", {})),
+                    "status": "degraded",
+                    "probe": "provider_unavailable",
+                    "sample_pages": list(OCRSamplePlan.for_page_count(page_count or 1).pages),
+                }
+                summary["contextual_input_ready"] = False
+                degradations = (
+                    *degradations,
+                    *(
+                        {
+                            "kind": "contextual_retrieval_degraded",
+                            "reason": "ocr_provider_unavailable",
+                            "chunk_id": chunk.chunk_id,
+                            "provider": "mineru-pipeline",
+                        }
+                        for chunk in chunks
+                        if contextual_target(chunk)
+                    ),
+                )
         elif kind.startswith("image/") or kind in {"image", "图片"}:
             route_adapter = "image-vlm"
             context = {
@@ -793,7 +904,16 @@ class ContentProcessor:
                 )
         else:
             raise PlatformError("unsupported_media_type", "Media type is not supported", {}, 415)
+        chunks, summary, degradations = self._apply_contextual_retrieval(
+            request,
+            chunks,
+            summary,
+            degradations,
+            document_text=document_text,
+            media_kind=media_kind,
+        )
         summary = dict(summary)
+        summary["processing_list"] = self._processing_list(request, chunks)
         summary["media_kind"] = media_kind
         summary["route"] = {
             "adapter": route_adapter,
@@ -846,6 +966,9 @@ class ContentProcessor:
             for name in ("prompt", "ocr_prompt", "vlm_prompt", "cr_prompt")
             if request.processing_config_snapshot.get(name) is not None
         }
+        if self._contextual_provider is not None:
+            configured_models["cr"] = self._contextual_provider.model
+            configured_prompts["cr_prefix"] = CONTEXTUAL_PROMPT_SCHEMA_VERSION
         receipt = IndexProcessingReceipt(
             job_id=request.job_id,
             attempt_id=request.attempt_id,
@@ -895,6 +1018,216 @@ class ContentProcessor:
         receipt.validate_against(request)
         self._submit_local_usage(request, local_usage_facts)
         return ProcessingOutput(tuple(chunks), receipt)
+
+    def _apply_contextual_retrieval(
+        self,
+        request: IndexStagingRequest,
+        chunks: list[IndexChunk],
+        summary: Mapping[str, Any],
+        degradations: tuple[Mapping[str, Any], ...],
+        *,
+        document_text: str,
+        media_kind: str,
+    ) -> tuple[list[IndexChunk], Mapping[str, Any], tuple[Mapping[str, Any], ...]]:
+        eligible = [chunk for chunk in chunks if contextual_target(chunk)]
+        if (
+            self._contextual_provider is None
+            or not eligible
+            or summary.get("contextual_input_ready") is False
+        ):
+            return chunks, summary, degradations
+
+        metadata = {
+            "document_id": request.document_id,
+            "document_version_id": request.document_version_id,
+            "media_kind": media_kind,
+            "object_manifest_ref": request.object_manifest_ref,
+            "processing_profile_version": request.processing_profile_version,
+        }
+        document = ContextualDocument(
+            instance_id=str(request.processing_config_snapshot.get("index_namespace") or "default"),
+            space_id=request.space_id,
+            document_id=request.document_id,
+            document_version_id=request.document_version_id,
+            generation_id=request.expected_generation_id,
+            metadata=metadata,
+            full_text=document_text,
+        )
+        service = ContextualRetrievalService(
+            provider=self._contextual_provider,
+            cache=self._contextual_cache,
+            concurrency=self._contextual_concurrency,
+            max_attempts=self._contextual_max_attempts,
+            token_limit=self._contextual_prefix_token_limit,
+            token_counter=(
+                self._contextual_token_counter or approximate_token_count
+            ),
+            tokenization_config_version=(
+                (
+                    "runtime-tokenizer-v1"
+                    if self._contextual_token_counter is not None
+                    else CONTEXTUAL_TOKENIZATION_VERSION
+                )
+                + f":limit={self._contextual_prefix_token_limit}"
+            ),
+            usage_sink=lambda fact: self._submit_contextual_provider_usage(request, fact),
+        )
+        enhancement = service.enhance(document, chunks)
+        enhanced_chunks = [
+            replace(
+                chunk,
+                embedding_text=(
+                    f"CONTEXTUAL RETRIEVAL\n{enhancement.contexts[chunk.chunk_id]}\n\n"
+                    f"ORIGINAL CHUNK\n{chunk.embedding_text}"
+                    if chunk.chunk_id in enhancement.contexts
+                    else chunk.embedding_text
+                ),
+                metadata={
+                    **dict(chunk.metadata),
+                    "contextual_retrieval": (
+                        "applied" if chunk.chunk_id in enhancement.contexts else "raw-fallback"
+                    ),
+                },
+            )
+            for chunk in chunks
+        ]
+        unit_summaries = [
+            {
+                "unit_id": unit.unit_id,
+                "grouping": unit.grouping,
+                "chunk_ids": [item.chunk_id for item in unit.chunks],
+                "warmup_chunk_ids": list(unit.warmup_chunk_ids),
+                "concurrent_chunk_ids": list(unit.concurrent_chunk_ids),
+                "cache_mode": unit.cache_mode,
+                "cache_outage": unit.cache_outage,
+                "cache_reason": unit.cache_reason,
+                "prefix_truncated": unit.prefix_truncated,
+                "estimated_prefix_tokens": unit.estimated_prefix_tokens,
+                "prompt_cache_hit_tokens": unit.prompt_cache_hit_tokens,
+                "prompt_cache_miss_tokens": unit.prompt_cache_miss_tokens,
+            }
+            for unit in enhancement.units
+        ]
+        cr_summary = {
+            "eligible_count": len(eligible),
+            "enhanced_count": len(enhancement.contexts),
+            "applied": bool(enhancement.contexts),
+            "unit": "leaf_chunk",
+            "model": self._contextual_provider.model,
+            "model_revision": self._contextual_provider.model_revision,
+            "provider": self._contextual_provider.provider,
+            "prefix_units": unit_summaries,
+            "prompt_cache_hit_tokens": sum(
+                unit.prompt_cache_hit_tokens for unit in enhancement.units
+            ),
+            "prompt_cache_miss_tokens": sum(
+                unit.prompt_cache_miss_tokens for unit in enhancement.units
+            ),
+        }
+        result_summary = {**dict(summary), "cr": cr_summary}
+        tree = dict(result_summary.get("tree") or {})
+        if tree.get("tree_indexed"):
+            tree["node_summaries"] = [
+                {
+                    "path": path,
+                    "summary": "\n".join(
+                        enhancement.contexts[chunk.chunk_id]
+                        for chunk in group
+                        if chunk.chunk_id in enhancement.contexts
+                    ),
+                    "model": self._contextual_provider.model,
+                    "source": "contextual_retrieval",
+                }
+                for path, group in _group_chunks_by_tree_parent(enhanced_chunks)
+            ]
+            tree["node_summary_model"] = self._contextual_provider.model
+            result_summary["tree"] = tree
+        return (
+            enhanced_chunks,
+            result_summary,
+            (
+                *degradations,
+                *enhancement.degradations,
+            ),
+        )
+
+    @staticmethod
+    def _processing_list(
+        request: IndexStagingRequest, chunks: Sequence[IndexChunk]
+    ) -> Mapping[str, Any]:
+        return {
+            "processing_list_id": f"processing_list:{request.publication_id}:{request.attempt_id}",
+            "frozen": True,
+            "items": [
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "contextual_retrieval": contextual_target(chunk),
+                    "media_kind": chunk.media_kind,
+                }
+                for chunk in chunks
+            ],
+        }
+
+    def _submit_contextual_provider_usage(
+        self, request: IndexStagingRequest, fact: ContextualUsageFact
+    ) -> None:
+        submission = self._usage_submission
+        prepare = getattr(submission, "prepare_provider_call", None)
+        dispatch = getattr(submission, "mark_dispatching", None)
+        complete = getattr(submission, "complete_provider_call", None)
+        if submission is None or not callable(prepare) or not callable(complete):
+            return
+        ownership_values = request.usage_ownership
+        if not isinstance(ownership_values, Mapping):
+            return
+        deadline = request.usage_deadline_at_utc or datetime.now(UTC) + timedelta(minutes=5)
+        call_id = prepare(
+            provider=fact.provider,
+            model=fact.model,
+            operation=fact.operation,
+            execution_kind="document_processing",
+            execution_id=request.job_id,
+            attempt_id=request.attempt_id,
+            generation_id=request.expected_generation_id,
+            resource_id=f"{request.publication_id}:{fact.unit_id}:{fact.chunk_id}",
+            deadline_utc=deadline,
+            request_fingerprint=fact.request_fingerprint,
+            replay_generation=request.usage_replay_generation,
+        )
+        if callable(dispatch):
+            dispatch(call_id, started_at_provider=lambda: datetime.now(UTC))
+        values = dict(ownership_values)
+        values["source_space_ids"] = tuple(values.get("source_space_ids") or ())
+        ownership = OwnershipSnapshot(**values)
+        measurement = ProviderMeasurement(
+            input_tokens=fact.input_tokens,
+            prompt_cache_hit_tokens=fact.prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens=fact.prompt_cache_miss_tokens,
+            output_tokens=fact.output_tokens,
+            reasoning_tokens=None,
+            image_count=None,
+            visual_input_tokens=None,
+            embedding_input_tokens=None,
+            vector_count=None,
+            measurement_sources={
+                field: "provider"
+                for field in (
+                    "input_tokens",
+                    "prompt_cache_hit_tokens",
+                    "prompt_cache_miss_tokens",
+                    "output_tokens",
+                )
+                if getattr(fact, field) is not None
+            },
+        )
+        complete(
+            provider_call_id=call_id,
+            measurement=measurement,
+            ownership=ownership,
+            result=fact.result,
+            provider_request_id=fact.provider_request_id,
+            started_at_utc=None,
+        )
 
     def _submit_local_usage(
         self,
@@ -951,10 +1284,12 @@ class ContentProcessor:
         if not sections and text.strip():
             sections = [("", text.strip())]
         chunks: list[IndexChunk] = []
-        for path, section in sections:
+        for section_index, (path, section) in enumerate(sections, start=1):
+            block_index = 0
             for body in _split_blocks_preserving_tables(
                 section, maximum=self._text_chunk_max_chars
             ):
+                block_index += 1
                 index = len(chunks) + 1
                 compressed = self._compressor.compress(body, context={"section_path": path})
                 chunks.append(
@@ -972,7 +1307,11 @@ class ContentProcessor:
                         snippet=body[:500],
                         media_kind=media_kind,
                         manifest_hash=manifest_hash,
-                        metadata={"section_path": path, "cr_unit": "chunk"},
+                        metadata={
+                            "section_path": path,
+                            "cr_parent_group": f"{section_index}:{block_index}",
+                            "cr_unit": "chunk",
+                        },
                     )
                 )
         return (

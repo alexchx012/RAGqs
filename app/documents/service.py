@@ -337,6 +337,16 @@ class DocumentsService:
         if not callable(recorder) or calendar is None:
             return None
         summary = receipt.get("processing_summary") or {}
+        processing_list = summary.get("processing_list")
+        processing_list_id = (
+            str(processing_list.get("processing_list_id"))
+            if isinstance(processing_list, Mapping) and processing_list.get("frozen") is True
+            else None
+        )
+        if not processing_list_id:
+            raise PlatformError(
+                "validation_error", "Processing receipt has no frozen processing list", {}, 422
+            )
         pages = _metered_pages(
             page_count=receipt.get("page_count", summary.get("page_count", summary.get("pages", 1))),
             image_count=summary.get("image_count", summary.get("images", 0)),
@@ -366,7 +376,7 @@ class DocumentsService:
         debit_id = recorder(
             connection,
             publication_status="succeeded",
-            quota_operation_id=str(job["id"]),
+            quota_operation_id=processing_list_id,
             publication_id=str(publication["id"]),
             quota_subject_user_id=subject,
             pages=pages,
@@ -394,6 +404,7 @@ class DocumentsService:
             charge_reason = "quota_debit_not_recorded"
         return {
             "pages": pages,
+            "processing_list_id": processing_list_id,
             "quota_debit_id": debit_id,
             "quota_charge_status": charge_status,
             "quota_charge_reason": charge_reason,
@@ -3888,7 +3899,11 @@ class DocumentsService:
                             in {IngestionJobState.FAILED.value, IngestionJobState.DEAD_LETTER.value}
                             else None
                         ),
-                        "degradations": row["degradations_json"],
+                        "degradations": [
+                            {"kind": str(item.get("kind"))}
+                            for item in row["degradations_json"]
+                            if isinstance(item, Mapping)
+                        ],
                         "ocr_low_confidence": row["ocr_low_confidence"],
                         "publication_id": row["active_publication_id"],
                         "processing_summary": row["processing_summary_json"],
