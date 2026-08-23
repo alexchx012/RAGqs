@@ -529,6 +529,45 @@ def test_graph_route_degradation_keeps_hybrid_retrieval_result() -> None:
     assert result.degradations[-1] == {"code": "graph_degraded", "reason": "graph_stale"}
 
 
+def test_missing_graph_router_is_an_explicit_degradation() -> None:
+    provider = InMemorySparseIndexProvider()
+    provider.stage_chunks(
+        "attempt_1",
+        "publication_1",
+        "document_1",
+        "version_1",
+        [_chunk("chunk_1")],
+    )
+    provider.publish_staged("attempt_1", "publication_1")
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=lambda candidate, principal: DocumentVisibilityFact(
+            candidate.document_id,
+            candidate.space_id,
+            "active",
+            candidate.document_version_id,
+            candidate.publication_id,
+            "active",
+            candidate.manifest_hash,
+            True,
+        ),
+    )
+
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(route_graph=True),
+    )
+
+    assert [hit.chunk.chunk_id for hit in result.hits] == ["chunk_1"]
+    assert result.degradations[-1] == {
+        "code": "graph_degraded",
+        "reason": "graph_unavailable",
+    }
+
+
 def test_citation_withholds_locator_when_server_scope_excludes_document() -> None:
     candidate = _chunk("chunk_1")
 

@@ -86,7 +86,7 @@ class IndexingService:
         self._staged_chunks: dict[tuple[str, str], tuple[Any, ...]] = {}
         self._staged_receipts: dict[tuple[str, str], IndexProcessingReceipt] = {}
         self.graph = (
-            GraphComponentCoordinator(self.generation, source_service)
+            GraphComponentCoordinator(self.generation, source_service, graph_store=graph_store)
             if source_service is not None
             else None
         )
@@ -116,7 +116,9 @@ class IndexingService:
         repository = getattr(self.generation, "_repository", None)
         if repository is not None:
             repository.set_generation_cleanup(self._cleanup_generation_publication)
-            repository.set_generation_purge(self._purge_generation_resources)
+            repository.set_generation_component_purge("sparse", self._purge_sparse_generation)
+            repository.set_generation_component_purge("vector", self._purge_vector_generation)
+            repository.set_generation_component_purge("cache", self._purge_cache_generation)
             if object_store is not None:
                 repository.set_generation_builder(self._build_generation_publication)
 
@@ -163,6 +165,36 @@ class IndexingService:
                 document_id,
                 document_version_id,
             )
+
+    @staticmethod
+    def _purge_provider_generation(
+        provider: Any,
+        generation_id: str,
+        publications: tuple[tuple[str, str], ...],
+    ) -> None:
+        for document_id, document_version_id in publications:
+            provider.delete_document_version(
+                document_id,
+                document_version_id,
+                generation_id=generation_id,
+            )
+
+    def _purge_sparse_generation(
+        self, generation_id: str, publications: tuple[tuple[str, str], ...]
+    ) -> None:
+        self._purge_provider_generation(self.sparse_provider, generation_id, publications)
+
+    def _purge_vector_generation(
+        self, generation_id: str, publications: tuple[tuple[str, str], ...]
+    ) -> None:
+        self._purge_provider_generation(self.dense_writer, generation_id, publications)
+
+    def _purge_cache_generation(
+        self, generation_id: str, publications: tuple[tuple[str, str], ...]
+    ) -> None:
+        del publications
+        if self._prefix_cache is not None:
+            self._prefix_cache.delete_generation(generation_id=generation_id)
 
     def _build_generation_publication(
         self, generation: Any, source: Mapping[str, Any], connection: Any

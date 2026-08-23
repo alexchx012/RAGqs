@@ -369,18 +369,22 @@ class SqlAlchemyPublicGraphStore:
             ).rowcount
         return int(relations or 0) + int(entities or 0)
 
-    def purge_generation(self, index_generation_id: str) -> int:
-        with self._engine.begin() as connection:
-            relations = connection.execute(
-                delete(graph_relations_table).where(
-                    graph_relations_table.c.index_generation_id == index_generation_id
-                )
-            ).rowcount
-            entities = connection.execute(
-                delete(graph_entities_table).where(
-                    graph_entities_table.c.index_generation_id == index_generation_id
-                )
-            ).rowcount
+    def purge_generation(
+        self, index_generation_id: str, *, connection: Connection | None = None
+    ) -> int:
+        if connection is None:
+            with self._engine.begin() as transaction:
+                return self.purge_generation(index_generation_id, connection=transaction)
+        relations = connection.execute(
+            delete(graph_relations_table).where(
+                graph_relations_table.c.index_generation_id == index_generation_id
+            )
+        ).rowcount
+        entities = connection.execute(
+            delete(graph_entities_table).where(
+                graph_entities_table.c.index_generation_id == index_generation_id
+            )
+        ).rowcount
         return int(relations or 0) + int(entities or 0)
 
 

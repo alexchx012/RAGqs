@@ -696,9 +696,16 @@ class RetrievalService:
                 )
             except Exception as error:
                 degradations.append(self._routing_degradation("tree", error))
-        if selected.route_graph and self._graph_router is not None:
+        if selected.route_graph:
             graph_lease = None
             try:
+                if self._graph_router is None:
+                    raise PlatformError(
+                        "graph_unavailable",
+                        "public graph routing is unavailable",
+                        {},
+                        503,
+                    )
                 if self._graph_reader is None:
                     raise PlatformError(
                         "reader_unavailable",

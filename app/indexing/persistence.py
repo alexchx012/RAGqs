@@ -53,6 +53,70 @@ def _fingerprint(value: Any) -> str:
     ).hexdigest()
 
 
+_GC_COMPONENTS = ("public_graph", "sparse", "vector", "hierarchy", "cache")
+
+
+def _component_progress(*, completed: bool = False) -> dict[str, dict[str, Any]]:
+    state = "completed" if completed else "pending"
+    return {
+        component: {"state": state, "attempts": 0, "last_error": None}
+        for component in _GC_COMPONENTS
+    }
+
+
+def _component_defaults(
+    generation_id: str, configuration: Mapping[str, Any]
+) -> dict[str, dict[str, Any]]:
+    shared = {"reader_lease_binding": generation_id}
+    return {
+        "dense": {
+            "state": "ready",
+            "component_generation_id": f"{generation_id}:dense",
+            "component_manifest_revision": "dense-v1",
+            **shared,
+            "provider": "configured",
+            "embedding_model": configuration.get("embedding_model"),
+            "embedding_revision": configuration.get("embedding_revision"),
+            "embedding_dimension": configuration.get("embedding_dimension"),
+            "embedding_metric": configuration.get("embedding_metric"),
+        },
+        "sparse": {
+            "state": "ready",
+            "component_generation_id": f"{generation_id}:sparse",
+            "component_manifest_revision": "sparse-v1",
+            **shared,
+            "provider": configuration["provider"],
+            "engine": configuration["engine"],
+            "analyzer": configuration["analyzer"],
+            "engine_revision": configuration["engine_revision"],
+            "analyzer_revision": configuration["analyzer_revision"],
+            "tokenizer_revision": configuration["tokenizer_revision"],
+            "pretokenizer_version": configuration["pretokenizer_version"],
+            "schema_hash": configuration["schema_hash"],
+            "sparse_schema_hash": configuration["sparse_schema_hash"],
+            "config_hash": configuration["config_hash"],
+            "implementation_config_hash": configuration["implementation_config_hash"],
+            "dimension": configuration.get("embedding_dimension"),
+            "metric": configuration.get("embedding_metric"),
+            "model_revision": configuration.get("embedding_revision"),
+        },
+        "hierarchy": {
+            "state": "ready",
+            "component_generation_id": f"{generation_id}:hierarchy",
+            "component_manifest_revision": "hierarchy-v1",
+            **shared,
+        },
+        "public_graph": {
+            "graph_generation_id": None,
+            "state": "disabled",
+            "source_revision": None,
+            "source_head_fence": None,
+            "component_manifest_revision": "public-graph-v1",
+            **shared,
+        },
+    }
+
+
 class SqlAlchemyIndexingRepository:
     """Durable indexing state with caller-connection transaction boundaries."""
 
@@ -72,6 +136,9 @@ class SqlAlchemyIndexingRepository:
         ) = None
         self._generation_cleanup: Callable[[str, str, str | None], None] | None = None
         self._generation_purge: Callable[[str, Sequence[tuple[str, str]]], None] | None = None
+        self._generation_component_purges: dict[
+            str, Callable[[str, Sequence[tuple[str, str]]], None]
+        ] = {}
         self._retrieval_release_gate: Callable[[str, Connection], bool] | None = None
         self._generation_configuration = dict(generation_configuration or {})
 
@@ -85,6 +152,15 @@ class SqlAlchemyIndexingRepository:
 
     def set_generation_purge(self, purge: Callable[[str, Sequence[tuple[str, str]]], None]) -> None:
         self._generation_purge = purge
+
+    def set_generation_component_purge(
+        self,
+        component_kind: str,
+        purge: Callable[[str, Sequence[tuple[str, str]]], None],
+    ) -> None:
+        if component_kind not in _GC_COMPONENTS:
+            raise ValueError("generation GC component kind is invalid")
+        self._generation_component_purges[component_kind] = purge
 
     def set_retrieval_release_gate(self, gate: Callable[[str, Connection], bool]) -> None:
         self._retrieval_release_gate = gate
@@ -249,6 +325,7 @@ class SqlAlchemyIndexingRepository:
                 "base_revision": current_revision,
                 "applied_revision": current_revision,
                 "manifest_json": {
+                    "generation_id": "generation_initial",
                     "indexing_configuration": configuration,
                     "provider": configuration["provider"],
                     "engine_revision": configuration["engine_revision"],
@@ -260,40 +337,13 @@ class SqlAlchemyIndexingRepository:
                     "metric": configuration.get("embedding_metric"),
                     "model_revision": configuration.get("embedding_revision"),
                     "last_applied_index_change_id": None,
+                    "created_at": now.isoformat(),
                     "published_at": now.isoformat(),
                     "rollback_candidate_until": None,
                     "gc_state": "active",
                     "base_revision": current_revision,
                     "applied_revision": current_revision,
-                    "components": {
-                        "dense": {
-                            "state": "ready",
-                            "provider": "configured",
-                            "embedding_model": configuration.get("embedding_model"),
-                            "embedding_revision": configuration.get("embedding_revision"),
-                            "embedding_dimension": configuration.get("embedding_dimension"),
-                            "embedding_metric": configuration.get("embedding_metric"),
-                        },
-                        "sparse": {
-                            "state": "ready",
-                            "provider": configuration["provider"],
-                            "engine": configuration["engine"],
-                            "analyzer": configuration["analyzer"],
-                            "engine_revision": configuration["engine_revision"],
-                            "analyzer_revision": configuration["analyzer_revision"],
-                            "tokenizer_revision": configuration["tokenizer_revision"],
-                            "pretokenizer_version": configuration["pretokenizer_version"],
-                            "schema_hash": configuration["schema_hash"],
-                            "sparse_schema_hash": configuration["sparse_schema_hash"],
-                            "config_hash": configuration["config_hash"],
-                            "implementation_config_hash": configuration[
-                                "implementation_config_hash"
-                            ],
-                            "dimension": configuration.get("embedding_dimension"),
-                            "metric": configuration.get("embedding_metric"),
-                            "model_revision": configuration.get("embedding_revision"),
-                        },
-                    },
+                    "components": _component_defaults("generation_initial", configuration),
                     "base_snapshot": [],
                     "built_publications": {},
                 },
@@ -616,44 +666,20 @@ class SqlAlchemyIndexingRepository:
             )
             if existing is not None:
                 return self._row_to_generation(existing)
+            now = self._timestamp(conn)
             payload = dict(manifest or {})
             payload.setdefault("indexing_configuration", self._configuration_manifest())
             components = dict(payload.get("components", {}))
             configuration = dict(payload["indexing_configuration"])
-            components.setdefault(
-                "dense",
-                {
-                    "state": "ready",
-                    "provider": "configured",
-                    "embedding_model": configuration.get("embedding_model"),
-                    "embedding_revision": configuration.get("embedding_revision"),
-                    "embedding_dimension": configuration.get("embedding_dimension"),
-                    "embedding_metric": configuration.get("embedding_metric"),
-                },
-            )
-            components.setdefault(
-                "sparse",
-                {
-                    "state": "ready",
-                    "provider": configuration["provider"],
-                    "engine": configuration["engine"],
-                    "analyzer": configuration["analyzer"],
-                    "engine_revision": configuration["engine_revision"],
-                    "analyzer_revision": configuration["analyzer_revision"],
-                    "tokenizer_revision": configuration["tokenizer_revision"],
-                    "pretokenizer_version": configuration["pretokenizer_version"],
-                    "schema_hash": configuration["schema_hash"],
-                    "sparse_schema_hash": configuration["sparse_schema_hash"],
-                    "config_hash": configuration["config_hash"],
-                    "implementation_config_hash": configuration["implementation_config_hash"],
-                    "dimension": configuration.get("embedding_dimension"),
-                    "metric": configuration.get("embedding_metric"),
-                    "model_revision": configuration.get("embedding_revision"),
-                },
-            )
+            for component_kind, defaults in _component_defaults(identifier, configuration).items():
+                components[component_kind] = {
+                    **defaults,
+                    **dict(components.get(component_kind, {})),
+                }
             payload["components"] = components
             payload.update(
                 {
+                    "generation_id": identifier,
                     "provider": configuration["provider"],
                     "engine_revision": configuration["engine_revision"],
                     "analyzer_revision": configuration["analyzer_revision"],
@@ -664,6 +690,7 @@ class SqlAlchemyIndexingRepository:
                     "metric": configuration.get("embedding_metric"),
                     "model_revision": configuration.get("embedding_revision"),
                     "last_applied_index_change_id": None,
+                    "created_at": now.isoformat(),
                     "published_at": None,
                     "rollback_candidate_until": None,
                     "gc_state": "staging",
@@ -672,7 +699,6 @@ class SqlAlchemyIndexingRepository:
                 }
             )
             payload["base_snapshot"] = [dict(item) for item in (base_snapshot or snapshot)]
-            now = self._timestamp(conn)
             conn.execute(
                 index_generations_table.insert().values(
                     id=identifier,
@@ -1199,10 +1225,9 @@ class SqlAlchemyIndexingRepository:
             .all()
         )
         if (
-            (not graph and graph_rows)
-            or len(graph_rows) > 1
-            or (graph and not graph_rows)
-            or (graph and dict(graph_rows[0]["manifest_json"] or {}) != graph)
+            len(graph_rows) > 1
+            or (graph_rows and dict(graph_rows[0]["manifest_json"] or {}) != graph)
+            or (graph.get("state") != "disabled" and not graph_rows)
         ):
             raise PlatformError(
                 "release_gate_failed",
@@ -1751,6 +1776,7 @@ class SqlAlchemyIndexingRepository:
                 "state": state,
                 "blocking_reasons": list(dict.fromkeys(reasons)),
                 "retryable": bool(reasons),
+                "component_progress": _component_progress(completed=state == "already_purged"),
             }
             _insert_do_nothing(
                 conn,
@@ -1880,8 +1906,37 @@ class SqlAlchemyIndexingRepository:
         *,
         operation_id: str,
         reason: str,
+        component_kind: str = "public_graph",
     ) -> IndexGenerationGcReceipt:
-        with self._connection(None) as conn:
+        self.record_gc_component_progress(
+            candidate_generation_id,
+            operation_id=operation_id,
+            component_kind=component_kind,
+            state="failed",
+            error=reason,
+        )
+        return IndexGenerationGcReceipt(
+            operation_id, candidate_generation_id, "blocked", (reason,), True
+        )
+
+    def record_gc_component_progress(
+        self,
+        candidate_generation_id: str,
+        *,
+        operation_id: str,
+        component_kind: str,
+        state: str,
+        error: str | None = None,
+        connection: Connection | None = None,
+    ) -> Mapping[str, Any]:
+        if component_kind not in _GC_COMPONENTS or state not in {
+            "pending",
+            "running",
+            "completed",
+            "failed",
+        }:
+            raise PlatformError("validation_error", "GC component progress is invalid", {}, 422)
+        with self._connection(connection) as conn:
             operation = (
                 conn.execute(
                     select(index_operations_table).where(
@@ -1894,12 +1949,38 @@ class SqlAlchemyIndexingRepository:
             if operation is None:
                 raise PlatformError("gc_operation_not_found", "GC operation was not found", {}, 404)
             payload = dict(operation["response_json"] or {})
+            if (
+                operation["operation_kind"] != "generation_gc"
+                or payload.get("candidate_generation_id") != candidate_generation_id
+            ):
+                raise PlatformError("idempotency_key_conflict", "GC operation conflicts", {}, 409)
+            progress = {
+                name: dict(value)
+                for name, value in dict(
+                    payload.get("component_progress") or _component_progress()
+                ).items()
+            }
+            current = dict(progress.get(component_kind, {}))
+            attempts = int(current.get("attempts", 0))
+            if state == "running":
+                attempts += 1
+            elif state == "failed" and attempts == 0:
+                attempts = 1
+            progress[component_kind] = {
+                "state": state,
+                "attempts": attempts,
+                "last_error": error if state == "failed" else None,
+            }
             payload.update(
                 state="accepted",
                 blocking_reasons=[],
-                retryable=True,
-                cleanup_failure=reason,
+                retryable=state == "failed",
+                component_progress=progress,
             )
+            if state == "failed":
+                payload["cleanup_failure"] = error
+            else:
+                payload.pop("cleanup_failure", None)
             conn.execute(
                 update(index_operations_table)
                 .where(index_operations_table.c.operation_id == operation_id)
@@ -1909,9 +1990,33 @@ class SqlAlchemyIndexingRepository:
                     completed_at_utc=self._timestamp(conn),
                 )
             )
-            return IndexGenerationGcReceipt(
-                operation_id, candidate_generation_id, "blocked", (reason,), True
+            return progress[component_kind]
+
+    def _gc_component_state(
+        self,
+        candidate_generation_id: str,
+        *,
+        operation_id: str,
+        component_kind: str,
+        connection: Connection | None = None,
+    ) -> str:
+        with self._connection(connection) as conn:
+            operation = (
+                conn.execute(
+                    select(index_operations_table).where(
+                        index_operations_table.c.operation_id == operation_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
             )
+            if operation is None:
+                raise PlatformError("gc_operation_not_found", "GC operation was not found", {}, 404)
+            payload = dict(operation["response_json"] or {})
+            if payload.get("candidate_generation_id") != candidate_generation_id:
+                raise PlatformError("idempotency_key_conflict", "GC operation conflicts", {}, 409)
+            progress = dict(payload.get("component_progress") or _component_progress())
+            return str(dict(progress.get(component_kind, {})).get("state", "pending"))
 
     def complete_generation_gc(
         self,
@@ -1927,7 +2032,14 @@ class SqlAlchemyIndexingRepository:
             )
             if eligibility.state != "accepted":
                 return eligibility
-            if candidate.manifest.get("components", {}).get("public_graph"):
+            graph = dict(candidate.manifest.get("components", {}).get("public_graph", {}))
+            graph_progress = self._gc_component_state(
+                candidate_generation_id,
+                operation_id=operation_id,
+                component_kind="public_graph",
+                connection=conn,
+            )
+            if graph.get("state") not in {None, "disabled"} and graph_progress != "completed":
                 return IndexGenerationGcReceipt(
                     operation_id,
                     candidate_generation_id,
@@ -1935,19 +2047,86 @@ class SqlAlchemyIndexingRepository:
                     ("graph_component_cleanup_required",),
                     True,
                 )
-            return self._complete_generation_gc_after_component_cleanup(
+        if graph_progress != "completed":
+            self.record_gc_component_progress(
                 candidate_generation_id,
                 operation_id=operation_id,
-                connection=conn,
+                component_kind="public_graph",
+                state="completed",
+                connection=connection,
             )
+        return self._complete_generation_gc_after_component_cleanup(
+            candidate_generation_id,
+            operation_id=operation_id,
+            connection=connection,
+        )
 
     def _complete_generation_gc_after_component_cleanup(
         self,
         candidate_generation_id: str,
         *,
         operation_id: str,
-        connection: Connection,
+        connection: Connection | None = None,
     ) -> IndexGenerationGcReceipt:
+        with self._connection(connection) as conn:
+            publications = tuple(
+                (str(row["document_id"]), str(row["document_version_id"]))
+                for row in conn.execute(
+                    select(
+                        index_chunks_table.c.document_id,
+                        index_chunks_table.c.document_version_id,
+                    )
+                    .where(index_chunks_table.c.generation_id == candidate_generation_id)
+                    .distinct()
+                ).mappings()
+            )
+        for component_kind in ("sparse", "vector", "hierarchy", "cache"):
+            if (
+                self._gc_component_state(
+                    candidate_generation_id,
+                    operation_id=operation_id,
+                    component_kind=component_kind,
+                    connection=connection,
+                )
+                == "completed"
+            ):
+                continue
+            self.record_gc_component_progress(
+                candidate_generation_id,
+                operation_id=operation_id,
+                component_kind=component_kind,
+                state="running",
+                connection=connection,
+            )
+            purge = self._generation_component_purges.get(component_kind)
+            if purge is None and component_kind == "vector":
+                purge = self._generation_purge
+            try:
+                if purge is not None:
+                    purge(candidate_generation_id, publications)
+            except Exception:
+                self.record_gc_component_progress(
+                    candidate_generation_id,
+                    operation_id=operation_id,
+                    component_kind=component_kind,
+                    state="failed",
+                    error="cleanup_failed",
+                    connection=connection,
+                )
+                return IndexGenerationGcReceipt(
+                    operation_id,
+                    candidate_generation_id,
+                    "blocked",
+                    (f"{component_kind}_cleanup_failed",),
+                    True,
+                )
+            self.record_gc_component_progress(
+                candidate_generation_id,
+                operation_id=operation_id,
+                component_kind=component_kind,
+                state="completed",
+                connection=connection,
+            )
         with self._connection(connection) as conn:
             operation = (
                 conn.execute(
@@ -1967,19 +2146,6 @@ class SqlAlchemyIndexingRepository:
             if eligibility.state != "accepted":
                 return eligibility
             candidate = self.get_generation(candidate_generation_id, connection=conn)
-            publications = tuple(
-                (str(row["document_id"]), str(row["document_version_id"]))
-                for row in conn.execute(
-                    select(
-                        index_chunks_table.c.document_id,
-                        index_chunks_table.c.document_version_id,
-                    )
-                    .where(index_chunks_table.c.generation_id == candidate_generation_id)
-                    .distinct()
-                ).mappings()
-            )
-            if self._generation_purge is not None:
-                self._generation_purge(candidate_generation_id, publications)
             conn.execute(
                 index_chunks_table.delete().where(
                     index_chunks_table.c.generation_id == candidate_generation_id
@@ -1994,6 +2160,18 @@ class SqlAlchemyIndexingRepository:
                 )
             )
             payload["state"] = "already_purged"
+            payload["retryable"] = False
+            payload["blocking_reasons"] = []
+            payload["component_progress"] = {
+                name: {
+                    **dict(value),
+                    "state": "completed",
+                    "last_error": None,
+                }
+                for name, value in dict(
+                    payload.get("component_progress") or _component_progress(completed=True)
+                ).items()
+            }
             conn.execute(
                 update(index_operations_table)
                 .where(index_operations_table.c.operation_id == operation_id)

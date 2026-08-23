@@ -203,12 +203,14 @@ class GraphComponentCoordinator:
         source_service: Any,
         *,
         consumer_id: str = "indexing",
+        graph_store: Any | None = None,
         now: Any = _now,
         grant_ttl: timedelta = timedelta(minutes=10),
     ) -> None:
         self._generation = generation_manager
         self._source = source_service
         self._consumer_id = consumer_id
+        self._graph_store = graph_store
         self._now = now
         self._grant_ttl = grant_ttl
         self._grants: dict[str, GraphComponentStageGrant] = {}
@@ -576,6 +578,9 @@ class GraphComponentCoordinator:
                     "public_graph",
                     "staged",
                     manifest={
+                        "graph_generation_id": staging.generation_id,
+                        "component_manifest_revision": "public-graph-v1",
+                        "reader_lease_binding": staging.generation_id,
                         "target_generation_fence": fence,
                         "source_revision": expected_source_revision,
                         "source_manifest_hash": snapshot.source_manifest_hash,
@@ -1120,6 +1125,13 @@ class GraphComponentCoordinator:
                     if eligibility.state != "accepted":
                         return eligibility
                     try:
+                        repository.record_gc_component_progress(
+                            candidate_generation_id,
+                            operation_id=operation_id,
+                            component_kind="public_graph",
+                            state="running",
+                            connection=connection,
+                        )
                         candidate = repository.get_generation(
                             candidate_generation_id, connection=connection
                         )
@@ -1145,21 +1157,41 @@ class GraphComponentCoordinator:
                         repository.remove_graph_component_for_gc(
                             candidate_generation_id, connection=connection
                         )
-                        return repository._complete_generation_gc_after_component_cleanup(
+                        if self._graph_store is not None:
+                            self._graph_store.purge_generation(
+                                candidate_generation_id,
+                                connection=connection,
+                            )
+                        repository.record_gc_component_progress(
                             candidate_generation_id,
                             operation_id=operation_id,
+                            component_kind="public_graph",
+                            state="completed",
                             connection=connection,
                         )
-                    except PlatformError as error:
-                        if error.code == "idempotency_key_conflict":
-                            raise
-                        raise _GraphComponentCleanupFailure(error) from error
+                    except Exception as error:
+                        if isinstance(error, PlatformError):
+                            if error.code == "idempotency_key_conflict":
+                                raise
+                            failure = error
+                        else:
+                            failure = PlatformError(
+                                "graph_cleanup_failed",
+                                "Graph component cleanup failed",
+                                {},
+                                503,
+                            )
+                        raise _GraphComponentCleanupFailure(failure) from error
             except _GraphComponentCleanupFailure as failure:
                 return repository.record_gc_cleanup_failure(
                     candidate_generation_id,
                     operation_id=operation_id,
                     reason=failure.error.code,
                 )
+            return repository.complete_generation_gc(
+                candidate_generation_id,
+                operation_id=operation_id,
+            )
 
     CompleteIndexGenerationGc = complete_index_generation_gc
 
