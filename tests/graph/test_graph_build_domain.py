@@ -156,6 +156,19 @@ def _publication(number: int) -> dict[str, str]:
     }
 
 
+def _empty_graph_payload(number: int = 1) -> dict[str, object]:
+    return {
+        "graph": {
+            "source": {
+                "document_id": f"doc_{number}",
+                "content_manifest_id": f"manifest_{number}",
+            },
+            "nodes": [],
+            "edges": [],
+        }
+    }
+
+
 def _build_env(now: FixedClock | None = None, *, extractor: object | None = None):
     clock = now or FixedClock(datetime(2026, 8, 5, 0, 0, tzinfo=UTC))
     engine = create_engine(
@@ -1153,7 +1166,7 @@ def test_stale_worker_fault_does_not_discard_reclaimed_attempt_component_stage()
                 run=retry,
                 resource_kind="publication_graph",
                 resource_id="pub_1",
-                payload={"graph": {}},
+                payload=_empty_graph_payload(),
             )
             self.retry = retry
             self.component_stage_id = service.stage_component(run=retry)

@@ -156,6 +156,16 @@ def _publish(runtime) -> None:
     )
 
 
+def _empty_graph_payload() -> dict[str, object]:
+    return {
+        "graph": {
+            "source": {"document_id": "doc_1", "content_manifest_id": "manifest_1"},
+            "nodes": [],
+            "edges": [],
+        }
+    }
+
+
 def test_role_gating_and_create_contract() -> None:
     client, runtime = _make_client()
     ops_token = _seed_user(runtime, "ops", "ops-user")
@@ -365,7 +375,7 @@ def test_runtime_requeues_a_staged_attempt_and_completes_the_next_attempt() -> N
         run=retry,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     component_stage_id = service.stage_component(run=retry)
     receipt = service.release_component(run=retry, component_stage_id=component_stage_id)
@@ -418,7 +428,7 @@ def test_runtime_does_not_expose_recovery_retry_before_stale_component_stage_cle
         run=retry,
         resource_kind="publication_graph",
         resource_id="pub_1",
-        payload={"graph": {}},
+        payload=_empty_graph_payload(),
     )
     component_stage_id = service.stage_component(run=retry)
     receipt = service.release_component(run=retry, component_stage_id=component_stage_id)
