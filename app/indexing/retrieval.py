@@ -23,6 +23,13 @@ from .models import (
     RetrievalResult,
     RetrievalScope,
 )
+from .observability import (
+    CANDIDATE_FILTER_ROUTE,
+    CANDIDATE_REPLENISH_ROUTE,
+    GRAPH_QUERY_SKIP_ROUTE,
+    GRAPH_STALE_DURATION_ROUTE,
+    record_index_observation,
+)
 from .providers import SparseIndexProvider
 
 
@@ -338,6 +345,11 @@ class RetrievalService:
             raise ValueError("at least one retrieval provider is required")
         self._generation = generation_manager
         self._providers = tuple(providers)
+        self._sparse_sources = frozenset(
+            str(getattr(provider, "provider_name", ""))
+            for provider in self._providers
+            if _backend_kind(provider, fallback="sparse") == "sparse"
+        )
         self._identity = identity_access
         self._visibility = visibility_facts
         self._reranker = reranker or NoopReranker(environment=environment)
@@ -515,6 +527,7 @@ class RetrievalService:
         cursor: str | None = None
         cursors_seen: set[str | None] = set()
         provider_seen = 0
+        page_number = 0
         while provider_seen < quota:
             if cursor in cursors_seen:
                 raise PlatformError(
@@ -539,19 +552,39 @@ class RetrievalService:
             facts = self._visibility_facts(
                 tuple(candidate for candidate, _ in candidates), principal
             )
+            rejected = 0
             for candidate, provider_score in candidates:
                 fact = facts.get((candidate.space_id, candidate.document_id))
                 if not self._visible(candidate, fact, scope, generation_id):
+                    rejected += 1
                     continue
                 provider_seen += 1
-                hits.append(
-                    RetrievalHit(candidate, provider_score, getattr(provider, "provider_name", ""))
+                source = str(getattr(provider, "provider_name", ""))
+                score = (
+                    0.0
+                    if _backend_kind(provider, fallback="sparse") == "sparse"
+                    else provider_score
                 )
+                hits.append(RetrievalHit(candidate, score, source))
                 if provider_seen >= quota:
                     break
+            record_index_observation(
+                self._exact_match_metrics,
+                CANDIDATE_FILTER_ROUTE,
+                success=True,
+                count=rejected,
+            )
+            if page_number > 0:
+                record_index_observation(
+                    self._exact_match_metrics,
+                    CANDIDATE_REPLENISH_ROUTE,
+                    success=True,
+                    count=len(candidates),
+                )
             if page.cursor is None:
                 break
             cursor = page.cursor
+            page_number += 1
         return hits
 
     def _collect_hybrid_hits(
@@ -696,9 +729,16 @@ class RetrievalService:
                 )
             except Exception as error:
                 degradations.append(self._routing_degradation("tree", error))
-        if selected.route_graph and self._graph_router is not None:
+        if selected.route_graph:
             graph_lease = None
             try:
+                if self._graph_router is None:
+                    raise PlatformError(
+                        "graph_unavailable",
+                        "public graph routing is unavailable",
+                        {},
+                        503,
+                    )
                 if self._graph_reader is None:
                     raise PlatformError(
                         "reader_unavailable",
@@ -718,13 +758,29 @@ class RetrievalService:
                     )
             except Exception as error:
                 degradations.append(self._routing_degradation("graph", error))
+                record_index_observation(
+                    self._exact_match_metrics,
+                    GRAPH_QUERY_SKIP_ROUTE,
+                    success=False,
+                )
+                if isinstance(error, PlatformError) and error.code == "graph_stale":
+                    stale_duration_ms = error.details.get("stale_duration_ms", 0)
+                    if isinstance(stale_duration_ms, int):
+                        record_index_observation(
+                            self._exact_match_metrics,
+                            GRAPH_STALE_DURATION_ROUTE,
+                            success=True,
+                            latency_ms=stale_duration_ms,
+                        )
             finally:
                 if graph_lease is not None:
                     self._graph_reader.release_reader_lease(graph_lease)
         filtered = [
             hit
             for hit in reranked
-            if selected.score_threshold is None or hit.score >= selected.score_threshold
+            if selected.score_threshold is None
+            or hit.source in self._sparse_sources
+            or hit.score >= selected.score_threshold
         ]
         budgeted: list[RetrievalHit] = []
         deferred: list[RetrievalHit] = []

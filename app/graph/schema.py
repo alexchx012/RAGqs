@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
+    Float,
     Index,
     Integer,
     MetaData,
@@ -95,6 +97,73 @@ graph_staging_resources_table = Table(
     ),
 )
 
+graph_entities_table = Table(
+    "graph_entities",
+    graph_metadata,
+    Column("id", String(128), primary_key=True),
+    Column("graph_generation_id", String(128), nullable=False),
+    Column("index_generation_id", String(128), nullable=False),
+    Column("source_revision", Integer, nullable=False),
+    Column("source_head_fence", Integer, nullable=False),
+    Column("space_id", String(64), nullable=False),
+    Column("canonical_key", String(256), nullable=False),
+    Column("entity_type", String(128), nullable=False),
+    Column("display_name", String(512), nullable=False),
+    Column("aliases_json", JSON, nullable=False),
+    Column("document_id", String(128), nullable=False),
+    Column("document_version_id", String(128), nullable=False),
+    Column("publication_id", String(128), nullable=False),
+    Column("content_manifest_id", String(128), nullable=False),
+    Column("chunk_locator_json", JSON, nullable=False),
+    Column("extraction_model_revision", String(128), nullable=False),
+    Column("prompt_revision", String(128), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("graph_build_id", String(64), nullable=False),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "graph_generation_id",
+        "canonical_key",
+        "publication_id",
+        "document_version_id",
+        name="uq_graph_entity_provenance",
+    ),
+)
+
+graph_relations_table = Table(
+    "graph_relations",
+    graph_metadata,
+    Column("id", String(128), primary_key=True),
+    Column("graph_generation_id", String(128), nullable=False),
+    Column("index_generation_id", String(128), nullable=False),
+    Column("source_revision", Integer, nullable=False),
+    Column("source_head_fence", Integer, nullable=False),
+    Column("space_id", String(64), nullable=False),
+    Column("source_canonical_key", String(256), nullable=False),
+    Column("target_canonical_key", String(256), nullable=False),
+    Column("relation_type", String(128), nullable=False),
+    Column("directed", Boolean, nullable=False),
+    Column("properties_json", JSON, nullable=False),
+    Column("document_id", String(128), nullable=False),
+    Column("document_version_id", String(128), nullable=False),
+    Column("publication_id", String(128), nullable=False),
+    Column("content_manifest_id", String(128), nullable=False),
+    Column("chunk_locator_json", JSON, nullable=False),
+    Column("extraction_model_revision", String(128), nullable=False),
+    Column("prompt_revision", String(128), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("graph_build_id", String(64), nullable=False),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "graph_generation_id",
+        "source_canonical_key",
+        "target_canonical_key",
+        "relation_type",
+        "publication_id",
+        "document_version_id",
+        name="uq_graph_relation_provenance",
+    ),
+)
+
 graph_build_audit_table = Table(
     "graph_build_audit",
     graph_metadata,
@@ -137,6 +206,16 @@ Index(
     graph_build_audit_table.c.created_at_utc,
 )
 Index(
+    "ix_graph_entities_generation_document",
+    graph_entities_table.c.index_generation_id,
+    graph_entities_table.c.document_id,
+)
+Index(
+    "ix_graph_relations_generation_document",
+    graph_relations_table.c.index_generation_id,
+    graph_relations_table.c.document_id,
+)
+Index(
     "uq_graph_build_single_active_run",
     literal_column("(1)"),
     unique=True,
@@ -149,6 +228,8 @@ __all__ = [
     "graph_build_audit_table",
     "graph_build_operations_table",
     "graph_build_runs_table",
+    "graph_entities_table",
     "graph_metadata",
+    "graph_relations_table",
     "graph_staging_resources_table",
 ]

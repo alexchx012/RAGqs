@@ -105,6 +105,10 @@ class IndexSettings(_StrictModel):
     )
     sparse_url: str | None = None
     sparse_api_key: SecretStr | None = None
+    sparse_username: str | None = None
+    sparse_password: SecretStr | None = None
+    sparse_ca_path: str | None = None
+    sparse_jvm_heap_min_gb: float = Field(default=1.0, gt=0.0, le=1024.0)
     sparse_index: str = Field(
         default="ragqs_chunks", min_length=1, max_length=128, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$"
     )
@@ -272,6 +276,10 @@ _ENV_KEYS = {
     "RAG_INDEX_VECTOR_COLLECTION_PREFIX",
     "RAG_INDEX_SPARSE_URL",
     "RAG_INDEX_SPARSE_API_KEY",
+    "RAG_INDEX_SPARSE_USERNAME",
+    "RAG_INDEX_SPARSE_PASSWORD",
+    "RAG_INDEX_SPARSE_CA_PATH",
+    "RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB",
     "RAG_INDEX_SPARSE_INDEX",
     "RAG_INDEX_SPARSE_DATA_PATH",
     "RAG_INDEX_TEXT_CHUNK_MAX_CHARS",
@@ -475,6 +483,14 @@ def load_platform_settings(
                 or "ragqs",
                 "sparse_url": _optional(env, "RAG_INDEX_SPARSE_URL"),
                 "sparse_api_key": _optional_secret(env, "RAG_INDEX_SPARSE_API_KEY"),
+                "sparse_username": _optional(env, "RAG_INDEX_SPARSE_USERNAME"),
+                "sparse_password": _optional_secret(env, "RAG_INDEX_SPARSE_PASSWORD"),
+                "sparse_ca_path": _optional(env, "RAG_INDEX_SPARSE_CA_PATH"),
+                "sparse_jvm_heap_min_gb": (
+                    _float(env, "RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB")
+                    if "RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB" in env
+                    else 1.0
+                ),
                 "sparse_index": _optional(env, "RAG_INDEX_SPARSE_INDEX") or "ragqs_chunks",
                 "sparse_data_path": _optional(env, "RAG_INDEX_SPARSE_DATA_PATH"),
                 "text_chunk_max_chars": _int(env, "RAG_INDEX_TEXT_CHUNK_MAX_CHARS"),

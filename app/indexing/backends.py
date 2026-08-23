@@ -14,6 +14,8 @@ from .embedding import (
 )
 from .meilisearch import HttpMeilisearchClient, MeilisearchSparseIndexProvider
 from .milvus import HttpMilvusClient, MilvusIndexWriter
+from .observability import PROVIDER_ANALYZER_PROBE_ROUTE, record_index_observation
+from .opensearch import HttpOpenSearchClient, OpenSearchSparseIndexProvider
 from .providers import InMemoryIndexWriter, InMemorySparseIndexProvider, build_sparse_provider
 
 
@@ -71,6 +73,27 @@ def build_dense_writer(
 
 
 def build_configured_sparse_provider(settings: PlatformSettings, *, allow_create: bool) -> Any:
+    if settings.index.sparse_provider.startswith("opensearch"):
+        if not settings.index.sparse_url:
+            raise RuntimeError("OpenSearch requires RAG_INDEX_SPARSE_URL")
+        username = settings.index.sparse_username
+        password = _secret(settings.index.sparse_password)
+        ca_path = settings.index.sparse_ca_path
+        if not username or not password or not ca_path:
+            raise RuntimeError(
+                "OpenSearch requires username, password, and RAG_INDEX_SPARSE_CA_PATH"
+            )
+        return OpenSearchSparseIndexProvider(
+            HttpOpenSearchClient(
+                settings.index.sparse_url,
+                username=username,
+                password=password,
+                ca_path=ca_path,
+            ),
+            index_name=settings.index.sparse_index,
+            allow_create_index=allow_create,
+            jvm_heap_min_bytes=int(settings.index.sparse_jvm_heap_min_gb * 1024**3),
+        )
     if settings.index.sparse_url:
         if settings.index.sparse_provider != "meilisearch":
             raise PlatformError(
@@ -90,11 +113,24 @@ def build_configured_sparse_provider(settings: PlatformSettings, *, allow_create
     return build_sparse_provider(settings.index.sparse_provider)
 
 
-def probe_configured_backends(*backends: Any) -> None:
+def probe_configured_backends(*backends: Any, metrics: Any | None = None) -> None:
     for backend in backends:
         probe = getattr(backend, "probe", None)
         if callable(probe):
-            probe()
+            try:
+                probe()
+            except Exception:
+                record_index_observation(
+                    metrics,
+                    PROVIDER_ANALYZER_PROBE_ROUTE,
+                    success=False,
+                )
+                raise
+            record_index_observation(
+                metrics,
+                PROVIDER_ANALYZER_PROBE_ROUTE,
+                success=True,
+            )
 
 
 def is_memory_indexing_adapter(value: Any) -> bool:

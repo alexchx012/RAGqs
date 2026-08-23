@@ -37,6 +37,7 @@ from .ports import (
     PublicGraphSourcePort,
 )
 from .repository import SqlAlchemyGraphRepository
+from .store import SqlAlchemyPublicGraphStore
 
 GRAPH_CONSUMER_ID = "public_graph"
 CREATE_OP_PREFIX = "gb_create"
@@ -86,6 +87,7 @@ class GraphBuildService:
         outbox: GraphBuildOutboxPort,
         verifier: GraphActivatedReceiptVerifierPort,
         configuration: GraphBuildConfiguration | None = None,
+        store: SqlAlchemyPublicGraphStore | None = None,
         gc_authorizer: Callable[[str], bool] | None = None,
         now: Callable[[], datetime] = _now,
         grant_ttl: timedelta = timedelta(minutes=10),
@@ -100,6 +102,7 @@ class GraphBuildService:
         self._outbox = outbox
         self._verifier = verifier
         self._configuration = configuration or GraphBuildConfiguration()
+        self._store = store or SqlAlchemyPublicGraphStore(engine, now=now)
         self._gc_authorizer = gc_authorizer or (lambda caller: caller == "retention-ops")
         self._now = now
         self._grant_ttl = grant_ttl
@@ -457,6 +460,7 @@ class GraphBuildService:
                 "lease_expires_at_utc": None,
                 "heartbeat_at_utc": None,
                 "fencing_token": new_fence,
+                "failure_class": "cancel_requested",
             },
         )
         self._repository.write_audit(
@@ -476,6 +480,7 @@ class GraphBuildService:
             transition_version=run.version + 1,
             occurred_at=now,
             recipient_user_id=run.initiator_identity_id,
+            failure_class="cancel_requested",
             connection=connection,
         )
         self._repository.delete_staging_resources(
@@ -674,15 +679,36 @@ class GraphBuildService:
             }
         )
         grant = _grant_from_record(run)
-        receipt = self._coordinator.stage_public_graph_component(
-            grant=grant,
-            graph_resource_manifest_hash=manifest_hash,
-            graph_resource_ids=resource_ids,
-            build_receipt_hash=build_receipt_hash,
-            lease_guard=lambda connection: self._require_current_lease(
-                run=run, connection=connection
-            ),
-        )
+        with self._engine.begin() as connection:
+            self._require_current_lease(run=run, connection=connection)
+            resources = self._repository.list_staging_payloads(
+                connection=connection,
+                run_id=run.graph_build_id,
+                attempt=run.current_attempt,
+            )
+            self._store.activate(
+                connection=connection,
+                graph_build_id=run.graph_build_id,
+                graph_generation_id=run.target_generation_id,
+                index_generation_id=run.target_generation_id,
+                source_revision=run.source_revision,
+                source_head_fence=run.source_head_fence,
+                publications=run.publications,
+                resources=resources,
+            )
+        try:
+            receipt = self._coordinator.stage_public_graph_component(
+                grant=grant,
+                graph_resource_manifest_hash=manifest_hash,
+                graph_resource_ids=resource_ids,
+                build_receipt_hash=build_receipt_hash,
+                lease_guard=lambda connection: self._require_current_lease(
+                    run=run, connection=connection
+                ),
+            )
+        except Exception:
+            self._store.purge_generation(run.target_generation_id)
+            raise
         try:
             with self._engine.begin() as connection:
                 self._repository.set_stage_receipt(

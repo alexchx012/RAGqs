@@ -54,6 +54,7 @@ from app.graph import (
     RepositoryActivatedReceiptVerifier,
     SqlAlchemyGraphBuildOutboxAdapter,
     SqlAlchemyGraphRepository,
+    SqlAlchemyPublicGraphStore,
     UsageLedgerSubmissionAdapter,
 )
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
@@ -89,6 +90,7 @@ from app.indexing.image_vlm import (
     NoneImageDescriber,
 )
 from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
+from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.prefix_cache import PrefixCacheManager
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
@@ -226,6 +228,9 @@ def build_runtime(
         success_sample_rate=settings.observability.success_sample_rate,
         max_route_templates=settings.observability.max_route_templates,
     )
+    configure_metric_routes = getattr(observability_metrics, "configure_route_templates", None)
+    if callable(configure_metric_routes):
+        configure_metric_routes(INDEX_INTERNAL_OBSERVABILITY_ROUTES)
     secret_key = (
         settings.object_storage.secret_key.get_secret_value()
         if settings.object_storage.secret_key is not None
@@ -379,11 +384,16 @@ def build_runtime(
         )
     )
     configured.setdefault("public_graph_source_service", public_graph_source_service)
+    public_graph_store = configured.get("public_graph_store") or SqlAlchemyPublicGraphStore(
+        engine, now=clock.now_utc
+    )
+    configured.setdefault("public_graph_store", public_graph_store)
     generation_repository = configured.get("indexing_generation_repository") or (
         SqlAlchemyIndexingRepository(
             engine,
             now=clock.now_utc,
             rollback_days=settings.index.generation_rollback_days,
+            operational_metrics=observability_metrics,
             generation_configuration={
                 "provider": settings.index.sparse_provider,
                 "engine": (
@@ -392,7 +402,22 @@ def build_runtime(
                     else "meilisearch"
                 ),
                 "analyzer": (
-                    "ik" if settings.index.sparse_provider == "opensearch+ik" else "jieba"
+                    "ik" if settings.index.sparse_provider.startswith("opensearch") else "jieba"
+                ),
+                "engine_revision": (
+                    "opensearch-rest-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "meilisearch-http-v1"
+                ),
+                "analyzer_revision": (
+                    "ik-smart-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "jieba-v1"
+                ),
+                "tokenizer_revision": (
+                    "ik-smart-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "jieba-v1"
                 ),
                 "pretokenizer_version": "v1",
                 "schema_version": "index-chunks-v1",
@@ -552,7 +577,7 @@ def build_runtime(
             raise RuntimeError("production sparse backend must provide BM25 search")
         if not callable(getattr(reranker, "rerank", None)):
             raise RuntimeError("production reranker does not implement the rerank port")
-    probe_configured_backends(dense_writer, sparse_provider)
+    probe_configured_backends(dense_writer, sparse_provider, metrics=observability_metrics)
     indexing_service = configured.get("indexing_service") or IndexingService(
         processor=processor,
         dense_writer=dense_writer,
@@ -566,7 +591,8 @@ def build_runtime(
         visibility_facts=visibility_facts,
         source_service=public_graph_source_service,
         tree_router=configured.get("indexing_tree_router"),
-        graph_router=configured.get("indexing_graph_router"),
+        graph_router=configured.get("indexing_graph_router") or public_graph_store.route,
+        graph_store=public_graph_store,
         token_counter=token_counter,
         object_store=object_store,
         embedding=embedding,
@@ -694,6 +720,7 @@ def build_runtime(
         outbox=graph_build_outbox_port,
         verifier=graph_activated_receipt_verifier,
         configuration=graph_build_configuration,
+        store=public_graph_store,
         now=clock.now_utc,
     )
     configured.setdefault("graph_build_service", graph_build_service)

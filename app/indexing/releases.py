@@ -15,6 +15,18 @@ from .models import RetrievalProfile
 from .schema import index_generations_table, retrieval_releases_table
 
 _REQUIRED_METRICS = frozenset({"p50_ms", "p95_ms", "p99_ms", "error_rate", "vram_mb"})
+_REQUIRED_SAMPLES = frozenset(
+    {
+        "phrase_query",
+        "proper_noun_query",
+        "quoted_exact_query",
+        "real_question",
+        "acl_filter",
+        "sparse_exact_hit",
+        "refusal",
+    }
+)
+_REQUIRED_QUALITY_METRICS = frozenset({"hit_at_k", "mrr", "ndcg", "refusal"})
 
 
 def _id() -> str:
@@ -28,7 +40,13 @@ def _fingerprint(value: Mapping[str, Any]) -> str:
 
 
 def _acceptance_suite(value: Mapping[str, Any]) -> dict[str, Any]:
-    required = ("acl_assertions", "hardware_profile", "thresholds")
+    required = (
+        "acl_assertions",
+        "hardware_profile",
+        "thresholds",
+        "samples",
+        "quality_thresholds",
+    )
     if any(not isinstance(value.get(key), Mapping) or not value[key] for key in required):
         raise PlatformError("validation_error", "retrieval acceptance suite is incomplete", {}, 422)
     thresholds = dict(value["thresholds"])
@@ -38,10 +56,47 @@ def _acceptance_suite(value: Mapping[str, Any]) -> dict[str, Any]:
         raise PlatformError(
             "validation_error", "retrieval acceptance thresholds are incomplete", {}, 422
         )
+    samples = dict(value["samples"])
+    if not _REQUIRED_SAMPLES <= samples.keys():
+        raise PlatformError(
+            "validation_error", "retrieval acceptance samples are incomplete", {}, 422
+        )
+    frozen_samples: dict[str, list[dict[str, str]]] = {}
+    for name in _REQUIRED_SAMPLES:
+        entries = samples[name]
+        if not isinstance(entries, list) or not entries:
+            raise PlatformError(
+                "validation_error", "retrieval acceptance samples are incomplete", {}, 422
+            )
+        normalized: list[dict[str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                raise PlatformError(
+                    "validation_error", "retrieval acceptance sample is invalid", {}, 422
+                )
+            item = {
+                field: str(entry.get(field, "")).strip()
+                for field in ("sample_id", "input", "expected")
+            }
+            if any(not value for value in item.values()):
+                raise PlatformError(
+                    "validation_error", "retrieval acceptance sample is invalid", {}, 422
+                )
+            normalized.append(item)
+        frozen_samples[name] = normalized
+    quality_thresholds = dict(value["quality_thresholds"])
+    if not _REQUIRED_QUALITY_METRICS <= quality_thresholds.keys() or any(
+        not isinstance(quality_thresholds[name], (int, float)) for name in _REQUIRED_QUALITY_METRICS
+    ):
+        raise PlatformError(
+            "validation_error", "retrieval quality thresholds are incomplete", {}, 422
+        )
     return {
         "acl_assertions": dict(value["acl_assertions"]),
         "hardware_profile": dict(value["hardware_profile"]),
         "thresholds": thresholds,
+        "samples": frozen_samples,
+        "quality_thresholds": quality_thresholds,
     }
 
 
@@ -126,6 +181,8 @@ class RetrievalReleaseService:
                         "acl_assertions",
                         "hardware_profile",
                         "thresholds",
+                        "samples",
+                        "quality_thresholds",
                         "component_manifest",
                         "component_manifest_hash",
                         "generation_config",
@@ -157,7 +214,13 @@ class RetrievalReleaseService:
                 "state": "staged",
             }
 
-    def release(self, release_id: str, *, metrics: Mapping[str, Any]) -> None:
+    def release(
+        self,
+        release_id: str,
+        *,
+        metrics: Mapping[str, Any],
+        hardware_profile: Mapping[str, Any],
+    ) -> None:
         if not _REQUIRED_METRICS <= metrics.keys() or any(
             not isinstance(metrics[name], (int, float)) for name in _REQUIRED_METRICS
         ):
@@ -180,8 +243,18 @@ class RetrievalReleaseService:
             thresholds = _acceptance_suite(dict(release["acceptance_suite_json"] or {}))[
                 "thresholds"
             ]
+            quality_thresholds = _acceptance_suite(dict(release["acceptance_suite_json"] or {}))[
+                "quality_thresholds"
+            ]
             binding = _generation_binding(connection, str(release["generation_id"]))
             frozen = dict(release["acceptance_suite_json"] or {})
+            if dict(hardware_profile) != dict(frozen.get("hardware_profile") or {}):
+                raise PlatformError(
+                    "release_gate_failed",
+                    "retrieval hardware profile does not match frozen acceptance evidence",
+                    {},
+                    409,
+                )
             if any(
                 frozen.get(key) != binding[key]
                 for key in (
@@ -198,9 +271,23 @@ class RetrievalReleaseService:
                 raise PlatformError(
                     "release_gate_failed", "retrieval metrics exceed acceptance thresholds", {}, 409
                 )
+            if not _REQUIRED_QUALITY_METRICS <= metrics.keys() or any(
+                float(metrics[name]) < float(quality_thresholds[name])
+                for name in _REQUIRED_QUALITY_METRICS
+            ):
+                raise PlatformError(
+                    "release_gate_failed",
+                    "retrieval quality metrics do not meet acceptance thresholds",
+                    {},
+                    409,
+                )
             evidence = frozen
             evidence["results"] = {
-                "metrics": {name: metrics[name] for name in sorted(_REQUIRED_METRICS)},
+                "hardware_profile": dict(hardware_profile),
+                "metrics": {
+                    name: metrics[name]
+                    for name in sorted(_REQUIRED_METRICS | _REQUIRED_QUALITY_METRICS)
+                },
                 "passed": True,
                 "evaluated_at_utc": self._now().isoformat(),
             }
@@ -274,7 +361,9 @@ class RetrievalReleaseService:
             results = dict(evidence.get("results") or {})
             metrics = dict(results.get("metrics") or {})
             try:
-                thresholds = _acceptance_suite(evidence)["thresholds"]
+                suite = _acceptance_suite(evidence)
+                thresholds = suite["thresholds"]
+                quality_thresholds = suite["quality_thresholds"]
             except PlatformError:
                 continue
             if (
@@ -283,8 +372,14 @@ class RetrievalReleaseService:
                 or evidence.get("profile_config_hash")
                 != _fingerprint(dict(release["profile_json"] or {}))
                 or results.get("passed") is not True
-                or not _REQUIRED_METRICS <= metrics.keys()
+                or dict(results.get("hardware_profile") or {})
+                != dict(evidence.get("hardware_profile") or {})
+                or not _REQUIRED_METRICS | _REQUIRED_QUALITY_METRICS <= metrics.keys()
                 or any(float(metrics[name]) > float(thresholds[name]) for name in _REQUIRED_METRICS)
+                or any(
+                    float(metrics[name]) < float(quality_thresholds[name])
+                    for name in _REQUIRED_QUALITY_METRICS
+                )
             ):
                 continue
             return True

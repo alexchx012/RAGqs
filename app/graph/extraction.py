@@ -164,7 +164,20 @@ def _deterministic_graph(publication: Mapping[str, str]) -> dict[str, Any]:
             "content_manifest_id": str(publication.get("content_manifest_id", "")),
         },
         "entity_manifest_hash": digest[:16],
-        "nodes": [{"node_id": f"{document_id}:topic", "label": "topic"}],
+        "nodes": [
+            {
+                "canonical_key": f"{document_id}:topic",
+                "entity_type": "topic",
+                "display_name": document_id,
+                "aliases": [],
+                "chunk_locator": {
+                    "content_manifest_id": str(publication.get("content_manifest_id", ""))
+                },
+                "extraction_model_revision": "public-graph-extraction-v1",
+                "prompt_revision": "public-graph-v1",
+                "confidence": 1.0,
+            }
+        ],
         "edges": [],
     }
 

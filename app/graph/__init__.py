@@ -11,6 +11,7 @@ from .outbox import RepositoryActivatedReceiptVerifier, SqlAlchemyGraphBuildOutb
 from .repository import SqlAlchemyGraphRepository
 from .schema import graph_metadata
 from .service import GRAPH_CONSUMER_ID, GraphBuildConfiguration, GraphBuildService
+from .store import SqlAlchemyPublicGraphStore
 from .usage import GraphUsageRecorder, UsageLedgerSubmissionAdapter
 from .worker import GraphBuildWorker, GraphBuildWorkerStats
 
@@ -32,4 +33,5 @@ __all__ = [
     "SqlAlchemyGraphRepository",
     "UsageLedgerSubmissionAdapter",
     "graph_metadata",
+    "SqlAlchemyPublicGraphStore",
 ]

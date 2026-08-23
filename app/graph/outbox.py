@@ -40,7 +40,7 @@ class SqlAlchemyGraphBuildOutboxAdapter:
         payload: dict[str, object] = {
             "graph_build_id": graph_build_id,
             "status": status,
-            "source_revision": str(source_revision),
+            "source_revision": source_revision,
             "graph_generation_id": graph_generation_id,
             "index_generation_id": index_generation_id,
             "failure_class": failure_class,
