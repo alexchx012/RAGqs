@@ -575,6 +575,39 @@ class SqlAlchemyGraphRepository:
         ).all()
         return [{"resource_kind": str(row[0]), "resource_id": str(row[1])} for row in rows]
 
+    def list_staging_payloads(
+        self, *, connection: Connection, run_id: str, attempt: int
+    ) -> list[Mapping[str, Any]]:
+        rows = (
+            connection.execute(
+                select(
+                    graph_staging_resources_table.c.resource_kind,
+                    graph_staging_resources_table.c.resource_id,
+                    graph_staging_resources_table.c.payload_json,
+                )
+                .where(
+                    and_(
+                        graph_staging_resources_table.c.run_id == run_id,
+                        graph_staging_resources_table.c.attempt == attempt,
+                    )
+                )
+                .order_by(
+                    graph_staging_resources_table.c.resource_kind,
+                    graph_staging_resources_table.c.resource_id,
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [
+            {
+                "resource_kind": str(row["resource_kind"]),
+                "resource_id": str(row["resource_id"]),
+                "payload": dict(row["payload_json"] or {}),
+            }
+            for row in rows
+        ]
+
     def delete_staging_resources(
         self, *, connection: Connection, run_id: str, attempt: int
     ) -> None:

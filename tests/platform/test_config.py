@@ -138,6 +138,11 @@ def test_index_backend_keys_load_from_environment() -> None:
             RAG_INDEX_VECTOR_COLLECTION_PREFIX="ragqs",
             RAG_INDEX_SPARSE_URL="http://127.0.0.1:7700",
             RAG_INDEX_SPARSE_API_KEY="ragqs-dev-meili-key",
+            RAG_INDEX_SPARSE_PROVIDER="opensearch+ik",
+            RAG_INDEX_SPARSE_USERNAME="admin",
+            RAG_INDEX_SPARSE_PASSWORD="opensearch-secret",
+            RAG_INDEX_SPARSE_CA_PATH="./volumes/opensearch/ca.crt",
+            RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB="2",
             RAG_INDEX_SPARSE_INDEX="ragqs_chunks",
             RAG_INDEX_SPARSE_DATA_PATH="./volumes/meilisearch",
         )
@@ -147,8 +152,23 @@ def test_index_backend_keys_load_from_environment() -> None:
     assert settings.index.embedding_dimension == 1024
     assert settings.index.vector_provider == "milvus"
     assert settings.index.vector_uri == "http://127.0.0.1:9091"
+    assert settings.index.sparse_provider == "opensearch+ik"
     assert settings.index.sparse_url == "http://127.0.0.1:7700"
+    assert settings.index.sparse_username == "admin"
+    assert settings.index.sparse_jvm_heap_min_gb == 2
     assert settings.index.sparse_data_path == "./volumes/meilisearch"
+
+
+def test_opensearch_jvm_heap_baseline_must_be_positive() -> None:
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(
+            development_environment(
+                RAG_INDEX_SPARSE_PROVIDER="opensearch+ik",
+                RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB="0",
+            )
+        )
+
+
 def test_documents_and_indexing_processing_limits_are_configurable() -> None:
     settings = load_platform_settings(
         development_environment(
@@ -186,7 +206,12 @@ def test_unprefixed_legacy_alias_is_rejected() -> None:
 
 @pytest.mark.parametrize(
     "key",
-    ["SPARSE_INDEX_PROVIDER", "RERANKER_PROVIDER", "IMAGE_VLM_PROVIDER", "INDEX_GENERATION_ROLLBACK_DAYS"],
+    [
+        "SPARSE_INDEX_PROVIDER",
+        "RERANKER_PROVIDER",
+        "IMAGE_VLM_PROVIDER",
+        "INDEX_GENERATION_ROLLBACK_DAYS",
+    ],
 )
 def test_legacy_indexing_aliases_are_rejected(key: str) -> None:
     with pytest.raises(ValueError, match="unknown|legacy"):

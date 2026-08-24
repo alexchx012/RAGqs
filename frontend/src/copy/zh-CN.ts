@@ -775,6 +775,7 @@ export const zhCN = {
       emptyList: '暂无会话', // 措辞后定：无任何会话
       emptySearch: '没有匹配的会话', // 措辞后定：搜索过滤无结果（与 emptyList 独立，§3.2）
       listError: '会话加载失败', // 措辞后定
+      untitledConversation: '新会话', // 措辞后定：新会话首条消息生成标题前的默认列表标题
       sectionPinned: '置顶', // 措辞后定
       sectionToday: '今天', // 措辞后定
       sectionWeek: '本周', // 措辞后定
@@ -783,6 +784,7 @@ export const zhCN = {
       menuPin: '置顶', // 措辞后定
       menuUnpin: '取消置顶', // 措辞后定
       menuMoveToGroup: '移入分组', // 措辞后定
+      menuMoveOutOfGroup: '移出分组', // 措辞后定：仅分组内会话显示，移出后按最后对话时间回落默认列表
       menuDelete: '删除', // 措辞后定
       renamePlaceholder: '会话标题', // 措辞后定
       newGroupPlaceholder: '分组名称', // 措辞后定

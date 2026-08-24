@@ -23,14 +23,35 @@ body {
   font-style: normal;
 }
 
-/* 键盘焦点可见：:focus-visible 2px 描边 + 2px 偏移，圆角随元素（outline 自动跟随 border-radius）。 */
-:focus-visible {
-  outline: 2px solid var(--color-ink-black);
-  outline-offset: 2px;
-}
+/*
+ * 键盘焦点可见：:focus-visible 2px 描边 + 2px 偏移，圆角随元素（outline 自动跟随 border-radius）。
+ * 必须放在 @layer base：未分层的全局规则会无条件压过 utilities 层的 outline-none，
+ * 而输入类组件以 border 变色（focus:/focus-within:border-ink-black）自表焦点，
+ * 叠加本基线会出现「输入框内套黑框」。入层后 outline-none 正常生效；
+ * 未声明 outline 工具类的元素（按钮、链接、菜单项等）仍由本规则兜底。
+ */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-ink-black);
+    outline-offset: 2px;
+  }
 
-:focus:not(:focus-visible) {
-  outline: none;
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /*
+   * 文本输入类控件全站以 border 变色（focus:/focus-within:border-ink-black）表达焦点，
+   * 不再叠加描边（否则输入框内再套一层黑框）。
+   * radio/checkbox/file/range 无 border 焦点样式，仍由上面的描边兜底。
+   */
+  :is(
+    input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']),
+    textarea,
+    select
+  ):focus-visible {
+    outline: none;
+  }
 }
 
 /*
@@ -104,4 +125,13 @@ body {
   to {
     opacity: 1;
   }
+}
+
+/* 全站滚动条隐藏（保留滚动能力）：滚动列表不再显示右侧滚动条。 */
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
 }

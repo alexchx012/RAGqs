@@ -25,6 +25,11 @@ from .ops import require_ops
 
 router = APIRouter(prefix="/ops/graph-builds", tags=["ops"])
 
+# The operation-id contract is deliberately stricter than the platform-wide
+# idempotency limit: gb_create_<key> and gb_cancel_<key> remain within the
+# graph domain's public 64-character operation identifier contract.
+GRAPH_IDEMPOTENCY_KEY_MAX_LENGTH = 54
+
 
 def graph_service(request: Request):
     service = request.app.state.platform_runtime.resolve("graph_build_service")
@@ -57,6 +62,18 @@ def _request_hash(payload: dict[str, object], idempotency_key: str) -> str:
     return hashlib.sha256(b"graph-build-v1\0" + encoded.encode("utf-8")).hexdigest()
 
 
+def _graph_idempotency_key(value: str | None) -> str:
+    key = validate_idempotency_key(value)
+    if len(key) > GRAPH_IDEMPOTENCY_KEY_MAX_LENGTH:
+        raise PlatformError(
+            "validation_error",
+            "Idempotency-Key is too long",
+            {"max_length": GRAPH_IDEMPOTENCY_KEY_MAX_LENGTH},
+            422,
+        )
+    return key
+
+
 @router.get("/current")
 def graph_build_current(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
@@ -74,7 +91,7 @@ def graph_build_create(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = validate_idempotency_key(idempotency_key)
+    key = _graph_idempotency_key(idempotency_key)
     view = graph_service(request).create(
         initiator_identity_id=principal.user_id,
         expected_source_revision=body.expected_source_revision,
@@ -86,7 +103,7 @@ def graph_build_create(
     return JSONResponse(view.to_dict(), status_code=202)
 
 
-@router.post("/{graph_build_id}/cancel")
+@router.post("/{graph_build_id}/cancel", status_code=202)
 def graph_build_cancel(
     graph_build_id: str,
     body: GraphBuildCancelRequest,
@@ -95,7 +112,7 @@ def graph_build_cancel(
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
     require_ops(principal)
-    key = validate_idempotency_key(idempotency_key)
+    key = _graph_idempotency_key(idempotency_key)
     view = graph_service(request).cancel(
         actor_identity_id=principal.user_id,
         graph_build_id=graph_build_id,
@@ -106,7 +123,7 @@ def graph_build_cancel(
             key,
         ),
     )
-    return JSONResponse(view.to_dict(), status_code=200)
+    return JSONResponse(view.to_dict(), status_code=202)
 
 
-__all__ = ["router"]
+__all__ = ["GRAPH_IDEMPOTENCY_KEY_MAX_LENGTH", "router"]

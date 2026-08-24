@@ -32,4 +32,5 @@ AGENTS.md.bak
 /.comet/*
 !/.comet/config.yaml
 # <<< Comet managed project state <<<
+data/user-deletion-archives/
 /.opencode/

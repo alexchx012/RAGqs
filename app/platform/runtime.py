@@ -22,7 +22,11 @@ from app.chat.worker import ChatGenerationWorker
 from app.documents.preview import ProcessingReceiptPreviewRenderer
 from app.documents.public_graph import PublicGraphSourceService
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
-from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
+from app.documents.service import (
+    DocumentsDepartmentWorkCheckPort,
+    DocumentsPersonalDocumentDeletion,
+    DocumentsService,
+)
 from app.documents.submissions import DocumentsSubmissionInvalidationPort
 from app.evaluation import (
     CalibrationCloseWorker,
@@ -50,6 +54,7 @@ from app.graph import (
     RepositoryActivatedReceiptVerifier,
     SqlAlchemyGraphBuildOutboxAdapter,
     SqlAlchemyGraphRepository,
+    SqlAlchemyPublicGraphStore,
     UsageLedgerSubmissionAdapter,
 )
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
@@ -58,6 +63,7 @@ from app.identity.ports import (
     AccountRetirementConfirmation,
     AccountRetirementRequest,
     UnavailableAccountRetirementGateway,
+    UnavailablePersonalDocumentDeletionPort,
 )
 from app.identity.service import IdentityAccessService
 from app.indexing import (
@@ -76,7 +82,16 @@ from app.indexing.backends import (
     is_memory_indexing_adapter,
     probe_configured_backends,
 )
+from app.indexing.contextual_provider import DashScopeContextualRetriever
 from app.indexing.embedding import InMemoryEmbeddingProvider
+from app.indexing.image_vlm import (
+    BailianImageDescriber,
+    InternVLImageDescriber,
+    NoneImageDescriber,
+)
+from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
+from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
+from app.indexing.prefix_cache import PrefixCacheManager
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -95,8 +110,12 @@ from app.outbox.publisher import (
     SqlAlchemySubmissionOutboxAdapter,
 )
 from app.outbox.service import NotificationService
+from app.usage.billing import ProviderBillingService
+from app.usage.budget import BudgetMeterService
 from app.usage.calendar import CalendarLock, get_calendar_service
 from app.usage.ledger import UsageLedger
+from app.usage.metering import LocalUsageMeterService
+from app.usage.observability import UsageResourceMetrics
 from app.usage.price import PriceCatalogService
 from app.usage.quota import QuotaService
 from app.usage.requests import QuotaRequestService
@@ -174,6 +193,19 @@ def missing_evaluation_judge_configuration(settings: PlatformSettings) -> tuple[
     return tuple(missing)
 
 
+class _LazyUsageSubmission:
+    """Resolve the usage submission port lazily; assembly order differs."""
+
+    def __init__(self, configured: dict[str, Any]) -> None:
+        self._configured = configured
+
+    def submit_local_usage(self, **kwargs: Any) -> str | None:
+        submission = self._configured.get("indexing_usage_submission")
+        if submission is None:
+            return None
+        return submission.submit_local_usage(**kwargs)
+
+
 def build_runtime(
     settings: PlatformSettings,
     adapters: Mapping[str, Any] | None = None,
@@ -196,6 +228,9 @@ def build_runtime(
         success_sample_rate=settings.observability.success_sample_rate,
         max_route_templates=settings.observability.max_route_templates,
     )
+    configure_metric_routes = getattr(observability_metrics, "configure_route_templates", None)
+    if callable(configure_metric_routes):
+        configure_metric_routes(INDEX_INTERNAL_OBSERVABILITY_ROUTES)
     secret_key = (
         settings.object_storage.secret_key.get_secret_value()
         if settings.object_storage.secret_key is not None
@@ -305,6 +340,7 @@ def build_runtime(
         identity_access._account_retirement_gateway, UnavailableAccountRetirementGateway
     ):
         identity_access._account_retirement_gateway = account_retirement_gateway
+    identity_access._profile = settings.profile
     retention_maintenance = configured.get("notification_retention_maintenance") or (
         NotificationRetentionMaintenance(
             engine,
@@ -348,11 +384,16 @@ def build_runtime(
         )
     )
     configured.setdefault("public_graph_source_service", public_graph_source_service)
+    public_graph_store = configured.get("public_graph_store") or SqlAlchemyPublicGraphStore(
+        engine, now=clock.now_utc
+    )
+    configured.setdefault("public_graph_store", public_graph_store)
     generation_repository = configured.get("indexing_generation_repository") or (
         SqlAlchemyIndexingRepository(
             engine,
             now=clock.now_utc,
             rollback_days=settings.index.generation_rollback_days,
+            operational_metrics=observability_metrics,
             generation_configuration={
                 "provider": settings.index.sparse_provider,
                 "engine": (
@@ -361,7 +402,22 @@ def build_runtime(
                     else "meilisearch"
                 ),
                 "analyzer": (
-                    "ik" if settings.index.sparse_provider == "opensearch+ik" else "jieba"
+                    "ik" if settings.index.sparse_provider.startswith("opensearch") else "jieba"
+                ),
+                "engine_revision": (
+                    "opensearch-rest-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "meilisearch-http-v1"
+                ),
+                "analyzer_revision": (
+                    "ik-smart-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "jieba-v1"
+                ),
+                "tokenizer_revision": (
+                    "ik-smart-v1"
+                    if settings.index.sparse_provider.startswith("opensearch")
+                    else "jieba-v1"
                 ),
                 "pretokenizer_version": "v1",
                 "schema_version": "index-chunks-v1",
@@ -402,13 +458,71 @@ def build_runtime(
         DocumentsRetrievalVisibilityPort(engine, object_store)
     )
     configured.setdefault("indexing_visibility_facts", visibility_facts)
+    mineru_adapter = configured.get("indexing_mineru")
+    if mineru_adapter is None and settings.index.mineru_provider == "local":
+        mineru_adapter = MinerUAdapter(
+            executable=settings.index.mineru_executable,
+            timeout_seconds=settings.index.mineru_timeout_seconds,
+            confidence_threshold=settings.index.ocr_confidence_threshold,
+        )
+        configured.setdefault("indexing_mineru", mineru_adapter)
+    image_ocr = configured.get("indexing_image_ocr")
+    if image_ocr is None and settings.index.mineru_provider == "local":
+        image_ocr = MinerUImageOCR(mineru_adapter)
+        configured.setdefault("indexing_image_ocr", image_ocr)
+    image_describer = configured.get("indexing_image_describer")
+    if image_describer is None:
+        vlm_provider = settings.index.image_vlm_provider.casefold()
+        if vlm_provider == "bailian" and settings.index.image_vlm_base_url:
+            api_key = settings.index.image_vlm_api_key
+            image_describer = BailianImageDescriber(
+                base_url=settings.index.image_vlm_base_url,
+                api_key=api_key.get_secret_value() if api_key is not None else "",
+                model=settings.index.image_vlm_model,
+                timeout_seconds=settings.index.image_vlm_timeout_seconds,
+            )
+        elif vlm_provider == "internvl" and settings.index.image_vlm_base_url:
+            image_describer = InternVLImageDescriber(
+                base_url=settings.index.image_vlm_base_url,
+                model=settings.index.image_vlm_model,
+                revision=settings.index.image_vlm_revision,
+                timeout_seconds=settings.index.image_vlm_timeout_seconds,
+            )
+        elif vlm_provider == "none":
+            image_describer = NoneImageDescriber(environment=settings.profile)
+        if image_describer is not None:
+            configured.setdefault("indexing_image_describer", image_describer)
+    token_counter = configured.get("indexing_token_counter")
+    contextual_provider = configured.get("indexing_contextual_provider")
+    if contextual_provider is None and settings.index.contextual_retrieval_provider == "dashscope":
+        contextual_api_key = settings.index.contextual_retrieval_api_key
+        contextual_provider = DashScopeContextualRetriever(
+            base_url=settings.index.contextual_retrieval_base_url or "",
+            api_key=(
+                contextual_api_key.get_secret_value() if contextual_api_key is not None else ""
+            ),
+            model=settings.index.contextual_retrieval_model,
+            revision=settings.index.contextual_retrieval_revision,
+            timeout_seconds=settings.index.contextual_retrieval_timeout_seconds,
+        )
+        configured.setdefault("indexing_contextual_provider", contextual_provider)
+    prefix_cache = configured.get("indexing_prefix_cache")
+    if prefix_cache is None and settings.index.contextual_prefix_cache_provider == "memory":
+        prefix_cache = PrefixCacheManager()
+        configured.setdefault("indexing_prefix_cache", prefix_cache)
     processor = configured.get("indexing_processor") or ContentProcessor(
-        mineru=configured.get("indexing_mineru"),
-        image_describer=configured.get("indexing_image_describer"),
-        image_ocr=configured.get("indexing_image_ocr"),
+        mineru=mineru_adapter,
+        image_describer=image_describer,
+        image_ocr=image_ocr,
         text_chunk_max_chars=settings.index.text_chunk_max_chars,
         xlsx_merged_cells_max=settings.index.xlsx_merged_cells_max,
         ocr_confidence_threshold=settings.index.ocr_confidence_threshold,
+        usage_submission=_LazyUsageSubmission(configured),
+        contextual_provider=contextual_provider,
+        contextual_cache=prefix_cache,
+        contextual_concurrency=settings.index.contextual_retrieval_concurrency,
+        contextual_prefix_token_limit=(settings.index.contextual_retrieval_prefix_token_limit),
+        contextual_token_counter=token_counter,
     )
     configured.setdefault("indexing_processor", processor)
     embedding = configured.get("indexing_embedding")
@@ -426,8 +540,9 @@ def build_runtime(
     if sparse_provider is None and settings.index.sparse_url:
         sparse_provider = build_configured_sparse_provider(settings, allow_create=allow_create)
         configured.setdefault("indexing_sparse_provider", sparse_provider)
-    token_counter = configured.get("indexing_token_counter")
     if settings.profile == "production":
+        if contextual_provider is None:
+            raise RuntimeError("production requires an explicit contextual retrieval provider")
         if not callable(configured.get("indexing_image_ocr")) or not callable(
             configured.get("indexing_image_describer")
         ):
@@ -462,7 +577,7 @@ def build_runtime(
             raise RuntimeError("production sparse backend must provide BM25 search")
         if not callable(getattr(reranker, "rerank", None)):
             raise RuntimeError("production reranker does not implement the rerank port")
-    probe_configured_backends(dense_writer, sparse_provider)
+    probe_configured_backends(dense_writer, sparse_provider, metrics=observability_metrics)
     indexing_service = configured.get("indexing_service") or IndexingService(
         processor=processor,
         dense_writer=dense_writer,
@@ -476,11 +591,13 @@ def build_runtime(
         visibility_facts=visibility_facts,
         source_service=public_graph_source_service,
         tree_router=configured.get("indexing_tree_router"),
-        graph_router=configured.get("indexing_graph_router"),
+        graph_router=configured.get("indexing_graph_router") or public_graph_store.route,
+        graph_store=public_graph_store,
         token_counter=token_counter,
         object_store=object_store,
         embedding=embedding,
         exact_match_metrics=observability_metrics,
+        prefix_cache=prefix_cache,
     )
     configured.setdefault("indexing_service", indexing_service)
     if _index_configuration_staging_table_exists(engine, "index_generations"):
@@ -492,6 +609,14 @@ def build_runtime(
     )
     prices = configured.get("price_catalog") or PriceCatalogService(engine, clock)
     ledger = configured.get("usage_ledger") or UsageLedger(engine, clock, calendar, prices)
+    usage_metrics = configured.get("usage_resource_metrics") or UsageResourceMetrics()
+    configured.setdefault("usage_resource_metrics", usage_metrics)
+    local_usage_meter = configured.get("local_usage_meter") or LocalUsageMeterService(
+        ledger, clock, usage_metrics
+    )
+    provider_billing = configured.get("provider_billing") or ProviderBillingService(
+        ledger, clock, usage_metrics
+    )
     quota_service = configured.get("quota_service") or QuotaService(engine, clock, calendar)
     outbox_port = configured.get("outbox_enqueue_port") or (
         SqlAlchemyQuotaOutboxEnqueueAdapter(outbox_publisher)
@@ -512,6 +637,8 @@ def build_runtime(
     configured.setdefault("business_calendar", calendar)
     configured.setdefault("price_catalog", prices)
     configured.setdefault("usage_ledger", ledger)
+    configured.setdefault("local_usage_meter", local_usage_meter)
+    configured.setdefault("provider_billing", provider_billing)
     configured.setdefault("quota_service", quota_service)
     configured.setdefault("outbox_enqueue_port", outbox_port)
     configured.setdefault("submission_outbox_port", submission_outbox_port)
@@ -558,6 +685,12 @@ def build_runtime(
         if documents_service._message_citation_preview_port is None:
             documents_service._message_citation_preview_port = message_citation_preview_port
     configured.setdefault("documents_service", documents_service)
+    if identity_access._personal_document_deletion is None or isinstance(
+        identity_access._personal_document_deletion, UnavailablePersonalDocumentDeletionPort
+    ):
+        identity_access._personal_document_deletion = DocumentsPersonalDocumentDeletion(
+            documents_service
+        )
     graph_build_outbox_port = configured.get("graph_build_outbox_port") or (
         SqlAlchemyGraphBuildOutboxAdapter(outbox_publisher)
     )
@@ -587,6 +720,7 @@ def build_runtime(
         outbox=graph_build_outbox_port,
         verifier=graph_activated_receipt_verifier,
         configuration=graph_build_configuration,
+        store=public_graph_store,
         now=clock.now_utc,
     )
     configured.setdefault("graph_build_service", graph_build_service)
@@ -620,6 +754,12 @@ def build_runtime(
         UsageLedgerSubmissionAdapter(ledger)
     )
     configured.setdefault("chat_usage_submission", chat_usage)
+    generation_budget_meter = configured.get("generation_budget_meter")
+    if settings.profile == "production":
+        if not isinstance(generation_budget_meter, BudgetMeterService):
+            raise RuntimeError("production requires an explicit generation budget meter")
+        generation_budget_meter.policy.validate(production=True)
+    configured.setdefault("generation_budget_meter", generation_budget_meter)
     chat_conversation_service = configured.get("chat_conversation_service") or (
         ConversationService(engine, now=clock)
     )
@@ -630,6 +770,7 @@ def build_runtime(
             clock=clock,
             authorization=chat_authorization,
             calibration=chat_calibration,
+            budget_meter=generation_budget_meter,
         )
     )
     configured.setdefault("chat_generation_service", chat_generation_service)
@@ -648,6 +789,7 @@ def build_runtime(
         provider=chat_provider,
         usage=chat_usage,
         calibration=chat_calibration,
+        budget_meter=generation_budget_meter,
     )
     configured.setdefault("chat_generation_worker", chat_worker)
     evaluation_repository = configured.get("evaluation_repository") or (

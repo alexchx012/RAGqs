@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import functools
 import json
+import secrets
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -82,6 +83,8 @@ class MeilisearchClient(Protocol):
     def health(self) -> None: ...
 
     def authorized(self) -> None: ...
+
+    def version(self) -> Mapping[str, Any]: ...
 
     def has_index(self, name: str) -> bool: ...
 
@@ -185,6 +188,10 @@ class HttpMeilisearchClient:
         if body is None:
             raise PlatformError("meilisearch_unauthorized", "Meilisearch auth failed", {}, 503)
 
+    def version(self) -> Mapping[str, Any]:
+        body = self._request("GET", "/version")
+        return dict(body or {})
+
     def has_index(self, name: str) -> bool:
         return self._request("GET", f"/indexes/{name}") is not None
 
@@ -287,6 +294,22 @@ def probe_meilisearch_volume(data_path: str | None) -> None:
             {"path": str(path)},
             503,
         )
+    probe_path = path / f".ragqs-write-probe-{secrets.token_hex(8)}"
+    try:
+        with probe_path.open("xb") as probe:
+            probe.write(b"ragqs")
+    except OSError as exc:
+        raise PlatformError(
+            "meilisearch_volume_unwritable",
+            "Meilisearch persistent volume is not writable",
+            {"path": str(path)},
+            503,
+        ) from exc
+    finally:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class MeilisearchSparseIndexProvider:
@@ -314,6 +337,14 @@ class MeilisearchSparseIndexProvider:
     def probe(self) -> None:
         probe_meilisearch_volume(self._data_path)
         self._client.health()
+        version = self._client.version()
+        if not str(version.get("pkgVersion", "")).strip():
+            raise PlatformError(
+                "meilisearch_version_unavailable",
+                "Meilisearch version is unavailable",
+                {},
+                503,
+            )
         self._client.authorized()
         if not self._client.has_index(self._index) and not self._allow_create:
             raise PlatformError(
@@ -413,6 +444,7 @@ class MeilisearchSparseIndexProvider:
                 content_hash=prepared.content_hash,
                 fencing_token=fencing_token,
                 tokens=self._tokenize(chunk.sparse_text or chunk.text),
+                resource_ids=prepared.resource_ids,
             )
             for chunk in prepared.chunks
         ]
@@ -601,6 +633,7 @@ def _document(
     content_hash: str,
     fencing_token: int,
     tokens: str,
+    resource_ids: Sequence[str],
 ) -> dict[str, Any]:
     identifier = (
         f"{status}:{attempt_id}:{chunk.publication_id}:{chunk.chunk_id}"
@@ -619,6 +652,7 @@ def _document(
         "status": status,
         "content_hash": content_hash,
         "fencing_token": fencing_token,
+        "stage_resource_ids": list(resource_ids),
         "text": chunk.text,
         "jieba_tokens": tokens,
         "payload": json.dumps(chunk.to_mapping(), ensure_ascii=True, separators=(",", ":")),
@@ -637,12 +671,18 @@ def _result_from_docs(
 ) -> StageResult:
     first = docs[0]
     chunks = tuple(_chunk_from_doc(item) for item in docs)
+    stored_resource_ids = first.get("stage_resource_ids")
+    resource_ids = (
+        tuple(str(item) for item in stored_resource_ids)
+        if isinstance(stored_resource_ids, list) and stored_resource_ids
+        else tuple(f"{attempt_id}:{publication_id}:{chunk.chunk_id}" for chunk in chunks)
+    )
     return StageResult(
         state,
         attempt_id,
         publication_id,
         str(first.get("generation_id") or chunks[0].generation_id),
-        tuple(f"{attempt_id}:{publication_id}:{chunk.chunk_id}" for chunk in chunks),
+        resource_ids,
         str(first.get("content_hash") or ""),
         int(first.get("fencing_token") or 1),
     )

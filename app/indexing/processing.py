@@ -12,21 +12,60 @@ import zipfile
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 from typing import Any, Protocol
 from xml.etree import ElementTree
 
 from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
 from app.platform.errors import PlatformError
+from app.usage.ledger import LocalMeasurement, OwnershipSnapshot, ProviderMeasurement
 
+from .contextual import (
+    CONTEXTUAL_PREFIX_TOKEN_LIMIT,
+    CONTEXTUAL_PROMPT_SCHEMA_VERSION,
+    CONTEXTUAL_PROVIDER_ATTEMPTS,
+    CONTEXTUAL_TOKENIZATION_VERSION,
+    ContextualDocument,
+    ContextualRetrievalProvider,
+    ContextualRetrievalService,
+    ContextualUsageFact,
+    approximate_token_count,
+    contextual_target,
+)
+from .image_vlm import (
+    image_dimensions,
+    is_decorative,
+    normalize_description,
+)
 from .models import IndexChunk
+from .prefix_cache import PrefixCacheManager
 
 # OCR pages below this confidence are flagged low-confidence in the processing
 # receipt; the value is a stable default, not per-document configuration.
 OCR_LOW_CONFIDENCE_THRESHOLD = 0.9
+CONTINUATION_HEADER_SIMILARITY = 0.7
+MINERU_PROVIDER_ATTEMPTS = 5
 
 
 class CompressionPort(Protocol):
     def compress(self, text: str, *, context: Mapping[str, Any]) -> str: ...
+
+
+class UsageSubmissionPort(Protocol):
+    def submit_local_usage(
+        self,
+        *,
+        execution_kind: str,
+        execution_id: str,
+        stage: str,
+        resource_kind: str,
+        measurement: LocalMeasurement,
+        ownership: OwnershipSnapshot,
+        result: str,
+        started_at_utc: datetime,
+        replay_generation: int = 0,
+    ) -> str | None: ...
 
 
 class IdentityCompression:
@@ -74,6 +113,18 @@ def _machine_low_confidence_fact(confidence: float, page: int | None) -> dict[st
     """Outbox-closed OCR fact shape: only confidence, page and region."""
 
     return {"confidence": confidence, "page": int(page or 1), "region": []}
+
+
+def _group_chunks_by_tree_parent(
+    chunks: Sequence[IndexChunk],
+) -> list[tuple[str, list[IndexChunk]]]:
+    grouped: dict[str, list[IndexChunk]] = {}
+    for chunk in chunks:
+        if not contextual_target(chunk):
+            continue
+        path = str(chunk.metadata.get("section_path") or "").strip()
+        grouped.setdefault(path, []).append(chunk)
+    return list(grouped.items())
 
 
 def _sha256(value: bytes) -> str:
@@ -132,12 +183,12 @@ def _sections(text: str) -> list[tuple[str, str]]:
     return sections
 
 
-def _category_column(rows: Sequence[Sequence[str]], width: int) -> int:
+def _category_column(rows: Sequence[Sequence[str]], width: int) -> int | None:
     for column in range(width):
         values = [row[column].strip() for row in rows if column < len(row) and row[column].strip()]
         if values and len(set(values)) < len(values):
             return column
-    return 0
+    return None
 
 
 def _split_rows(
@@ -149,19 +200,17 @@ def _split_rows(
     category = _category_column(rows, width) if category_column is None else category_column
     groups: list[tuple[int, int]] = []
     start = 0
-    while start < len(rows):
-        end = min(len(rows), start + size)
-        if end < len(rows) and width and rows[end - 1] and rows[end]:
-            value = rows[end - 1][category].strip() if category < len(rows[end - 1]) else ""
-            while (
-                end > start + 1
-                and value
-                and category < len(rows[end])
-                and rows[end][category].strip() == value
-            ):
-                end -= 1
-        groups.append((start, end))
-        start = end
+    for index in range(1, len(rows)):
+        previous, current = rows[index - 1], rows[index]
+        changed = False
+        if width and category is not None and previous and current:
+            previous_value = previous[category].strip() if category < len(previous) else ""
+            current_value = current[category].strip() if category < len(current) else ""
+            changed = bool(previous_value) and previous_value != current_value
+        if index - start >= size or changed:
+            groups.append((start, index))
+            start = index
+    groups.append((start, len(rows)))
     return groups
 
 
@@ -175,6 +224,154 @@ def _column_name(number: int) -> str:
 
 def _split_text(value: str, *, maximum: int) -> list[str]:
     return [value[start : start + maximum] for start in range(0, len(value), maximum)]
+
+
+def _split_blocks_preserving_tables(value: str, *, maximum: int) -> list[str]:
+    """Split text by blank-line blocks; markdown tables stay atomic."""
+
+    blocks = [block for block in re.split(r"\n\s*\n", value) if block.strip()]
+    result: list[str] = []
+    buffer = ""
+    for block in blocks:
+        lines = block.splitlines()
+        table_block = len(lines) >= 2 and all(line.lstrip().startswith("|") for line in lines)
+        if table_block:
+            if buffer.strip():
+                result.extend(_split_text(buffer, maximum=maximum))
+                buffer = ""
+            result.append("\n".join(lines))
+            continue
+        candidate = f"{buffer}\n\n{block}" if buffer else block
+        if len(candidate) > maximum and buffer:
+            result.extend(_split_text(buffer, maximum=maximum))
+            buffer = block
+        else:
+            buffer = candidate
+    if buffer.strip():
+        result.extend(_split_text(buffer, maximum=maximum))
+    return result or [""]
+
+
+def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    escaped_headers = [str(header).replace("|", "\\|") for header in headers]
+    lines = [
+        "| " + " | ".join(escaped_headers) + " |",
+        "| " + " | ".join("---" for _ in escaped_headers) + " |",
+    ]
+    for row in rows:
+        values = [
+            str(row[index] if index < len(row) else "").replace("|", "\\|")
+            for index in range(len(escaped_headers))
+        ]
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines)
+
+
+def _key_value_rows(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    return "\n".join(
+        " | ".join(
+            f"{header}: {row[index] if index < len(row) else ''}"
+            for index, header in enumerate(headers)
+        )
+        for row in rows
+    )
+
+
+def _header_similarity(left: Sequence[str], right: Sequence[str]) -> float:
+    return SequenceMatcher(
+        None,
+        "\x00".join(str(item).strip().casefold() for item in left),
+        "\x00".join(str(item).strip().casefold() for item in right),
+    ).ratio()
+
+
+def _tables_continuation(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Continuation check: column count + header similarity + aspect ratio."""
+
+    left_headers = list(left.get("headers") or ())
+    right_headers = list(right.get("headers") or ())
+    if not left_headers or len(left_headers) != len(right_headers):
+        return False
+    if _header_similarity(left_headers, right_headers) < CONTINUATION_HEADER_SIMILARITY:
+        return False
+    left_rows = list(left.get("rows") or ())
+    right_rows = list(right.get("rows") or ())
+    left_ratio = len(left_rows) / max(len(left_headers), 1)
+    right_ratio = len(right_rows) / max(len(right_headers), 1)
+    return abs(left_ratio - right_ratio) <= max(left_ratio, right_ratio, 1.0)
+
+
+def _strip_header_row(headers: Sequence[str], rows: list[list[str]]) -> list[list[str]]:
+    if rows and _header_similarity(headers, rows[0]) >= CONTINUATION_HEADER_SIMILARITY:
+        return rows[1:]
+    return rows
+
+
+def merge_continuation_tables(
+    tables: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Concatenate continuation tables before row-group chunking."""
+
+    merged: list[dict[str, Any]] = []
+    facts: list[dict[str, Any]] = []
+    for table in tables:
+        headers = [str(item) for item in (table.get("headers") or ())]
+        rows = [[str(cell) for cell in row] for row in (table.get("rows") or ())]
+        page = int(table.get("page", 1) or 1)
+        previous = merged[-1] if merged else None
+        if previous and _tables_continuation(previous, {"headers": headers, "rows": rows}):
+            incoming = rows
+            if (
+                incoming
+                and _header_similarity(headers, previous["headers"])
+                >= CONTINUATION_HEADER_SIMILARITY
+            ):
+                incoming = incoming[1:]
+                facts.append(
+                    {
+                        "kind": "continuation_header_deduplicated",
+                        "pages": [previous["page_end"], page],
+                    }
+                )
+            previous["rows"].extend(incoming)
+            previous["page_end"] = page
+            continue
+        merged.append(
+            {
+                "headers": headers,
+                "rows": _strip_header_row(headers, rows),
+                "page_start": page,
+                "page_end": page,
+                "title": str(table.get("title", "") or ""),
+            }
+        )
+    return merged, facts
+
+
+def _flatten_multilevel_header(
+    header_rows: Sequence[Sequence[str]],
+) -> list[str]:
+    """Flatten non-empty parent-child header paths (e.g. 财务数据_营收_Q1)."""
+
+    if len(header_rows) <= 1:
+        return [str(item).strip() for item in (header_rows[0] if header_rows else ())]
+    width = max(len(row) for row in header_rows)
+    columns: list[str] = []
+    seen: dict[str, int] = {}
+    for column in range(width):
+        parts: list[str] = []
+        for row in header_rows:
+            value = row[column].strip() if column < len(row) else ""
+            if value and value not in parts:
+                parts.append(value)
+        name = "_".join(parts) or f"column_{column + 1}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}_{seen[name]}"
+        else:
+            seen[name] = 1
+        columns.append(name)
+    return columns
 
 
 def _xlsx_merged_ranges(content: bytes, *, maximum_cells: int) -> dict[str, tuple[str, ...]]:
@@ -303,11 +500,18 @@ class ContentProcessor:
         *,
         compressor: CompressionPort | None = None,
         mineru: Callable[[bytes], Mapping[str, Any]] | None = None,
-        image_describer: Callable[[bytes, Mapping[str, Any]], str] | None = None,
+        image_describer: Callable[[bytes, Mapping[str, Any]], Any] | None = None,
         image_ocr: Callable[[bytes, Mapping[str, Any]], str] | None = None,
         text_chunk_max_chars: int = 8_000,
         xlsx_merged_cells_max: int = 10_000,
         ocr_confidence_threshold: float = 0.9,
+        usage_submission: UsageSubmissionPort | None = None,
+        contextual_provider: ContextualRetrievalProvider | None = None,
+        contextual_cache: PrefixCacheManager | None = None,
+        contextual_concurrency: int = 4,
+        contextual_max_attempts: int = CONTEXTUAL_PROVIDER_ATTEMPTS,
+        contextual_prefix_token_limit: int = CONTEXTUAL_PREFIX_TOKEN_LIMIT,
+        contextual_token_counter: Callable[[str], int] | None = None,
     ) -> None:
         self._compressor = compressor or IdentityCompression()
         self._mineru = mineru
@@ -316,6 +520,13 @@ class ContentProcessor:
         self._text_chunk_max_chars = text_chunk_max_chars
         self._xlsx_merged_cells_max = xlsx_merged_cells_max
         self._ocr_confidence_threshold = float(ocr_confidence_threshold)
+        self._usage_submission = usage_submission
+        self._contextual_provider = contextual_provider
+        self._contextual_cache = contextual_cache
+        self._contextual_concurrency = contextual_concurrency
+        self._contextual_max_attempts = contextual_max_attempts
+        self._contextual_prefix_token_limit = contextual_prefix_token_limit
+        self._contextual_token_counter = contextual_token_counter
 
     def process(
         self,
@@ -337,6 +548,10 @@ class ContentProcessor:
         raw = content if isinstance(content, bytes) else content.encode("utf-8")
         kind = media_kind.strip().casefold()
         profile = processing_config_version or request.processing_profile_version or "default"
+        route_adapter = "text"
+        local_usage_facts: list[dict[str, Any]] = []
+        document_text = ""
+        mineru_probe_failed = False
         if not content_manifest_id or not content_manifest_hash:
             raise PlatformError(
                 "validation_error", "content manifest identity is required", {}, 422
@@ -349,12 +564,14 @@ class ContentProcessor:
                 409,
             )
         if kind in {"text/plain", "text/markdown", "txt", "md", "markdown"}:
+            document_text = _text(content)
             chunks, summary, degradations = self._text_chunks(
-                request, _text(content), media_kind, content_manifest_hash
+                request, document_text, media_kind, content_manifest_hash
             )
         elif kind in {"text/csv", "csv"} or kind.endswith("csv"):
+            document_text = _text(content)
             chunks, summary, degradations = self._csv_chunks(
-                request, _text(content), content_manifest_hash
+                request, document_text, content_manifest_hash
             )
         elif kind in {
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -362,6 +579,7 @@ class ContentProcessor:
             "xlsx",
             "excel",
         }:
+            route_adapter = "structured-table"
             chunks, summary, degradations = self._xlsx_chunks(request, raw, content_manifest_hash)
         elif kind in {
             "application/json",
@@ -375,12 +593,14 @@ class ContentProcessor:
             "text/xml",
             "xml",
         }:
+            document_text = _text(content)
             chunks, summary, degradations = self._structured_chunks(
-                request, _text(content), kind, content_manifest_hash
+                request, document_text, kind, content_manifest_hash
             )
         elif kind in {"text/x-python", "python", "code", "text/javascript", "javascript"}:
+            document_text = _text(content)
             chunks, summary, degradations = self._code_chunks(
-                request, _text(content), content_manifest_hash
+                request, document_text, content_manifest_hash
             )
         elif kind in {
             "application/pdf",
@@ -389,18 +609,60 @@ class ContentProcessor:
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "docx",
             "word",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "ppt",
+            "pptx",
+            "powerpoint",
+            "text/html",
+            "html",
+            "url",
+            "web_url",
         }:
+            route_adapter = "mineru-pipeline"
             if self._mineru is None:
                 raise PlatformError(
                     "processor_unavailable", "MinerU processor is not configured", {}, 503
                 )
-            parsed = self._mineru(raw)
+            parse = getattr(self._mineru, "parse", None)
+            try:
+                for _attempt in range(1, MINERU_PROVIDER_ATTEMPTS + 1):
+                    try:
+                        if callable(parse):
+                            parsed = parse(
+                                raw,
+                                media_kind=media_kind,
+                                page_count=page_count,
+                                source_url=media_kind if kind in {"url", "web_url"} else None,
+                            )
+                        else:
+                            parsed = self._mineru(raw)
+                        break
+                    except PlatformError as exc:
+                        if (
+                            exc.code != "mineru_parse_failed"
+                            or _attempt == MINERU_PROVIDER_ATTEMPTS
+                        ):
+                            raise
+            except PlatformError as exc:
+                if exc.code != "mineru_parse_failed":
+                    raise
+                mineru_probe_failed = True
+                parsed = {
+                    "text": raw.decode("latin-1"),
+                    "page_count": page_count or 1,
+                    "has_text_layer": False,
+                    "structure": {"class": "basic", "reason": "ocr_probe_unavailable"},
+                    "backend": "pipeline",
+                }
             parsed_text = str(parsed.get("text", ""))
             if not parsed_text.strip():
                 raise PlatformError("processing_failed", "MinerU returned no text", {}, 422)
+            document_text = parsed_text
             chunks, summary, degradations = self._text_chunks(
                 request, parsed_text, media_kind, content_manifest_hash
             )
+            summary = dict(summary)
             page_count = int(parsed.get("page_count", page_count or 0))
             summary["page_count"] = page_count
             parsed_text_layer = parsed.get("has_text_layer")
@@ -416,13 +678,18 @@ class ContentProcessor:
                 ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
                 ocr["fact"] = _machine_low_confidence_fact(float(confidence), None)
                 ocr["threshold"] = self._ocr_confidence_threshold
+                ocr["threshold_version"] = f"ocr_threshold:{self._ocr_confidence_threshold}"
             local_confidence = parsed.get("ocr_confidence_by_page", {})
             if isinstance(local_confidence, Mapping):
                 sample = OCRSamplePlan.for_page_count(page_count)
                 sampled = {
-                    str(page): float(local_confidence[str(page)])
+                    str(page): float(
+                        local_confidence[str(page)]
+                        if str(page) in local_confidence
+                        else local_confidence[page]
+                    )
                     for page in sample.pages
-                    if str(page) in local_confidence
+                    if str(page) in local_confidence or page in local_confidence
                 }
                 if sampled:
                     lowest = min(sampled.values())
@@ -435,30 +702,102 @@ class ContentProcessor:
                     ocr["status"] = "degraded" if ocr["low_confidence"] else "ok"
                     ocr["fact"] = _machine_low_confidence_fact(lowest, worst_page)
                     ocr["threshold"] = self._ocr_confidence_threshold
+                    ocr["threshold_version"] = f"ocr_threshold:{self._ocr_confidence_threshold}"
             summary["ocr"] = ocr
-            parsed_chunks = parsed.get("chunks", ())
-            locations = tuple(parsed_chunks) if isinstance(parsed_chunks, Sequence) else ()
-            if kind in {"application/pdf", "pdf"}:
+            structure = parsed.get("structure")
+            structure_class = (
+                str(structure.get("class", "tree")) if isinstance(structure, Mapping) else "tree"
+            )
+            if isinstance(structure, Mapping) and structure.get("signal_low_confidence"):
+                signal_values = [
+                    float(value)
+                    for value in (structure.get("signal_confidence") or {}).values()
+                    if value is not None
+                ]
+                if signal_values:
+                    lowest_signal = min(signal_values)
+                    ocr["low_confidence"] = True
+                    ocr["reason"] = "structure_low_confidence"
+                    ocr["status"] = "degraded"
+                    ocr["fact"] = _machine_low_confidence_fact(lowest_signal, None)
+                    ocr["threshold"] = self._ocr_confidence_threshold
+                    ocr["threshold_version"] = f"ocr_threshold:{self._ocr_confidence_threshold}"
+            if structure_class == "basic":
                 chunks = [
                     replace(
                         chunk,
-                        locator=(
-                            {
-                                "page": int(locations[index].get("page", 1)),
-                                **(
-                                    {"span": str(locations[index]["span"])}
-                                    if has_text_layer and locations[index].get("span") is not None
-                                    else {}
-                                ),
-                            }
-                            if index < len(locations) and isinstance(locations[index], Mapping)
-                            else {"page": min(index + 1, max(page_count, 1))}
-                        ),
-                        snippet=chunk.snippet if has_text_layer else None,
+                        locator={},
+                        metadata={**dict(chunk.metadata), "section_path": ""},
                     )
-                    for index, chunk in enumerate(chunks)
+                    for chunk in chunks
                 ]
+                summary["tree"] = {
+                    "tree_indexed": False,
+                    "tree_reason": "no_structure",
+                    "structure_class": structure_class,
+                }
+            elif structure_class == "partial":
+                chunks = [
+                    replace(
+                        chunk,
+                        metadata={
+                            **dict(chunk.metadata),
+                            "section_path": str(chunk.metadata.get("section_path") or "")
+                            or "此章未能分类",
+                        },
+                    )
+                    for chunk in chunks
+                ]
+                tree = dict(summary.get("tree") or {})
+                tree["structure_class"] = structure_class
+                summary["tree"] = tree
             else:
+                tree = dict(summary.get("tree") or {})
+                tree["structure_class"] = structure_class
+                summary["tree"] = tree
+            parsed_usage = parsed.get("usage")
+            if isinstance(parsed_usage, Mapping) and parsed_usage.get("kind") == "local_usage":
+                local_usage_facts.append(dict(parsed_usage))
+            parsed_timings = parsed.get("timings")
+            if isinstance(parsed_timings, Mapping):
+                summary["mineru_timings"] = {
+                    "sample_ms": int(parsed_timings.get("sample_ms", 0) or 0),
+                    "full_ms": int(parsed_timings.get("full_ms", 0) or 0),
+                }
+            parsed_chunks = parsed.get("chunks", ())
+            locations = tuple(parsed_chunks) if isinstance(parsed_chunks, Sequence) else ()
+            if kind in {"application/pdf", "pdf"}:
+                if structure_class == "basic":
+                    pass
+                else:
+                    chunks = [
+                        replace(
+                            chunk,
+                            locator=(
+                                {
+                                    "page": int(locations[index].get("page", 1)),
+                                    **(
+                                        {"span": str(locations[index]["span"])}
+                                        if has_text_layer
+                                        and locations[index].get("span") is not None
+                                        else {}
+                                    ),
+                                }
+                                if index < len(locations) and isinstance(locations[index], Mapping)
+                                else {"page": min(index + 1, max(page_count, 1))}
+                            ),
+                            snippet=chunk.snippet if has_text_layer else None,
+                        )
+                        for index, chunk in enumerate(chunks)
+                    ]
+            else:
+                chunks = [
+                    replace(
+                        chunk,
+                        snippet=None,
+                    )
+                    for chunk in chunks
+                ]
                 tree = dict(summary.get("tree") or {})
                 sections: list[dict[str, list[str]]] = []
                 for chunk in chunks:
@@ -471,14 +810,76 @@ class ContentProcessor:
                     )
                 tree["sections"] = sections
                 summary["tree"] = tree
-                chunks = [replace(chunk, snippet=None) for chunk in chunks]
+            parsed_tables = parsed.get("tables")
+            if isinstance(parsed_tables, Sequence) and parsed_tables:
+                merged_tables, continuation_facts = merge_continuation_tables(
+                    tuple(table for table in parsed_tables if isinstance(table, Mapping))
+                )
+                table_chunks, table_summary, table_degradations = self._markdown_table_chunks(
+                    request,
+                    merged_tables,
+                    content_manifest_hash,
+                    continuation_facts=tuple(continuation_facts),
+                )
+                chunks = [*chunks, *table_chunks]
+                summary["chunk_count"] = len(chunks)
+                summary["table_count"] = int(summary.get("table_count", 0)) + int(
+                    table_summary["table_count"]
+                )
+                summary["row_groups"] = [
+                    *list(summary.get("row_groups") or []),
+                    *list(table_summary["row_groups"]),
+                ]
+                summary["continuation_tables"] = table_summary["continuation_tables"]
+                degradations = (*degradations, *table_degradations)
+            if mineru_probe_failed:
+                sample = OCRSamplePlan.for_page_count(page_count or 1)
+                local_usage_facts.append(
+                    {
+                        "kind": "local_usage",
+                        "stage": "mineru_pipeline_probe",
+                        "resource_kind": "document",
+                        "item_count": len(sample.pages),
+                        "page_count": page_count or 1,
+                    }
+                )
+                summary["ocr"] = {
+                    **dict(summary.get("ocr", {})),
+                    "status": "degraded",
+                    "probe": "provider_unavailable",
+                    "sample_pages": list(OCRSamplePlan.for_page_count(page_count or 1).pages),
+                }
+                summary["contextual_input_ready"] = False
+                degradations = (
+                    *degradations,
+                    *(
+                        {
+                            "kind": "contextual_retrieval_degraded",
+                            "reason": "ocr_provider_unavailable",
+                            "chunk_id": chunk.chunk_id,
+                            "provider": "mineru-pipeline",
+                        }
+                        for chunk in chunks
+                        if contextual_target(chunk)
+                    ),
+                )
         elif kind.startswith("image/") or kind in {"image", "图片"}:
+            route_adapter = "image-vlm"
             context = {
                 "media_kind": media_kind,
                 "decorative": decorative_image,
                 **dict(image_context or {}),
                 "ocr_text": image_ocr_text or "",
             }
+            dimensions = image_dimensions(raw)
+            if dimensions is not None and not context.get("decorative"):
+                page_area = context.get("page_area")
+                context["decorative"] = is_decorative(
+                    dimensions[0],
+                    dimensions[1],
+                    page_area=int(page_area) if isinstance(page_area, int) else None,
+                )
+                context["image_dimensions"] = {"width": dimensions[0], "height": dimensions[1]}
             if not context["ocr_text"] and self._image_ocr is not None:
                 context["ocr_text"] = self._image_ocr(raw, context)
             chunks, summary, degradations = self._image_chunks(
@@ -487,10 +888,40 @@ class ContentProcessor:
                 content_manifest_hash,
                 context=context,
             )
+            image_provider_summary = summary.get("image_provider")
+            if (
+                isinstance(image_provider_summary, Mapping)
+                and image_provider_summary.get("provider") == "internvl"
+            ):
+                local_usage_facts.append(
+                    {
+                        "kind": "local_usage",
+                        "stage": "image_vlm_internvl",
+                        "resource_kind": "image",
+                        "item_count": 1,
+                        "page_count": 1,
+                    }
+                )
         else:
-            raise PlatformError("unsupported_media_kind", "Media kind is not supported", {}, 422)
+            raise PlatformError("unsupported_media_type", "Media type is not supported", {}, 415)
+        chunks, summary, degradations = self._apply_contextual_retrieval(
+            request,
+            chunks,
+            summary,
+            degradations,
+            document_text=document_text,
+            media_kind=media_kind,
+        )
         summary = dict(summary)
+        summary["processing_list"] = self._processing_list(request, chunks)
         summary["media_kind"] = media_kind
+        summary["route"] = {
+            "adapter": route_adapter,
+            "media_kind": kind,
+            "mineru": route_adapter == "mineru-pipeline",
+            "vlm": route_adapter == "image-vlm",
+            "structured_loader": route_adapter == "structured-table",
+        }
         summary["processing_profile_version"] = profile
         summary.setdefault("page_count", page_count)
         summary.setdefault(
@@ -535,6 +966,9 @@ class ContentProcessor:
             for name in ("prompt", "ocr_prompt", "vlm_prompt", "cr_prompt")
             if request.processing_config_snapshot.get(name) is not None
         }
+        if self._contextual_provider is not None:
+            configured_models["cr"] = self._contextual_provider.model
+            configured_prompts["cr_prefix"] = CONTEXTUAL_PROMPT_SCHEMA_VERSION
         receipt = IndexProcessingReceipt(
             job_id=request.job_id,
             attempt_id=request.attempt_id,
@@ -582,7 +1016,261 @@ class ContentProcessor:
             processing_config_snapshot=dict(request.processing_config_snapshot),
         )
         receipt.validate_against(request)
+        self._submit_local_usage(request, local_usage_facts)
         return ProcessingOutput(tuple(chunks), receipt)
+
+    def _apply_contextual_retrieval(
+        self,
+        request: IndexStagingRequest,
+        chunks: list[IndexChunk],
+        summary: Mapping[str, Any],
+        degradations: tuple[Mapping[str, Any], ...],
+        *,
+        document_text: str,
+        media_kind: str,
+    ) -> tuple[list[IndexChunk], Mapping[str, Any], tuple[Mapping[str, Any], ...]]:
+        eligible = [chunk for chunk in chunks if contextual_target(chunk)]
+        if (
+            self._contextual_provider is None
+            or not eligible
+            or summary.get("contextual_input_ready") is False
+        ):
+            return chunks, summary, degradations
+
+        metadata = {
+            "document_id": request.document_id,
+            "document_version_id": request.document_version_id,
+            "media_kind": media_kind,
+            "object_manifest_ref": request.object_manifest_ref,
+            "processing_profile_version": request.processing_profile_version,
+        }
+        document = ContextualDocument(
+            instance_id=str(request.processing_config_snapshot.get("index_namespace") or "default"),
+            space_id=request.space_id,
+            document_id=request.document_id,
+            document_version_id=request.document_version_id,
+            generation_id=request.expected_generation_id,
+            metadata=metadata,
+            full_text=document_text,
+        )
+        service = ContextualRetrievalService(
+            provider=self._contextual_provider,
+            cache=self._contextual_cache,
+            concurrency=self._contextual_concurrency,
+            max_attempts=self._contextual_max_attempts,
+            token_limit=self._contextual_prefix_token_limit,
+            token_counter=(
+                self._contextual_token_counter or approximate_token_count
+            ),
+            tokenization_config_version=(
+                (
+                    "runtime-tokenizer-v1"
+                    if self._contextual_token_counter is not None
+                    else CONTEXTUAL_TOKENIZATION_VERSION
+                )
+                + f":limit={self._contextual_prefix_token_limit}"
+            ),
+            usage_sink=lambda fact: self._submit_contextual_provider_usage(request, fact),
+        )
+        enhancement = service.enhance(document, chunks)
+        enhanced_chunks = [
+            replace(
+                chunk,
+                embedding_text=(
+                    f"CONTEXTUAL RETRIEVAL\n{enhancement.contexts[chunk.chunk_id]}\n\n"
+                    f"ORIGINAL CHUNK\n{chunk.embedding_text}"
+                    if chunk.chunk_id in enhancement.contexts
+                    else chunk.embedding_text
+                ),
+                metadata={
+                    **dict(chunk.metadata),
+                    "contextual_retrieval": (
+                        "applied" if chunk.chunk_id in enhancement.contexts else "raw-fallback"
+                    ),
+                },
+            )
+            for chunk in chunks
+        ]
+        unit_summaries = [
+            {
+                "unit_id": unit.unit_id,
+                "grouping": unit.grouping,
+                "chunk_ids": [item.chunk_id for item in unit.chunks],
+                "warmup_chunk_ids": list(unit.warmup_chunk_ids),
+                "concurrent_chunk_ids": list(unit.concurrent_chunk_ids),
+                "cache_mode": unit.cache_mode,
+                "cache_outage": unit.cache_outage,
+                "cache_reason": unit.cache_reason,
+                "prefix_truncated": unit.prefix_truncated,
+                "estimated_prefix_tokens": unit.estimated_prefix_tokens,
+                "prompt_cache_hit_tokens": unit.prompt_cache_hit_tokens,
+                "prompt_cache_miss_tokens": unit.prompt_cache_miss_tokens,
+            }
+            for unit in enhancement.units
+        ]
+        cr_summary = {
+            "eligible_count": len(eligible),
+            "enhanced_count": len(enhancement.contexts),
+            "applied": bool(enhancement.contexts),
+            "unit": "leaf_chunk",
+            "model": self._contextual_provider.model,
+            "model_revision": self._contextual_provider.model_revision,
+            "provider": self._contextual_provider.provider,
+            "prefix_units": unit_summaries,
+            "prompt_cache_hit_tokens": sum(
+                unit.prompt_cache_hit_tokens for unit in enhancement.units
+            ),
+            "prompt_cache_miss_tokens": sum(
+                unit.prompt_cache_miss_tokens for unit in enhancement.units
+            ),
+        }
+        result_summary = {**dict(summary), "cr": cr_summary}
+        tree = dict(result_summary.get("tree") or {})
+        if tree.get("tree_indexed"):
+            tree["node_summaries"] = [
+                {
+                    "path": path,
+                    "summary": "\n".join(
+                        enhancement.contexts[chunk.chunk_id]
+                        for chunk in group
+                        if chunk.chunk_id in enhancement.contexts
+                    ),
+                    "model": self._contextual_provider.model,
+                    "source": "contextual_retrieval",
+                }
+                for path, group in _group_chunks_by_tree_parent(enhanced_chunks)
+            ]
+            tree["node_summary_model"] = self._contextual_provider.model
+            result_summary["tree"] = tree
+        return (
+            enhanced_chunks,
+            result_summary,
+            (
+                *degradations,
+                *enhancement.degradations,
+            ),
+        )
+
+    @staticmethod
+    def _processing_list(
+        request: IndexStagingRequest, chunks: Sequence[IndexChunk]
+    ) -> Mapping[str, Any]:
+        return {
+            "processing_list_id": f"processing_list:{request.publication_id}:{request.attempt_id}",
+            "frozen": True,
+            "items": [
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "contextual_retrieval": contextual_target(chunk),
+                    "media_kind": chunk.media_kind,
+                }
+                for chunk in chunks
+            ],
+        }
+
+    def _submit_contextual_provider_usage(
+        self, request: IndexStagingRequest, fact: ContextualUsageFact
+    ) -> None:
+        submission = self._usage_submission
+        prepare = getattr(submission, "prepare_provider_call", None)
+        dispatch = getattr(submission, "mark_dispatching", None)
+        complete = getattr(submission, "complete_provider_call", None)
+        if submission is None or not callable(prepare) or not callable(complete):
+            return
+        ownership_values = request.usage_ownership
+        if not isinstance(ownership_values, Mapping):
+            return
+        deadline = request.usage_deadline_at_utc or datetime.now(UTC) + timedelta(minutes=5)
+        call_id = prepare(
+            provider=fact.provider,
+            model=fact.model,
+            operation=fact.operation,
+            execution_kind="document_processing",
+            execution_id=request.job_id,
+            attempt_id=request.attempt_id,
+            generation_id=request.expected_generation_id,
+            resource_id=f"{request.publication_id}:{fact.unit_id}:{fact.chunk_id}",
+            deadline_utc=deadline,
+            request_fingerprint=fact.request_fingerprint,
+            replay_generation=request.usage_replay_generation,
+        )
+        if callable(dispatch):
+            dispatch(call_id, started_at_provider=lambda: datetime.now(UTC))
+        values = dict(ownership_values)
+        values["source_space_ids"] = tuple(values.get("source_space_ids") or ())
+        ownership = OwnershipSnapshot(**values)
+        measurement = ProviderMeasurement(
+            input_tokens=fact.input_tokens,
+            prompt_cache_hit_tokens=fact.prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens=fact.prompt_cache_miss_tokens,
+            output_tokens=fact.output_tokens,
+            reasoning_tokens=None,
+            image_count=None,
+            visual_input_tokens=None,
+            embedding_input_tokens=None,
+            vector_count=None,
+            measurement_sources={
+                field: "provider"
+                for field in (
+                    "input_tokens",
+                    "prompt_cache_hit_tokens",
+                    "prompt_cache_miss_tokens",
+                    "output_tokens",
+                )
+                if getattr(fact, field) is not None
+            },
+        )
+        complete(
+            provider_call_id=call_id,
+            measurement=measurement,
+            ownership=ownership,
+            result=fact.result,
+            provider_request_id=fact.provider_request_id,
+            started_at_utc=None,
+        )
+
+    def _submit_local_usage(
+        self,
+        request: IndexStagingRequest,
+        facts: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Submit aggregated local expensive-stage usage through the typed port."""
+
+        if self._usage_submission is None or not facts:
+            return
+        ownership_values = request.usage_ownership
+        if not isinstance(ownership_values, Mapping):
+            return
+        values = dict(ownership_values)
+        values["source_space_ids"] = tuple(values.get("source_space_ids") or ())
+        ownership = OwnershipSnapshot(**values)
+        meter_fields = (
+            "item_count",
+            "page_count",
+            "input_bytes",
+            "gpu_milliseconds",
+            "cpu_milliseconds",
+            "peak_vram_bytes",
+        )
+        started = datetime.now(UTC)
+        for fact in facts:
+            measurement = LocalMeasurement(
+                **{field: fact.get(field) for field in meter_fields},
+                measurement_sources={
+                    field: "estimated" for field in meter_fields if fact.get(field) is not None
+                },
+            )
+            self._usage_submission.submit_local_usage(
+                execution_kind="document_processing",
+                execution_id=request.job_id,
+                stage=str(fact.get("stage", "document_ingestion")),
+                resource_kind=str(fact.get("resource_kind", "document")),
+                measurement=measurement,
+                ownership=ownership,
+                result="succeeded",
+                started_at_utc=started,
+                replay_generation=request.usage_replay_generation,
+            )
 
     def _text_chunks(
         self,
@@ -596,8 +1284,12 @@ class ContentProcessor:
         if not sections and text.strip():
             sections = [("", text.strip())]
         chunks: list[IndexChunk] = []
-        for path, section in sections:
-            for body in _split_text(section, maximum=self._text_chunk_max_chars):
+        for section_index, (path, section) in enumerate(sections, start=1):
+            block_index = 0
+            for body in _split_blocks_preserving_tables(
+                section, maximum=self._text_chunk_max_chars
+            ):
+                block_index += 1
                 index = len(chunks) + 1
                 compressed = self._compressor.compress(body, context={"section_path": path})
                 chunks.append(
@@ -615,7 +1307,11 @@ class ContentProcessor:
                         snippet=body[:500],
                         media_kind=media_kind,
                         manifest_hash=manifest_hash,
-                        metadata={"section_path": path, "cr_unit": "chunk"},
+                        metadata={
+                            "section_path": path,
+                            "cr_parent_group": f"{section_index}:{block_index}",
+                            "cr_unit": "chunk",
+                        },
                     )
                 )
         return (
@@ -676,7 +1372,7 @@ class ContentProcessor:
                         sparse_text=part,
                         locator={
                             "sheet": "CSV",
-                            "a1_range": f"A{start + 2}:{chr(65 + min(len(headers), 26) - 1)}{end + 1}",
+                            "a1_range": f"A{start + 2}:{_column_name(len(headers))}{end + 1}",
                         },
                         snippet=None,
                         media_kind="text/csv",
@@ -708,6 +1404,96 @@ class ContentProcessor:
             (),
         )
 
+    def _markdown_table_chunks(
+        self,
+        request: IndexStagingRequest,
+        tables: Sequence[Mapping[str, Any]],
+        manifest_hash: str,
+        *,
+        continuation_facts: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[list[IndexChunk], Mapping[str, Any], tuple[Mapping[str, Any], ...]]:
+        """Emit complete markdown tables; continuation tables are merged already."""
+
+        chunks: list[IndexChunk] = []
+        row_groups: list[Mapping[str, Any]] = []
+        degradations: list[Mapping[str, Any]] = []
+        planned: list[tuple[Mapping[str, Any], tuple[int, int]]] = []
+        for table in tables:
+            headers = [str(item) for item in (table.get("headers") or ())]
+            rows = [[str(cell) for cell in row] for row in (table.get("rows") or ())]
+            if not headers:
+                degradations.append({"code": "table_parse_failed", "reason": "missing_headers"})
+                continue
+            for start, end in _split_rows(rows, len(headers)):
+                planned.append((table, (start, end)))
+        total_blocks = len(planned)
+        for block, (table, (start, end)) in enumerate(planned, start=1):
+            headers = [str(item) for item in (table.get("headers") or ())]
+            rows = [[str(cell) for cell in row] for row in (table.get("rows") or ())]
+            group = rows[start:end]
+            markdown = _markdown_table(headers, group)
+            key_values = _key_value_rows(headers, group)
+            page_start = int(table.get("page_start", 1) or 1)
+            page_end = int(table.get("page_end", page_start) or page_start)
+            context_title = str(table.get("title", "") or "")
+            index = len(chunks) + 1
+            chunks.append(
+                IndexChunk(
+                    chunk_id=f"chunk_{index}",
+                    generation_id=request.expected_generation_id,
+                    publication_id=request.publication_id,
+                    document_id=request.document_id,
+                    document_version_id=request.document_version_id,
+                    space_id=request.space_id,
+                    text=markdown,
+                    embedding_text=(
+                        f"{context_title}\n{key_values}" if context_title else key_values
+                    ),
+                    sparse_text=key_values,
+                    locator=(
+                        {"page": page_start, "page_end": page_end}
+                        if page_start != page_end
+                        else {"page": page_start}
+                    ),
+                    snippet=markdown[:500],
+                    media_kind="table/markdown",
+                    manifest_hash=manifest_hash,
+                    metadata={
+                        "headers": headers,
+                        "table": True,
+                        "table_title": context_title,
+                        "block": block,
+                        "total_blocks": total_blocks,
+                        "page_start": page_start,
+                        "page_end": page_end,
+                        "row_start": start + 1,
+                        "row_end": end,
+                        "continuation": bool(
+                            table.get("page_start") is not None
+                            and int(table.get("page_start", 1)) != page_end
+                        ),
+                    },
+                )
+            )
+            row_groups.append(
+                {
+                    "sheet": f"page:{page_start}-{page_end}",
+                    "start": start + 1,
+                    "end": end,
+                    "block": block,
+                    "total_blocks": total_blocks,
+                }
+            )
+        return (
+            chunks,
+            {
+                "table_count": len(tables),
+                "row_groups": row_groups,
+                "continuation_tables": [dict(fact) for fact in continuation_facts],
+            },
+            tuple(degradations),
+        )
+
     def _xlsx_chunks(
         self,
         request: IndexStagingRequest,
@@ -733,81 +1519,14 @@ class ContentProcessor:
         sheet_manifest: list[Mapping[str, Any]] = []
         row_groups: list[Mapping[str, Any]] = []
         try:
+            from openpyxl.utils.cell import range_boundaries  # type: ignore[import-untyped]
+
             for worksheet in workbook.worksheets:
                 merged_ranges = list(merged_ranges_by_sheet.get(worksheet.title, ()))
                 merged_cells = _MergedCellResolver(merged_ranges)
                 origin_values: dict[tuple[int, int], str] = {}
-                headers: list[str] | None = None
-                pending_rows: list[tuple[int, list[str]]] = []
+                collected: list[tuple[int, list[str]]] = []
                 row_count = 0
-                sheet_manifest_entry: dict[str, Any] | None = None
-
-                def emit_rows(
-                    rows: list[tuple[int, list[str]]],
-                    *,
-                    sheet_name: str,
-                    sheet_headers: list[str],
-                    sheet_merged_ranges: Sequence[str],
-                    sheet_horizontally_merged_rows: set[int],
-                ) -> None:
-                    nonlocal table_count
-                    if not rows:
-                        return
-                    start_row = rows[0][0]
-                    end_row = rows[-1][0]
-                    total_rows = [
-                        row_number
-                        for row_number, _ in rows
-                        if row_number in sheet_horizontally_merged_rows
-                    ]
-                    body = "\n".join(
-                        " | ".join(
-                            f"{header}: {row[index] if index < len(row) else ''}"
-                            for index, header in enumerate(sheet_headers)
-                        )
-                        for _, row in rows
-                    )
-                    if body.strip():
-                        table_count += 1
-                        row_groups.append(
-                            {
-                                "sheet": sheet_name,
-                                "start": start_row,
-                                "end": end_row,
-                                "block": len(row_groups) + 1,
-                                "total_rows": total_rows,
-                            }
-                        )
-                        chunks.append(
-                            IndexChunk(
-                                chunk_id=f"chunk_{len(chunks) + 1}",
-                                generation_id=request.expected_generation_id,
-                                publication_id=request.publication_id,
-                                document_id=request.document_id,
-                                document_version_id=request.document_version_id,
-                                space_id=request.space_id,
-                                text=body,
-                                embedding_text=body,
-                                sparse_text=body,
-                                locator={
-                                    "sheet": sheet_name,
-                                    "a1_range": f"A{start_row}:{_column_name(len(sheet_headers))}{end_row}",
-                                },
-                                snippet=None,
-                                media_kind="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                manifest_hash=manifest_hash,
-                                metadata={
-                                    "headers": sheet_headers,
-                                    "row_start": start_row,
-                                    "row_end": end_row,
-                                    "table": True,
-                                    "merged_ranges": sheet_merged_ranges,
-                                    "total_rows": total_rows,
-                                },
-                            )
-                        )
-                    rows.clear()
-
                 for row_number, raw_row in enumerate(
                     worksheet.iter_rows(values_only=True), start=1
                 ):
@@ -822,39 +1541,89 @@ class ContentProcessor:
                         elif origin is not None:
                             rendered = origin_values.get(origin, rendered)
                         row.append(rendered)
-                    if not any(cell.strip() for cell in row):
-                        continue
-                    if headers is None:
-                        headers = row
-                        sheet_manifest_entry = {
-                            "sheet": worksheet.title,
-                            "headers": headers,
-                            "merged_ranges": merged_ranges,
-                            "row_count": 0,
-                        }
-                        sheet_manifest.append(sheet_manifest_entry)
-                        continue
-                    pending_rows.append((row_number, row))
-                    row_limit = 30 if len(headers) < 20 else 20
-                    if len(pending_rows) >= row_limit:
-                        emit_rows(
-                            pending_rows,
-                            sheet_name=worksheet.title,
-                            sheet_headers=headers,
-                            sheet_merged_ranges=merged_ranges,
-                            sheet_horizontally_merged_rows=merged_cells.horizontally_merged_rows,
-                        )
-                if headers is None:
+                    if any(cell.strip() for cell in row):
+                        collected.append((row_number, row))
+                if not collected:
                     raise PlatformError("table_parse_failed", "Excel sheet has no header", {}, 422)
-                if sheet_manifest_entry is not None:
-                    sheet_manifest_entry["row_count"] = row_count
-                emit_rows(
-                    pending_rows,
-                    sheet_name=worksheet.title,
-                    sheet_headers=headers,
-                    sheet_merged_ranges=merged_ranges,
-                    sheet_horizontally_merged_rows=merged_cells.horizontally_merged_rows,
+                header_start = collected[0][0]
+                header_depth = 1
+                for reference in merged_ranges:
+                    min_column, min_row, _max_column, max_row = range_boundaries(reference)
+                    del min_column
+                    if min_row < max_row and min_row <= header_start + 2:
+                        header_depth = max(header_depth, max_row - header_start + 1)
+                by_row = dict(collected)
+                header_rows = [
+                    by_row.get(row_number, [])
+                    for row_number in range(header_start, header_start + header_depth)
+                ]
+                headers = _flatten_multilevel_header(header_rows)
+                data_rows = [
+                    (row_number, row)
+                    for row_number, row in collected
+                    if row_number >= header_start + header_depth
+                ]
+                sheet_manifest.append(
+                    {
+                        "sheet": worksheet.title,
+                        "headers": headers,
+                        "merged_ranges": merged_ranges,
+                        "row_count": row_count,
+                    }
                 )
+                width = len(headers)
+                for start, end in _split_rows([row for _, row in data_rows], width):
+                    group = data_rows[start:end]
+                    if not group:
+                        continue
+                    start_row = group[0][0]
+                    end_row = group[-1][0]
+                    total_rows = [
+                        row_number
+                        for row_number, _ in group
+                        if row_number in merged_cells.horizontally_merged_rows
+                    ]
+                    body = _key_value_rows(headers, [row for _, row in group])
+                    if not body.strip():
+                        continue
+                    table_count += 1
+                    row_groups.append(
+                        {
+                            "sheet": worksheet.title,
+                            "start": start_row,
+                            "end": end_row,
+                            "block": len(row_groups) + 1,
+                            "total_rows": total_rows,
+                        }
+                    )
+                    chunks.append(
+                        IndexChunk(
+                            chunk_id=f"chunk_{len(chunks) + 1}",
+                            generation_id=request.expected_generation_id,
+                            publication_id=request.publication_id,
+                            document_id=request.document_id,
+                            document_version_id=request.document_version_id,
+                            space_id=request.space_id,
+                            text=body,
+                            embedding_text=body,
+                            sparse_text=body,
+                            locator={
+                                "sheet": worksheet.title,
+                                "a1_range": f"A{start_row}:{_column_name(width)}{end_row}",
+                            },
+                            snippet=None,
+                            media_kind="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            manifest_hash=manifest_hash,
+                            metadata={
+                                "headers": headers,
+                                "row_start": start_row,
+                                "row_end": end_row,
+                                "table": True,
+                                "merged_ranges": merged_ranges,
+                                "total_rows": total_rows,
+                            },
+                        )
+                    )
         finally:
             workbook.close()
         return (
@@ -1116,17 +1885,44 @@ class ContentProcessor:
                     "ocr": {"applied": False},
                     "tree": {"tree_indexed": False, "tree_reason": "decorative_image"},
                     "cr": {"applied": False, "unit": "image"},
+                    "filtered_image_count": 1,
                 },
                 ({"code": "image_not_indexable", "reason": "decorative"},),
             )
-        description = (
-            self._image_describer(content, context).strip()
+        result = (
+            normalize_description(self._image_describer(content, context))
             if self._image_describer is not None
-            else ""
+            else None
         )
+        description = result.text.strip() if result is not None else ""
         caption = str(context.get("caption", "")).strip()
         ocr_text = str(context.get("ocr_text", "")).strip()
         index_text = "\n".join(part for part in (caption, description, ocr_text) if part)
+        provider_summary = {
+            "provider": result.provider if result is not None else "none",
+            "degraded": bool(result.degraded) if result is not None else not bool(index_text),
+            "reason": result.reason if result is not None else "no_provider",
+            **(
+                {"usage": dict(result.usage)}
+                if result is not None and result.usage is not None
+                else {}
+            ),
+        }
+        if result is not None and result.degraded and result.reason == "degraded_no_text":
+            return (
+                [],
+                {
+                    "chunk_count": 0,
+                    "page_count": 0,
+                    "image_count": 1,
+                    "table_count": 0,
+                    "ocr": {"applied": bool(ocr_text)},
+                    "tree": {"tree_indexed": False, "tree_reason": "image"},
+                    "cr": {"applied": False, "unit": "image_description"},
+                    "image_provider": provider_summary,
+                },
+                ({"code": "degraded_no_text", "reason": "vlm_disabled_no_text"},),
+            )
         if not index_text:
             return (
                 [],
@@ -1137,7 +1933,8 @@ class ContentProcessor:
                     "table_count": 0,
                     "ocr": {"applied": bool(ocr_text)},
                     "tree": {"tree_indexed": False, "tree_reason": "image"},
-                    "cr": {"applied": False, "unit": "image"},
+                    "cr": {"applied": False, "unit": "image_description"},
+                    "image_provider": provider_summary,
                 },
                 ({"code": "image_not_indexable", "reason": "no_usable_text"},),
             )
@@ -1159,6 +1956,7 @@ class ContentProcessor:
                     manifest_hash=manifest_hash,
                     metadata={
                         "image_description": bool(description),
+                        "image_provider": provider_summary,
                         "reverse_links": list(context.get("reverse_links", ())),
                     },
                 )
@@ -1171,8 +1969,13 @@ class ContentProcessor:
                 "ocr": {"applied": bool(ocr_text)},
                 "tree": {"tree_indexed": False, "tree_reason": "image"},
                 "cr": {"applied": False, "unit": "image_description"},
+                "image_provider": provider_summary,
             },
-            (),
+            (
+                ({"code": "image_degraded", "reason": result.reason},)
+                if result is not None and result.degraded
+                else ()
+            ),
         )
 
 

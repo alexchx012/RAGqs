@@ -4,11 +4,12 @@ import hashlib
 import json
 import secrets
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, select, text, update
 from sqlalchemy.engine import Connection, Engine
 
 from app.documents.upload_security import validate_upload_security
@@ -336,6 +337,16 @@ class DocumentsService:
         if not callable(recorder) or calendar is None:
             return None
         summary = receipt.get("processing_summary") or {}
+        processing_list = summary.get("processing_list")
+        processing_list_id = (
+            str(processing_list.get("processing_list_id"))
+            if isinstance(processing_list, Mapping) and processing_list.get("frozen") is True
+            else None
+        )
+        if not processing_list_id:
+            raise PlatformError(
+                "validation_error", "Processing receipt has no frozen processing list", {}, 422
+            )
         pages = _metered_pages(
             page_count=receipt.get("page_count", summary.get("page_count", summary.get("pages", 1))),
             image_count=summary.get("image_count", summary.get("images", 0)),
@@ -365,7 +376,7 @@ class DocumentsService:
         debit_id = recorder(
             connection,
             publication_status="succeeded",
-            quota_operation_id=str(job["id"]),
+            quota_operation_id=processing_list_id,
             publication_id=str(publication["id"]),
             quota_subject_user_id=subject,
             pages=pages,
@@ -393,6 +404,7 @@ class DocumentsService:
             charge_reason = "quota_debit_not_recorded"
         return {
             "pages": pages,
+            "processing_list_id": processing_list_id,
             "quota_debit_id": debit_id,
             "quota_charge_status": charge_status,
             "quota_charge_reason": charge_reason,
@@ -2622,37 +2634,66 @@ class DocumentsService:
         expected_version: int,
         idempotency_key: str | None,
         transaction_id: str | None = None,
+        connection: Connection | None = None,
+        system_actor: str | None = None,
     ) -> dict[str, Any]:
         key = self._required_key(idempotency_key)
         if expected_version < 1:
             raise PlatformError("validation_error", "expected_version is invalid", {}, 422)
-        actor_id = str(principal.user_id)
+        actor_id = system_actor or str(principal.user_id)
         endpoint = "documents.delete"
-        with self._engine.begin() as connection:
+        with (
+            self._engine.begin() if connection is None else nullcontext(connection)
+        ) as connection:
             document = self._locked_document(connection, document_id)
             if document is None:
                 raise PlatformError("document_not_found", "Document was not found", {}, 404)
             fingerprint = canonical_request_fingerprint(
                 {"expected_version": expected_version, "document_id": document_id}
             )
-            replay = self._idempotency_replay(
-                connection,
-                actor_id=actor_id,
-                endpoint=endpoint,
-                target_id=document_id,
-                key=key,
-                fingerprint=fingerprint,
+            # Internal system-actor calls (account deletion §9.2.1) skip the
+            # request-idempotency ledger: determinism is guaranteed by the
+            # caller's (user_deletion_id, document_id) key plus the document
+            # lifecycle state machine, and the outer identity transaction is
+            # the unit of recovery.
+            replay = (
+                None
+                if system_actor is not None
+                else self._idempotency_replay(
+                    connection,
+                    actor_id=actor_id,
+                    endpoint=endpoint,
+                    target_id=document_id,
+                    key=key,
+                    fingerprint=fingerprint,
+                )
             )
             if replay is not None:
                 return replay
             lifecycle = str(document["lifecycle_status"])
+            if system_actor is not None and lifecycle in (
+                DocumentLifecycle.PENDING_DELETE.value,
+                DocumentLifecycle.DELETED.value,
+            ):
+                # Internal account-deletion call: the per-document workflow was
+                # already delegated with the deterministic (user_deletion_id,
+                # document_id) key, so reuse it instead of failing the retry.
+                return {
+                    "document_id": document_id,
+                    "deletion_id": str(document["deletion_id"] or ""),
+                    "state": lifecycle,
+                    "version": int(document["version"]),
+                    "lifecycle_status": lifecycle,
+                    "deletion_requested_at": _timestamp(document["updated_at_utc"]),
+                }
             if lifecycle == DocumentLifecycle.PENDING_DELETE.value:
                 raise PlatformError(
                     "document_pending_delete", "Document is pending deletion", {}, 409
                 )
             if lifecycle == DocumentLifecycle.DELETED.value:
                 raise PlatformError("document_deleted", "Document has been deleted", {}, 410)
-            self._authorize(principal, str(document["space_id"]), "manage")
+            if system_actor is None:
+                self._authorize(principal, str(document["space_id"]), "manage")
             if int(document["version"]) != expected_version:
                 raise PlatformError(
                     "document_version_conflict",
@@ -2878,18 +2919,70 @@ class DocumentsService:
                 result="succeeded",
                 occurred_at=now,
             )
-            self._complete_idempotency(
-                connection,
-                actor_id=actor_id,
-                endpoint=endpoint,
-                target_id=document_id,
-                key=key,
-                fingerprint=fingerprint,
-                response=response,
-            )
+            if system_actor is None:
+                self._complete_idempotency(
+                    connection,
+                    actor_id=actor_id,
+                    endpoint=endpoint,
+                    target_id=document_id,
+                    key=key,
+                    fingerprint=fingerprint,
+                    response=response,
+                )
             return response
 
     delete = delete_document
+
+    def delete_personal_documents_for_account(
+        self,
+        connection: Connection,
+        *,
+        user_id: str,
+        user_deletion_id: str,
+    ) -> int:
+        """§9.2.1 account-deletion integration for personal-space documents.
+
+        Creates or reuses one document permanent-deletion workflow per
+        personal document of ``user_id`` with the deterministic idempotency
+        key ``(user_deletion_id, document_id)`` and returns how many personal
+        documents are not yet in the ``deleted`` tombstone state. Shared-space
+        contributions are never touched here.
+        """
+
+        rows = connection.execute(
+            text(
+                """
+                SELECT d.id, d.version
+                FROM documents d
+                JOIN identity_space s ON s.id = d.space_id
+                WHERE s.owner_user_id = :user_id
+                  AND d.lifecycle_status != 'deleted'
+                ORDER BY d.id
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().all()
+        for row in rows:
+            self.delete_document(
+                principal=_AccountDeletionPrincipal(user_id),
+                document_id=str(row["id"]),
+                expected_version=int(row["version"]),
+                idempotency_key=f"user-deletion:{user_deletion_id}:{row['id']}"[:255],
+                connection=connection,
+                system_actor="system:account-deletion",
+            )
+        remaining = connection.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM documents d
+                JOIN identity_space s ON s.id = d.space_id
+                WHERE s.owner_user_id = :user_id
+                  AND d.lifecycle_status != 'deleted'
+                """
+            ),
+            {"user_id": user_id},
+        ).scalar_one()
+        return int(remaining)
 
     def _append_delete_index_change(
         self, connection: Connection, document: Mapping[str, Any], now: datetime
@@ -3806,7 +3899,11 @@ class DocumentsService:
                             in {IngestionJobState.FAILED.value, IngestionJobState.DEAD_LETTER.value}
                             else None
                         ),
-                        "degradations": row["degradations_json"],
+                        "degradations": [
+                            {"kind": str(item.get("kind"))}
+                            for item in row["degradations_json"]
+                            if isinstance(item, Mapping)
+                        ],
                         "ocr_low_confidence": row["ocr_low_confidence"],
                         "publication_id": row["active_publication_id"],
                         "processing_summary": row["processing_summary_json"],
@@ -4181,3 +4278,34 @@ class DocumentsService:
             "state": job["state"],
             "replay_generation": job["replay_generation"],
         }
+
+
+class _AccountDeletionPrincipal:
+    """Minimal principal shim for internal system-actor document deletion."""
+
+    user_id: str
+
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+        self.role = "admin"
+        self.department_id = None
+
+
+class DocumentsPersonalDocumentDeletion:
+    """PersonalDocumentDeletionPort adapter owned by the documents domain."""
+
+    def __init__(self, documents_service: DocumentsService) -> None:
+        self._documents_service = documents_service
+
+    def pending_personal_documents(
+        self,
+        connection: Connection,
+        *,
+        user_id: str,
+        user_deletion_id: str,
+    ) -> int:
+        return self._documents_service.delete_personal_documents_for_account(
+            connection,
+            user_id=user_id,
+            user_deletion_id=user_deletion_id,
+        )

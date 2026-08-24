@@ -236,7 +236,7 @@ def test_context_space_k_rebalances_after_threshold() -> None:
     assert [hit.chunk.chunk_id for hit in result.hits] == ["a1", "a2", "b1", "a3"]
 
 
-def test_retrieval_preserves_provider_score_for_cross_encoder_input() -> None:
+def test_retrieval_hides_sparse_provider_score_from_cross_backend_reranker() -> None:
     class ScoredProvider(InMemorySparseIndexProvider):
         def search(self, *args, **kwargs):
             page = super().search(*args, **kwargs)
@@ -265,7 +265,34 @@ def test_retrieval_preserves_provider_score_for_cross_encoder_input() -> None:
 
     service.search("text", principal="user_1")
 
-    assert seen == [0.75]
+    assert seen == [0.0]
+
+
+def test_sparse_candidate_is_not_rejected_by_final_score_threshold() -> None:
+    class ScoredSparseProvider(InMemorySparseIndexProvider):
+        def search(self, *args, **kwargs):
+            page = super().search(*args, **kwargs)
+            return {
+                "items": [{**chunk.to_mapping(), "score": 0.01} for chunk in page.items],
+                "cursor": page.cursor,
+            }
+
+    provider = ScoredSparseProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+    )
+
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(score_threshold=0.9),
+    )
+
+    assert [hit.chunk.chunk_id for hit in result.hits] == ["chunk_1"]
 
 
 def test_conservative_context_counter_does_not_underestimate_chinese_text() -> None:

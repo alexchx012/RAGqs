@@ -30,7 +30,7 @@ import { TextLink } from '../ui/TextLink';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { useSettings } from './SettingsProvider';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
-import { useModalDialog } from './use-modal-dialog';
+import { useModalDialog, useModalPresence } from './use-modal-dialog';
 import type { DocumentListItem, QuotaSnapshot, SpaceItem } from './types';
 import { UploadDialog } from './UploadDialog';
 import { readUploadHistory, subscribeUploadHistory } from './upload-history';
@@ -410,6 +410,7 @@ export function KnowledgeModule() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            data-drill-row="uploads"
             onClick={() => drillUploads()}
             className="inline-flex items-center gap-1.5 text-[15px] text-ink-black underline-offset-2 hover:underline"
           >
@@ -423,6 +424,7 @@ export function KnowledgeModule() {
           {isMember && (
             <button
               type="button"
+              data-drill-row="submissions"
               onClick={() => drillSubmissions()}
               className="text-[15px] text-ink-black underline-offset-2 hover:underline"
             >
@@ -440,11 +442,11 @@ export function KnowledgeModule() {
             quota.unlimited ? (
               <p className="text-[15px] text-slate-gray">{copy.settings.knowledge.quota.unlimited}</p>
             ) : (
+              // 耗尽整行变危险红：150ms 变色（共用基座 §5.6），不瞬时跳色
               <p
                 className={
-                  quota.used >= quota.effective_limit
-                    ? 'text-[15px] text-danger'
-                    : 'text-[15px] text-slate-gray'
+                  'text-[15px] transition-colors duration-[var(--duration-fast)] ' +
+                  (quota.used >= quota.effective_limit ? 'text-danger' : 'text-slate-gray')
                 }
               >
                 {copy.settings.knowledge.quota.usedOfLimit(quota.used, quota.effective_limit)}
@@ -456,7 +458,7 @@ export function KnowledgeModule() {
               variant="ghost"
               ghostBorder="ink"
               size="xs"
-              className="mt-2"
+              className="ui-fade-enter-fast mt-2"
               onClick={() => setRequestDialogOpen(true)}
             >
               {copy.settings.knowledge.quota.requestMore}
@@ -472,6 +474,7 @@ export function KnowledgeModule() {
       {isMinister && manageSpaces.length > 0 && (
         <button
           type="button"
+          data-drill-row="manage"
           onClick={() => drillManage()}
           className="mt-6 flex h-12 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
         >
@@ -657,7 +660,8 @@ export function KnowledgeDocumentRow({ doc, manage, onUploadNewVersion, onVersio
       <div className="flex min-w-0 items-center gap-3 md:contents">
         <span className="flex shrink-0 items-center gap-2">
           {updating ? <StatusDot intent="slate" pulse /> : <StatusDot intent="success" />}
-          <span className="text-[15px] text-slate-gray">{statusText}</span>
+          {/* 状态文字就地切换时重挂载播 150ms 淡入（共用基座 §5.6 交叉淡化的进入半程） */}
+          <span key={statusText} className="ui-fade-enter-fast text-[15px] text-slate-gray">{statusText}</span>
         </span>
         <span className="min-w-0 flex-1 truncate text-[15px] text-slate-gray md:w-40 md:flex-none">
           {formatDateTime(doc.uploaded_at)}
@@ -706,12 +710,13 @@ function QuotaRequestDialog({
   onConfirm,
 }: QuotaRequestDialogProps) {
   const dialogRef = useModalDialog(open, onOpenChange);
+  const presence = useModalPresence(open);
   const parsed = Number(pages);
   // 保留原始非法输入（-1/1.5 等），不静默改写；非空且非 1–500 整数即非法
   const valueInvalid = pages.trim() !== '' && (!Number.isInteger(parsed) || parsed < 1 || parsed > 500);
   const canConfirm = pages.trim() !== '' && Number.isInteger(parsed) && parsed >= 1 && parsed <= 500;
   const showInvalid = invalid || valueInvalid;
-  if (!open) {
+  if (!presence.mounted) {
     return null;
   }
   return (
@@ -723,8 +728,16 @@ function QuotaRequestDialog({
       aria-modal="true"
       aria-label={copy.settings.knowledge.quota.requestDialogTitle}
     >
-      <div className="fixed inset-0 bg-ink-black/24" onClick={() => onOpenChange(false)} aria-hidden="true" />
-      <div className="fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+      <div
+        className="ui-dialog-overlay fixed inset-0 bg-ink-black/24"
+        data-state={presence.state}
+        onClick={() => onOpenChange(false)}
+        aria-hidden="true"
+      />
+      <div
+        className="ui-dialog-content fixed top-1/2 left-1/2 w-[400px] max-w-[calc(100vw-32px)] rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]"
+        data-state={presence.state}
+      >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.quota.requestDialogTitle}</h2>
         <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.quota.requestDescription}</p>
         <div className="mt-4">

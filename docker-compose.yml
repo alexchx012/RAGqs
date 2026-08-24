@@ -74,7 +74,27 @@ services:
       timeout: 10s
       retries: 5
 
+  # Optional profile. Use an image or mounted security configuration that has
+  # analysis-ik installed and exposes HTTPS with the CA configured in .env.
+  opensearch:
+    profiles: ["opensearch"]
+    image: opensearchproject/opensearch:2.19.1
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-change-me}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
 volumes:
   etcd_data:
   milvus_minio_data:
   milvus_data:
+  opensearch_data:

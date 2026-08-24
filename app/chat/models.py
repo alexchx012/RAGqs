@@ -234,6 +234,7 @@ class RetrievalHitOutcome:
     locator: Mapping[str, Any]
     snippet: str | None
     library: str = "unknown"
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

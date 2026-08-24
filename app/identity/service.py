@@ -15,7 +15,7 @@ from sqlalchemy import Engine, and_, delete, exists, func, literal, select, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
-from app.platform.config import AuthSettings
+from app.platform.config import AuthSettings, _resolve_user_deletion_archive_dir
 from app.platform.context import current_context
 from app.platform.database import _insert_do_nothing, platform_audit_table
 from app.platform.errors import PlatformError
@@ -44,9 +44,11 @@ from .ports import (
     DepartmentWorkState,
     PendingSubmissionInvalidationCommand,
     PendingSubmissionInvalidationPort,
+    PersonalDocumentDeletionPort,
     UnavailableAccountDeletionCleanupPort,
     UnavailableAccountRetirementGateway,
     UnavailableDepartmentWorkCheckPort,
+    UnavailablePersonalDocumentDeletionPort,
 )
 from .revocation import (
     GenerationRevocationCommand,
@@ -57,6 +59,7 @@ from .revocation import (
 from .schema import (
     auth_refresh_token_table,
     auth_session_table,
+    identity_account_cleanup_target_table,
     identity_deletion_workflow_table,
     identity_department_table,
     identity_idempotency_table,
@@ -70,6 +73,10 @@ from .schema import (
 Role = Literal["user", "minister", "ops", "admin"]
 _ROLES = frozenset({"user", "minister", "ops", "admin"})
 _COMPLETED_HISTORY_RETENTION = timedelta(days=90)
+
+
+class _ArchiveRestoreRequired(Exception):
+    """Internal signal: archive missing/corrupt after cleanup already started."""
 
 
 def _utc(value: datetime) -> datetime:
@@ -223,6 +230,7 @@ class IdentityAccessService:
         account_retirement_gateway: AccountRetirementGateway | None = None,
         submission_invalidation_port: PendingSubmissionInvalidationPort | None = None,
         archive_issuer: Any = None,
+        personal_document_deletion: PersonalDocumentDeletionPort | None = None,
     ) -> None:
         self._engine = engine
         self._settings = settings
@@ -245,6 +253,10 @@ class IdentityAccessService:
         self._pending_submission_invalidation_port = submission_invalidation_port
         self._archive_issuer = archive_issuer
         self._object_store = object_store
+        self._personal_document_deletion = (
+            personal_document_deletion or UnavailablePersonalDocumentDeletionPort()
+        )
+        self._profile: str = "development"
 
     def _current_time(self) -> datetime:
         return _utc(self._now())
@@ -557,6 +569,7 @@ class IdentityAccessService:
         user_id: str,
         requested_at: datetime,
         purge_after: datetime,
+        archive_dir_snapshot: str | None = None,
     ) -> None:
         connection.execute(
             identity_deletion_workflow_table.insert().values(
@@ -569,6 +582,7 @@ class IdentityAccessService:
                     requested_at=requested_at,
                     purge_after=purge_after,
                 ),
+                archive_dir_snapshot=archive_dir_snapshot,
                 cleanup_reference=None,
                 cleanup_completed_at_utc=None,
                 completed_at_utc=None,
@@ -1541,6 +1555,7 @@ class IdentityAccessService:
                 user_id=user_id,
                 requested_at=now,
                 purge_after=purge_after,
+                archive_dir_snapshot=self._effective_archive_dir(),
             )
             self._revoke_account_sessions_in_transaction(
                 connection,
@@ -1548,6 +1563,14 @@ class IdentityAccessService:
                 reason="account_pending_delete",
                 revoked_at=now,
                 transition_version=next_transition,
+            )
+            self._audit(
+                connection,
+                actor_id=actor.user_id,
+                resource_type="user",
+                resource_id=user_id,
+                result="user_sessions_revoked",
+                occurred_at=now,
             )
             result = {
                 "id": user_id,
@@ -1595,6 +1618,408 @@ class IdentityAccessService:
             ).scalars()
             return [str(user_id) for user_id in records]
 
+    def _effective_archive_dir(self) -> str:
+        return _resolve_user_deletion_archive_dir(self._settings, self._profile)
+
+    def list_deletion_workflows_pending_archive(self, *, limit: int = 100) -> list[str]:
+        if limit < 1 or limit > 1000:
+            raise PlatformError("validation_error", "Deletion workflow limit is invalid", {}, 422)
+        now = self._current_time()
+        with self._engine.connect() as connection:
+            records = connection.execute(
+                select(identity_deletion_workflow_table.c.user_id)
+                .where(
+                    and_(
+                        identity_deletion_workflow_table.c.status == "pending",
+                        identity_deletion_workflow_table.c.archive_completed_at_utc.is_(None),
+                    )
+                )
+                .order_by(identity_deletion_workflow_table.c.requested_at_utc)
+                .limit(limit)
+            ).scalars()
+            del now
+            return [str(user_id) for user_id in records]
+
+    def build_deletion_archive(
+        self,
+        *,
+        user_id: str,
+        connection: Connection | None = None,
+    ) -> dict[str, object]:
+        """Build (or rebuild) the physical archive package for a pending deletion."""
+
+        from .archive_package import AccountArchivePackageBuilder
+
+        now = self._current_time()
+        from .archive_package import AccountArchiveRecord
+
+        builder: AccountArchivePackageBuilder | None = None
+        deletion_id = ""
+        record: AccountArchiveRecord | None = None
+        build_error: Exception | None = None
+        # One sequential transaction on the pooled connection: read the
+        # workflow, snapshot the user's rows into the zip, and record the
+        # archive. A second transaction is only opened after a rollback to
+        # persist the failure marker.
+        with self._engine.begin() as connection:
+            workflow = (
+                connection.execute(
+                    select(identity_deletion_workflow_table)
+                    .where(identity_deletion_workflow_table.c.user_id == user_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if workflow is None:
+                raise PlatformError(
+                    "deletion_workflow_not_found", "Deletion workflow was not found", {}, 404
+                )
+            if workflow["status"] != "pending" or workflow["archive_completed_at_utc"] is not None:
+                return {"user_id": user_id, "archive_status": "already_archived"}
+            snapshot_dir = str(
+                workflow["archive_dir_snapshot"] or self._effective_archive_dir()
+            )
+            deletion_id = str(workflow["cleanup_operation_id"])
+            builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
+            try:
+                # Frozen online data: a consistent snapshot of the user's rows.
+                record = builder.build(
+                    connection, user_id=user_id, deletion_id=deletion_id, now=now
+                )
+                connection.execute(
+                    update(identity_deletion_workflow_table)
+                    .where(
+                        and_(
+                            identity_deletion_workflow_table.c.user_id == user_id,
+                            identity_deletion_workflow_table.c.status == "pending",
+                            identity_deletion_workflow_table.c.archive_completed_at_utc.is_(None),
+                        )
+                    )
+                    .values(
+                        archive_file_name=record.file_name,
+                        archive_size_bytes=record.size_bytes,
+                        archive_sha256=record.sha256,
+                        archive_completed_at_utc=now,
+                        archive_failed_at_utc=None,
+                        archive_alert=None,
+                    )
+                )
+                self._audit(
+                    connection,
+                    actor_id="system:deletion-worker",
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_archive_completed",
+                    occurred_at=now,
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised below
+                build_error = exc
+        if build_error is not None:
+            # The read transaction is closed before the failure is recorded,
+            # so pooled connections are never nested.
+            with self._engine.begin() as failure_connection:
+                failure_connection.execute(
+                    update(identity_deletion_workflow_table)
+                    .where(identity_deletion_workflow_table.c.user_id == user_id)
+                    .values(archive_failed_at_utc=now)
+                )
+                self._audit(
+                    failure_connection,
+                    actor_id="system:deletion-worker",
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_archive_failed",
+                    occurred_at=now,
+                )
+            raise PlatformError(
+                "account_archive_failed",
+                "Account archive package could not be built",
+                {"retryable": True},
+                503,
+                True,
+            ) from build_error
+        assert record is not None
+        return {
+            "user_id": user_id,
+            "archive_status": "archived",
+            "file_name": record.file_name,
+            "size_bytes": record.size_bytes,
+        }
+
+    def _verify_or_restore_archive(
+        self,
+        connection: Connection,
+        *,
+        workflow: Mapping[str, object],
+        user_id: str,
+        now: datetime,
+    ) -> None:
+        """§9.2.1 archive gate: verify the package, rebuild or stop-and-alert."""
+
+        from .archive_package import AccountArchivePackageBuilder
+
+        if workflow["archive_completed_at_utc"] is None:
+            raise PlatformError(
+                "account_archive_pending",
+                "Archive package has not been built yet",
+                {"retryable": True},
+                409,
+                True,
+            )
+        deletion_id = str(workflow["cleanup_operation_id"])
+        snapshot_dir = str(workflow["archive_dir_snapshot"] or self._effective_archive_dir())
+        builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
+        expected_sha256 = str(workflow["archive_sha256"] or "")
+        expected_size = workflow["archive_size_bytes"]
+        if builder.verify(
+            user_id=user_id,
+            deletion_id=deletion_id,
+            expected_sha256=expected_sha256,
+            expected_size=int(expected_size) if expected_size is not None else None,
+        ):
+            return
+        completed_targets = connection.execute(
+            select(func.count())
+            .select_from(identity_account_cleanup_target_table)
+            .where(
+                and_(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                    identity_account_cleanup_target_table.c.status == "completed",
+                )
+            )
+        ).scalar_one()
+        if int(completed_targets) == 0:
+            # Nothing destructive has happened yet: rebuild from frozen data.
+            record = builder.build(connection, user_id=user_id, deletion_id=deletion_id, now=now)
+            connection.execute(
+                update(identity_deletion_workflow_table)
+                .where(identity_deletion_workflow_table.c.user_id == user_id)
+                .values(
+                    archive_file_name=record.file_name,
+                    archive_size_bytes=record.size_bytes,
+                    archive_sha256=record.sha256,
+                    archive_alert=None,
+                )
+            )
+            return
+        # The alert must outlive this transaction's rollback, so it is
+        # persisted by finalize_pending_deletion after the outer rollback.
+        raise _ArchiveRestoreRequired()
+
+    def _is_cleanup_target_completed(
+        self,
+        connection: Connection,
+        *,
+        deletion_id: str,
+        backend_kind: str,
+        resource_id: str,
+    ) -> bool:
+        status = (
+            connection.execute(
+                select(identity_account_cleanup_target_table.c.status)
+                .where(
+                    and_(
+                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                        identity_account_cleanup_target_table.c.resource_id == resource_id,
+                    )
+                )
+            )
+            .scalar_one_or_none()
+        )
+        return status == "completed"
+
+    def _record_cleanup_target(
+        self,
+        connection: Connection,
+        *,
+        deletion_id: str,
+        backend_kind: str,
+        resource_id: str,
+        status: str,
+        last_error: str | None,
+        now: datetime,
+    ) -> None:
+        existing = (
+            connection.execute(
+                select(identity_account_cleanup_target_table.c.deletion_id)
+                .where(
+                    and_(
+                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                        identity_account_cleanup_target_table.c.resource_id == resource_id,
+                    )
+                )
+            )
+            .scalar_one_or_none()
+        )
+        if existing is None:
+            connection.execute(
+                identity_account_cleanup_target_table.insert().values(
+                    deletion_id=deletion_id,
+                    backend_kind=backend_kind,
+                    resource_id=resource_id,
+                    status=status,
+                    attempts=1,
+                    last_error=last_error,
+                    created_at_utc=now,
+                    completed_at_utc=now if status == "completed" else None,
+                    updated_at_utc=now,
+                )
+            )
+            return
+        connection.execute(
+            update(identity_account_cleanup_target_table)
+            .where(
+                and_(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                    identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                    identity_account_cleanup_target_table.c.resource_id == resource_id,
+                )
+            )
+            .values(
+                status=status,
+                attempts=identity_account_cleanup_target_table.c.attempts + 1,
+                last_error=last_error,
+                completed_at_utc=now if status == "completed" else None,
+                updated_at_utc=now,
+            )
+        )
+
+    def _run_account_cleanup_targets(
+        self,
+        connection: Connection,
+        *,
+        user_id: str,
+        deletion_id: str,
+        now: datetime,
+    ) -> None:
+        """Run the idempotent non-document cleanup targets (§9.2.1 §3)."""
+
+        # object_store.avatar: the tombstone write below clears avatar_url, so
+        # the current avatar object must be removed (and recorded as a target)
+        # while the row still carries it. Replaced avatars are already handled
+        # by the identity object-cleanup queue above.
+        avatar_url = (
+            connection.execute(
+                select(identity_user_table.c.avatar_url).where(
+                    identity_user_table.c.id == user_id
+                )
+            ).scalar_one_or_none()
+        )
+        if self._is_cleanup_target_completed(
+            connection, deletion_id=deletion_id, backend_kind="object_store.avatar", resource_id=user_id
+        ):
+            pass
+        else:
+            avatar_error: str | None = None
+            if (
+                isinstance(avatar_url, str)
+                and avatar_url.startswith("object://")
+                and self._object_store is not None
+            ):
+                avatar_key = avatar_url.removeprefix("object://")
+                try:
+                    if self._object_store.exists(avatar_key):
+                        self._object_store.delete(avatar_key)
+                except Exception as exc:  # noqa: BLE001 - recorded per target
+                    avatar_error = str(exc)[:512]
+            self._record_cleanup_target(
+                connection,
+                deletion_id=deletion_id,
+                backend_kind="object_store.avatar",
+                resource_id=user_id,
+                status="failed" if avatar_error else "completed",
+                last_error=avatar_error,
+                now=now,
+            )
+            if avatar_error:
+                self._audit(
+                    connection,
+                    actor_id="system:deletion-worker",
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_cleanup_retried",
+                    occurred_at=now,
+                )
+                raise PlatformError(
+                    "account_cleanup_target_failed",
+                    "A cleanup target failed and will be retried",
+                    {"retryable": True},
+                    503,
+                    True,
+                )
+        targets: tuple[tuple[str, str], ...] = (
+            ("postgres.chat_conversation_groups", "DELETE FROM chat_conversation_group WHERE owner_user_id = :user_id"),
+            ("postgres.chat_conversations", "DELETE FROM chat_conversation WHERE owner_user_id = :user_id"),
+            ("postgres.chat_messages", "DELETE FROM chat_message WHERE owner_user_id = :user_id"),
+            ("postgres.chat_message_feedback", "DELETE FROM chat_message_feedback WHERE voter_user_id = :user_id"),
+            (
+                "postgres.user_tasks",
+                """
+                DELETE FROM ingestion_jobs WHERE created_by_user_id = :user_id
+                  AND document_id IN (SELECT id FROM documents WHERE lifecycle_status = 'deleted')
+                """,
+            ),
+            ("postgres.identity_spaces", "DELETE FROM identity_space WHERE owner_user_id = :user_id"),
+        )
+        failed = False
+        for backend_kind, sql in targets:
+            completed = (
+                connection.execute(
+                    select(identity_account_cleanup_target_table.c.status)
+                    .where(
+                        and_(
+                            identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                            identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                            identity_account_cleanup_target_table.c.resource_id == user_id,
+                        )
+                    )
+                )
+                .scalar_one_or_none()
+            )
+            if completed == "completed":
+                continue
+            try:
+                connection.execute(text(sql), {"user_id": user_id})
+            except Exception as exc:
+                failed = True
+                self._record_cleanup_target(
+                    connection,
+                    deletion_id=deletion_id,
+                    backend_kind=backend_kind,
+                    resource_id=user_id,
+                    status="failed",
+                    last_error=str(exc)[:512],
+                    now=now,
+                )
+                continue
+            self._record_cleanup_target(
+                connection,
+                deletion_id=deletion_id,
+                backend_kind=backend_kind,
+                resource_id=user_id,
+                status="completed",
+                last_error=None,
+                now=now,
+            )
+        if failed:
+            self._audit(
+                connection,
+                actor_id="system:deletion-worker",
+                resource_type="user",
+                resource_id=user_id,
+                result="user_cleanup_retried",
+                occurred_at=now,
+            )
+            raise PlatformError(
+                "account_cleanup_target_failed",
+                "A cleanup target failed and will be retried",
+                {"retryable": True},
+                503,
+                True,
+            )
+
     def finalize_pending_deletion(
         self,
         *,
@@ -1604,6 +2029,43 @@ class IdentityAccessService:
         """Turn a completed deletion workflow into a non-authenticating tombstone."""
 
         now = self._current_time()
+        try:
+            return self._finalize_pending_deletion_locked(
+                user_id=user_id, connection=connection, now=now
+            )
+        except _ArchiveRestoreRequired:
+            self._mark_archive_restore_alert(user_id=user_id, now=now)
+            raise PlatformError(
+                "account_archive_restore_required",
+                "Archive package is missing or corrupted after cleanup started",
+                {"retryable": True},
+                503,
+                True,
+            ) from None
+
+    def _mark_archive_restore_alert(self, *, user_id: str, now: datetime) -> None:
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(identity_deletion_workflow_table)
+                .where(identity_deletion_workflow_table.c.user_id == user_id)
+                .values(archive_alert="archive_restore_required")
+            )
+            self._audit(
+                connection,
+                actor_id="system:deletion-worker",
+                resource_type="user",
+                resource_id=user_id,
+                result="user_archive_restore_alert",
+                occurred_at=now,
+            )
+
+    def _finalize_pending_deletion_locked(
+        self,
+        *,
+        user_id: str,
+        connection: Connection | None,
+        now: datetime,
+    ) -> dict[str, object]:
         with self._engine.begin() if connection is None else nullcontext(connection) as connection:
             workflow = (
                 connection.execute(
@@ -1644,6 +2106,44 @@ class IdentityAccessService:
                     "deletion_not_ready",
                     "Deletion retention period has not elapsed",
                     {"purge_after_at": purge_after.isoformat(), "retryable": True},
+                    409,
+                    True,
+                )
+            self._verify_or_restore_archive(
+                connection, workflow=workflow, user_id=user_id, now=now
+            )
+            pending_personal_documents: int
+            try:
+                pending_personal_documents = (
+                    self._personal_document_deletion.pending_personal_documents(
+                        connection,
+                        user_id=user_id,
+                        user_deletion_id=str(workflow["cleanup_operation_id"]),
+                    )
+                )
+            except PlatformError:
+                raise
+            except Exception as exc:
+                raise PlatformError(
+                    "personal_document_deletion_unavailable",
+                    "Personal document deletion is not configured",
+                    {"retryable": True},
+                    503,
+                    True,
+                ) from exc
+            if pending_personal_documents > 0:
+                self._audit(
+                    connection,
+                    actor_id="system:deletion-worker",
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_cleanup_retried",
+                    occurred_at=now,
+                )
+                raise PlatformError(
+                    "deletion_documents_pending",
+                    "Personal documents are still being cleaned up",
+                    {"pending_documents": pending_personal_documents, "retryable": True},
                     409,
                     True,
                 )
@@ -1692,6 +2192,20 @@ class IdentityAccessService:
                     503,
                     True,
                 )
+            self._run_account_cleanup_targets(
+                connection,
+                user_id=user_id,
+                deletion_id=str(workflow["cleanup_operation_id"]),
+                now=now,
+            )
+            self._audit(
+                connection,
+                actor_id="system:deletion-worker",
+                resource_type="user",
+                resource_id=user_id,
+                result="user_cleanup_completed",
+                occurred_at=now,
+            )
             # Identity-owned archive proof: produced by identity, verified by
             # the outbox retirement lifecycle against this completed proof.
             archive_ref = str(workflow["archive_ref"] or "")
@@ -1758,6 +2272,24 @@ class IdentityAccessService:
                     retirement_receipt_id=retirement_receipt_id,
                 )
             )
+            from .archive_package import AccountArchivePackageBuilder
+
+            final_builder = AccountArchivePackageBuilder(
+                str(workflow["archive_dir_snapshot"] or self._effective_archive_dir()),
+                self._object_store,
+            )
+            if not final_builder.verify(
+                user_id=user_id,
+                deletion_id=str(workflow["cleanup_operation_id"]),
+                expected_sha256=str(workflow["archive_sha256"] or ""),
+            ):
+                raise PlatformError(
+                    "account_archive_verification_failed",
+                    "Final archive verification failed",
+                    {"retryable": True},
+                    503,
+                    True,
+                )
             session_ids = select(auth_session_table.c.id).where(
                 auth_session_table.c.user_id == user_id
             )

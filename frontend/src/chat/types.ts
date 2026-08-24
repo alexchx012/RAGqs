@@ -87,7 +87,7 @@ export interface CreateConversationResponse {
   readonly last_active_at: string;
 }
 
-/** PATCH /conversations/{id}：重命名 / 置顶 / 移入分组三合一。 */
+/** PATCH /conversations/{id}：重命名 / 置顶 / 分组移入移出（group_id null = 移出分组）。 */
 export interface PatchConversationRequest {
   readonly title?: string;
   readonly pinned?: boolean;

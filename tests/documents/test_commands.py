@@ -142,6 +142,13 @@ def _accept(service, principal, item, *, stage_resources=None):
                 "ocr": {},
                 "tree": {},
                 "cr": {},
+                "processing_list": {
+                    "processing_list_id": (
+                        f"processing_list:{lease.publication_id}:{lease.attempt_id}"
+                    ),
+                    "frozen": True,
+                    "items": [{"chunk_id": "chunk_1", "contextual_retrieval": False}],
+                },
             },
             "locator_snippet_integrity": {"locators_valid": True, "snippets_valid": True},
             "index_component_results": {"dense": {"state": "succeeded"}},

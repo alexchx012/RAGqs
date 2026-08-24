@@ -29,6 +29,71 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(12)}"
 
 
+def _generation_manifest(
+    generation_id: str,
+    *,
+    revision: int,
+    created_at: datetime,
+    active: bool,
+    supplied: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(supplied or {})
+    components = dict(payload.get("components", {}))
+    defaults = {
+        "dense": {
+            "state": "ready",
+            "component_generation_id": f"{generation_id}:dense",
+            "component_manifest_revision": "dense-v1",
+            "reader_lease_binding": generation_id,
+        },
+        "sparse": {
+            "state": "ready",
+            "component_generation_id": f"{generation_id}:sparse",
+            "component_manifest_revision": "sparse-v1",
+            "reader_lease_binding": generation_id,
+        },
+        "hierarchy": {
+            "state": "ready",
+            "component_generation_id": f"{generation_id}:hierarchy",
+            "component_manifest_revision": "hierarchy-v1",
+            "reader_lease_binding": generation_id,
+        },
+        "public_graph": {
+            "graph_generation_id": None,
+            "state": "disabled",
+            "source_revision": None,
+            "source_head_fence": None,
+            "component_manifest_revision": "public-graph-v1",
+            "reader_lease_binding": generation_id,
+        },
+    }
+    for component_kind, facts in defaults.items():
+        components[component_kind] = {**facts, **dict(components.get(component_kind, {}))}
+    payload.update(
+        {
+            "generation_id": generation_id,
+            "provider": payload.get("provider", "memory"),
+            "engine_revision": payload.get("engine_revision", "v1"),
+            "analyzer_revision": payload.get("analyzer_revision", "v1"),
+            "tokenizer_revision": payload.get("tokenizer_revision", "v1"),
+            "sparse_schema_hash": payload.get("sparse_schema_hash", "memory-v1"),
+            "implementation_config_hash": payload.get("implementation_config_hash", "memory-v1"),
+            "dimension": payload.get("dimension"),
+            "metric": payload.get("metric"),
+            "model_revision": payload.get("model_revision"),
+            "base_revision": revision,
+            "applied_revision": revision,
+            "last_applied_index_change_id": payload.get("last_applied_index_change_id"),
+            "created_at": created_at.isoformat(),
+            "published_at": created_at.isoformat() if active else None,
+            "rollback_candidate_until": None,
+            "gc_state": "active" if active else "staging",
+            "components": components,
+        }
+    )
+    return payload
+
+
 @dataclass(slots=True)
 class _LeaseRecord:
     lease: GenerationReferenceLease | GenerationComponentReaderLease
@@ -55,7 +120,15 @@ class GenerationManager:
             status="active",
             base_revision=current_revision,
             applied_revision=current_revision,
-            manifest={"components": {}, "base_snapshot": []},
+            manifest={
+                **_generation_manifest(
+                    "generation_initial",
+                    revision=current_revision,
+                    created_at=timestamp,
+                    active=True,
+                ),
+                "base_snapshot": [],
+            },
             created_at=timestamp,
             activated_at=timestamp,
         )
@@ -71,6 +144,11 @@ class GenerationManager:
     def active_generation_id(self) -> str:
         with self._lock:
             return self._active_generation_id
+
+    @property
+    def rollback_candidate_id(self) -> str | None:
+        with self._lock:
+            return self._rollback_candidate_id
 
     @property
     def current_revision(self) -> int:
@@ -95,6 +173,12 @@ class GenerationManager:
                     "generation_not_found", "Index generation was not found", {}, 404
                 )
             return generation
+
+    def has_generation_lease(self, generation_id: str) -> bool:
+        with self._lock:
+            return any(
+                record.lease.generation_id == generation_id for record in self._leases.values()
+            )
 
     def list_generations(self) -> tuple[Generation, ...]:
         with self._lock:
@@ -121,10 +205,15 @@ class GenerationManager:
             identifier = generation_id or _new_id("generation")
             if identifier in self._generations:
                 return self._generations[identifier]
-            payload = dict(manifest or {})
-            payload.setdefault("components", {})
-            payload["base_snapshot"] = [dict(item) for item in base_snapshot]
             timestamp = _utc(self._now())
+            payload = _generation_manifest(
+                identifier,
+                revision=revision,
+                created_at=timestamp,
+                active=False,
+                supplied=manifest,
+            )
+            payload["base_snapshot"] = [dict(item) for item in base_snapshot]
             generation = Generation(
                 generation_id=identifier,
                 status="staging",

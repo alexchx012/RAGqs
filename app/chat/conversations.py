@@ -36,6 +36,11 @@ def _group_id() -> str:
     return f"grp_{uuid.uuid4().hex}"
 
 
+# group_id 形参的「未提供」哨兵：路由层以 exclude_unset 过滤未提交字段，
+# 显式 null（清空分组）与未提交（不动分组）在服务层必须可区分。
+_UNSET: Any = object()
+
+
 class ConversationService:
     def __init__(self, engine: Engine, *, now: Any = None) -> None:
         self._engine = engine
@@ -144,7 +149,7 @@ class ConversationService:
         conversation_id: str,
         title: Any = None,
         pinned: Any = None,
-        group_id: Any = None,
+        group_id: Any = _UNSET,
     ) -> dict[str, Any]:
         with self._engine.begin() as connection:
             existing = self._require_owned_conversation(
@@ -171,25 +176,60 @@ class ConversationService:
                         "validation_error", "pinned must be a boolean", {"field": "pinned"}, 422
                     )
                 values["pinned"] = pinned
-            if group_id is not None:
-                if not isinstance(group_id, str) or not group_id.strip():
-                    raise PlatformError(
-                        "validation_error",
-                        "group_id must be a string or null",
-                        {"field": "group_id"},
-                        422,
-                    )
-                self._require_owned_group(connection, group_id=group_id, user_id=user_id)
-                values["group_id"] = group_id
-            elif group_id == "":
-                values["group_id"] = None
+            if group_id is not _UNSET:
+                if group_id is None:
+                    # 显式 null = 移出分组（未提交则保持原分组）
+                    values["group_id"] = None
+                else:
+                    if not isinstance(group_id, str) or not group_id.strip():
+                        raise PlatformError(
+                            "validation_error",
+                            "group_id must be a string or null",
+                            {"field": "group_id"},
+                            422,
+                        )
+                    self._require_owned_group(connection, group_id=group_id, user_id=user_id)
+                    values["group_id"] = group_id
             connection.execute(
                 update(chat_conversation_table)
                 .where(chat_conversation_table.c.id == conversation_id)
                 .values(**values)
             )
+            # 移出/转移到其他分组后，原分组不再有会话时自动删除（空分组不残留）
+            old_group_id = existing["group_id"]
+            if (
+                "group_id" in values
+                and old_group_id is not None
+                and values["group_id"] != old_group_id
+            ):
+                self._delete_group_if_empty(
+                    connection, group_id=str(old_group_id), user_id=user_id
+                )
             updated = {**existing, **values}
             return self._summary(updated)
+
+    def _delete_group_if_empty(
+        self, connection: Connection, *, group_id: str, user_id: str
+    ) -> None:
+        still_in_use = connection.execute(
+            select(chat_conversation_table.c.id)
+            .where(
+                and_(
+                    chat_conversation_table.c.group_id == group_id,
+                    chat_conversation_table.c.owner_user_id == user_id,
+                )
+            )
+            .limit(1)
+        ).first()
+        if still_in_use is None:
+            connection.execute(
+                chat_conversation_group_table.delete().where(
+                    and_(
+                        chat_conversation_group_table.c.id == group_id,
+                        chat_conversation_group_table.c.owner_user_id == user_id,
+                    )
+                )
+            )
 
     def delete_conversation(self, *, user_id: str, conversation_id: str) -> None:
         with self._engine.begin() as connection:

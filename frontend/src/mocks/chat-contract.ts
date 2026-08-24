@@ -421,9 +421,21 @@ export class MockChatController {
       if (patch.group_id !== null && !this.groups.has(patch.group_id)) {
         throw new MockHttpError(404, 'not_found');
       }
+      const previousGroupId = conversation.groupId;
       conversation.groupId = patch.group_id;
+      // 与真实后端一致（app/chat/conversations.py patch_conversation）：
+      // 移出/转移使原分组不再有会话时自动删除原分组（空分组不残留）。
+      if (previousGroupId !== null && previousGroupId !== patch.group_id) {
+        const stillUsed = [...this.conversations.values()].some(
+          (item) => item.groupId === previousGroupId,
+        );
+        if (!stillUsed) {
+          this.groups.delete(previousGroupId);
+        }
+      }
     }
-    conversation.lastActiveAt = this.iso();
+    // 与真实后端一致：重命名/置顶/移入移出分组只动 updated_at，不动 last_active_at——
+    // 移出分组后按原最后对话时间回落默认列表。
     return this.summaryOf(conversation);
   }
 

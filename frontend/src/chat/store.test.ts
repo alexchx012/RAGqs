@@ -475,6 +475,53 @@ describe('会话状态机（ChatStore）', () => {
     });
   });
 
+  describe('openOrCreateNewConversation：新会话全局限一', () => {
+    it('无新会话时创建并打开', async () => {
+      const { store } = makeStore();
+      const created = await store.openOrCreateNewConversation();
+      expect(created).not.toBeNull();
+      expect(store.getState().conversationId).toBe(created?.id);
+    });
+
+    it('已有新会话且当前在旧会话：指向既有新会话，不新建', async () => {
+      const { store } = makeStore();
+      const fresh = await store.createConversation();
+      await store.openConversation('c_1');
+
+      const again = await store.openOrCreateNewConversation();
+      expect(again?.id).toBe(fresh?.id);
+      expect(store.getState().conversationId).toBe(fresh?.id);
+      expect(
+        store.getState().conversations.filter((item) => item.title === ''),
+      ).toHaveLength(1);
+    });
+
+    it('当前已是新会话：无操作（不新建、不重新加载）', async () => {
+      const { store } = makeStore();
+      const fresh = await store.createConversation();
+      expect(store.getState().conversationStatus).toBe('ready');
+
+      const again = await store.openOrCreateNewConversation();
+      expect(again?.id).toBe(fresh?.id);
+      expect(store.getState().conversationStatus).toBe('ready'); // 未触发 loading
+      expect(
+        store.getState().conversations.filter((item) => item.title === ''),
+      ).toHaveLength(1);
+    });
+
+    it('并发调用单飞：共享同一在飞请求，不重复创建', async () => {
+      const { store } = makeStore();
+      const [a, b] = await Promise.all([
+        store.openOrCreateNewConversation(),
+        store.openOrCreateNewConversation(),
+      ]);
+      expect(a?.id).toBe(b?.id);
+      expect(
+        store.getState().conversations.filter((item) => item.title === ''),
+      ).toHaveLength(1);
+    });
+  });
+
   it('读模型合并：completed 历史消息 generation.phase=null', async () => {
     const { store } = makeStore();
     await store.openConversation('c_1');

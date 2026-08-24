@@ -6,16 +6,20 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
+from app.chat.schema import chat_metadata
+from app.documents.schema import documents_metadata
 from app.identity.archive import IdentityArchiveProofIssuer
 from app.identity.ports import (
     DepartmentWorkState,
     NoopAccountDeletionCleanupPort,
     NoopAccountRetirementGateway,
     NoopDepartmentWorkCheckPort,
+    NoopPersonalDocumentDeletionPort,
 )
 from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationRevocationPort
 from app.identity.schema import identity_deletion_workflow_table, identity_metadata
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
 from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
@@ -283,6 +287,17 @@ def test_pending_delete_emits_account_revocation_without_an_active_session() -> 
     assert command.identity_transition_version == 2
 
 
+
+
+def _prepare_account_deletion(service: IdentityAccessService, *, user_id: str) -> None:
+    """§9.2.1: create remaining-domain tables, the Noop personal-document
+    port, and the physical archive package before finalizing a deletion."""
+    for metadata in (chat_metadata, documents_metadata, outbox_metadata):
+        metadata.create_all(service._engine)
+    service._personal_document_deletion = NoopPersonalDocumentDeletionPort()
+    service.build_deletion_archive(user_id=user_id)
+
+
 def test_pending_account_deletion_can_be_finalized_to_a_tombstone() -> None:
     current = datetime(2026, 8, 6, tzinfo=UTC)
     service = make_service(now=lambda: current)
@@ -317,6 +332,7 @@ def test_pending_account_deletion_can_be_finalized_to_a_tombstone() -> None:
     assert early_finalization.value.code == "deletion_not_ready"
 
     current += timedelta(days=30)
+    _prepare_account_deletion(service, user_id=user["id"])
     finalized = service.finalize_pending_deletion(user_id=user["id"])
 
     assert finalized == {"id": user["id"], "lifecycle_status": "deleted"}
@@ -378,6 +394,7 @@ def test_deletion_finalization_fails_closed_without_cleanup_confirmation() -> No
         idempotency_key="user-delete-1",
     )
     current += timedelta(days=30)
+    _prepare_account_deletion(service, user_id=user["id"])
 
     with pytest.raises(PlatformError) as exc_info:
         service.finalize_pending_deletion(user_id=user["id"])

@@ -124,6 +124,39 @@
   animation: ui-fade-in var(--duration-fast) var(--ease-in-out) both;
 }
 
+/* 整区视图切换（我的投稿筛选切换）：旧视图向上滑出渐隐 150ms（--duration-fast --ease-in-out，
+   滑出期间禁点）；新视图自下滑入渐显 250ms（--duration-base --ease-out）。 */
+@keyframes ui-view-switch-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes ui-view-switch-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ui-view-switch[data-phase='exit'] {
+  animation: ui-view-switch-out var(--duration-fast) var(--ease-in-out) forwards;
+  pointer-events: none;
+}
+
+.ui-view-switch[data-phase='enter'] {
+  animation: ui-view-switch-in var(--duration-base) var(--ease-out) both;
+}
+
 .ui-menu-content[data-state='open'] {
   animation: ui-overlay-enter var(--duration-base) var(--ease-out) both;
 }

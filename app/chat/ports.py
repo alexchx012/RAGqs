@@ -258,9 +258,8 @@ class IndexingChatRetrievalPort:
             profile=profile,
         )
         self._active_request = request
-        self._active_hits = {
-            (hit.chunk.document_id, hit.chunk.chunk_id): hit for hit in result.hits
-        }
+        candidates = result.candidates
+        self._active_hits = {(hit.chunk.document_id, hit.chunk.chunk_id): hit for hit in candidates}
         hits = tuple(
             RetrievalHitOutcome(
                 document_id=hit.chunk.document_id,
@@ -271,8 +270,9 @@ class IndexingChatRetrievalPort:
                 locator=dict(hit.chunk.locator),
                 snippet=hit.chunk.snippet,
                 library=hit.source or "unknown",
+                rerank_score=hit.rerank_score,
             )
-            for hit in result.hits
+            for hit in candidates
         )
         return RetrievalOutcome(
             hits=hits,

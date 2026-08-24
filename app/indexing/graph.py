@@ -203,12 +203,14 @@ class GraphComponentCoordinator:
         source_service: Any,
         *,
         consumer_id: str = "indexing",
+        graph_store: Any | None = None,
         now: Any = _now,
         grant_ttl: timedelta = timedelta(minutes=10),
     ) -> None:
         self._generation = generation_manager
         self._source = source_service
         self._consumer_id = consumer_id
+        self._graph_store = graph_store
         self._now = now
         self._grant_ttl = grant_ttl
         self._grants: dict[str, GraphComponentStageGrant] = {}
@@ -387,17 +389,25 @@ class GraphComponentCoordinator:
         connection: Any | None,
         acknowledge_source: bool,
     ) -> None:
+        if self._graph_store is not None:
+            self._graph_store.purge_generation(
+                receipt.target_generation_id,
+                connection=connection,
+            )
+        manifest: dict[str, Any] = {
+            "graph_resource_manifest_hash": "",
+            "graph_resource_ids": [],
+            "stage_receipt_id": None,
+            "component_stage_id": None,
+            "build_receipt_hash": None,
+        }
+        if state == "stale":
+            manifest["stale_since_at"] = self._now().isoformat()
         self._generation.set_component_state(
             receipt.target_generation_id,
             "public_graph",
             state,
-            manifest={
-                "graph_resource_manifest_hash": "",
-                "graph_resource_ids": [],
-                "stage_receipt_id": None,
-                "component_stage_id": None,
-                "build_receipt_hash": None,
-            },
+            manifest=manifest,
             **({"connection": connection} if connection is not None else {}),
         )
         if not acknowledge_source:
@@ -426,7 +436,11 @@ class GraphComponentCoordinator:
             generation.generation_id,
             "public_graph",
             "stale",
-            manifest={"graph_resource_manifest_hash": "", "graph_resource_ids": []},
+            manifest={
+                "graph_resource_manifest_hash": "",
+                "graph_resource_ids": [],
+                "stale_since_at": self._now().isoformat(),
+            },
         )
 
     def _graph_component(
@@ -576,6 +590,9 @@ class GraphComponentCoordinator:
                     "public_graph",
                     "staged",
                     manifest={
+                        "graph_generation_id": staging.generation_id,
+                        "component_manifest_revision": "public-graph-v1",
+                        "reader_lease_binding": staging.generation_id,
                         "target_generation_fence": fence,
                         "source_revision": expected_source_revision,
                         "source_manifest_hash": snapshot.source_manifest_hash,
@@ -745,7 +762,11 @@ class GraphComponentCoordinator:
                             grant.target_generation_id,
                             "public_graph",
                             "stale",
-                            manifest={"graph_resource_manifest_hash": "", "graph_resource_ids": []},
+                            manifest={
+                                "graph_resource_manifest_hash": "",
+                                "graph_resource_ids": [],
+                                "stale_since_at": self._now().isoformat(),
+                            },
                         )
                         self._acknowledge(
                             source_revision=int(grant.source_snapshot.source_revision),
@@ -850,6 +871,14 @@ class GraphComponentCoordinator:
                     )
                     if lease_guard is not None:
                         lease_guard(connection)
+                    if self._graph_store is not None:
+                        self._graph_store.validate_generation(
+                            graph_generation_id=target_generation_id,
+                            index_generation_id=target_generation_id,
+                            source_revision=source_revision,
+                            source_head_fence=source_head_fence,
+                            connection=connection,
+                        )
                     self._acknowledge(
                         source_revision=source_revision,
                         source_manifest_hash=source_manifest_hash,
@@ -862,7 +891,10 @@ class GraphComponentCoordinator:
                         target_generation_id,
                         "public_graph",
                         "ready",
-                        manifest={"component_stage_id": component_stage_id},
+                        manifest={
+                            "component_stage_id": component_stage_id,
+                            "stale_since_at": None,
+                        },
                         **({"connection": connection} if connection is not None else {}),
                     )
                     if lease_guard is not None:
@@ -895,6 +927,8 @@ class GraphComponentCoordinator:
                         receipt,
                         operation_id=f"{operation_id}:source-changed-discard",
                     )
+                if repository is not None:
+                    repository.record_component_failure("publish")
                 raise
             self._release_receipts[operation_id] = result
             return result
@@ -904,6 +938,15 @@ class GraphComponentCoordinator:
     def acquire_current_reader_lease(self, *, generation_id: str) -> GenerationComponentReaderLease:
         active = self._generation.get_generation(generation_id)
         component = active.manifest.get("components", {}).get("public_graph", {})
+        if component.get("state") == "stale":
+            stale_since = datetime.fromisoformat(str(component["stale_since_at"]))
+            stale_duration_ms = max(0, int((self._now() - stale_since).total_seconds() * 1000))
+            raise PlatformError(
+                "graph_stale",
+                "public graph component is stale",
+                {"stale_duration_ms": stale_duration_ms},
+                409,
+            )
         return self.acquire_reader_lease(
             generation_id=generation_id,
             source_revision=int(component.get("source_revision", 0)),
@@ -1066,16 +1109,20 @@ class GraphComponentCoordinator:
                 "operation_id": receipt.operation_id,
             }
 
-        with self._lock:
-            with repository._engine.begin() as connection:
-                return repository._rollback_after_graph_source_validation(
-                    candidate_generation_id,
-                    source_receipt=source_receipt,
-                    graph_source_validation=lambda source_identity: validate_graph_source(
-                        source_identity, connection=connection
-                    ),
-                    connection=connection,
-                )
+        try:
+            with self._lock:
+                with repository._engine.begin() as connection:
+                    return repository._rollback_after_graph_source_validation(
+                        candidate_generation_id,
+                        source_receipt=source_receipt,
+                        graph_source_validation=lambda source_identity: validate_graph_source(
+                            source_identity, connection=connection
+                        ),
+                        connection=connection,
+                    )
+        except Exception:
+            repository.record_component_failure("rollback")
+            raise
 
     RollbackGeneration = rollback_generation
 
@@ -1120,6 +1167,13 @@ class GraphComponentCoordinator:
                     if eligibility.state != "accepted":
                         return eligibility
                     try:
+                        repository.record_gc_component_progress(
+                            candidate_generation_id,
+                            operation_id=operation_id,
+                            component_kind="public_graph",
+                            state="running",
+                            connection=connection,
+                        )
                         candidate = repository.get_generation(
                             candidate_generation_id, connection=connection
                         )
@@ -1145,21 +1199,41 @@ class GraphComponentCoordinator:
                         repository.remove_graph_component_for_gc(
                             candidate_generation_id, connection=connection
                         )
-                        return repository._complete_generation_gc_after_component_cleanup(
+                        if self._graph_store is not None:
+                            self._graph_store.purge_generation(
+                                candidate_generation_id,
+                                connection=connection,
+                            )
+                        repository.record_gc_component_progress(
                             candidate_generation_id,
                             operation_id=operation_id,
+                            component_kind="public_graph",
+                            state="completed",
                             connection=connection,
                         )
-                    except PlatformError as error:
-                        if error.code == "idempotency_key_conflict":
-                            raise
-                        raise _GraphComponentCleanupFailure(error) from error
+                    except Exception as error:
+                        if isinstance(error, PlatformError):
+                            if error.code == "idempotency_key_conflict":
+                                raise
+                            failure = error
+                        else:
+                            failure = PlatformError(
+                                "graph_cleanup_failed",
+                                "Graph component cleanup failed",
+                                {},
+                                503,
+                            )
+                        raise _GraphComponentCleanupFailure(failure) from error
             except _GraphComponentCleanupFailure as failure:
                 return repository.record_gc_cleanup_failure(
                     candidate_generation_id,
                     operation_id=operation_id,
                     reason=failure.error.code,
                 )
+            return repository.complete_generation_gc(
+                candidate_generation_id,
+                operation_id=operation_id,
+            )
 
     CompleteIndexGenerationGc = complete_index_generation_gc
 

@@ -84,6 +84,11 @@ class IndexSettings(_StrictModel):
     reranker_provider: str = Field(default="configured", min_length=1, max_length=64)
     image_vlm_provider: str = Field(default="configured", min_length=1, max_length=64)
     image_vlm_credential_ref: str = Field(default="image-vlm")
+    image_vlm_base_url: str | None = None
+    image_vlm_api_key: SecretStr | None = None
+    image_vlm_model: str = Field(default="qwen-vl-plus", min_length=1, max_length=128)
+    image_vlm_revision: str = Field(default="", max_length=128)
+    image_vlm_timeout_seconds: int = Field(default=60, ge=1, le=600)
     generation_rollback_days: int = Field(default=7, ge=1, le=365)
     embedding_provider: Literal["openai-compatible", "memory"] = "memory"
     embedding_base_url: str | None = None
@@ -100,6 +105,10 @@ class IndexSettings(_StrictModel):
     )
     sparse_url: str | None = None
     sparse_api_key: SecretStr | None = None
+    sparse_username: str | None = None
+    sparse_password: SecretStr | None = None
+    sparse_ca_path: str | None = None
+    sparse_jvm_heap_min_gb: float = Field(default=1.0, gt=0.0, le=1024.0)
     sparse_index: str = Field(
         default="ragqs_chunks", min_length=1, max_length=128, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$"
     )
@@ -107,6 +116,18 @@ class IndexSettings(_StrictModel):
     text_chunk_max_chars: int = Field(default=8_000, ge=1)
     xlsx_merged_cells_max: int = Field(default=10_000, ge=1)
     ocr_confidence_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    mineru_provider: Literal["disabled", "local"] = "disabled"
+    mineru_executable: str = Field(default="mineru", min_length=1, max_length=256)
+    mineru_timeout_seconds: int = Field(default=900, ge=1, le=7200)
+    contextual_retrieval_provider: Literal["disabled", "dashscope"] = "disabled"
+    contextual_retrieval_base_url: str | None = None
+    contextual_retrieval_api_key: SecretStr | None = None
+    contextual_retrieval_model: Literal["ds-v4-flash"] = "ds-v4-flash"
+    contextual_retrieval_revision: str = Field(default="ds-v4-flash", min_length=1, max_length=128)
+    contextual_retrieval_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    contextual_retrieval_concurrency: int = Field(default=4, ge=1, le=32)
+    contextual_retrieval_prefix_token_limit: int = Field(default=30_000, ge=1_000, le=100_000)
+    contextual_prefix_cache_provider: Literal["memory", "disabled"] = "memory"
 
 
 class DocumentsSettings(_StrictModel):
@@ -147,6 +168,8 @@ class AuthSettings(_StrictModel):
     login_max_attempts: int = Field(default=5, ge=1, le=20)
     login_lock_seconds: int = Field(default=60, ge=1, le=3600)
     user_deletion_retention_days: int = Field(default=30, ge=1, le=3650)
+    # 物理归档包目录；生产必须显式配置，开发缺省回退到本地数据目录。
+    user_deletion_archive_dir: str | None = None
     secret_key: SecretStr | None = None
     allowed_origins: tuple[str, ...] = ()
     admin_roster: tuple[str, ...] = ()
@@ -234,6 +257,11 @@ _ENV_KEYS = {
     "RAG_INDEX_RERANKER_PROVIDER",
     "RAG_INDEX_IMAGE_VLM_PROVIDER",
     "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF",
+    "RAG_INDEX_IMAGE_VLM_BASE_URL",
+    "RAG_INDEX_IMAGE_VLM_API_KEY",
+    "RAG_INDEX_IMAGE_VLM_MODEL",
+    "RAG_INDEX_IMAGE_VLM_REVISION",
+    "RAG_INDEX_IMAGE_VLM_TIMEOUT_SECONDS",
     "RAG_INDEX_GENERATION_ROLLBACK_DAYS",
     "RAG_INDEX_EMBEDDING_PROVIDER",
     "RAG_INDEX_EMBEDDING_BASE_URL",
@@ -248,11 +276,27 @@ _ENV_KEYS = {
     "RAG_INDEX_VECTOR_COLLECTION_PREFIX",
     "RAG_INDEX_SPARSE_URL",
     "RAG_INDEX_SPARSE_API_KEY",
+    "RAG_INDEX_SPARSE_USERNAME",
+    "RAG_INDEX_SPARSE_PASSWORD",
+    "RAG_INDEX_SPARSE_CA_PATH",
+    "RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB",
     "RAG_INDEX_SPARSE_INDEX",
     "RAG_INDEX_SPARSE_DATA_PATH",
     "RAG_INDEX_TEXT_CHUNK_MAX_CHARS",
     "RAG_INDEX_XLSX_MERGED_CELLS_MAX",
     "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD",
+    "RAG_INDEX_MINERU_PROVIDER",
+    "RAG_INDEX_MINERU_EXECUTABLE",
+    "RAG_INDEX_MINERU_TIMEOUT_SECONDS",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PROVIDER",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_BASE_URL",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_API_KEY",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_MODEL",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_REVISION",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_TIMEOUT_SECONDS",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_CONCURRENCY",
+    "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PREFIX_TOKEN_LIMIT",
+    "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER",
     "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
     "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS",
     "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
@@ -350,6 +394,22 @@ def load_platform_settings(
     environ: Mapping[str, str] | None = None,
 ) -> PlatformSettings:
     env = dict(os.environ if environ is None else environ)
+    profile = env.get("RAG_PLATFORM_PROFILE", "development")
+    global_provider_base_url = _optional(env, "RAG_PROVIDER_BASE_URL")
+    global_provider_api_key = _optional(env, "RAG_PROVIDER_API_KEY")
+    contextual_defaults: dict[str, str | None] = {}
+    if profile == "production":
+        contextual_defaults = {
+            "contextual_retrieval_provider": "dashscope",
+            "contextual_retrieval_base_url": (
+                _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_BASE_URL")
+                or global_provider_base_url
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            ),
+            "contextual_retrieval_api_key": (
+                _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_API_KEY") or global_provider_api_key
+            ),
+        }
     relevant = {
         key: value
         for key, value in env.items()
@@ -376,7 +436,7 @@ def load_platform_settings(
         "base_url": _optional(env, "RAG_PROVIDER_BASE_URL"),
     }
     data = {
-        "profile": env.get("RAG_PLATFORM_PROFILE", "development"),
+        "profile": profile,
         "database": {key: value for key, value in database.items() if value is not None},
         "object_storage": {
             key: value for key, value in object_storage.items() if value is not None
@@ -403,6 +463,11 @@ def load_platform_settings(
                 or "configured",
                 "image_vlm_credential_ref": _optional(env, "RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF")
                 or "image-vlm",
+                "image_vlm_base_url": _optional(env, "RAG_INDEX_IMAGE_VLM_BASE_URL"),
+                "image_vlm_api_key": _optional_secret(env, "RAG_INDEX_IMAGE_VLM_API_KEY"),
+                "image_vlm_model": _optional(env, "RAG_INDEX_IMAGE_VLM_MODEL") or "qwen-vl-plus",
+                "image_vlm_revision": _optional(env, "RAG_INDEX_IMAGE_VLM_REVISION") or "",
+                "image_vlm_timeout_seconds": _int(env, "RAG_INDEX_IMAGE_VLM_TIMEOUT_SECONDS"),
                 "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS") or 7,
                 "embedding_provider": _optional(env, "RAG_INDEX_EMBEDDING_PROVIDER") or "memory",
                 "embedding_base_url": _optional(env, "RAG_INDEX_EMBEDDING_BASE_URL"),
@@ -418,11 +483,53 @@ def load_platform_settings(
                 or "ragqs",
                 "sparse_url": _optional(env, "RAG_INDEX_SPARSE_URL"),
                 "sparse_api_key": _optional_secret(env, "RAG_INDEX_SPARSE_API_KEY"),
+                "sparse_username": _optional(env, "RAG_INDEX_SPARSE_USERNAME"),
+                "sparse_password": _optional_secret(env, "RAG_INDEX_SPARSE_PASSWORD"),
+                "sparse_ca_path": _optional(env, "RAG_INDEX_SPARSE_CA_PATH"),
+                "sparse_jvm_heap_min_gb": (
+                    _float(env, "RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB")
+                    if "RAG_INDEX_SPARSE_JVM_HEAP_MIN_GB" in env
+                    else 1.0
+                ),
                 "sparse_index": _optional(env, "RAG_INDEX_SPARSE_INDEX") or "ragqs_chunks",
                 "sparse_data_path": _optional(env, "RAG_INDEX_SPARSE_DATA_PATH"),
                 "text_chunk_max_chars": _int(env, "RAG_INDEX_TEXT_CHUNK_MAX_CHARS"),
                 "xlsx_merged_cells_max": _int(env, "RAG_INDEX_XLSX_MERGED_CELLS_MAX"),
                 "ocr_confidence_threshold": _float(env, "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD"),
+                "mineru_provider": _optional(env, "RAG_INDEX_MINERU_PROVIDER") or "disabled",
+                "mineru_executable": _optional(env, "RAG_INDEX_MINERU_EXECUTABLE") or "mineru",
+                "mineru_timeout_seconds": _int(env, "RAG_INDEX_MINERU_TIMEOUT_SECONDS"),
+                "contextual_retrieval_provider": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PROVIDER")
+                    or contextual_defaults.get("contextual_retrieval_provider")
+                    or "disabled"
+                ),
+                "contextual_retrieval_base_url": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_BASE_URL")
+                    or contextual_defaults.get("contextual_retrieval_base_url")
+                ),
+                "contextual_retrieval_api_key": (
+                    _optional_secret(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_API_KEY")
+                    or contextual_defaults.get("contextual_retrieval_api_key")
+                ),
+                "contextual_retrieval_model": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_MODEL") or "ds-v4-flash"
+                ),
+                "contextual_retrieval_revision": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_REVISION") or "ds-v4-flash"
+                ),
+                "contextual_retrieval_timeout_seconds": _int(
+                    env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_TIMEOUT_SECONDS"
+                ),
+                "contextual_retrieval_concurrency": _int(
+                    env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_CONCURRENCY"
+                ),
+                "contextual_retrieval_prefix_token_limit": _int(
+                    env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PREFIX_TOKEN_LIMIT"
+                ),
+                "contextual_prefix_cache_provider": (
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER") or "memory"
+                ),
             }.items()
             if value is not None
         },
@@ -476,9 +583,8 @@ def load_platform_settings(
                 "cookie_secure": _optional_bool(env, "RAG_AUTH_COOKIE_SECURE"),
                 "login_max_attempts": _int(env, "RAG_AUTH_LOGIN_MAX_ATTEMPTS"),
                 "login_lock_seconds": _int(env, "RAG_AUTH_LOGIN_LOCK_SECONDS"),
-                "user_deletion_retention_days": _int(
-                    env, "USER_DELETION_RETENTION_DAYS"
-                ),
+                "user_deletion_retention_days": _int(env, "USER_DELETION_RETENTION_DAYS"),
+                "user_deletion_archive_dir": _optional(env, "USER_DELETION_ARCHIVE_DIR"),
                 "secret_key": _optional(env, "RAG_AUTH_SECRET_KEY"),
                 "allowed_origins": _csv(env, "RAG_AUTH_ALLOWED_ORIGINS"),
                 "admin_roster": _csv(env, "RAG_AUTH_ADMIN_ROSTER"),
@@ -528,8 +634,26 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production reranker provider cannot be none")
         if settings.index.image_vlm_provider.casefold() == "none":
             raise ValueError("production image VLM provider cannot be none")
+        image_vlm = settings.index.image_vlm_provider.casefold()
+        if image_vlm in {"bailian", "internvl"}:
+            if not settings.index.image_vlm_base_url:
+                raise ValueError("production image VLM provider requires a base URL")
+            if image_vlm == "bailian" and (
+                settings.index.image_vlm_api_key is None
+                or not settings.index.image_vlm_api_key.get_secret_value()
+            ):
+                raise ValueError("production bailian image VLM requires an API key")
+            if image_vlm == "internvl" and not settings.index.image_vlm_model:
+                raise ValueError("production InternVL image VLM requires a model ID")
         if settings.provider.api_key is None or not settings.provider.api_key.get_secret_value():
             raise ValueError("production provider api key is required")
+        if settings.index.contextual_retrieval_provider == "disabled":
+            raise ValueError("production contextual retrieval provider cannot be disabled")
+        if not settings.index.contextual_retrieval_base_url:
+            raise ValueError("production contextual retrieval provider requires a base URL")
+        contextual_key = settings.index.contextual_retrieval_api_key
+        if contextual_key is None or not contextual_key.get_secret_value():
+            raise ValueError("production contextual retrieval provider requires an API key")
         if settings.debug:
             raise ValueError("production debug must be disabled")
         if settings.auth.secret_key is None or not settings.auth.secret_key.get_secret_value():
@@ -538,3 +662,58 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production auth allowed origins are required")
         if not settings.auth.admin_roster:
             raise ValueError("production auth admin roster is required")
+        _precheck_user_deletion_archive_dir(settings)
+    if settings.index.contextual_retrieval_provider != "disabled":
+        if not settings.index.contextual_retrieval_base_url:
+            raise ValueError("contextual retrieval provider requires a base URL")
+        contextual_key = settings.index.contextual_retrieval_api_key
+        if contextual_key is None or not contextual_key.get_secret_value():
+            raise ValueError("contextual retrieval provider requires an API key")
+
+
+# 归档目录不得落入 Web 静态资源、上传目录或其他业务接口可直接读取的目录。
+_FORBIDDEN_ARCHIVE_DIR_PARTS = frozenset({"static", "uploads", "frontend", "public"})
+
+
+def resolve_user_deletion_archive_dir(settings: PlatformSettings) -> str:
+    """Return the effective account-deletion archive directory as an absolute path."""
+
+    return _resolve_user_deletion_archive_dir(settings.auth, settings.profile)
+
+
+def _resolve_user_deletion_archive_dir(auth: AuthSettings, profile: str) -> str:
+    configured = auth.user_deletion_archive_dir
+    if configured is None or not configured.strip():
+        if profile == "production":
+            raise ValueError("production requires USER_DELETION_ARCHIVE_DIR to be configured")
+        return os.path.abspath(os.path.join("data", "user-deletion-archives"))
+    path = os.path.abspath(os.path.expanduser(configured.strip()))
+    if not os.path.isabs(path):
+        raise ValueError("USER_DELETION_ARCHIVE_DIR must be an absolute path")
+    lowered = {part.lower() for part in path.replace("\\", "/").split("/")}
+    if lowered & _FORBIDDEN_ARCHIVE_DIR_PARTS:
+        raise ValueError(
+            "USER_DELETION_ARCHIVE_DIR must not live in a web-static, upload or "
+            "otherwise business-readable directory"
+        )
+    return path
+
+
+def _precheck_user_deletion_archive_dir(settings: PlatformSettings) -> None:
+    path = resolve_user_deletion_archive_dir(settings)
+    if settings.profile != "production":
+        return
+    os.makedirs(path, exist_ok=True)
+    probe = os.path.join(path, ".rag-precheck")
+    try:
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("ok")
+    except OSError as exc:
+        raise ValueError(
+            "USER_DELETION_ARCHIVE_DIR must be writable by the backend process"
+        ) from exc
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass

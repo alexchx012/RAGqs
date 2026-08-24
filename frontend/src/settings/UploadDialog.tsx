@@ -20,7 +20,7 @@ import { formatDrawerLocation } from '../router/drawer-params';
 import { Pill } from '../ui/Pill';
 import { useSettings } from './SettingsProvider';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
-import { useModalDialog } from './use-modal-dialog';
+import { useModalDialog, useModalPresence } from './use-modal-dialog';
 import type { SpaceItem, UploadItem, UploadResponse } from './types';
 import { recordUploadHistory } from './upload-history';
 
@@ -51,6 +51,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
     invalidateOperation();
     onOpenChange(false);
   });
+  const presence = useModalPresence(open);
   const [spaces, setSpaces] = useState<readonly SpaceItem[]>([]);
   const [spacesError, setSpacesError] = useState(false);
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
@@ -200,7 +201,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
   const acceptedCount = result?.items.length ?? 0;
   const failedCount = 0;
 
-  if (!open) {
+  if (!presence.mounted) {
     return null;
   }
 
@@ -214,7 +215,8 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
       aria-label={copy.settings.knowledge.upload.dialogTitle}
     >
       <div
-        className="fixed inset-0 bg-ink-black/24"
+        className="ui-dialog-overlay fixed inset-0 bg-ink-black/24"
+        data-state={presence.state}
         onClick={() => {
           if (phase !== 'uploading') {
             requestClose();
@@ -222,7 +224,10 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
         }}
         aria-hidden="true"
       />
-      <div className="fixed top-1/2 left-1/2 w-[480px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]">
+      <div
+        className="ui-dialog-content fixed top-1/2 left-1/2 w-[480px] max-w-[calc(100vw-32px)] rounded-[var(--radius-elevatedcards)] bg-paper-white p-5 shadow-[var(--shadow-subtle-2)]"
+        data-state={presence.state}
+      >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.upload.dialogTitle}</h2>
         <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.upload.dialogDescription}</p>
 

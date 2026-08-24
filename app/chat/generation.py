@@ -95,6 +95,7 @@ class GenerationService:
         clock: Any,
         authorization: ChatAuthorizationPort,
         calibration: CalibrationWindowPort,
+        budget_meter: Any | None = None,
         sampler: Any = None,
         max_running_per_user: int = DEFAULT_MAX_RUNNING_GENERATIONS_PER_USER,
         absolute_deadline_seconds: int = GENERATION_ABSOLUTE_DEADLINE_SECONDS,
@@ -103,6 +104,7 @@ class GenerationService:
         self._clock = clock
         self._authorization = authorization
         self._calibration = calibration
+        self._budget_meter = budget_meter
         self._sampler = sampler or _default_sampler
         self._max_running_per_user = max_running_per_user
         self._absolute_deadline_seconds = absolute_deadline_seconds
@@ -247,8 +249,7 @@ class GenerationService:
                     chat_generation_table.c.id == chat_ab_pair_table.c.generation_id,
                 )
                 .where(
-                    chat_generation_table.c.root_generation_id
-                    == str(parent["root_generation_id"])
+                    chat_generation_table.c.root_generation_id == str(parent["root_generation_id"])
                 )
                 .limit(1)
             ).scalar_one_or_none()
@@ -352,6 +353,13 @@ class GenerationService:
             "updated_at_utc": now,
         }
         connection.execute(chat_generation_table.insert().values(**generation_values))
+        if self._budget_meter is not None:
+            self._budget_meter.ensure_meter_in_transaction(
+                connection,
+                generation_id=generation_id,
+                effort_level=requested_effort,
+                deadline_at_utc=generation_values["absolute_deadline_at_utc"],
+            )
         connection.execute(
             chat_generation_execution_table.insert().values(
                 execution_id=_new_id("exec"),
@@ -817,8 +825,11 @@ class GenerationService:
     ) -> None:
         row = (
             connection.execute(
-                select(chat_message_table.c.id, chat_message_table.c.owner_user_id,
-                       chat_message_table.c.role).where(chat_message_table.c.id == message_id)
+                select(
+                    chat_message_table.c.id,
+                    chat_message_table.c.owner_user_id,
+                    chat_message_table.c.role,
+                ).where(chat_message_table.c.id == message_id)
             )
             .mappings()
             .one_or_none()
@@ -856,9 +867,7 @@ class GenerationService:
         )
         with self._engine.begin() as connection:
             self._authorization.verify_active(connection, principal)
-            self._require_votable_message(
-                connection, principal=principal, message_id=message_id
-            )
+            self._require_votable_message(connection, principal=principal, message_id=message_id)
             pair = (
                 connection.execute(
                     select(chat_ab_pair_table)

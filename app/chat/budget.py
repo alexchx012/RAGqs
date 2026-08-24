@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import math
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from app.platform.errors import PlatformError
+
+from .models import RetrievalHitOutcome
 
 RAG_BUDGET_POLICY_VERSION = "chat-rag-budget-v2"
 
@@ -16,12 +19,14 @@ EFFORT_RAG_LIMITS: dict[str, int] = {"quick": 1, "think": 4, "deep": 10}
 EFFORT_WALL_LIMITS: dict[str, int] = {"quick": 20, "think": 60, "deep": 180}
 EFFORT_TOKEN_LIMITS: dict[str, int] = {"quick": 12_000, "think": 24_000, "deep": 48_000}
 EFFORT_CANDIDATE_DOCUMENT_LIMITS: dict[str, int] = {"quick": 5, "think": 7, "deep": 9}
+EFFORT_CANDIDATE_LIMITS: dict[str, int] = EFFORT_CANDIDATE_DOCUMENT_LIMITS
 
 RAG_OPERATION_KINDS = ("retrieval", "rewrite", "tree")
 BUDGET_REASONS = ("budget_exhausted", "cost_unavailable")
 
 # Effort may only be upgraded by one level when needed.
 _UPGRADE_CHAIN = {"quick": "think", "think": "deep"}
+EFFORT_UPGRADE_CHAIN = _UPGRADE_CHAIN
 
 
 def default_pricer(_operation: str, _tokens: int) -> float | None:
@@ -277,3 +282,44 @@ class BudgetMeter:
             "policy_version": RAG_BUDGET_POLICY_VERSION,
             "price_version": self.policy.price_version,
         }
+
+
+
+
+def select_budget_candidates(
+    hits: Iterable[RetrievalHitOutcome], *, limit: int
+) -> tuple[tuple[RetrievalHitOutcome, ...], tuple[dict[str, str], ...]]:
+    """Return the stable tree-search subset and missing-identity degradations."""
+
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    ranked = sorted(
+        hits,
+        key=lambda hit: (
+            -(hit.rerank_score if hit.rerank_score is not None else 0.0),
+            hit.document_id,
+            hit.chunk_id,
+        ),
+    )
+    selected: list[RetrievalHitOutcome] = []
+    documents: set[str] = set()
+    missing_identity = False
+    for hit in ranked:
+        if not hit.document_id:
+            missing_identity = True
+            continue
+        if hit.document_id in documents:
+            continue
+        if len(selected) == limit:
+            continue
+        selected.append(hit)
+        documents.add(hit.document_id)
+    degradations = ({"code": "missing_document_identity"},) if missing_identity else ()
+    return tuple(selected), degradations
+
+
+def conservative_chat_token_estimate(content: str, snippets: Iterable[str | None]) -> int:
+    """Conservatively map request/context characters to model tokens."""
+
+    source_characters = len(content) + sum(len(snippet or "") for snippet in snippets)
+    return math.ceil(source_characters * 1.1) + 2000

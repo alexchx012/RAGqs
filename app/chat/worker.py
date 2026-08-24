@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, update
@@ -16,7 +17,13 @@ from app.platform.errors import PlatformError
 from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
 from app.usage.ports import UsageSubmissionPort
 
-from .budget import GenerationBudget
+from .budget import (
+    EFFORT_CANDIDATE_LIMITS,
+    EFFORT_UPGRADE_CHAIN,
+    GenerationBudget,
+    conservative_chat_token_estimate,
+    select_budget_candidates,
+)
 from .events import append_event, has_terminal_event
 from .leases import generation_has_active_lease
 from .models import NOTICE_KINDS, RetrievalHitOutcome
@@ -69,6 +76,7 @@ class ChatGenerationWorker:
         provider: ChatProviderPort,
         usage: UsageSubmissionPort,
         calibration: CalibrationWindowPort,
+        budget_meter: Any | None = None,
         lease_seconds: int = EXECUTION_LEASE_SECONDS,
         max_physical_executions: int = MAX_PHYSICAL_EXECUTIONS,
     ) -> None:
@@ -78,6 +86,7 @@ class ChatGenerationWorker:
         self._provider = provider
         self._usage = usage
         self._calibration = calibration
+        self._budget_meter = budget_meter
         self._lease_seconds = lease_seconds
         self._max_physical_executions = max_physical_executions
 
@@ -510,6 +519,13 @@ class ChatGenerationWorker:
         profile_version = str(generation["retrieval_profile_version"])
         effort = str(generation["effective_effort_level"])
         budget = GenerationBudget(effort_level=effort)
+        budget_meter_snapshot = None
+        if self._budget_meter is not None:
+            budget_meter_snapshot = self._budget_meter.ensure_meter(
+                generation_id=str(generation["id"]),
+                effort_level=effort,
+                deadline_at_utc=generation["absolute_deadline_at_utc"],
+            )
         hits: tuple[RetrievalHitOutcome, ...] = ()
 
         round_index = 0
@@ -525,9 +541,31 @@ class ChatGenerationWorker:
                 )
             if round_index > 0 and not budget.can_start_rag_round():
                 previous_effort = budget.effort_level
-                upgraded = budget.upgrade_effort()
+                upgraded = EFFORT_UPGRADE_CHAIN.get(previous_effort)
                 if upgraded is None:
                     break
+                assert upgraded is not None
+                if self._budget_meter is not None:
+                    next_step_tokens = conservative_chat_token_estimate(
+                        str(generation["request_content"]),
+                        (hit.snippet for hit in hits),
+                    )
+                    next_step_cost = self._budget_meter.estimate_cost(
+                        "chat_generation", next_step_tokens
+                    )
+                    if (
+                        self._budget_meter.upgrade(
+                            generation_id=generation_id,
+                            next_step_tokens=next_step_tokens,
+                            next_step_cost=next_step_cost,
+                            next_step_is_rag=True,
+                        )
+                        != upgraded
+                    ):
+                        break
+                    budget_meter_snapshot = self._budget_meter.meter(generation_id=generation_id)
+                upgraded = budget.upgrade_effort()
+                assert upgraded is not None
                 if not self._persist_effort_upgrade(
                     generation_id=generation_id,
                     execution_id=execution_id,
@@ -560,6 +598,20 @@ class ChatGenerationWorker:
                 phase=stage,
                 generation=generation,
             )
+            budget_reservation_id = None
+            if self._budget_meter is not None:
+                budget_reservation_id = f"rag:{generation_id}:{round_index}"
+                self._budget_reserve(
+                    generation=generation,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    reservation_id=budget_reservation_id,
+                    operation_kind="rag_retrieval",
+                    estimated_tokens=0,
+                    estimated_cost=Decimal("0"),
+                    is_rag=True,
+                )
             outcome = self._retrieval.search(
                 str(generation["request_content"]),
                 principal=_principal_from_generation(generation),
@@ -568,6 +620,13 @@ class ChatGenerationWorker:
                 profile_version=profile_version,
                 effort=budget.effort_level,
             )
+            if self._budget_meter is not None:
+                self._budget_meter.settle(
+                    generation_id=generation_id,
+                    reservation_id=budget_reservation_id,
+                    actual_tokens=0,
+                    actual_cost=Decimal("0"),
+                )
             hits = outcome.hits
             self._emit_stage(
                 generation_id=generation_id,
@@ -578,8 +637,19 @@ class ChatGenerationWorker:
                 generation=generation,
                 detail={"route": dict(outcome.route_output or {"kind": "no_rewrite"})},
             )
+            hits, missing_identities = select_budget_candidates(
+                hits,
+                limit=(
+                    budget_meter_snapshot.candidate_document_limit
+                    if budget_meter_snapshot is not None
+                    else EFFORT_CANDIDATE_LIMITS[budget.effort_level]
+                ),
+            )
             budget.record_rag_round()
-            for item in outcome.degradations:
+            outcome_degradations = tuple(outcome.degradations) + tuple(
+                dict(item) for item in missing_identities
+            )
+            for item in outcome_degradations:
                 code = str(item.get("code") or "")
                 kind = code if code in NOTICE_KINDS else "retrieval_degraded"
                 self._emit_notice(
@@ -757,6 +827,7 @@ class ChatGenerationWorker:
                 generation=generation,
                 execution_id=execution_id,
                 fencing_token=fencing_token,
+                control_version=control_version,
             )
             answer_mode = _answer_mode(hits, citations)
             results.append(
@@ -769,6 +840,52 @@ class ChatGenerationWorker:
             )
         return results
 
+    def _budget_reserve(
+        self,
+        *,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        reservation_id: str,
+        operation_kind: str,
+        estimated_tokens: int,
+        estimated_cost: Decimal,
+        is_rag: bool,
+    ) -> None:
+        if self._budget_meter is None:
+            return
+        try:
+            self._budget_meter.reserve(
+                generation_id=str(generation["id"]),
+                reservation_id=reservation_id,
+                operation_kind=operation_kind,
+                estimated_tokens=estimated_tokens,
+                estimated_cost=estimated_cost,
+                is_rag=is_rag,
+                request_fingerprint=reservation_id,
+            )
+        except PlatformError as error:
+            if error.code in {"budget_exhausted", "cost_unavailable"}:
+                self._emit_notice(
+                    generation_id=str(generation["id"]),
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    kind="retrieval_degraded",
+                    detail={"reason": error.code},
+                    generation=generation,
+                )
+            raise
+
+    def _estimated_provider_tokens(self, request: ChatProviderRequest) -> int:
+        snippets = [
+            str(item.get("snippet") or "")
+            for item in request.context_items
+            if isinstance(item, Mapping)
+        ]
+        return conservative_chat_token_estimate(request.content, snippets)
+
     def _provider_call(
         self,
         request: ChatProviderRequest,
@@ -776,7 +893,28 @@ class ChatGenerationWorker:
         generation: Mapping[str, Any],
         execution_id: str,
         fencing_token: int,
+        control_version: int,
     ) -> Any:
+        budget_reservation_id = None
+        estimated_cost = Decimal("0")
+        if self._budget_meter is not None:
+            candidate_key = request.candidate if request.candidate is not None else 0
+            budget_reservation_id = (
+                f"provider:{request.generation_id}:{execution_id}:{candidate_key}"
+            )
+            estimated_tokens = self._estimated_provider_tokens(request)
+            estimated_cost = self._budget_meter.estimate_cost("chat_generation", estimated_tokens)
+            self._budget_reserve(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                reservation_id=budget_reservation_id,
+                operation_kind="chat_generation",
+                estimated_tokens=estimated_tokens,
+                estimated_cost=estimated_cost,
+                is_rag=False,
+            )
         call_id = self._usage.prepare_provider_call(
             provider="chat",
             model="chat-model",
@@ -830,6 +968,11 @@ class ChatGenerationWorker:
         try:
             response = self._provider.generate(request)
         except PlatformError as error:
+            if self._budget_meter is not None:
+                self._budget_meter.mark_unknown(
+                    generation_id=str(generation["id"]),
+                    reservation_id=budget_reservation_id,
+                )
             self._usage.complete_provider_call(
                 provider_call_id=call_id,
                 measurement=ProviderMeasurement(
@@ -852,6 +995,11 @@ class ChatGenerationWorker:
             # 已派发但传输中断（连接断开/超时等）：结果未知而非确定失败，
             # 按 §6.5 记 unknown 并以 provider_result_unknown 终态化（SSE error 事件）。
             self._usage.mark_unknown(call_id)
+            if self._budget_meter is not None:
+                self._budget_meter.mark_unknown(
+                    generation_id=str(generation["id"]),
+                    reservation_id=budget_reservation_id,
+                )
             raise PlatformError(
                 "provider_result_unknown",
                 "The chat provider result is unknown after dispatch",
@@ -876,6 +1024,18 @@ class ChatGenerationWorker:
             ownership=ownership,
             result="succeeded",
         )
+        if self._budget_meter is not None:
+            actual_tokens = (
+                int(getattr(response, "input_tokens", 0) or 0)
+                + int(getattr(response, "output_tokens", 0) or 0)
+                + int(getattr(response, "reasoning_tokens", 0) or 0)
+            )
+            self._budget_meter.settle(
+                generation_id=str(generation["id"]),
+                reservation_id=budget_reservation_id,
+                actual_tokens=actual_tokens,
+                actual_cost=self._budget_meter.estimate_cost("chat_generation", actual_tokens),
+            )
         return response
 
     # ------------------------------------------------------------- publication
