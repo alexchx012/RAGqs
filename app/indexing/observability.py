@@ -13,6 +13,8 @@ COMPONENT_ROLLBACK_FAILURE_ROUTE = "index_component_rollback_failure"
 COMPONENT_GC_FAILURE_ROUTE = "index_component_gc_failure"
 GRAPH_QUERY_SKIP_ROUTE = "index_graph_query_skip"
 GRAPH_STALE_DURATION_ROUTE = "index_graph_stale_duration"
+LIBRARY_SEARCH_LATENCY_ROUTE = "index_library_search_latency"
+TREE_CANDIDATE_ORDER_ROUTE = "index_tree_candidate_order"
 
 INDEX_INTERNAL_OBSERVABILITY_ROUTES = frozenset(
     {
@@ -24,6 +26,8 @@ INDEX_INTERNAL_OBSERVABILITY_ROUTES = frozenset(
         COMPONENT_GC_FAILURE_ROUTE,
         GRAPH_QUERY_SKIP_ROUTE,
         GRAPH_STALE_DURATION_ROUTE,
+        LIBRARY_SEARCH_LATENCY_ROUTE,
+        TREE_CANDIDATE_ORDER_ROUTE,
     }
 )
 
@@ -63,6 +67,8 @@ __all__ = [
     "GRAPH_QUERY_SKIP_ROUTE",
     "GRAPH_STALE_DURATION_ROUTE",
     "INDEX_INTERNAL_OBSERVABILITY_ROUTES",
+    "LIBRARY_SEARCH_LATENCY_ROUTE",
     "PROVIDER_ANALYZER_PROBE_ROUTE",
+    "TREE_CANDIDATE_ORDER_ROUTE",
     "record_index_observation",
 ]

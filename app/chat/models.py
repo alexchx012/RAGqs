@@ -233,6 +233,7 @@ class RetrievalHitOutcome:
     space_id: str
     locator: Mapping[str, Any]
     snippet: str | None
+    library: str = "unknown"
     rerank_score: float | None = None
 
 
@@ -240,3 +241,4 @@ class RetrievalHitOutcome:
 class RetrievalOutcome:
     hits: tuple[RetrievalHitOutcome, ...]
     degradations: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    route_output: Mapping[str, Any] | None = None

@@ -24,9 +24,24 @@ _REQUIRED_SAMPLES = frozenset(
         "acl_filter",
         "sparse_exact_hit",
         "refusal",
+        "source_conflict",
     }
 )
 _REQUIRED_QUALITY_METRICS = frozenset({"hit_at_k", "mrr", "ndcg", "refusal"})
+# Quality metrics must improve (higher is better); latency/error/vram metrics
+# must not regress beyond the tolerance against the current released baseline.
+_HIGHER_IS_BETTER = frozenset(_REQUIRED_QUALITY_METRICS)
+
+
+def _regression_tolerance(suite: Mapping[str, Any]) -> float:
+    value = suite.get("regression_tolerance")
+    if value is None:
+        return 0.0
+    if not isinstance(value, (int, float)) or not 0.0 <= float(value) < 1.0:
+        raise PlatformError(
+            "validation_error", "retrieval regression tolerance is invalid", {}, 422
+        )
+    return float(value)
 
 
 def _id() -> str:
@@ -97,6 +112,7 @@ def _acceptance_suite(value: Mapping[str, Any]) -> dict[str, Any]:
         "thresholds": thresholds,
         "samples": frozen_samples,
         "quality_thresholds": quality_thresholds,
+        "regression_tolerance": _regression_tolerance(value),
     }
 
 
@@ -150,6 +166,7 @@ class RetrievalReleaseService:
             "retrieval_context_items_per_space": profile.retrieval_context_items_per_space,
             "retrieval_context_tokens_per_space": profile.retrieval_context_tokens_per_space,
             "retrieval_context_tokens_cap": profile.retrieval_context_tokens_cap,
+            "expected_library_count": profile.expected_library_count,
             "route_tree": profile.route_tree,
             "route_graph": profile.route_graph,
             "config_snapshot": dict(profile.config_snapshot),
@@ -281,6 +298,47 @@ class RetrievalReleaseService:
                     {},
                     409,
                 )
+            baseline_row = (
+                connection.execute(
+                    select(retrieval_releases_table.c.acceptance_suite_json)
+                    .where(
+                        retrieval_releases_table.c.generation_id == str(release["generation_id"]),
+                        retrieval_releases_table.c.profile_id == release["profile_id"],
+                        retrieval_releases_table.c.state == "released",
+                        retrieval_releases_table.c.id != release_id,
+                    )
+                    .order_by(retrieval_releases_table.c.created_at_utc.desc())
+                    .limit(1)
+                )
+                .scalar_one_or_none()
+            )
+            tolerance = _regression_tolerance(frozen)
+            if baseline_row is not None:
+                baseline_metrics = dict(
+                    dict(baseline_row or {}).get("results", {}).get("metrics", {}) or {}
+                )
+                for name in sorted(_REQUIRED_METRICS | _REQUIRED_QUALITY_METRICS):
+                    baseline = baseline_metrics.get(name)
+                    if baseline is None:
+                        continue
+                    if name in _HIGHER_IS_BETTER:
+                        floor = float(baseline) * (1.0 - tolerance)
+                        if float(metrics[name]) < floor:
+                            raise PlatformError(
+                                "release_gate_failed",
+                                "retrieval quality metrics regress beyond tolerance",
+                                {"metric": name, "baseline": float(baseline)},
+                                409,
+                            )
+                    else:
+                        ceiling = float(baseline) * (1.0 + tolerance)
+                        if float(metrics[name]) > ceiling:
+                            raise PlatformError(
+                                "release_gate_failed",
+                                "retrieval latency metrics regress beyond tolerance",
+                                {"metric": name, "baseline": float(baseline)},
+                                409,
+                            )
             evidence = frozen
             evidence["results"] = {
                 "hardware_profile": dict(hardware_profile),
@@ -332,6 +390,7 @@ class RetrievalReleaseService:
             retrieval_context_items_per_space=int(snapshot["retrieval_context_items_per_space"]),
             retrieval_context_tokens_per_space=int(snapshot["retrieval_context_tokens_per_space"]),
             retrieval_context_tokens_cap=int(snapshot["retrieval_context_tokens_cap"]),
+            expected_library_count=int(snapshot.get("expected_library_count", 1)),
             route_tree=bool(snapshot.get("route_tree", False)),
             route_graph=bool(snapshot.get("route_graph", False)),
             release_id=str(row["id"]),

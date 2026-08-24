@@ -51,6 +51,11 @@ from .providers import (
     build_sparse_provider,
 )
 from .releases import RetrievalReleaseService
+from .rerank import (
+    RerankerRelease,
+    StubRerankerModel,
+    TwoStageReranker,
+)
 from .retrieval import (
     CitationService,
     NoopReranker,
@@ -58,8 +63,10 @@ from .retrieval import (
     ScoreReranker,
     intersect_scopes,
 )
+from .routing import MetadataPrefilter, RouteOutput, RuleQueryRouter, Subquestion
 from .schema import INDEXING_TABLE_NAMES, indexing_metadata
 from .service import IndexingService
+from .tree_search import PageIndexTreeRouter, TreeDocumentOutcome, TreeSearchOutcome
 
 OpenSearchSparseIndexProvider = RealOpenSearchSparseIndexProvider
 
@@ -110,9 +117,19 @@ __all__ = [
     "RetrievalProfile",
     "RetrievalResult",
     "RetrievalReleaseService",
+    "RerankerRelease",
     "RetrievalScope",
     "RetrievalService",
     "ScoreReranker",
+    "StubRerankerModel",
+    "Subquestion",
+    "TwoStageReranker",
+    "MetadataPrefilter",
+    "RouteOutput",
+    "RuleQueryRouter",
+    "PageIndexTreeRouter",
+    "TreeDocumentOutcome",
+    "TreeSearchOutcome",
     "SqlAlchemyGenerationManager",
     "SqlAlchemyIndexingRepository",
     "SparseIndexProvider",

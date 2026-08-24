@@ -66,6 +66,7 @@ def _acceptance_suite() -> dict[str, object]:
                 "acl_filter",
                 "sparse_exact_hit",
                 "refusal",
+                "source_conflict",
             )
         },
         "quality_thresholds": {"hit_at_k": 0.8, "mrr": 0.8, "ndcg": 0.8, "refusal": 0.9},

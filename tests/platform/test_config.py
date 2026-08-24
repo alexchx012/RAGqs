@@ -343,8 +343,10 @@ def test_production_requires_explicit_business_timezone() -> None:
         )
 
 
-def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected() -> None:
+def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected(tmp_path) -> None:
     import pytest as _pytest
+
+    archive_dir = tmp_path / "user-deletion-archive"
 
     settings = load_platform_settings(
         {
@@ -358,6 +360,7 @@ def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected() -> None:
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",
             "RAG_BUSINESS_TIMEZONE": "UTC",
+            "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
         }
     )
     assert settings.business_timezone == "UTC"
@@ -374,6 +377,7 @@ def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected() -> None:
                 "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
                 "RAG_AUTH_ADMIN_ROSTER": "root",
                 "RAG_BUSINESS_TIMEZONE": "Not/AZone",
+                "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
             }
         )
 

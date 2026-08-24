@@ -283,15 +283,15 @@ def test_sparse_exact_match_is_sampled_into_observability_read_path() -> None:
     result, samples = _search(_Metrics(rate=1.0))
     # 检索结果不受抽样影响。
     assert {hit.chunk.chunk_id for hit in result.hits} == {"match", "partial"}
-    assert len(samples) == 1
-    sample = samples[0]
-    assert sample.route_template == SPARSE_EXACT_MATCH_ROUTE
+    sampled = [s for s in samples if s.route_template == SPARSE_EXACT_MATCH_ROUTE]
+    assert len(sampled) == 1
+    sample = sampled[0]
     assert sample.sample_weight == 1.0
 
 
 def test_sparse_exact_match_sampling_skips_when_rate_zero() -> None:
     _result, samples = _search(_Metrics(rate=0.0))
-    assert samples == []
+    assert [s for s in samples if s.route_template == SPARSE_EXACT_MATCH_ROUTE] == []
 
 
 def test_sparse_exact_match_sampling_never_breaks_retrieval() -> None:

@@ -223,6 +223,7 @@ class RetrievalProfile:
     retrieval_context_items_per_space: int = 5
     retrieval_context_tokens_per_space: int = 8000
     retrieval_context_tokens_cap: int = 24000
+    expected_library_count: int = 1
     route_tree: bool = False
     route_graph: bool = False
     release_id: str | None = None
@@ -240,8 +241,19 @@ class RetrievalProfile:
             self.retrieval_context_items_per_space < 1
             or self.retrieval_context_tokens_per_space < 1
             or self.retrieval_context_tokens_cap < 1
+            or self.expected_library_count < 1
         ):
             raise PlatformError("validation_error", "retrieval context limits are invalid", {}, 422)
+        if (
+            self.retrieval_context_tokens_per_space * self.expected_library_count
+            > self.retrieval_context_tokens_cap
+        ):
+            raise PlatformError(
+                "startup_error",
+                "retrieval context per-library cap exceeds total cap",
+                {},
+                500,
+            )
         if self.release_id is not None:
             _required(self.release_id, "release_id")
         if not isinstance(self.config_snapshot, Mapping):
@@ -292,6 +304,7 @@ class RetrievalResult:
     profile: RetrievalProfile
     degradations: tuple[Mapping[str, Any], ...] = ()
     candidate_hits: tuple[RetrievalHit, ...] = ()
+    route_output: Mapping[str, Any] | None = None
 
     @property
     def candidates(self) -> tuple[RetrievalHit, ...]:

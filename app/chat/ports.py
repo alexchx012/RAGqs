@@ -47,6 +47,7 @@ class ChatProviderRequest:
     effort_level: str
     candidate: int | None
     context_items: tuple[Mapping[str, Any], ...]
+    source_conflict_contract: Mapping[str, Any] | None = None
 
 
 class ChatAuthorizationPort(Protocol):
@@ -87,6 +88,7 @@ class ChatRetrievalPort(Protocol):
         profile_id: str,
         profile_version: str,
         effort: str,
+        budget: Any | None = None,
     ) -> RetrievalOutcome: ...
 
     def resolve_citations(
@@ -239,6 +241,7 @@ class IndexingChatRetrievalPort:
         profile_id: str,
         profile_version: str,
         effort: str,
+        budget: Any | None = None,
     ) -> RetrievalOutcome:
         from .models import RetrievalHitOutcome
 
@@ -255,6 +258,7 @@ class IndexingChatRetrievalPort:
             principal=principal,
             narrowing_scope=narrowing_scope,
             profile=profile,
+            budget=budget,
         )
         self._active_request = request
         candidates = result.candidates
@@ -268,11 +272,16 @@ class IndexingChatRetrievalPort:
                 space_id=hit.chunk.space_id,
                 locator=dict(hit.chunk.locator),
                 snippet=hit.chunk.snippet,
+                library=hit.source or "unknown",
                 rerank_score=hit.rerank_score,
             )
             for hit in candidates
         )
-        return RetrievalOutcome(hits=hits, degradations=tuple(result.degradations))
+        return RetrievalOutcome(
+            hits=hits,
+            degradations=tuple(result.degradations),
+            route_output=result.route_output,
+        )
 
     def resolve_citations(
         self,
@@ -306,6 +315,8 @@ class IndexingChatRetrievalPort:
                         "document_version_id": citation["document_version_id"],
                         "publication_id": citation["publication_id"],
                         "chunk_id": citation["chunk_id"],
+                        "space_id": citation.get("space_id", hit.chunk.space_id),
+                        "library": hit.source or "unknown",
                         "locator": dict(citation["locator"]),
                         "snippet": citation["snippet"],
                     }
@@ -336,6 +347,7 @@ class RecordingChatRetrievalPort:
         profile_id: str,
         profile_version: str,
         effort: str,
+        budget: Any | None = None,
     ) -> RetrievalOutcome:
         self.searches.append(
             {

@@ -545,7 +545,8 @@ def test_cli_main_runs_and_does_not_leak_key(tmp_path, monkeypatch, capsys) -> N
     assert row["cancel_reason"] == "applicant_inactive"
 
 
-def test_run_usage_maintenance_once_production_requires_key() -> None:
+def test_run_usage_maintenance_once_production_requires_key(tmp_path) -> None:
+    archive_dir = tmp_path / "user-deletion-archive"
     settings = load_platform_settings(
         {
             "RAG_PLATFORM_PROFILE": "production",
@@ -558,6 +559,7 @@ def test_run_usage_maintenance_once_production_requires_key() -> None:
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",
             "RAG_BUSINESS_TIMEZONE": "UTC",
+            "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
         }
     )
     with pytest.raises(ValueError, match="MAINTENANCE_KEY|maintenance key"):
@@ -575,6 +577,7 @@ def test_run_usage_maintenance_once_production_requires_key() -> None:
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",
             "RAG_BUSINESS_TIMEZONE": "UTC",
+            "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
             "RAG_MAINTENANCE_KEY": "prod-maintenance-key",
         }
     )

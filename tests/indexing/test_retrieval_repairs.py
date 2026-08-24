@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pathlib
+import tempfile
 import pytest
 from sqlalchemy import create_engine
 
@@ -72,6 +74,9 @@ def _production_settings():
             "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
             "RAG_AUTH_ADMIN_ROSTER": "admin",
+            "USER_DELETION_ARCHIVE_DIR": str(
+                pathlib.Path(tempfile.gettempdir()) / "rag-test-archive"
+            ),
         }
     )
 

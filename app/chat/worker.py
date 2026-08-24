@@ -20,6 +20,8 @@ from app.usage.ports import UsageSubmissionPort
 from .budget import (
     EFFORT_CANDIDATE_LIMITS,
     EFFORT_UPGRADE_CHAIN,
+    BudgetMeter,
+    BudgetPolicy,
     GenerationBudget,
     conservative_chat_token_estimate,
     select_budget_candidates,
@@ -506,6 +508,38 @@ class ChatGenerationWorker:
                 # expire so recovery can take over.
                 continue
 
+    def _build_rag_budget_meter(
+        self,
+        effort: str,
+        snapshot: Mapping[str, Any] | None,
+        deadline: datetime,
+    ) -> BudgetMeter | None:
+        """Adapt the usage metering pricer into the logical RAG operation meter."""
+
+        if self._budget_meter is None:
+            return None
+        usage = self._budget_meter
+
+        def pricer(operation: str, tokens: int) -> float | None:
+            try:
+                return float(usage.estimate_cost(operation, tokens))
+            except Exception:
+                return None
+
+        price_version = str((snapshot or {}).get("price_version_id") or "usage-metering")
+        ceiling = (snapshot or {}).get("max_estimated_cost_amount")
+        try:
+            max_cost = float(ceiling) if ceiling is not None else 1000.0
+        except (TypeError, ValueError):
+            max_cost = 1000.0
+        policy = BudgetPolicy.for_effort(
+            effort,
+            price_version=price_version,
+            max_estimated_cost_amount=max(0.01, max_cost),
+            pricer=pricer,
+        )
+        return BudgetMeter(policy=policy, deadline=deadline)
+
     def _execute_claimed(
         self,
         *,
@@ -520,11 +554,17 @@ class ChatGenerationWorker:
         effort = str(generation["effective_effort_level"])
         budget = GenerationBudget(effort_level=effort)
         budget_meter_snapshot = None
+        rag_budget_meter = None
         if self._budget_meter is not None:
             budget_meter_snapshot = self._budget_meter.ensure_meter(
                 generation_id=str(generation["id"]),
                 effort_level=effort,
                 deadline_at_utc=generation["absolute_deadline_at_utc"],
+            )
+            rag_budget_meter = self._build_rag_budget_meter(
+                effort,
+                budget_meter_snapshot,
+                _utc(generation["absolute_deadline_at_utc"]),
             )
         hits: tuple[RetrievalHitOutcome, ...] = ()
 
@@ -619,6 +659,7 @@ class ChatGenerationWorker:
                 profile_id=profile_id,
                 profile_version=profile_version,
                 effort=budget.effort_level,
+                budget=rag_budget_meter,
             )
             if self._budget_meter is not None:
                 self._budget_meter.settle(
@@ -628,6 +669,15 @@ class ChatGenerationWorker:
                     actual_cost=Decimal("0"),
                 )
             hits = outcome.hits
+            self._emit_stage(
+                generation_id=generation_id,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                phase="retrieval_routed",
+                generation=generation,
+                detail={"route": dict(outcome.route_output or {"kind": "no_rewrite"})},
+            )
             hits, missing_identities = select_budget_candidates(
                 hits,
                 limit=(
@@ -771,8 +821,14 @@ class ChatGenerationWorker:
                 "document_version_id": hit.document_version_id,
                 "publication_id": hit.publication_id,
                 "chunk_id": hit.chunk_id,
+                "space_id": hit.space_id,
+                "library": hit.library,
                 "locator": dict(hit.locator),
                 "snippet": hit.snippet,
+                "claim_contract": {
+                    "annotate": ["library", "space_id"],
+                    "conflicts": "state_each_claim_separately_with_own_citation",
+                },
             }
             for hit in hits
         )
@@ -802,6 +858,10 @@ class ChatGenerationWorker:
                 effort_level=str(generation["effective_effort_level"]),
                 candidate=None if pair is None else candidate,
                 context_items=context,
+                source_conflict_contract={
+                    "required_fields": ("library", "space_id", "publication/version", "locator"),
+                    "conflict_policy": "present_each_claim_and_citation_no_system_adjudication",
+                },
             )
             response = self._provider_call(
                 request,
@@ -1435,6 +1495,7 @@ class ChatGenerationWorker:
         control_version: int,
         phase: str,
         generation: Mapping[str, Any],
+        detail: Mapping[str, Any] | None = None,
     ) -> None:
         del generation
         with self._engine.begin() as connection:
@@ -1455,7 +1516,7 @@ class ChatGenerationWorker:
                 connection,
                 generation_id=generation_id,
                 event_type="stage",
-                data={"phase": phase},
+                data={"phase": phase, **(dict(detail) if detail is not None else {})},
                 now=self._now(connection),
             )
 
@@ -1656,6 +1717,7 @@ def _hit_mapping(hit: RetrievalHitOutcome) -> Mapping[str, Any]:
         "publication_id": hit.publication_id,
         "chunk_id": hit.chunk_id,
         "space_id": hit.space_id,
+        "library": hit.library,
         "locator": dict(hit.locator),
         "snippet": hit.snippet,
     }

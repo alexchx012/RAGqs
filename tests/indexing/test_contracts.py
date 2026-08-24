@@ -47,7 +47,7 @@ from app.indexing import (
 )
 from app.indexing.models import RetrievalHit
 from app.indexing.processing import _xlsx_merged_ranges
-from app.indexing.retrieval import CitationService
+from app.indexing.retrieval import CitationService, ScoreReranker
 from app.indexing.schema import index_chunks_table, index_generation_heads_table
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore, ObjectMetadata
@@ -137,6 +137,7 @@ def _release_suite() -> dict[str, object]:
                 "acl_filter",
                 "sparse_exact_hit",
                 "refusal",
+                "source_conflict",
             )
         },
         "quality_thresholds": {"hit_at_k": 0.8, "mrr": 0.8, "ndcg": 0.8, "refusal": 0.9},
@@ -361,7 +362,11 @@ def test_retrieval_keeps_hybrid_before_rerank_and_routes_tree_afterwards() -> No
         def rerank(self, query, hits, profile):
             del query, profile
             events.append(("rerank", tuple(hit.chunk.chunk_id for hit in hits)))
-            return tuple(reversed(hits)), None
+            scored = tuple(
+                RetrievalHit(hit.chunk, hit.score, hit.source, rerank_score=hit.score)
+                for hit in reversed(hits)
+            )
+            return scored, None
 
     def tree_router(query, candidates, *, max_documents, rag_call_limit):
         del query
@@ -405,7 +410,7 @@ def test_retrieval_keeps_hybrid_before_rerank_and_routes_tree_afterwards() -> No
         ("rerank", ("dense_1", "sparse_1")),
         # Equal scores fall back to the chunk_id tie-break, so the reranker's
         # reversed output still routes in a deterministic order (A6).
-        ("tree", (("dense_1", "sparse_1"), 7, 4)),
+        ("tree", (("dense_1", "sparse_1"), 7, 8)),
     ]
     assert [hit.chunk.chunk_id for hit in result.hits] == ["dense_1", "sparse_1"]
 
@@ -444,7 +449,7 @@ def test_cleanup_resource_removes_dense_and_sparse_document_version_resources() 
 
 @pytest.mark.parametrize(
     ("effort", "expected_calls", "expected_documents", "tree_expected"),
-    (("quick", 1, 5, False), ("think", 4, 7, True), ("deep", 10, 9, True)),
+    (("quick", 1, 5, False), ("think", 8, 7, True), ("deep", 10, 9, True)),
 )
 def test_retrieval_effort_sets_routing_budgets(
     effort: str,
@@ -454,10 +459,31 @@ def test_retrieval_effort_sets_routing_budgets(
 ) -> None:
     tree_calls: list[tuple[int, int]] = []
     graph_calls: list[int] = []
+    provider = InMemorySparseIndexProvider()
+    budget_chunk = _chunk("budget_chunk")
+    provider.stage_chunks(
+        "budget_attempt",
+        budget_chunk.publication_id,
+        budget_chunk.document_id,
+        budget_chunk.document_version_id,
+        [budget_chunk],
+    )
+    provider.publish_staged("budget_attempt", budget_chunk.publication_id)
     service = RetrievalService(
         GenerationManager(),
-        [InMemorySparseIndexProvider()],
+        [provider],
         identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=lambda candidate, principal: DocumentVisibilityFact(
+            candidate.document_id,
+            candidate.space_id,
+            "active",
+            candidate.document_version_id,
+            candidate.publication_id,
+            "active",
+            candidate.manifest_hash,
+            True,
+        ),
+        reranker=ScoreReranker(),
         graph_reader=type(
             "Reader",
             (),
@@ -533,6 +559,8 @@ def test_graph_route_degradation_keeps_hybrid_retrieval_result() -> None:
     assert result.degradations[-1] == {"code": "graph_degraded", "reason": "graph_stale"}
 
     assert [(sample.route_template, sample.latency_ms) for sample in samples] == [
+        ("index_library_search_latency", 0),
+        ("index_tree_candidate_order", 0),
         ("index_graph_query_skip", 0),
         ("index_graph_stale_duration", 2500),
     ]
@@ -2906,3 +2934,83 @@ def test_durable_graph_gc_cleanup_failure_is_retryable_and_does_not_purge() -> N
         ).state
         == "accepted"
     )
+
+
+def test_retrieval_release_gate_rejects_regression_beyond_tolerance() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    documents_metadata.create_all(engine)
+    indexing_metadata.create_all(engine)
+    SqlAlchemyIndexingRepository(engine).active_generation_id()
+    releases = RetrievalReleaseService(engine)
+    suite = {**_release_suite(), "regression_tolerance": 0.05}
+    first = releases.stage(
+        generation_id="generation_initial",
+        profile=RetrievalProfile(),
+        acceptance_suite=suite,
+    )
+    releases.release(
+        str(first["id"]),
+        metrics=_release_metrics(),
+        hardware_profile=suite["hardware_profile"],
+    )
+
+    second = releases.stage(
+        generation_id="generation_initial",
+        profile=RetrievalProfile(version="2"),
+        acceptance_suite=suite,
+    )
+    # 0.83 clears the absolute 0.8 floor but falls below 0.9 * (1 - 0.05) = 0.855,
+    # so only the relative-regression gate can reject it.
+    with pytest.raises(PlatformError) as error:
+        releases.release(
+            str(second["id"]),
+            metrics={**_release_metrics(), "hit_at_k": 0.83},
+            hardware_profile=suite["hardware_profile"],
+        )
+    assert error.value.code == "release_gate_failed"
+    assert error.value.details.get("metric") == "hit_at_k"
+
+    third = releases.stage(
+        generation_id="generation_initial",
+        profile=RetrievalProfile(version="3"),
+        acceptance_suite=suite,
+    )
+    # 0.86 stays above 0.9 * (1 - 0.05) = 0.855, so it passes the gate.
+    releases.release(
+        str(third["id"]),
+        metrics={**_release_metrics(), "hit_at_k": 0.86},
+        hardware_profile=suite["hardware_profile"],
+    )
+
+
+def test_retrieval_release_gate_rejects_latency_regression_beyond_tolerance() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    documents_metadata.create_all(engine)
+    indexing_metadata.create_all(engine)
+    SqlAlchemyIndexingRepository(engine).active_generation_id()
+    releases = RetrievalReleaseService(engine)
+    suite = {**_release_suite(), "regression_tolerance": 0.1}
+    first = releases.stage(
+        generation_id="generation_initial",
+        profile=RetrievalProfile(),
+        acceptance_suite=suite,
+    )
+    releases.release(
+        str(first["id"]),
+        metrics=_release_metrics(),
+        hardware_profile=suite["hardware_profile"],
+    )
+    second = releases.stage(
+        generation_id="generation_initial",
+        profile=RetrievalProfile(version="2"),
+        acceptance_suite=suite,
+    )
+    # p50_ms doubling from 1ms to 3ms exceeds the 10% latency tolerance.
+    with pytest.raises(PlatformError) as error:
+        releases.release(
+            str(second["id"]),
+            metrics={**_release_metrics(), "p50_ms": 3},
+            hardware_profile=suite["hardware_profile"],
+        )
+    assert error.value.code == "release_gate_failed"
+    assert error.value.details.get("metric") == "p50_ms"
