@@ -228,7 +228,7 @@ class BudgetMeter:
         self._pending_reservations.append((estimate, token_reservation))
         return estimate
 
-    def reconcile(self, reserved: float, *, actual_tokens: int, actual_cost: float) -> None:
+    def reconcile(self, reserved: float, *, actual_tokens: int, actual_cost: float = 0.0) -> None:
         """Release unused reservation and record actual usage after completion."""
 
         actual = max(actual_tokens, 0)

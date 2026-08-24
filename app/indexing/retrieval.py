@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -28,10 +29,16 @@ from .observability import (
     CANDIDATE_REPLENISH_ROUTE,
     GRAPH_QUERY_SKIP_ROUTE,
     GRAPH_STALE_DURATION_ROUTE,
+    LIBRARY_SEARCH_LATENCY_ROUTE,
+    TREE_CANDIDATE_ORDER_ROUTE,
     record_index_observation,
 )
 from .providers import SparseIndexProvider
 from .routing import MetadataPrefilter, RuleQueryRouter
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def intersect_scopes(
@@ -168,6 +175,39 @@ class RerankResult:
     degradation: Mapping[str, Any] | None = None
 
 
+class RAGOperationBudgetPort(Protocol):
+    """Per-request logical RAG operation gate; app.chat.budget.BudgetMeter satisfies it."""
+
+    def gate(
+        self, operation: str, *, estimated_tokens: int, now: datetime
+    ) -> Mapping[str, Any] | None: ...
+
+    def reserve(
+        self, operation: str, *, estimated_tokens: int, now: datetime
+    ) -> float: ...
+
+    def reconcile(
+        self, reserved: float, *, actual_tokens: int, actual_cost: float = 0.0
+    ) -> None: ...
+
+    @property
+    def rag_calls_used(self) -> int: ...
+
+
+def _budget_notice_payload(notice: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize a budget gate notice to the public degraded structure."""
+
+    detail = dict(notice.get("detail") or {}) if isinstance(notice.get("detail"), Mapping) else {}
+    reason = str(detail.get("reason") or "budget_exhausted")
+    if reason not in {"budget_exhausted", "cost_unavailable"}:
+        reason = "budget_exhausted"
+    return {
+        "code": "retrieval_degraded",
+        "kind": "retrieval_degraded",
+        "detail": {"reason": reason},
+    }
+
+
 class RetrievalRequest:
     """Keeps one generation reference lease for a request and its citations."""
 
@@ -197,6 +237,7 @@ class RetrievalRequest:
         principal: Any = None,
         narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
         profile: RetrievalProfile | None = None,
+        budget: RAGOperationBudgetPort | None = None,
     ) -> RetrievalResult:
         return self._service._search_with_lease(
             query,
@@ -204,6 +245,7 @@ class RetrievalRequest:
             principal=principal,
             narrowing_scope=narrowing_scope,
             profile=profile,
+            budget=budget,
         )
 
     def resolve_citation(self, hit: RetrievalHit, *, principal: Any = None) -> Mapping[str, Any]:
@@ -625,22 +667,26 @@ class RetrievalService:
         def run(index: int) -> tuple[int, str, list[RetrievalHit] | Exception]:
             provider = self._providers[index]
             kind = kinds[index]
+            started = time.monotonic()
             try:
-                return (
-                    index,
-                    kind,
-                    self._collect_provider_hits(
-                        provider,
-                        query,
-                        generation_id=generation_id,
-                        scope=scope,
-                        quota=quotas[index],
-                        principal=principal,
-                        metadata_prefilter=metadata_prefilter,
-                    ),
+                payload: list[RetrievalHit] | Exception = self._collect_provider_hits(
+                    provider,
+                    query,
+                    generation_id=generation_id,
+                    scope=scope,
+                    quota=quotas[index],
+                    principal=principal,
+                    metadata_prefilter=metadata_prefilter,
                 )
             except Exception as error:
-                return index, kind, error
+                payload = error
+            record_index_observation(
+                self._exact_match_metrics,
+                LIBRARY_SEARCH_LATENCY_ROUTE,
+                success=not isinstance(payload, Exception),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+            return index, kind, payload
 
         if len(self._providers) == 1:
             outcomes = [run(0)]
@@ -702,6 +748,7 @@ class RetrievalService:
         principal: Any = None,
         narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
         profile: RetrievalProfile | None = None,
+        budget: RAGOperationBudgetPort | None = None,
     ) -> RetrievalResult:
         with self.open_request() as request:
             return request.search(
@@ -709,6 +756,7 @@ class RetrievalService:
                 principal=principal,
                 narrowing_scope=narrowing_scope,
                 profile=profile,
+                budget=budget,
             )
 
     def _search_with_lease(
@@ -719,6 +767,7 @@ class RetrievalService:
         principal: Any = None,
         narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
         profile: RetrievalProfile | None = None,
+        budget: RAGOperationBudgetPort | None = None,
     ) -> RetrievalResult:
         if not isinstance(query, str) or not query.strip():
             raise PlatformError("validation_error", "query is required", {}, 422)
@@ -737,9 +786,27 @@ class RetrievalService:
         hits: list[RetrievalHit] = []
         degradations: list[Mapping[str, Any]] = []
         seen_route_keys: set[tuple[str, str, str]] = set()
+        # One rewrite/HyDE route output is a single logical "rewrite" RAG
+        # operation under the shared budget gates (A64).
+        if budget is not None and route.kind in {"rewrite", "hyde"}:
+            now = _utc_now()
+            notice = budget.gate("rewrite", estimated_tokens=len(query), now=now)
+            if notice is not None:
+                degradations.append(_budget_notice_payload(notice))
+            else:
+                reserved = budget.reserve("rewrite", estimated_tokens=len(query), now=now)
+                budget.reconcile(reserved, actual_tokens=0)
         # Every route output keeps the default hybrid retrieval running. Split
-        # questions are additive logical retrieval units, never exclusive routes.
+        # questions are additive logical retrieval units, never exclusive routes,
+        # and each split subquestion is its own logical "retrieval" operation.
         for search_query in route.search_queries():
+            if budget is not None:
+                gate_notice = budget.gate(
+                    "retrieval", estimated_tokens=len(search_query), now=_utc_now()
+                )
+                if gate_notice is not None:
+                    degradations.append(_budget_notice_payload(gate_notice))
+                    continue
             query_hits, query_degradations = self._collect_hybrid_hits(
                 search_query,
                 lease.generation_id,
@@ -749,6 +816,11 @@ class RetrievalService:
                 route.metadata_prefilter,
             )
             degradations.extend(query_degradations)
+            if budget is not None:
+                reserved = budget.reserve(
+                    "retrieval", estimated_tokens=len(search_query), now=_utc_now()
+                )
+                budget.reconcile(reserved, actual_tokens=0)
             for hit in query_hits:
                 if hit.chunk.dedupe_key in seen_route_keys:
                     continue
@@ -798,6 +870,12 @@ class RetrievalService:
             )
         rag_call_limit, tree_document_limit = _EFFORT_LIMITS[selected.effort]
         tree_candidates = self._document_candidates(reranked, tree_document_limit)
+        record_index_observation(
+            self._exact_match_metrics,
+            TREE_CANDIDATE_ORDER_ROUTE,
+            success=True,
+            count=len(tree_candidates),
+        )
         has_final_scores = bool(tree_candidates) and all(
             hit.rerank_score is not None for hit in tree_candidates
         )
@@ -811,19 +889,42 @@ class RetrievalService:
                     "threshold": "not_applied",
                 }
             )
+        tree_result_hits: list[RetrievalHit] = []
         if (
             selected.route_tree
             and selected.effort != "quick"
             and self._tree_router is not None
             and has_final_scores
         ):
+            searchable_candidates = tree_candidates
+            # Each candidate document is its own logical "tree" RAG operation
+            # (A64): gate before the provider call so a budget rejection never
+            # produces an outbound side effect for that document.
+            if budget is not None:
+                allowed: list[RetrievalHit] = []
+                for hit in tree_candidates:
+                    tree_notice = budget.gate(
+                        "tree", estimated_tokens=len(query), now=_utc_now()
+                    )
+                    if tree_notice is not None:
+                        degradations.append(_budget_notice_payload(tree_notice))
+                        continue
+                    allowed.append(hit)
+                searchable_candidates = tuple(allowed)
             try:
                 tree_outcome = self._tree_router(
                     query,
-                    tree_candidates,
+                    searchable_candidates,
                     max_documents=tree_document_limit,
                     rag_call_limit=rag_call_limit,
                 )
+                if budget is not None and tree_outcome is not None:
+                    for _document in tuple(getattr(tree_outcome, "documents", ())):
+                        if str(getattr(_document, "status", "")) != "missing_document_identity":
+                            reserved = budget.reserve(
+                                "tree", estimated_tokens=len(query), now=_utc_now()
+                            )
+                            budget.reconcile(reserved, actual_tokens=0)
                 if tree_outcome is not None:
                     skipped = bool(getattr(tree_outcome, "skipped", False))
                     reason = getattr(tree_outcome, "reason", None)
@@ -845,6 +946,9 @@ class RetrievalService:
                                     "stage": "tree",
                                 }
                             )
+                    trigger_by_document = {
+                        str(hit.chunk.document_id): hit for hit in tree_candidates
+                    }
                     for document in tuple(getattr(tree_outcome, "documents", ())):
                         status = str(getattr(document, "status", ""))
                         if status == "missing_document_identity":
@@ -867,6 +971,35 @@ class RetrievalService:
                                     "stage": "tree",
                                 }
                             )
+                        elif status == "ok" and getattr(document, "result", None):
+                            # Tree results merge back into the candidate pool by
+                            # owning document/library, then re-verify visibility
+                            # and lifecycle before quota assembly (A58/A68).
+                            result = document.result
+                            text = str(
+                                (result.get("text") or result.get("answer") or "") if isinstance(result, Mapping) else ""
+                            ).strip()
+                            trigger = trigger_by_document.get(str(document.document_id))
+                            if text and trigger is not None:
+                                tree_chunk = replace(
+                                    trigger.chunk,
+                                    text=text,
+                                    snippet=text[:200],
+                                )
+                                if self._visible(
+                                    tree_chunk,
+                                    self._visibility_fact(tree_chunk, principal),
+                                    scope,
+                                    lease.generation_id,
+                                ):
+                                    tree_result_hits.append(
+                                        RetrievalHit(
+                                            tree_chunk,
+                                            trigger.score,
+                                            "tree",
+                                            rerank_score=trigger.rerank_score,
+                                        )
+                                    )
             except Exception as error:
                 degradations.append(self._routing_degradation("tree", error))
         if selected.route_graph:
@@ -930,6 +1063,10 @@ class RetrievalService:
             or hit.source in self._sparse_sources
             or (hit.rerank_score is not None and hit.rerank_score >= selected.score_threshold)
         ]
+        # Tree hits inherit the owning document's 8B score, so they satisfy the
+        # final-threshold rule without a separate threshold and enter the same
+        # per-library quota assembly below.
+        filtered.extend(tree_result_hits)
         budgeted: list[RetrievalHit] = []
         deferred: list[RetrievalHit] = []
         used_by_space: dict[str, int] = {}

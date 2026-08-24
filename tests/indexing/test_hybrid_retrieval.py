@@ -7,6 +7,7 @@ from app.indexing import (
     GenerationManager,
     InMemoryIndexWriter,
     InMemorySparseIndexProvider,
+    RetrievalHit,
     RetrievalProfile,
     RetrievalScope,
     RetrievalService,
@@ -327,3 +328,210 @@ def test_candidate_pool_is_exposed_separately_from_final_hits() -> None:
     assert {hit.chunk.chunk_id for hit in result.hits} <= {
         hit.chunk.chunk_id for hit in result.candidates
     }
+
+
+# ------------------------------------- tree result merge-back and budget wiring
+
+
+class _ScoredReranker:
+    def rerank(self, query, hits, profile):
+        del query, profile
+        return (
+            tuple(
+                RetrievalHit(hit.chunk, hit.score, hit.source, rerank_score=hit.score)
+                for hit in hits
+            ),
+            None,
+        )
+
+
+class _RecordingMetrics:
+    def __init__(self) -> None:
+        self.samples: list[object] = []
+
+    def record(self, sample) -> None:
+        self.samples.append(sample)
+
+
+def _meter(effort: str = "think"):
+    from app.chat.budget import BudgetMeter, BudgetPolicy
+
+    policy = BudgetPolicy.for_effort(
+        effort,
+        price_version="test-prices",
+        max_estimated_cost_amount=100.0,
+        pricer=lambda operation, tokens: 0.001,
+    )
+    return BudgetMeter(policy=policy)
+
+
+def test_tree_results_merge_back_after_visibility_recheck() -> None:
+    from types import SimpleNamespace
+
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1", document_id="document_ok"), "attempt_1")
+    _publish(provider, _chunk("chunk_2", document_id="document_denied"), "attempt_2")
+
+    def tree_router(query, candidates, *, max_documents, rag_call_limit):
+        del query, max_documents, rag_call_limit
+        outcomes = []
+        for hit in candidates:
+            allowed = hit.chunk.document_id != "document_denied"
+            outcomes.append(
+                SimpleNamespace(
+                    document_id=hit.chunk.document_id,
+                    chunk_id=hit.chunk.chunk_id,
+                    status="ok" if allowed else "ok",
+                    result={"text": f"tree evidence for {hit.chunk.document_id}"},
+                )
+            )
+        return SimpleNamespace(skipped=False, reason=None, documents=tuple(outcomes))
+
+    def facts(candidate: IndexChunk, principal: object) -> DocumentVisibilityFact:
+        del principal
+        return DocumentVisibilityFact(
+            candidate.document_id,
+            candidate.space_id,
+            "active",
+            candidate.document_version_id,
+            candidate.publication_id,
+            "active",
+            candidate.manifest_hash,
+            candidate.document_id != "document_denied",
+        )
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=facts,
+        reranker=_ScoredReranker(),
+        tree_router=tree_router,
+    )
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=4,
+            candidate_limit=4,
+            retrieval_context_items_per_space=4,
+            effort="think",
+            route_tree=True,
+        ),
+    )
+    tree_hits = [hit for hit in result.hits if hit.source == "tree"]
+    assert [hit.chunk.document_id for hit in tree_hits] == ["document_ok"]
+    assert tree_hits[0].chunk.text == "tree evidence for document_ok"
+    assert all(hit.chunk.document_id != "document_denied" for hit in result.hits)
+
+
+def test_budget_counts_each_split_subquestion_and_tree_document() -> None:
+    from types import SimpleNamespace
+
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    tree_documents: list[SimpleNamespace] = []
+
+    def tree_router(query, candidates, *, max_documents, rag_call_limit):
+        del query, max_documents, rag_call_limit
+        documents = tuple(
+            SimpleNamespace(
+                document_id=hit.chunk.document_id,
+                chunk_id=hit.chunk.chunk_id,
+                status="ok",
+                result=None,
+            )
+            for hit in candidates
+        )
+        tree_documents.extend(documents)
+        return SimpleNamespace(skipped=False, reason=None, documents=documents)
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        reranker=_ScoredReranker(),
+        tree_router=tree_router,
+    )
+    meter = _meter("think")
+    service.search(
+        "第一部分；第二部分？第三部分",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=4,
+            candidate_limit=4,
+            retrieval_context_items_per_space=4,
+            effort="think",
+            route_tree=True,
+        ),
+        budget=meter,
+    )
+    # 3 split subquestions each count as one retrieval operation; the single
+    # searchable tree document counts as one tree operation (A64).
+    assert meter.rag_calls_used == 3 + len(tree_documents)
+
+
+def test_budget_gate_rejection_skips_subquestion_and_sends_notice() -> None:
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        reranker=_ScoredReranker(),
+    )
+    meter = _meter("quick")
+    meter.rag_calls_used = meter.policy.max_rag_calls
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(top_k=4, candidate_limit=4),
+        budget=meter,
+    )
+    assert result.hits == ()
+    notices = [
+        item
+        for item in result.degradations
+        if item.get("kind") == "retrieval_degraded"
+        and item.get("detail", {}).get("reason") == "budget_exhausted"
+    ]
+    assert notices
+
+
+def test_library_latency_and_tree_order_observability_routes() -> None:
+    from types import SimpleNamespace
+
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    metrics = _RecordingMetrics()
+
+    def tree_router(query, candidates, *, max_documents, rag_call_limit):
+        del query
+        return SimpleNamespace(skipped=False, reason=None, documents=())
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        reranker=_ScoredReranker(),
+        tree_router=tree_router,
+        exact_match_metrics=metrics,
+    )
+    service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=4,
+            candidate_limit=4,
+            retrieval_context_items_per_space=4,
+            effort="think",
+            route_tree=True,
+        ),
+    )
+    routes = {sample.route_template for sample in metrics.samples}
+    assert "index_library_search_latency" in routes
+    assert "index_tree_candidate_order" in routes

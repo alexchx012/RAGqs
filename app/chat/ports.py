@@ -88,6 +88,7 @@ class ChatRetrievalPort(Protocol):
         profile_id: str,
         profile_version: str,
         effort: str,
+        budget: Any | None = None,
     ) -> RetrievalOutcome: ...
 
     def resolve_citations(
@@ -240,6 +241,7 @@ class IndexingChatRetrievalPort:
         profile_id: str,
         profile_version: str,
         effort: str,
+        budget: Any | None = None,
     ) -> RetrievalOutcome:
         from .models import RetrievalHitOutcome
 
@@ -256,6 +258,7 @@ class IndexingChatRetrievalPort:
             principal=principal,
             narrowing_scope=narrowing_scope,
             profile=profile,
+            budget=budget,
         )
         self._active_request = request
         candidates = result.candidates
@@ -344,6 +347,7 @@ class RecordingChatRetrievalPort:
         profile_id: str,
         profile_version: str,
         effort: str,
+        budget: Any | None = None,
     ) -> RetrievalOutcome:
         self.searches.append(
             {

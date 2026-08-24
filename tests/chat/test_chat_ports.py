@@ -12,7 +12,7 @@ class _FakeRequest:
     def __init__(self) -> None:
         self.released = False
 
-    def search(self, query: str, *, principal: Any, narrowing_scope: Any, profile: Any) -> Any:
+    def search(self, query: str, *, principal: Any, narrowing_scope: Any, profile: Any, budget: Any = None) -> Any:
         del query, principal, narrowing_scope
         chunk = IndexChunk(
             chunk_id="chunk_1",
