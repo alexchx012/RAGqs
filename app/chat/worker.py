@@ -13,6 +13,11 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.engine import Connection, Engine
 
+from app.agents.selfeval import (
+    AcceptingSelfEvaluationPort,
+    HeuristicSelfEvaluationPort,
+    SelfEvaluationPort,
+)
 from app.platform.errors import PlatformError
 from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
 from app.usage.ports import UsageSubmissionPort
@@ -79,6 +84,7 @@ class ChatGenerationWorker:
         usage: UsageSubmissionPort,
         calibration: CalibrationWindowPort,
         budget_meter: Any | None = None,
+        self_evaluator: SelfEvaluationPort | None = None,
         lease_seconds: int = EXECUTION_LEASE_SECONDS,
         max_physical_executions: int = MAX_PHYSICAL_EXECUTIONS,
     ) -> None:
@@ -89,6 +95,10 @@ class ChatGenerationWorker:
         self._usage = usage
         self._calibration = calibration
         self._budget_meter = budget_meter
+        # Generation-side self-evaluation step (A6/I): think/deep evaluate each
+        # candidate and may trigger a bounded rewrite -> re-retrieve loop; the
+        # evaluation judge itself is owned by the evaluation capability.
+        self._self_evaluator = self_evaluator or HeuristicSelfEvaluationPort()
         self._lease_seconds = lease_seconds
         self._max_physical_executions = max_physical_executions
 
@@ -715,14 +725,149 @@ class ChatGenerationWorker:
                 break
             round_index += 1
 
-        candidates = self._produce_candidates(
-            generation=generation,
-            execution_id=execution_id,
-            fencing_token=fencing_token,
-            control_version=control_version,
-            hits=hits,
-            citations=citations,
+        # Generation with the bounded self-evaluation rewrite loop (A6):
+        # quick skips the evaluation entirely; think/deep re-run retrieval
+        # within the same frozen scope only while the tier still has RAG
+        # rounds and open budget gates. Rejected drafts never become public.
+        effective_query = str(generation["request_content"])
+        evaluator: SelfEvaluationPort = (
+            AcceptingSelfEvaluationPort()
+            if str(generation["effective_effort_level"]) == "quick"
+            else self._self_evaluator
         )
+        while True:
+            candidates = self._produce_candidates(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                hits=hits,
+                citations=citations,
+                query=effective_query,
+            )
+            evaluation = evaluator.evaluate(
+                query=effective_query,
+                candidate_content=candidates[0]["content"],
+                citations=tuple(citations),
+                context_items=tuple(_hit_mapping(hit) for hit in hits),
+            )
+            if evaluation.acceptable or evaluation.rewritten_query is None:
+                break
+            if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
+                break
+            if not budget.can_start_rag_round():
+                previous_effort = budget.effort_level
+                upgraded = EFFORT_UPGRADE_CHAIN.get(previous_effort)
+                next_step_tokens = conservative_chat_token_estimate(
+                    effective_query,
+                    (hit.snippet for hit in hits),
+                )
+                if (
+                    upgraded is None
+                    or (
+                        self._budget_meter is not None
+                        and self._budget_meter.upgrade(
+                            generation_id=generation_id,
+                            next_step_tokens=next_step_tokens,
+                            next_step_cost=self._budget_meter.estimate_cost(
+                                "chat_generation", next_step_tokens
+                            ),
+                            next_step_is_rag=True,
+                        )
+                        != upgraded
+                    )
+                ):
+                    break
+                upgraded = budget.upgrade_effort()
+                assert upgraded is not None
+                if not self._persist_effort_upgrade(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    previous_effort=previous_effort,
+                    upgraded_effort=upgraded,
+                ):
+                    return
+                generation = {
+                    **generation,
+                    "effective_effort_level": upgraded,
+                    "upgraded_from": previous_effort,
+                }
+                self._emit_notice(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    kind="effort_upgraded",
+                    detail={"effort_level": upgraded},
+                    generation=generation,
+                )
+            rewrite_reservation_id = None
+            if self._budget_meter is not None:
+                rewrite_reservation_id = (
+                    f"rag:{generation_id}:rewrite-{budget.rag_calls_used}"
+                )
+                self._budget_reserve(
+                    generation=generation,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    reservation_id=rewrite_reservation_id,
+                    operation_kind="rag_rewrite",
+                    estimated_tokens=0,
+                    estimated_cost=Decimal("0"),
+                    is_rag=True,
+                )
+            self._emit_stage(
+                generation_id=generation_id,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                phase="rewriting",
+                generation=generation,
+            )
+            effective_query = str(evaluation.rewritten_query)
+            outcome = self._retrieval.search(
+                effective_query,
+                principal=_principal_from_generation(generation),
+                narrowing_scope=generation["request_scope_json"],
+                profile_id=profile_id,
+                profile_version=profile_version,
+                effort=budget.effort_level,
+                budget=rag_budget_meter,
+            )
+            if self._budget_meter is not None:
+                self._budget_meter.settle(
+                    generation_id=generation_id,
+                    reservation_id=rewrite_reservation_id,
+                    actual_tokens=0,
+                    actual_cost=Decimal("0"),
+                )
+            hits = outcome.hits
+            budget.record_rag_round()
+            for item in outcome.degradations:
+                code = str(item.get("code") or "")
+                kind = code if code in NOTICE_KINDS else "retrieval_degraded"
+                self._emit_notice(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    kind=kind,
+                    detail=dict(item),
+                    generation=generation,
+                )
+            citations = self._resolve_citations(hits, generation)
+            if len(citations) != len(hits):
+                visible_ids = {
+                    (str(item["document_id"]), str(item["chunk_id"])) for item in citations
+                }
+                hits = tuple(
+                    hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids
+                )
+                if not hits:
+                    citations = []
         self._publish(
             generation=generation,
             execution_id=execution_id,
@@ -814,6 +959,7 @@ class ChatGenerationWorker:
         control_version: int,
         hits: tuple[RetrievalHitOutcome, ...],
         citations: list[Mapping[str, Any]],
+        query: str | None = None,
     ) -> list[dict[str, Any]]:
         context = tuple(
             {
@@ -854,7 +1000,7 @@ class ChatGenerationWorker:
             request = ChatProviderRequest(
                 generation_id=str(generation["id"]),
                 owner_user_id=str(generation["owner_user_id"]),
-                content=str(generation["request_content"]),
+                content=query if query is not None else str(generation["request_content"]),
                 effort_level=str(generation["effective_effort_level"]),
                 candidate=None if pair is None else candidate,
                 context_items=context,
