@@ -410,7 +410,7 @@ def test_retrieval_keeps_hybrid_before_rerank_and_routes_tree_afterwards() -> No
         ("rerank", ("dense_1", "sparse_1")),
         # Equal scores fall back to the chunk_id tie-break, so the reranker's
         # reversed output still routes in a deterministic order (A6).
-        ("tree", (("dense_1", "sparse_1"), 7, 4)),
+        ("tree", (("dense_1", "sparse_1"), 7, 8)),
     ]
     assert [hit.chunk.chunk_id for hit in result.hits] == ["dense_1", "sparse_1"]
 
@@ -449,7 +449,7 @@ def test_cleanup_resource_removes_dense_and_sparse_document_version_resources() 
 
 @pytest.mark.parametrize(
     ("effort", "expected_calls", "expected_documents", "tree_expected"),
-    (("quick", 1, 5, False), ("think", 4, 7, True), ("deep", 10, 9, True)),
+    (("quick", 1, 5, False), ("think", 8, 7, True), ("deep", 10, 9, True)),
 )
 def test_retrieval_effort_sets_routing_budgets(
     effort: str,

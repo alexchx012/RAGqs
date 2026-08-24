@@ -120,7 +120,7 @@ class GraphReader(Protocol):
 
 _EFFORT_LIMITS = {
     "quick": (1, 5),
-    "think": (4, 7),
+    "think": (8, 7),
     "deep": (10, 9),
 }
 _VECTOR_CANDIDATE_RATIO = 0.7

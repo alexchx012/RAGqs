@@ -14,8 +14,12 @@ from .models import RetrievalHitOutcome
 
 RAG_BUDGET_POLICY_VERSION = "chat-rag-budget-v2"
 
-# quick/think/deep logical RAG operation caps.
-EFFORT_RAG_LIMITS: dict[str, int] = {"quick": 1, "think": 4, "deep": 10}
+# quick/think/deep logical RAG operation caps: each tier exactly covers one
+# hybrid retrieval plus its tree candidate documents (1+0 / 1+7 / 1+9).
+EFFORT_RAG_LIMITS: dict[str, int] = {"quick": 1, "think": 8, "deep": 10}
+# Worker round caps keep the pre-existing mainline behaviour (a round is one
+# retrieval + generation pass, not a logical operation count).
+_EFFORT_ROUND_LIMITS: dict[str, int] = {"quick": 1, "think": 4, "deep": 10}
 EFFORT_WALL_LIMITS: dict[str, int] = {"quick": 20, "think": 60, "deep": 180}
 EFFORT_TOKEN_LIMITS: dict[str, int] = {"quick": 12_000, "think": 24_000, "deep": 48_000}
 EFFORT_CANDIDATE_DOCUMENT_LIMITS: dict[str, int] = {"quick": 5, "think": 7, "deep": 9}
@@ -104,7 +108,7 @@ class GenerationBudget:
 
     @property
     def rag_calls_remaining(self) -> int:
-        return max(EFFORT_RAG_LIMITS[self.effort_level] - self.rag_calls_used, 0)
+        return max(_EFFORT_ROUND_LIMITS[self.effort_level] - self.rag_calls_used, 0)
 
     def can_start_rag_round(self) -> bool:
         return self.rag_calls_remaining > 0
