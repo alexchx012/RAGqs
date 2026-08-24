@@ -922,6 +922,26 @@ def build_runtime(
         configured.setdefault("submission_invalidation_port", submission_invalidation_port)
         if identity_access._pending_submission_invalidation_port is None:
             identity_access._pending_submission_invalidation_port = submission_invalidation_port
+    # Backup/restore orchestration: the gate reader backs the API read-gate
+    # middleware; the orchestration service itself is only registered when
+    # its schema is available (fresh databases before the migration resolve
+    # it to None and the API simply runs with the gate open).
+    from app.backup.gate import MaintenanceGateReader
+
+    configured.setdefault("maintenance_gate_reader", MaintenanceGateReader(engine))
+    if "backup_restore_service" not in configured:
+        from app.backup.ports import EmptyObjectManifest, NoopObjectSnapshot, NoopPostgresBackup
+        from app.backup.service import BackupRestoreService
+
+        with engine.connect() as connection:
+            backup_schema_available = inspect(connection).has_table("backup_sets")
+        if backup_schema_available:
+            configured["backup_restore_service"] = BackupRestoreService(
+                engine,
+                postgres_backup=NoopPostgresBackup(),
+                object_snapshot=NoopObjectSnapshot(),
+                object_manifest=EmptyObjectManifest(),
+            )
     runtime = PlatformRuntime(settings=settings, adapters=configured)
     # Assemble the scoped workers around THIS runtime. Both workers use the
     # lifecycle's INTERNAL no-token entries; the worker object graphs contain

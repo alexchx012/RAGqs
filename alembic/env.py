@@ -8,6 +8,7 @@ from logging.config import fileConfig
 from sqlalchemy import create_engine, pool
 
 from alembic import context
+from app.backup.schema import backup_metadata
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata
 from app.evaluation.schema import evaluation_metadata
@@ -35,6 +36,7 @@ target_metadata = [
     chat_metadata,
     evaluation_metadata,
     retention_metadata,
+    backup_metadata,
 ]
 
 
