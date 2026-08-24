@@ -220,6 +220,8 @@ class NoopReranker:
         profile: RetrievalProfile,
     ) -> tuple[Sequence[RetrievalHit], Mapping[str, Any] | None]:
         del query, profile
+        if not hits:
+            return (), None
         if self._environment not in {"development", "test", "ci"}:
             raise PlatformError(
                 "reranker_unavailable",
@@ -766,7 +768,7 @@ class RetrievalService:
         has_final_scores = bool(tree_candidates) and all(
             hit.rerank_score is not None for hit in tree_candidates
         )
-        if not has_final_scores and not rerank_degraded:
+        if reranked and not has_final_scores and not rerank_degraded:
             degradations.append(
                 {
                     "code": "rerank_degraded",
@@ -932,8 +934,9 @@ class RetrievalService:
                     continue
                 if include(hit):
                     selected_per_library[library] = selected_per_library.get(library, 0) + 1
+        result_limit = selected.top_k if not library_quota_enabled else len(budgeted)
         return RetrievalResult(
-            tuple(budgeted[: selected.top_k]),
+            tuple(budgeted[:result_limit]),
             lease.generation_id,
             selected,
             tuple(degradations),

@@ -160,15 +160,42 @@ def test_both_backends_failing_fails_the_query() -> None:
             del args, kwargs
             raise PlatformError("index_unavailable", "down", {}, 503)
 
+    class BrokenSparse(InMemorySparseIndexProvider):
+        def search(self, *args, **kwargs):
+            del args, kwargs
+            raise PlatformError("index_unavailable", "down", {}, 503)
+
     service = RetrievalService(
         GenerationManager(),
-        [Broken(provider_name="dense"), Broken(provider_name="sparse")],
+        [Broken(provider_name="dense"), BrokenSparse(provider_name="sparse")],
         identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
         visibility_facts=_facts,
     )
     with pytest.raises(PlatformError) as error:
         service.search("text", principal="user_1")
     assert error.value.code == "retrieval_failed"
+    assert error.value.details["query_failure"] == {
+        "code": "retrieval_query_failed",
+        "failed_libraries": ["dense", "sparse"],
+        "retryable": True,
+    }
+    assert error.value.details["failure_reasons"] == {
+        "dense": "index_unavailable",
+        "sparse": "index_unavailable",
+    }
+
+
+def test_successful_zero_result_is_no_context_without_query_failure() -> None:
+    provider = InMemorySparseIndexProvider(provider_name="sparse")
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+    )
+    result = service.search("missing text", principal="user_1")
+    assert result.hits == ()
+    assert all(item.get("code") != "retrieval_query_failed" for item in result.degradations)
 
 
 def test_reranker_failure_keeps_original_order() -> None:
@@ -190,6 +217,59 @@ def test_reranker_failure_keeps_original_order() -> None:
     result = service.search("text", principal="user_1")
     assert [hit.chunk.chunk_id for hit in result.hits] == ["chunk_1"]
     assert result.degradations[-1]["code"] == "rerank_degraded"
+
+
+def test_two_stage_final_failure_keeps_per_library_raw_truncation_order() -> None:
+    provider = InMemorySparseIndexProvider()
+    for chunk_id in ("chunk_low", "chunk_high"):
+        _publish(provider, _chunk(chunk_id), f"attempt_{chunk_id}")
+
+    class FailingReranker:
+        def rerank(self, query, hits, profile):
+            del query, profile
+            return (), {"code": "rerank_degraded", "reason": "final_unavailable"}
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        reranker=FailingReranker(),
+    )
+    result = service.search(
+        "text", principal="user_1", profile=RetrievalProfile(score_threshold=0.99)
+    )
+    assert [hit.chunk.chunk_id for hit in result.hits] == []
+    assert result.degradations[-1]["code"] == "rerank_degraded"
+
+
+def test_none_reranker_skips_tree_and_exposes_stable_fallback_notice() -> None:
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    tree_calls: list[object] = []
+
+    def tree_router(*args, **kwargs):
+        tree_calls.append((args, kwargs))
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        environment="test",
+        tree_router=tree_router,
+    )
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(effort="think", route_tree=True),
+    )
+    assert tree_calls == []
+    notices = [item for item in result.degradations if item.get("code") == "rerank_degraded"]
+    assert notices
+    assert notices[0]["provider"] == "none"
+    assert notices[0]["fallback"] == "preserve_candidate_order"
+    assert notices[0]["threshold"] == "not_applied"
 
 
 # ------------------------------------- rerank stability and candidate split

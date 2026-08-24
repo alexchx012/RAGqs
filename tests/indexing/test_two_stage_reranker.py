@@ -113,6 +113,22 @@ def test_provider_failure_preserves_entering_order_without_threshold() -> None:
     assert all(hit.rerank_score is None for hit in reranked)
 
 
+def test_final_failure_preserves_raw_score_order_before_the_cross_encoder() -> None:
+    hits = [
+        _hit("low", "dense", score=0.1),
+        _hit("high", "dense", score=0.9),
+    ]
+    reranker = TwoStageReranker(
+        release=_release(score_threshold=0.99),
+        coarse_model=FixedModel((0.1, 0.9)),
+        final_model=FailingModel(),
+    )
+    reranked, degradation = reranker.rerank("query", hits, RetrievalProfile())
+    assert [hit.chunk.chunk_id for hit in reranked] == ["high", "low"]
+    assert degradation is not None
+    assert degradation["threshold"] == "not_applied"
+
+
 def test_stub_none_model_is_rejected_in_production_and_returns_no_scores() -> None:
     stub = StubRerankerModel(environment="production")
     try:

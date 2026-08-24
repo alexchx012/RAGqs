@@ -312,6 +312,8 @@ class IndexingChatRetrievalPort:
                         "document_version_id": citation["document_version_id"],
                         "publication_id": citation["publication_id"],
                         "chunk_id": citation["chunk_id"],
+                        "space_id": citation.get("space_id", hit.chunk.space_id),
+                        "library": hit.source or "unknown",
                         "locator": dict(citation["locator"]),
                         "snippet": citation["snippet"],
                     }

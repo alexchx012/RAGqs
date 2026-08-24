@@ -83,8 +83,12 @@ def test_deadline_and_token_gates_block_outbound_calls_before_side_effects() -> 
     assert expired.gate("retrieval", estimated_tokens=1, now=now) is not None
 
     full = BudgetMeter(policy=_policy("quick"))
-    full.tokens_used = 12_000
+    full.tokens_consumed = 12_000
     assert full.gate("retrieval", estimated_tokens=1, now=now) is not None
+
+    pending = BudgetMeter(policy=_policy("quick"))
+    pending.tokens_reserved = 12_000
+    assert pending.gate("retrieval", estimated_tokens=1, now=now) is not None
 
 
 def test_effort_upgrade_is_limited_to_once_and_keeps_consumed_usage() -> None:
