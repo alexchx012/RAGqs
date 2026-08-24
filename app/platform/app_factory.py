@@ -19,7 +19,7 @@ from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 from . import runtime as platform_runtime_module
 from .config import PlatformSettings, load_platform_settings
 from .context import new_request_context
-from .errors import map_exception
+from .errors import PlatformError, map_exception
 from .http_contract import register_exception_handlers, request_error_payload
 from .observability import ObservabilityMetricsError, ObservabilitySample, sample_success
 from .runtime import PlatformRuntime, build_runtime
@@ -117,6 +117,7 @@ def create_platform_app(
         response = None
         with context:
             try:
+                _reject_when_reads_closed(request, runtime)
                 response = await call_next(request)
             except Exception as exc:
                 error = map_exception(exc)
@@ -179,3 +180,26 @@ def _outcome_class(status_code: int) -> str:
     if status_code >= 500:
         return "server_error"
     return "other"
+
+
+# Routes that stay available while the maintenance gate closes reads during a
+# restore (design §2.8): health, metrics and ops maintenance endpoints.
+_READ_GATE_EXEMPT_PREFIXES: tuple[str, ...] = ("/v1/health", "/v1/metrics", "/v1/ops")
+
+
+def _reject_when_reads_closed(request: Request, runtime: PlatformRuntime) -> None:
+    path = request.url.path
+    if any(path.startswith(prefix) for prefix in _READ_GATE_EXEMPT_PREFIXES):
+        return
+    gate_reader = runtime.resolve("maintenance_gate_reader")
+    if gate_reader is None or not gate_reader.reads_closed():
+        return
+    error = map_exception(
+        PlatformError(
+            "maintenance_mode",
+            "Reads are closed during a restore",
+            {},
+            503,
+        )
+    )
+    raise error

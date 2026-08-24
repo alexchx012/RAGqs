@@ -658,6 +658,18 @@ class DocumentsService:
                 updated_at_utc=now,
             )
         )
+        context = current_context()
+        connection.execute(
+            platform_audit_table.insert().values(
+                actor_id="system_purge_worker",
+                resource_type="documents.version_purged",
+                resource_id=version_id,
+                request_id=context.request_id if context is not None else "req_documents",
+                occurred_at_utc=now,
+                result="succeeded",
+                details_json={},
+            )
+        )
 
     @staticmethod
     def _has_active_read_lease(
@@ -3210,6 +3222,14 @@ class DocumentsService:
                     update(document_versions_table)
                     .where(document_versions_table.c.id == version["id"])
                     .values(status=DocumentVersionState.PURGING.value, updated_at_utc=now)
+                )
+                self._audit(
+                    connection,
+                    actor_id="system_purge_worker",
+                    resource_type="documents.version_purging",
+                    resource_id=str(version["id"]),
+                    result="succeeded",
+                    occurred_at=now,
                 )
                 if self._stage_cleanup_targets(
                     connection,
