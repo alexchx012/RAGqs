@@ -12,12 +12,12 @@ from alembic import op
 from app.usage.schema import (
     generation_budget_meter_table,
     generation_budget_reservation_table,
-    local_usage_projection_table,
     local_usage_meter_table,
+    local_usage_projection_table,
     provider_billing_cost_adjustment_table,
     provider_billing_reconciliation_group_table,
-    provider_billing_source_record_table,
     provider_billing_source_group_table,
+    provider_billing_source_record_table,
     usage_cost_projection_table,
     usage_metadata,
 )
