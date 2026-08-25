@@ -115,9 +115,16 @@ def create_platform_app(
         context = new_request_context()
         started = perf_counter()
         response = None
+        # Count admitted business writes so the backup worker can drain them
+        # before moving the write gate from closing to closed (Q7).
+        write_tracker = runtime.resolve("backup_write_tracker")
+        tracked_write = write_tracker is not None and _write_gate_applies(request)
+        if tracked_write:
+            write_tracker.inc()
         with context:
             try:
                 _reject_when_reads_closed(request, runtime)
+                _reject_writes_during_backup(request, runtime)
                 response = await call_next(request)
             except Exception as exc:
                 error = map_exception(exc)
@@ -129,6 +136,8 @@ def create_platform_app(
                     status_code=error.status_code,
                 )
             finally:
+                if tracked_write:
+                    write_tracker.dec()
                 metrics = runtime.resolve("observability_metrics")
                 if metrics is not None:
                     status_code = response.status_code if response is not None else 500
@@ -186,6 +195,18 @@ def _outcome_class(status_code: int) -> str:
 # restore (design §2.8): health, metrics and ops maintenance endpoints.
 _READ_GATE_EXEMPT_PREFIXES: tuple[str, ...] = ("/v1/health", "/v1/metrics", "/v1/ops")
 
+# Routes that stay writable while the backup write gate is closing/closed
+# (Q7): health, metrics, the ops backup/restore commands themselves and auth
+# (operators must still be able to log in to monitor or unblock a backup).
+_WRITE_GATE_EXEMPT_PREFIXES: tuple[str, ...] = (
+    "/v1/health",
+    "/v1/metrics",
+    "/v1/ops",
+    "/v1/auth",
+)
+
+_WRITE_GATE_SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS"})
+
 
 def _reject_when_reads_closed(request: Request, runtime: PlatformRuntime) -> None:
     path = request.url.path
@@ -198,6 +219,30 @@ def _reject_when_reads_closed(request: Request, runtime: PlatformRuntime) -> Non
         PlatformError(
             "maintenance_mode",
             "Reads are closed during a restore",
+            {},
+            503,
+        )
+    )
+    raise error
+
+
+def _write_gate_applies(request: Request) -> bool:
+    if request.method in _WRITE_GATE_SAFE_METHODS:
+        return False
+    path = request.url.path
+    return not any(path.startswith(prefix) for prefix in _WRITE_GATE_EXEMPT_PREFIXES)
+
+
+def _reject_writes_during_backup(request: Request, runtime: PlatformRuntime) -> None:
+    if not _write_gate_applies(request):
+        return
+    gate_reader = runtime.resolve("backup_write_gate_reader")
+    if gate_reader is None or gate_reader.writes_open():
+        return
+    error = map_exception(
+        PlatformError(
+            "backup_in_progress",
+            "Writes are paused while a backup is in progress",
             {},
             503,
         )

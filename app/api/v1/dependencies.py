@@ -24,6 +24,15 @@ def outbox_dispatcher(request: Request):
     return dispatcher
 
 
+def backup_ops_service(request: Request):
+    from app.backup.ops_service import BackupOpsService
+
+    service = request.app.state.platform_runtime.resolve("backup_ops_service")
+    if not isinstance(service, BackupOpsService):
+        raise RuntimeError("backup ops service is not configured")
+    return service
+
+
 def quota_request_service(request: Request):
     from app.usage.requests import QuotaRequestService
 

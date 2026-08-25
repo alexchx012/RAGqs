@@ -30,6 +30,9 @@ class PostgresBackupPort(Protocol):
     def restore(self, reference: str) -> None:
         """Restore Postgres from the snapshot referenced by `reference`."""
 
+    def delete(self, reference: str) -> None:
+        """Delete the snapshot referenced by `reference` (retention expiry)."""
+
 
 class ObjectSnapshotPort(Protocol):
     def snapshot(self) -> str:
@@ -37,6 +40,9 @@ class ObjectSnapshotPort(Protocol):
 
     def restore(self, reference: str) -> None:
         """Restore object storage from the snapshot referenced by `reference`."""
+
+    def delete(self, reference: str) -> None:
+        """Delete the snapshot referenced by `reference` (retention expiry)."""
 
 
 class ObjectManifestPort(Protocol):
@@ -85,12 +91,18 @@ class NoopPostgresBackup:
     def restore(self, reference: str) -> None:
         del reference
 
+    def delete(self, reference: str) -> None:
+        del reference
+
 
 class NoopObjectSnapshot:
     def snapshot(self) -> str:
         return "object-snapshot:noop"
 
     def restore(self, reference: str) -> None:
+        del reference
+
+    def delete(self, reference: str) -> None:
         del reference
 
 

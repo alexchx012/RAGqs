@@ -46,6 +46,7 @@ export const zhCN = {
         departmentLibs: '部门库', // 措辞后定（知识空间下钻）
         opsJobs: '任务队列', // 措辞后定（系统运维下钻）
         opsMetrics: '指标看板', // 措辞后定（系统运维下钻）
+        backups: '备份与恢复', // 措辞后定（系统运维下钻，仅 ops）
         departments: '部门管理', // 措辞后定（人员与权限下钻）
       },
     },
@@ -588,6 +589,208 @@ export const zhCN = {
       emptyJobs: '暂无任务', // 措辞后定
       loadError: '加载失败，请稍后重试', // 措辞后定
       actionError: '操作失败，请稍后重试', // 措辞后定：任务行操作兜底
+      // 备份与恢复（backup-restore-operations-layer 规格 §9；严格 ops-only，深链 /admin/operations/backups）
+      backups: {
+        title: '备份与恢复', // 措辞后定：子层标题与分段控件 aria
+        denied: '仅运维账号可访问备份与恢复', // 措辞后定：非 ops 深链 / 降权后拒绝态
+        viewBackups: '备份', // 措辞后定
+        viewRestores: '恢复', // 措辞后定
+        viewPolicy: '策略', // 措辞后定
+        loadError: '加载失败，请稍后重试', // 措辞后定
+        actionError: '操作失败，请稍后重试', // 措辞后定
+        maintenanceMode: '实例处于维护模式，请稍后重试', // 措辞后定：503 maintenance_mode
+        // ---- 「备份」分段 ----
+        createBackup: '一键备份', // 措辞后定
+        backupCreated: (id: string) => `已创建备份 ${id}`, // 措辞后定：受理轻提示（含 backup_id）
+        backupTableAria: '备份历史', // 措辞后定
+        colBackupId: '备份 ID', // 措辞后定
+        colBackupStatus: '状态', // 措辞后定
+        colBackupCreatedAt: '创建时间', // 措辞后定
+        colBackupCompletedAt: '完成时间', // 措辞后定
+        colBackupRestorable: '可恢复', // 措辞后定
+        colBackupActions: '操作', // 措辞后定
+        backupStatus: (status: string) => {
+          switch (status) {
+            case 'creating':
+              return '创建中';
+            case 'complete':
+              return '完成';
+            case 'failed':
+              return '失败';
+            default:
+              return '未知状态'; // 未知状态：通用兜底，不回显机读原串
+          }
+        }, // 措辞后定
+        restorableYes: '可恢复', // 措辞后定
+        restorableNo: '—', // 措辞后定：不可恢复不额外标注
+        emptyBackups: '暂无备份', // 措辞后定
+        detailExpand: '组成物', // 措辞后定：行内展开备份详情
+        detailCollapse: '收起', // 措辞后定
+        detailLoadError: '备份详情加载失败', // 措辞后定
+        componentKind: (kind: string) => {
+          switch (kind) {
+            case 'postgres_snapshot':
+              return '数据库快照';
+            case 'object_store_snapshot':
+              return '对象存储快照';
+            case 'object_manifest':
+              return '对象清单';
+            default:
+              return '组件'; // 未知 kind：通用兜底，不回显机读原串
+          }
+        }, // 措辞后定
+        componentReference: (reference: string) => `快照引用 ${reference}`, // 措辞后定
+        componentFailure: (reason: string) => `失败原因：${reason}`, // 措辞后定
+        // ---- 「恢复」分段 ----
+        sourceLabel: '来源备份', // 措辞后定：恢复来源选择框
+        sourcePlaceholder: '选择可恢复的备份', // 措辞后定
+        noRestorableSource: '暂无可恢复的备份', // 措辞后定
+        startRestore: '发起恢复', // 措辞后定
+        restoreDialogTitle: '发起实例恢复？', // 措辞后定
+        restoreDialogBackup: (id: string) => `来源备份：${id}`, // 措辞后定：确认框内备份 ID 行
+        restoreDialogStatus: (statusLabel: string) => `备份当前状态：${statusLabel}`, // 措辞后定
+        restoreDialogImpact:
+          '恢复期间实例进入维护模式：业务读写暂停，新建备份与策略修改暂不可用，恢复完成后自动解除。', // 措辞后定：确认框内维护模式影响说明
+        restoreConfirm: '确认恢复', // 措辞后定
+        restoreStarted: (id: string) => `已发起恢复 ${id}`, // 措辞后定：受理轻提示（含 restore_id）
+        restoreInProgress: '已有进行中的恢复，已刷新记录', // 措辞后定：409 restore_in_progress
+        backupNotRestorable: '该备份已不可恢复，已刷新列表', // 措辞后定：404 backup_not_found / 409 backup_not_restorable
+        restoreTableAria: '恢复记录', // 措辞后定
+        colRestoreId: '恢复 ID', // 措辞后定
+        colRestoreBackup: '来源备份', // 措辞后定
+        colRestoreStatus: '状态', // 措辞后定
+        colRestoreCreatedAt: '发起时间', // 措辞后定
+        colRestoreCompletedAt: '完成时间', // 措辞后定
+        colRestoreActions: '操作', // 措辞后定
+        restoreStatus: (status: string) => {
+          switch (status) {
+            case 'accepted':
+              return '已受理';
+            case 'running':
+              return '恢复中';
+            case 'blocked':
+              return '待修复';
+            case 'succeeded':
+              return '已完成';
+            case 'failed':
+              return '已失败';
+            default:
+              return '未知状态';
+          }
+        }, // 措辞后定
+        emptyRestores: '暂无恢复记录', // 措辞后定
+        progressExpand: '进度', // 措辞后定：行内展开恢复进度
+        stagesTitle: '恢复阶段', // 措辞后定
+        stageLabel: (stage: string) => {
+          switch (stage) {
+            case 'postgres':
+              return '数据库';
+            case 'object_store':
+              return '对象存储';
+            case 'milvus':
+              return '向量索引';
+            case 'sparse':
+              return '稀疏索引';
+            case 'summary':
+              return '摘要索引';
+            case 'graph':
+              return '图谱';
+            case 'cache':
+              return '缓存';
+            default:
+              return '阶段'; // 未知 stage：通用兜底，不回显机读原串
+          }
+        }, // 措辞后定
+        stageStatus: (status: string) => {
+          switch (status) {
+            case 'pending':
+              return '等待';
+            case 'running':
+              return '进行中';
+            case 'succeeded':
+              return '已完成';
+            case 'failed':
+              return '失败';
+            default:
+              return '未知';
+          }
+        }, // 措辞后定
+        restoreFailure: (reason: string) => `失败原因：${reason}`, // 措辞后定
+        repairTitle: '修复目标', // 措辞后定
+        repairStatus: (status: string) => {
+          switch (status) {
+            case 'open':
+              return '待处理';
+            case 'succeeded':
+              return '已修复';
+            default:
+              return '未知';
+          }
+        }, // 措辞后定
+        repairFailure: (classification: string) => `失败分类：${classification}`, // 措辞后定
+        repairRetry: '重试修复', // 措辞后定：open 修复目标行内按钮
+        repairRetried: '已重新受理修复目标', // 措辞后定：202 轻提示
+        repairNotOpen: '修复目标状态已变化，已刷新', // 措辞后定：404 / 409 repair_target_not_open
+        // ---- 「策略」分段 ----
+        policyEnabledLabel: '定时备份', // 措辞后定
+        policyEnabledAria: '定时备份开关', // 措辞后定
+        policyFrequencyLabel: '周期', // 措辞后定
+        policyFrequencyDaily: '每天', // 措辞后定
+        policyFrequencyWeekly: '每周', // 措辞后定
+        policyFrequencyAria: '备份周期', // 措辞后定
+        policyLocalTimeLabel: '本地时间', // 措辞后定
+        policyLocalTimeInvalid: '请输入 HH:MM 格式的时间', // 措辞后定：客户端校验
+        policyWeekdaysLabel: '星期', // 措辞后定：weekly 多选
+        policyWeekday: (value: number) => {
+          switch (value) {
+            case 0:
+              return '周一';
+            case 1:
+              return '周二';
+            case 2:
+              return '周三';
+            case 3:
+              return '周四';
+            case 4:
+              return '周五';
+            case 5:
+              return '周六';
+            case 6:
+              return '周日';
+            default:
+              return '—';
+          }
+        }, // 措辞后定（0=周一 … 6=周日，与后端 date.weekday() 一致）
+        policyWeekdaysRequired: '每周周期至少选择一天', // 措辞后定：客户端校验
+        policyTimezoneLabel: '时区', // 措辞后定
+        policyTimezonePlaceholder: '如 Asia/Shanghai', // 措辞后定
+        policyTimezoneInvalid: '时区无效，请输入 IANA 时区名', // 措辞后定：422 validation_error（field=timezone）
+        policyKeepLastLabel: '保留最近份数', // 措辞后定
+        policyRetentionDaysLabel: '保留天数', // 措辞后定
+        policyPositiveInteger: '请输入正整数', // 措辞后定：keep_last / retention_days 客户端校验
+        // 规格 §5 保护式 AND：页面固定说明，不得省略
+        policyRetentionNote: '两项同时满足才会清理：备份超过保留天数，且不在最近保留份数之内。', // 措辞后定
+        policyNextRun: (value: string) => `下次执行：${value}`, // 措辞后定
+        policyNextRunDisabled: '定时备份未启用', // 措辞后定：next_run_at 为 null
+        policyLastScheduled: (value: string) => `上次排程：${value}`, // 措辞后定
+        policyLastOutcome: (outcome: string) => {
+          switch (outcome) {
+            case 'succeeded':
+              return '成功';
+            case 'skipped':
+              return '跳过';
+            case 'failed':
+              return '失败';
+            default:
+              return outcome; // 运行事实机读值原样回显
+          }
+        }, // 措辞后定
+        policyVersion: (version: number) => `策略版本 ${version}`, // 措辞后定
+        policySave: '保存', // 措辞后定
+        policySaved: '策略已保存', // 措辞后定
+        policyVersionConflict: '策略已被其他操作修改，已刷新最新值，请确认后重试', // 措辞后定：409 version_conflict
+        policyValidationError: '输入不符合要求，请检查后重试', // 措辞后定：422 validation_error
+      },
     },
     // 用户管理（§12.1–12.4；ops 与 admin 共用列表，写能力按角色收窄）
     users: {

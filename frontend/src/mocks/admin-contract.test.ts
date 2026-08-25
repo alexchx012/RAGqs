@@ -10,13 +10,20 @@ import type {
   AdminDepartmentListResponse,
   AdminUserItem,
   AdminUserListResponse,
+  BackupPolicy,
   CalibrationWindow,
   DashboardResponse,
   GraphBuildCancelResponse,
   GraphBuildCurrent,
   GraphBuildRun,
   LeaderboardResponse,
+  OpsBackupCreateResponse,
+  OpsBackupDetail,
+  OpsBackupListResponse,
   OpsJobsResponse,
+  OpsRepairTargetRetryResponse,
+  OpsRestoreCreateResponse,
+  OpsRestoreDetail,
   PermissionMatrixResponse,
   QuotaApproveResponse,
   QuotaRejectResponse,
@@ -28,6 +35,7 @@ import type {
   ApprovalListResponse,
   ApprovalSummary,
 } from '../settings/types';
+import { OPS_BACKUP_SEED_IDS } from './admin-contract';
 import { mockAdmin, mockAuth, mockKnowledge } from './testing';
 
 function bearerOf(username = 'zhangsan', password = 'password123'): string {
@@ -1106,5 +1114,425 @@ describe('admin contract：权限矩阵（§12.7）', () => {
       403,
       'permission_matrix_forbidden',
     );
+  });
+});
+
+/* ---------- 备份与恢复（backup-restore-operations-layer 规格 §2/§3/§7；严格 ops-only） ---------- */
+
+describe('admin contract：备份与恢复（ops-only）', () => {
+  it('非 ops 一律 403 backup_forbidden（admin / user 读与写同拒）', async () => {
+    const admin = bearerOf('admin');
+    const user = bearerOf('zhangsan');
+    await expectError(await jsonRequest(admin, '/v1/ops/backups'), 403, 'backup_forbidden');
+    await expectError(await jsonRequest(user, '/v1/ops/restores'), 403, 'backup_forbidden');
+    await expectError(await jsonRequest(admin, '/v1/ops/backup-policy'), 403, 'backup_forbidden');
+    await expectError(
+      await jsonRequest(user, '/v1/ops/backups', { method: 'POST', idempotencyKey: 'idem_f_1' }),
+      403,
+      'backup_forbidden',
+    );
+    await expectError(
+      await jsonRequest(admin, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { expected_version: 1, keep_last: 5 },
+        idempotencyKey: 'idem_f_2',
+      }),
+      403,
+      'backup_forbidden',
+    );
+  });
+
+  it('创建备份：202 受理 + 同键回放不重复创建 + 缺 Idempotency-Key 422', async () => {
+    const ops = bearerOf('ops-wang');
+    // 清空种子 blocked 恢复的 active 互斥（否则维护门禁 503）
+    mockAdmin.completeOpsRestore(OPS_BACKUP_SEED_IDS.repairRestore);
+
+    const created = await jsonRequest(ops, '/v1/ops/backups', {
+      method: 'POST',
+      idempotencyKey: 'idem_bk_1',
+    });
+    expect(created.status).toBe(202);
+    const createdBody = (await created.json()) as OpsBackupCreateResponse;
+    expect(createdBody.status).toBe('creating');
+    expect(createdBody.backup_id).toMatch(/^bk_/);
+
+    // 同键回放：同一 backup_id，不产生第二条
+    const replay = await jsonRequest(ops, '/v1/ops/backups', {
+      method: 'POST',
+      idempotencyKey: 'idem_bk_1',
+    });
+    expect(replay.status).toBe(202);
+    expect(((await replay.json()) as OpsBackupCreateResponse).backup_id).toBe(createdBody.backup_id);
+    const list = (await (
+      await jsonRequest(ops, '/v1/ops/backups?page=1&page_size=50')
+    ).json()) as OpsBackupListResponse;
+    expect(list.total).toBe(3); // 两条种子 + 一条新建
+
+    await expectError(
+      await jsonRequest(ops, '/v1/ops/backups', { method: 'POST' }),
+      422,
+      'validation_error',
+    );
+  });
+
+  it('备份列表：创建时间倒序 + 分页；读推进（首轮 creating，下一拍 complete）；详情含组成物；404', async () => {
+    const ops = bearerOf('ops-wang');
+
+    const page1 = (await (
+      await jsonRequest(ops, '/v1/ops/backups?page=1&page_size=1')
+    ).json()) as OpsBackupListResponse;
+    expect(page1.total).toBe(2);
+    expect(page1.page).toBe(1);
+    expect(page1.page_size).toBe(1);
+    // 倒序：creating 种子（08-19）晚于 complete 种子（08-17）
+    expect(page1.items[0]?.backup_id).toBe(OPS_BACKUP_SEED_IDS.creatingBackup);
+    // 先响应后推进：首轮读仍呈现 creating
+    expect(page1.items[0]?.status).toBe('creating');
+    expect(page1.items[0]?.restorable).toBe(false);
+
+    const page2 = (await (
+      await jsonRequest(ops, '/v1/ops/backups?page=2&page_size=1')
+    ).json()) as OpsBackupListResponse;
+    expect(page2.items[0]?.backup_id).toBe(OPS_BACKUP_SEED_IDS.completeBackup);
+
+    // 上一拍已推进：creating 种子转 complete 且可恢复
+    const converged = (await (
+      await jsonRequest(ops, '/v1/ops/backups?page=1&page_size=1')
+    ).json()) as OpsBackupListResponse;
+    expect(converged.items[0]?.status).toBe('complete');
+    expect(converged.items[0]?.restorable).toBe(true);
+    expect(converged.items[0]?.completed_at).not.toBeNull();
+
+    const detailResponse = await jsonRequest(
+      ops,
+      `/v1/ops/backups/${OPS_BACKUP_SEED_IDS.completeBackup}`,
+    );
+    expect(detailResponse.status).toBe(200);
+    const detail = (await detailResponse.json()) as OpsBackupDetail;
+    expect(detail.components.map((component) => component.kind)).toEqual([
+      'postgres_snapshot',
+      'object_store_snapshot',
+      'object_manifest',
+    ]);
+    for (const component of detail.components) {
+      expect(component.status).toBe('complete');
+      expect(component.reference).not.toBeNull();
+    }
+
+    await expectError(
+      await jsonRequest(ops, '/v1/ops/backups/bk_missing'),
+      404,
+      'backup_not_found',
+    );
+  });
+
+  it('维护门禁：种子 blocked 恢复 active 期间，新建备份与策略 PATCH 503；第二个恢复 409；GET 与 repair retry 白名单可用', async () => {
+    const ops = bearerOf('ops-wang');
+    // 种子 rs_seed_repair 为 blocked（active restore）
+
+    await expectError(
+      await jsonRequest(ops, '/v1/ops/backups', { method: 'POST', idempotencyKey: 'idem_g_1' }),
+      503,
+      'maintenance_mode',
+    );
+    await expectError(
+      await jsonRequest(ops, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { expected_version: 1, keep_last: 5 },
+        idempotencyKey: 'idem_g_2',
+      }),
+      503,
+      'maintenance_mode',
+    );
+    await expectError(
+      await postWithKey(
+        ops,
+        '/v1/ops/restores',
+        { backup_id: OPS_BACKUP_SEED_IDS.completeBackup },
+        'idem_g_3',
+      ),
+      409,
+      'restore_in_progress',
+    );
+
+    // 白名单：状态读与 repair retry 不受门禁
+    expect((await jsonRequest(ops, '/v1/ops/backups')).status).toBe(200);
+    expect((await jsonRequest(ops, '/v1/ops/restores')).status).toBe(200);
+    expect((await jsonRequest(ops, '/v1/ops/backup-policy')).status).toBe(200);
+    const retry = await jsonRequest(
+      ops,
+      `/v1/ops/restores/${OPS_BACKUP_SEED_IDS.repairRestore}/repair-targets/${OPS_BACKUP_SEED_IDS.repairTarget}/retry`,
+      { method: 'POST', idempotencyKey: 'idem_g_4' },
+    );
+    expect(retry.status).toBe(202);
+  });
+
+  it('创建恢复：202 + 七阶段形状；同键回放；异目标同键按新操作处理；不存在 / 不可恢复备份', async () => {
+    const ops = bearerOf('ops-wang');
+    mockAdmin.completeOpsRestore(OPS_BACKUP_SEED_IDS.repairRestore);
+
+    const created = await postWithKey(
+      ops,
+      '/v1/ops/restores',
+      { backup_id: OPS_BACKUP_SEED_IDS.completeBackup },
+      'idem_rs_1',
+    );
+    expect(created.status).toBe(202);
+    const createdBody = (await created.json()) as OpsRestoreCreateResponse;
+    expect(createdBody.status).toBe('accepted');
+    expect(createdBody.backup_id).toBe(OPS_BACKUP_SEED_IDS.completeBackup);
+    expect(createdBody.restore_id).toMatch(/^rs_/);
+
+    // 详情：七阶段全 pending（先响应后推进），修复目标空
+    const detail = (await (
+      await jsonRequest(ops, `/v1/ops/restores/${createdBody.restore_id}`)
+    ).json()) as OpsRestoreDetail;
+    expect(detail.stages.map((stage) => stage.stage)).toEqual([
+      'postgres',
+      'object_store',
+      'milvus',
+      'sparse',
+      'summary',
+      'graph',
+      'cache',
+    ]);
+    for (const stage of detail.stages) {
+      expect(stage.status).toBe('pending');
+    }
+    expect(detail.repair_targets).toEqual([]);
+
+    // 同键同请求回放：同一 restore_id
+    const replay = await postWithKey(
+      ops,
+      '/v1/ops/restores',
+      { backup_id: OPS_BACKUP_SEED_IDS.completeBackup },
+      'idem_rs_1',
+    );
+    expect(replay.status).toBe(202);
+    expect(((await replay.json()) as OpsRestoreCreateResponse).restore_id).toBe(
+      createdBody.restore_id,
+    );
+    // 幂等 scope 含目标（payload 即 backup_id）：同键异目标视为新操作，
+    // idempotency_key_conflict 在 repair retry / 策略 PATCH 用例覆盖
+    await expectError(
+      await postWithKey(ops, '/v1/ops/restores', { backup_id: 'bk_other' }, 'idem_rs_1'),
+      404,
+      'backup_not_found',
+    );
+
+    await expectError(
+      await postWithKey(ops, '/v1/ops/restores', { backup_id: 'bk_missing' }, 'idem_rs_2'),
+      404,
+      'backup_not_found',
+    );
+    // 新建的恢复仍为 active：先转终态解除维护门禁，再创建备份
+    mockAdmin.completeOpsRestore(createdBody.restore_id);
+    // 新建备份尚未经读推进（creating 不可恢复）：409 backup_not_restorable
+    const freshBackup = (await (
+      await jsonRequest(ops, '/v1/ops/backups', { method: 'POST', idempotencyKey: 'idem_rs_3' })
+    ).json()) as OpsBackupCreateResponse;
+    await expectError(
+      await postWithKey(ops, '/v1/ops/restores', { backup_id: freshBackup.backup_id }, 'idem_rs_4'),
+      409,
+      'backup_not_restorable',
+    );
+  });
+
+  it('repair retry：202 受理（open）；读推进两轮收敛终态；再 retry 409；未知目标 404；非空 body 422', async () => {
+    const ops = bearerOf('ops-wang');
+    const retryPath = `/v1/ops/restores/${OPS_BACKUP_SEED_IDS.repairRestore}/repair-targets/${OPS_BACKUP_SEED_IDS.repairTarget}/retry`;
+
+    const accepted = await jsonRequest(ops, retryPath, { method: 'POST', idempotencyKey: 'idem_rt_1' });
+    expect(accepted.status).toBe(202);
+    const acceptedBody = (await accepted.json()) as OpsRepairTargetRetryResponse;
+    expect(acceptedBody).toEqual({
+      target_id: OPS_BACKUP_SEED_IDS.repairTarget,
+      status: 'open',
+    });
+    // 同键回放：202 同形
+    const replay = await jsonRequest(ops, retryPath, { method: 'POST', idempotencyKey: 'idem_rt_1' });
+    expect(replay.status).toBe(202);
+    expect(((await replay.json()) as OpsRepairTargetRetryResponse).status).toBe('open');
+    // 同键异请求（同修复目标、异 restoreId → payload 不同）：409 idempotency_key_conflict
+    await expectError(
+      await jsonRequest(
+        ops,
+        `/v1/ops/restores/rs_other/repair-targets/${OPS_BACKUP_SEED_IDS.repairTarget}/retry`,
+        { method: 'POST', idempotencyKey: 'idem_rt_1' },
+      ),
+      409,
+      'idempotency_key_conflict',
+    );
+
+    // 先响应后推进：受理后第一拍详情仍是 blocked/open（结算发生在响应之后）
+    const firstRead = (await (
+      await jsonRequest(ops, `/v1/ops/restores/${OPS_BACKUP_SEED_IDS.repairRestore}`)
+    ).json()) as OpsRestoreDetail;
+    expect(firstRead.status).toBe('blocked');
+    expect(firstRead.repair_targets[0]?.status).toBe('open');
+    // 第二拍：阻断解除，阶段补齐，转终态 succeeded（mock 简化）
+    const secondRead = (await (
+      await jsonRequest(ops, `/v1/ops/restores/${OPS_BACKUP_SEED_IDS.repairRestore}`)
+    ).json()) as OpsRestoreDetail;
+    expect(secondRead.status).toBe('succeeded');
+    expect(secondRead.repair_targets[0]?.status).toBe('succeeded');
+    expect(secondRead.repair_targets[0]?.attempts).toBe(2);
+    expect(secondRead.completed_at).not.toBeNull();
+    for (const stage of secondRead.stages) {
+      expect(stage.status).toBe('succeeded');
+    }
+
+    // 已非 open：409 repair_target_not_open
+    await expectError(
+      await jsonRequest(ops, retryPath, { method: 'POST', idempotencyKey: 'idem_rt_2' }),
+      409,
+      'repair_target_not_open',
+    );
+    // 未知修复目标 / 未知恢复
+    await expectError(
+      await jsonRequest(
+        ops,
+        `/v1/ops/restores/${OPS_BACKUP_SEED_IDS.repairRestore}/repair-targets/rt_missing/retry`,
+        { method: 'POST', idempotencyKey: 'idem_rt_3' },
+      ),
+      404,
+      'repair_target_not_found',
+    );
+    await expectError(
+      await jsonRequest(ops, '/v1/ops/restores/rs_missing/repair-targets/rt_x/retry', {
+        method: 'POST',
+        idempotencyKey: 'idem_rt_4',
+      }),
+      404,
+      'restore_not_found',
+    );
+    // 非空请求体：422
+    await expectError(
+      await jsonRequest(ops, retryPath, {
+        method: 'POST',
+        body: { reason: 'manual' },
+        idempotencyKey: 'idem_rt_5',
+      }),
+      422,
+      'validation_error',
+    );
+  });
+
+  it('策略：GET 形状；PATCH 版本递增 + 同键回放 + 同键异请求 409；version_conflict 带 current_version；422 校验；enabled=false 后 next_run_at 为 null', async () => {
+    const ops = bearerOf('ops-wang');
+    mockAdmin.completeOpsRestore(OPS_BACKUP_SEED_IDS.repairRestore);
+
+    const getResponse = await jsonRequest(ops, '/v1/ops/backup-policy');
+    expect(getResponse.status).toBe(200);
+    const policy = (await getResponse.json()) as BackupPolicy;
+    expect(policy).toMatchObject({
+      enabled: true,
+      frequency: 'daily',
+      local_time: '02:30',
+      weekdays: [0, 1, 2, 3, 4],
+      timezone: 'Asia/Shanghai',
+      keep_last: 7,
+      retention_days: 30,
+      version: 1,
+      last_scheduled_for: '2026-08-18T18:30:00Z',
+      last_outcome: 'succeeded',
+    });
+    expect(policy.next_run_at).not.toBeNull();
+
+    const patched = await jsonRequest(ops, '/v1/ops/backup-policy', {
+      method: 'PATCH',
+      body: { expected_version: 1, keep_last: 9 },
+      idempotencyKey: 'idem_pol_1',
+    });
+    expect(patched.status).toBe(200);
+    const patchedBody = (await patched.json()) as BackupPolicy;
+    expect(patchedBody.version).toBe(2);
+    expect(patchedBody.keep_last).toBe(9);
+    expect(patchedBody.retention_days).toBe(30);
+
+    // 同键回放：版本不重复递增
+    const replay = await jsonRequest(ops, '/v1/ops/backup-policy', {
+      method: 'PATCH',
+      body: { expected_version: 1, keep_last: 9 },
+      idempotencyKey: 'idem_pol_1',
+    });
+    expect(replay.status).toBe(200);
+    expect(((await replay.json()) as BackupPolicy).version).toBe(2);
+    // 同键异请求：409 idempotency_key_conflict
+    await expectError(
+      await jsonRequest(ops, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { expected_version: 1, keep_last: 12 },
+        idempotencyKey: 'idem_pol_1',
+      }),
+      409,
+      'idempotency_key_conflict',
+    );
+
+    // 过期版本：409 version_conflict，details 带 current_version
+    const conflict = await expectError(
+      await jsonRequest(ops, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { expected_version: 1, keep_last: 10 },
+        idempotencyKey: 'idem_pol_2',
+      }),
+      409,
+      'version_conflict',
+    );
+    expect(conflict.error.details['current_version']).toBe(2);
+
+    // weekly 空 weekdays：422 field=weekdays（合并后整体验证）
+    const emptyWeekdays = await expectError(
+      await jsonRequest(ops, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { expected_version: 2, frequency: 'weekly', weekdays: [] },
+        idempotencyKey: 'idem_pol_3',
+      }),
+      422,
+      'validation_error',
+    );
+    expect(emptyWeekdays.error.details['field']).toBe('weekdays');
+    // 非法 IANA 时区：422 field=timezone
+    const badTimezone = await expectError(
+      await jsonRequest(ops, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { expected_version: 2, timezone: 'Mars/Olympus' },
+        idempotencyKey: 'idem_pol_4',
+      }),
+      422,
+      'validation_error',
+    );
+    expect(badTimezone.error.details['field']).toBe('timezone');
+    // 缺 expected_version（requireKeyShape 形状 422，不带 field）/ 缺 Idempotency-Key（field=idempotency_key）
+    await expectError(
+      await jsonRequest(ops, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { keep_last: 5 },
+        idempotencyKey: 'idem_pol_5',
+      }),
+      422,
+      'validation_error',
+    );
+    const missingKey = await expectError(
+      await jsonRequest(ops, '/v1/ops/backup-policy', {
+        method: 'PATCH',
+        body: { expected_version: 2, keep_last: 5 },
+      }),
+      422,
+      'validation_error',
+    );
+    expect(missingKey.error.details['field']).toBe('idempotency_key');
+
+    // 停用定时备份：next_run_at 为 null，版本正常递增
+    const disabled = await jsonRequest(ops, '/v1/ops/backup-policy', {
+      method: 'PATCH',
+      body: { expected_version: 2, enabled: false },
+      idempotencyKey: 'idem_pol_6',
+    });
+    expect(disabled.status).toBe(200);
+    const disabledBody = (await disabled.json()) as BackupPolicy;
+    expect(disabledBody.enabled).toBe(false);
+    expect(disabledBody.next_run_at).toBeNull();
+    expect(disabledBody.version).toBe(3);
   });
 });

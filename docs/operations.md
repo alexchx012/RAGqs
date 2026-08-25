@@ -84,6 +84,7 @@ No business scheduler runs inside the API process. External CronJobs/workflows c
 | Shadow evaluation | An external schedule calls `POST /admin/evaluations/shadow-runs` with an idempotency key. The HTTP handler only creates a queued run. |
 | Graph maintenance | `ops` explicitly creates a graph run. There is no automatic trigger or automatic replay. |
 | Chat maintenance | An external schedule invokes `ragqs-chat-maintenance` with `RAG_MAINTENANCE_KEY`; it reaps generation leases and executes queued chat generations. |
+| Backup maintenance | The resident `ragqs-backup-maintenance` worker claims due schedule windows, executes backups under the write gate, drives restores, and applies retention expiry from persisted state. Cadence, gate settle/drain timings and sweep batch size come from the `RAG_BACKUP_*` settings. |
 | Retention and GC | Maintenance work is persisted and idempotent. Its cadence is a profile value; it must be frequent enough to honor lifecycle deadlines and must never remove an active reference. |
 | Backup | Use the deployment backup profile, record `backup_id`, validate the object manifest, and alert on any incomplete component. |
 | Restore drill | Run at the cadence declared in the customer backup profile; the reference profile proposes quarterly drills, with evidence attached to the release/operations record. |

@@ -15,6 +15,8 @@
 import type {
   AdminDepartmentItem,
   AdminUserItem,
+  BackupPolicy,
+  BackupPolicyPatchInput,
   CalibrationWindow,
   CalibrationWindowAction,
   CalibrationWindowKind,
@@ -27,6 +29,15 @@ import type {
   LeaderboardResponse,
   MetricsWindow,
   OperationsMetricsResponse,
+  OpsBackupCreateResponse,
+  OpsBackupDetail,
+  OpsBackupItem,
+  OpsBackupListResponse,
+  OpsRepairTargetRetryResponse,
+  OpsRestoreCreateResponse,
+  OpsRestoreDetail,
+  OpsRestoreItem,
+  OpsRestoreListResponse,
   PermissionMatrixResponse,
   QuotaApproveResponse,
   QuotaRejectResponse,
@@ -134,6 +145,93 @@ interface StoredGraphProjection {
   latestRun: StoredGraphRun | null;
 }
 
+/* ---------- 备份与恢复存储记录（backup-restore-operations-layer） ---------- */
+
+interface StoredBackupComponent {
+  readonly kind: string;
+  status: 'creating' | 'complete' | 'failed';
+  reference: string | null;
+  failureReason: string | null;
+}
+
+interface StoredBackup {
+  readonly backupId: string;
+  status: 'creating' | 'complete' | 'failed';
+  readonly createdAt: string;
+  completedAt: string | null;
+  restorable: boolean;
+  readonly components: StoredBackupComponent[];
+  readonly initiatorId: string;
+}
+
+interface StoredRestoreStage {
+  readonly stage: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed';
+}
+
+interface StoredRepairTarget {
+  readonly targetId: string;
+  readonly stage: string;
+  readonly resourceId: string;
+  status: 'open' | 'succeeded';
+  readonly failureClassification: string;
+  attempts: number;
+}
+
+interface StoredRestore {
+  readonly restoreId: string;
+  readonly backupId: string;
+  status: 'accepted' | 'running' | 'blocked' | 'succeeded' | 'failed';
+  readonly createdAt: string;
+  completedAt: string | null;
+  failureReason: string | null;
+  readonly stages: StoredRestoreStage[];
+  readonly repairTargets: StoredRepairTarget[];
+}
+
+interface StoredBackupPolicy {
+  enabled: boolean;
+  frequency: 'daily' | 'weekly';
+  localTime: string;
+  weekdays: number[];
+  timezone: string;
+  keepLast: number;
+  retentionDays: number;
+  version: number;
+  lastScheduledFor: string | null;
+  lastOutcome: string | null;
+}
+
+/** 固定恢复阶段（与内部状态机同一词表与顺序）。 */
+const OPS_RESTORE_STAGES: readonly string[] = [
+  'postgres',
+  'object_store',
+  'milvus',
+  'sparse',
+  'summary',
+  'graph',
+  'cache',
+];
+
+const OPS_BACKUP_COMPONENT_KINDS: readonly string[] = [
+  'postgres_snapshot',
+  'object_store_snapshot',
+  'object_manifest',
+];
+
+/** mock 下一次执行窗口：UTC 当日 local_time，已过则顺延一日（不含真实时区换算）。 */
+function nextPolicyRunAt(localTime: string): string {
+  const now = new Date();
+  const [hours, minutes] = localTime.split(':').map((part) => Number(part));
+  const next = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours ?? 0, minutes ?? 0),
+  );
+  if (next.getTime() <= now.getTime()) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  return next.toISOString();
+}
+
 const EVALUATION_POLICY = {
   policy_version: 'eval_2026_v1',
   min_real_queries: 50,
@@ -159,6 +257,23 @@ export class MockAdminController {
   private readonly adminUsers = new Map<string, StoredAdminUser>();
   private readonly departments = new Map<string, StoredDepartment>();
   private readonly deactivationUnverified = new Set<string>();
+  /** 备份与恢复：备份集 / 恢复会话 / 版本化策略（备份与恢复运维层）。 */
+  private readonly backups = new Map<string, StoredBackup>();
+  private readonly restores = new Map<string, StoredRestore>();
+  private backupPolicy: StoredBackupPolicy = {
+    enabled: true,
+    frequency: 'daily',
+    localTime: '02:30',
+    weekdays: [0, 1, 2, 3, 4],
+    timezone: 'Asia/Shanghai',
+    keepLast: 7,
+    retentionDays: 30,
+    version: 1,
+    lastScheduledFor: null,
+    lastOutcome: null,
+  };
+  /** retry 已受理、待下一次状态读推进为 succeeded 的修复目标。 */
+  private readonly pendingRepairResolution = new Set<string>();
   /** 写操作幂等回放：scopedKey → { payload, result }；同键同请求在状态校验前返回首次快照。 */
   private readonly idempotency = new Map<string, { payload: string; result: unknown }>();
   private seq = 0;
@@ -178,6 +293,9 @@ export class MockAdminController {
     this.departments.clear();
     this.deactivationUnverified.clear();
     this.idempotency.clear();
+    this.backups.clear();
+    this.restores.clear();
+    this.pendingRepairResolution.clear();
     this.calibrationWindow = null;
     this.calibrationEligible = true;
     this.graphEstimateAvailable = true;
@@ -683,6 +801,385 @@ export class MockAdminController {
   private toGraphCancelResponse(run: StoredGraphRun): GraphBuildCancelResponse {
     return { graph_build_id: run.graphBuildId, version: run.version, state: run.status };
   }
+
+  /* ---------- 备份与恢复（backup-restore-operations-layer 规格 §2/§3/§7；严格 ops-only） ---------- */
+
+  private requireOpsBackups(auth: string | null): User {
+    const user = this.auth(auth);
+    if (user.role !== 'ops') {
+      throw new MockHttpError(403, 'backup_forbidden');
+    }
+    return user;
+  }
+
+  /** active restore 互斥事实（accepted/running/blocked）；恢复期间维护门禁与本判定共用。 */
+  private hasActiveRestore(): boolean {
+    return [...this.restores.values()].some(
+      (restore) =>
+        restore.status === 'accepted' || restore.status === 'running' || restore.status === 'blocked',
+    );
+  }
+
+  listOpsBackups(auth: string | null, page: number, pageSize: number): OpsBackupListResponse {
+    this.requireOpsBackups(auth);
+    // 创建时间倒序
+    const all = [...this.backups.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const start = (page - 1) * pageSize;
+    const items = all.slice(start, start + pageSize).map((backup) => this.toBackupItem(backup));
+    // 读推进（先响应后推进）：creating 备份每次状态读推进一拍，首轮读仍呈现 creating
+    for (const backup of all) {
+      this.progressBackup(backup);
+    }
+    return { items, page, page_size: pageSize, total: all.length };
+  }
+
+  createOpsBackup(auth: string | null, idempotencyKey: string): OpsBackupCreateResponse {
+    const user = this.requireOpsBackups(auth);
+    return this.idempotent(
+      idempotencyKey,
+      'manual-backup',
+      () => {
+        // 恢复期间维护门禁：创建备份 503 maintenance_mode（规格 §7 白名单）
+        if (this.hasActiveRestore()) {
+          throw new MockHttpError(503, 'maintenance_mode');
+        }
+        const backup: StoredBackup = {
+          backupId: this.nextId('bk'),
+          status: 'creating',
+          createdAt: new Date().toISOString(),
+          completedAt: null,
+          restorable: false,
+          components: OPS_BACKUP_COMPONENT_KINDS.map((kind) => ({
+            kind,
+            status: 'creating' as const,
+            reference: null,
+            failureReason: null,
+          })),
+          initiatorId: user.id,
+        };
+        this.backups.set(backup.backupId, backup);
+        return { backup_id: backup.backupId, status: backup.status };
+      },
+      user.id,
+      'backup-create',
+      'instance',
+    );
+  }
+
+  getOpsBackup(auth: string | null, backupId: string): OpsBackupDetail {
+    this.requireOpsBackups(auth);
+    const backup = this.backups.get(backupId);
+    if (backup === undefined) {
+      throw new MockHttpError(404, 'backup_not_found');
+    }
+    const detail = this.toBackupDetail(backup);
+    this.progressBackup(backup);
+    return detail;
+  }
+
+  /** 非终态推进一拍：creating→complete（组成物同步完成并补齐 reference，备份转为可恢复）。 */
+  private progressBackup(backup: StoredBackup): void {
+    if (backup.status !== 'creating') {
+      return;
+    }
+    backup.status = 'complete';
+    backup.completedAt = new Date().toISOString();
+    backup.restorable = true;
+    for (const component of backup.components) {
+      if (component.status === 'creating') {
+        component.status = 'complete';
+        component.reference = `${component.kind}:${backup.backupId}`;
+      }
+    }
+  }
+
+  listOpsRestores(auth: string | null, page: number, pageSize: number): OpsRestoreListResponse {
+    this.requireOpsBackups(auth);
+    const all = [...this.restores.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const start = (page - 1) * pageSize;
+    const items = all.slice(start, start + pageSize).map((restore) => this.toRestoreItem(restore));
+    // 读推进（先响应后推进）：与备份同一约定
+    for (const restore of all) {
+      this.progressRestore(restore);
+    }
+    return { items, page, page_size: pageSize, total: all.length };
+  }
+
+  createOpsRestore(
+    auth: string | null,
+    backupId: string,
+    idempotencyKey: string,
+  ): OpsRestoreCreateResponse {
+    const user = this.requireOpsBackups(auth);
+    const payload = JSON.stringify({ backupId });
+    return this.idempotent(
+      idempotencyKey,
+      payload,
+      () => {
+        const backup = this.backups.get(backupId);
+        if (backup === undefined) {
+          throw new MockHttpError(404, 'backup_not_found');
+        }
+        if (!backup.restorable) {
+          throw new MockHttpError(409, 'backup_not_restorable');
+        }
+        // 持久互斥：已有 active restore 时第二个恢复 409（规格 §7/Q9）
+        if (this.hasActiveRestore()) {
+          throw new MockHttpError(409, 'restore_in_progress');
+        }
+        const restore: StoredRestore = {
+          restoreId: this.nextId('rs'),
+          backupId,
+          status: 'accepted',
+          createdAt: new Date().toISOString(),
+          completedAt: null,
+          failureReason: null,
+          stages: OPS_RESTORE_STAGES.map((stage) => ({ stage, status: 'pending' as const })),
+          repairTargets: [],
+        };
+        this.restores.set(restore.restoreId, restore);
+        return { restore_id: restore.restoreId, backup_id: backupId, status: restore.status };
+      },
+      user.id,
+      'restore-create',
+      backupId,
+    );
+  }
+
+  getOpsRestore(auth: string | null, restoreId: string): OpsRestoreDetail {
+    this.requireOpsBackups(auth);
+    const restore = this.restores.get(restoreId);
+    if (restore === undefined) {
+      throw new MockHttpError(404, 'restore_not_found');
+    }
+    const detail = this.toRestoreDetail(restore);
+    this.progressRestore(restore);
+    return detail;
+  }
+
+  /**
+   * 非终态推进一拍：accepted→running 并启动首阶段；running 推进一个阶段；
+   * blocked 先结算已受理重试的修复目标（全部 succeeded 后解除阻断，重跑失败阶段）；
+   * 全部阶段 succeeded 后转终态。
+   */
+  private progressRestore(restore: StoredRestore): void {
+    if (restore.status === 'accepted') {
+      restore.status = 'running';
+      const first = restore.stages[0];
+      if (first !== undefined) {
+        first.status = 'running';
+      }
+      return;
+    }
+    if (restore.status === 'blocked') {
+      for (const target of restore.repairTargets) {
+        if (target.status === 'open' && this.pendingRepairResolution.has(target.targetId)) {
+          target.status = 'succeeded';
+          this.pendingRepairResolution.delete(target.targetId);
+        }
+      }
+      if (restore.repairTargets.some((target) => target.status === 'open')) {
+        return;
+      }
+      // mock 简化：阻断解除后一拍补齐剩余阶段并转终态（真实逐阶段推进由后端 worker 负责）
+      for (const stage of restore.stages) {
+        if (stage.status !== 'succeeded') {
+          stage.status = 'succeeded';
+        }
+      }
+      restore.status = 'succeeded';
+      restore.completedAt = new Date().toISOString();
+      return;
+    }
+    if (restore.status !== 'running') {
+      return;
+    }
+    const running = restore.stages.find((stage) => stage.status === 'running');
+    if (running !== undefined) {
+      running.status = 'succeeded';
+      const next = restore.stages.find((stage) => stage.status === 'pending');
+      if (next !== undefined) {
+        next.status = 'running';
+        return;
+      }
+    }
+    if (
+      restore.stages.length > 0 &&
+      restore.stages.every((stage) => stage.status === 'succeeded')
+    ) {
+      restore.status = 'succeeded';
+      restore.completedAt = new Date().toISOString();
+    }
+  }
+
+  retryOpsRepairTarget(
+    auth: string | null,
+    restoreId: string,
+    targetId: string,
+    idempotencyKey: string,
+  ): OpsRepairTargetRetryResponse {
+    const user = this.requireOpsBackups(auth);
+    const payload = JSON.stringify({ restoreId, targetId });
+    return this.idempotent(
+      idempotencyKey,
+      payload,
+      () => {
+        const restore = this.restores.get(restoreId);
+        if (restore === undefined) {
+          throw new MockHttpError(404, 'restore_not_found');
+        }
+        const target = restore.repairTargets.find((candidate) => candidate.targetId === targetId);
+        if (target === undefined) {
+          throw new MockHttpError(404, 'repair_target_not_found');
+        }
+        if (target.status !== 'open') {
+          throw new MockHttpError(409, 'repair_target_not_open');
+        }
+        target.attempts += 1;
+        // 重试受理后下一次状态读推进为 succeeded（持久 repair queue 语义）
+        this.pendingRepairResolution.add(target.targetId);
+        return { target_id: target.targetId, status: target.status };
+      },
+      user.id,
+      'repair-retry',
+      targetId,
+    );
+  }
+
+  /**
+   * 恢复终态夹具：把指定恢复直接推进到终态 succeeded（所有阶段与修复目标 succeeded），
+   * 用于测试前清空 active 互斥，避免 createOpsRestore 409 / 维护门禁 503 干扰后续用例。
+   */
+  completeOpsRestore(restoreId: string): void {
+    const restore = this.restores.get(restoreId);
+    if (restore === undefined) {
+      return;
+    }
+    for (const stage of restore.stages) {
+      stage.status = 'succeeded';
+    }
+    for (const target of restore.repairTargets) {
+      target.status = 'succeeded';
+      this.pendingRepairResolution.delete(target.targetId);
+    }
+    restore.status = 'succeeded';
+    restore.completedAt = new Date().toISOString();
+  }
+
+  getOpsBackupPolicy(auth: string | null): BackupPolicy {
+    this.requireOpsBackups(auth);
+    return this.toBackupPolicy();
+  }
+
+  patchOpsBackupPolicy(
+    auth: string | null,
+    input: BackupPolicyPatchInput,
+    idempotencyKey: string,
+  ): BackupPolicy {
+    const user = this.requireOpsBackups(auth);
+    const payload = JSON.stringify(input);
+    return this.idempotent(
+      idempotencyKey,
+      payload,
+      () => {
+        // 恢复期间维护门禁：策略 PATCH 503 maintenance_mode（规格 §7 白名单）
+        if (this.hasActiveRestore()) {
+          throw new MockHttpError(503, 'maintenance_mode');
+        }
+        const policy = this.backupPolicy;
+        if (policy.version !== input.expected_version) {
+          throw new MockHttpError(409, 'version_conflict', { current_version: policy.version });
+        }
+        const next: StoredBackupPolicy = {
+          enabled: input.enabled ?? policy.enabled,
+          frequency: input.frequency ?? policy.frequency,
+          localTime: input.local_time ?? policy.localTime,
+          weekdays: input.weekdays !== undefined ? [...input.weekdays] : policy.weekdays,
+          timezone: input.timezone ?? policy.timezone,
+          keepLast: input.keep_last ?? policy.keepLast,
+          retentionDays: input.retention_days ?? policy.retentionDays,
+          version: policy.version + 1,
+          lastScheduledFor: policy.lastScheduledFor,
+          lastOutcome: policy.lastOutcome,
+        };
+        // 合并后整体验证：weekly 至少一天（规格 §4）
+        if (next.frequency === 'weekly' && next.weekdays.length === 0) {
+          throw new MockHttpError(422, 'validation_error', { field: 'weekdays' });
+        }
+        this.backupPolicy = next;
+        return this.toBackupPolicy();
+      },
+      user.id,
+      'backup-policy',
+      'singleton',
+    );
+  }
+
+  private toBackupItem(backup: StoredBackup): OpsBackupItem {
+    return {
+      backup_id: backup.backupId,
+      status: backup.status,
+      created_at: backup.createdAt,
+      completed_at: backup.completedAt,
+      restorable: backup.restorable,
+    };
+  }
+
+  private toBackupDetail(backup: StoredBackup): OpsBackupDetail {
+    return {
+      ...this.toBackupItem(backup),
+      components: backup.components.map((component) => ({
+        kind: component.kind,
+        status: component.status,
+        reference: component.reference,
+        failure_reason: component.failureReason,
+      })),
+    };
+  }
+
+  private toRestoreItem(restore: StoredRestore): OpsRestoreItem {
+    return {
+      restore_id: restore.restoreId,
+      backup_id: restore.backupId,
+      status: restore.status,
+      created_at: restore.createdAt,
+      completed_at: restore.completedAt,
+    };
+  }
+
+  private toRestoreDetail(restore: StoredRestore): OpsRestoreDetail {
+    return {
+      ...this.toRestoreItem(restore),
+      failure_reason: restore.failureReason,
+      stages: restore.stages.map((stage) => ({ stage: stage.stage, status: stage.status })),
+      repair_targets: restore.repairTargets.map((target) => ({
+        target_id: target.targetId,
+        stage: target.stage,
+        resource_id: target.resourceId,
+        status: target.status,
+        failure_classification: target.failureClassification,
+        attempts: target.attempts,
+      })),
+    };
+  }
+
+  private toBackupPolicy(): BackupPolicy {
+    const policy = this.backupPolicy;
+    return {
+      enabled: policy.enabled,
+      frequency: policy.frequency,
+      local_time: policy.localTime,
+      weekdays: [...policy.weekdays],
+      timezone: policy.timezone,
+      keep_last: policy.keepLast,
+      retention_days: policy.retentionDays,
+      version: policy.version,
+      next_run_at: policy.enabled ? nextPolicyRunAt(policy.localTime) : null,
+      last_scheduled_for: policy.lastScheduledFor,
+      last_outcome: policy.lastOutcome,
+    };
+  }
+
 
   /* ---------- §11.1 排行榜 ---------- */
 
@@ -1675,6 +2172,93 @@ export class MockAdminController {
       },
       latestRun: null,
     };
+
+    // 备份与恢复种子：一份 complete 可恢复备份（恢复来源可选）、一份 creating 备份
+    // （首轮读仍 creating，下一次读推进 complete，供轮询收敛演示）、一条 blocked 恢复
+    // （含 open 修复目标，retry 受理后下一轮读转 succeeded）、一份默认策略（daily 02:30）。
+    this.seedBackup({
+      backupId: OPS_BACKUP_SEED_IDS.completeBackup,
+      status: 'complete',
+      createdAt: '2026-08-17T18:30:00Z',
+      completedAt: '2026-08-17T18:32:00Z',
+      restorable: true,
+      components: [
+        { kind: 'postgres_snapshot', status: 'complete', reference: 'pg:bk_seed_complete', failureReason: null },
+        { kind: 'object_store_snapshot', status: 'complete', reference: 'obj:bk_seed_complete', failureReason: null },
+        { kind: 'object_manifest', status: 'complete', reference: 'manifest:128', failureReason: null },
+      ],
+    });
+    this.seedBackup({
+      backupId: OPS_BACKUP_SEED_IDS.creatingBackup,
+      status: 'creating',
+      createdAt: '2026-08-19T02:00:00Z',
+      completedAt: null,
+      restorable: false,
+      components: OPS_BACKUP_COMPONENT_KINDS.map((kind) => ({
+        kind,
+        status: 'creating' as const,
+        reference: null,
+        failureReason: null,
+      })),
+    });
+    this.restores.set(OPS_BACKUP_SEED_IDS.repairRestore, {
+      restoreId: OPS_BACKUP_SEED_IDS.repairRestore,
+      backupId: OPS_BACKUP_SEED_IDS.completeBackup,
+      status: 'blocked',
+      createdAt: '2026-08-18T03:00:00Z',
+      completedAt: null,
+      failureReason: null,
+      stages: [
+        { stage: 'postgres', status: 'succeeded' },
+        { stage: 'object_store', status: 'succeeded' },
+        { stage: 'milvus', status: 'failed' },
+        { stage: 'sparse', status: 'pending' },
+        { stage: 'summary', status: 'pending' },
+        { stage: 'graph', status: 'pending' },
+        { stage: 'cache', status: 'pending' },
+      ],
+      repairTargets: [
+        {
+          targetId: OPS_BACKUP_SEED_IDS.repairTarget,
+          stage: 'milvus',
+          resourceId: 'doc_seed_1',
+          status: 'open',
+          failureClassification: 'checksum_mismatch',
+          attempts: 1,
+        },
+      ],
+    });
+    this.backupPolicy = {
+      enabled: true,
+      frequency: 'daily',
+      localTime: '02:30',
+      weekdays: [0, 1, 2, 3, 4],
+      timezone: 'Asia/Shanghai',
+      keepLast: 7,
+      retentionDays: 30,
+      version: 1,
+      lastScheduledFor: '2026-08-18T18:30:00Z',
+      lastOutcome: 'succeeded',
+    };
+  }
+
+  private seedBackup(input: {
+    readonly backupId: string;
+    readonly status: 'creating' | 'complete' | 'failed';
+    readonly createdAt: string;
+    readonly completedAt: string | null;
+    readonly restorable: boolean;
+    readonly components: readonly StoredBackupComponent[];
+  }): void {
+    this.backups.set(input.backupId, {
+      backupId: input.backupId,
+      status: input.status,
+      createdAt: input.createdAt,
+      completedAt: input.completedAt,
+      restorable: input.restorable,
+      components: input.components.map((component) => ({ ...component })),
+      initiatorId: 'u_ops',
+    });
   }
 
   private seedQuotaApproval(
@@ -1796,4 +2380,15 @@ export const ADMIN_SEED_NAMES = {
   finance: '财务部',
   hr: '人事部',
   emptyDept: '空壳部',
+} as const;
+
+/*
+ * e2e 断言用备份 / 恢复种子 ID（copy-discipline：与 ADMIN_SEED_NAMES 同一约定，
+ * 值必须与 seedFixtures 一致）。
+ */
+export const OPS_BACKUP_SEED_IDS = {
+  completeBackup: 'bk_seed_complete',
+  creatingBackup: 'bk_seed_creating',
+  repairRestore: 'rs_seed_repair',
+  repairTarget: 'rt_seed_1',
 } as const;

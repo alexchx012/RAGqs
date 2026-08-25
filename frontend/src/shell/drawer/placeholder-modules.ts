@@ -7,6 +7,7 @@
 
 import { createElement } from 'react';
 import { ApprovalSubmissionsLayer, QuotaRequestsLayer } from '../../admin/ApprovalsModule';
+import { BackupsLayer } from '../../admin/BackupsLayer';
 import { DashboardModule } from '../../admin/DashboardModule';
 import { EvaluationModule } from '../../admin/EvaluationModule';
 import { OperationsMetricsLayer, OpsJobsLayer } from '../../admin/OperationsModule';
@@ -142,6 +143,9 @@ export function createPlaceholderModules(): DrawerModule[] {
         // 任务队列（§10）与指标看板（§9.2）为系统运维下钻子界面；任务队列项带超时计数徽标（>0 警告琥珀）
         { id: 'jobs', title: modules.opsJobs, render: () => createElement(OpsJobsLayer), renderSummary: () => createElement(OperationsStaleBadge) },
         { id: 'metrics', title: modules.opsMetrics, render: () => createElement(OperationsMetricsLayer) },
+        // 备份与恢复（backup-restore-operations-layer 规格 §9）：严格 ops-only，
+        // 对 admin 隐藏下钻行，深链按角色截断回退到系统运维层
+        { id: 'backups', title: modules.backups, roles: OPS, render: () => createElement(BackupsLayer) },
       ],
     },
     // 同一模块 id 按角色给不同名：运维「用户管理」、超管「人员与权限」

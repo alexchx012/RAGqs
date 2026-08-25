@@ -410,3 +410,130 @@ export interface PermissionMatrixRow {
 export interface PermissionMatrixResponse {
   readonly capabilities: readonly PermissionMatrixRow[];
 }
+
+/* ---------- 备份与恢复（backup-restore-operations-layer 规格 §2；严格 ops-only） ---------- */
+
+export type OpsBackupStatus = 'creating' | 'complete' | 'failed';
+
+export interface OpsBackupItem {
+  readonly backup_id: string;
+  readonly status: OpsBackupStatus;
+  readonly created_at: string;
+  readonly completed_at: string | null;
+  /** 仅 complete 且未清理的备份可恢复（purged / creating / failed 均 false）。 */
+  readonly restorable: boolean;
+}
+
+/** 备份集组成物（kind 与后端同一词表：postgres_snapshot / object_store_snapshot / object_manifest）。 */
+export interface OpsBackupComponent {
+  readonly kind: string;
+  readonly status: OpsBackupStatus;
+  readonly reference?: string | null;
+  readonly failure_reason?: string | null;
+}
+
+export interface OpsBackupDetail extends OpsBackupItem {
+  readonly components: readonly OpsBackupComponent[];
+}
+
+export interface OpsBackupListResponse {
+  readonly items: readonly OpsBackupItem[];
+  readonly page: number;
+  readonly page_size: number;
+  readonly total: number;
+}
+
+/** POST /ops/backups 202 受理响应。 */
+export interface OpsBackupCreateResponse {
+  readonly backup_id: string;
+  readonly status: OpsBackupStatus;
+}
+
+/** 与内部状态机同词表：accepted/running/blocked 为 active（blocked = 有 open 修复目标），succeeded/failed 为终态。 */
+export type OpsRestoreStatus = 'accepted' | 'running' | 'blocked' | 'succeeded' | 'failed';
+
+export interface OpsRestoreItem {
+  readonly restore_id: string;
+  readonly backup_id: string;
+  readonly status: OpsRestoreStatus;
+  readonly created_at: string;
+  readonly completed_at: string | null;
+}
+
+export interface OpsRestoreListResponse {
+  readonly items: readonly OpsRestoreItem[];
+  readonly page: number;
+  readonly page_size: number;
+  readonly total: number;
+}
+
+/** POST /ops/restores 202 受理响应。 */
+export interface OpsRestoreCreateResponse {
+  readonly restore_id: string;
+  readonly backup_id: string;
+  readonly status: OpsRestoreStatus;
+}
+
+export type OpsRestoreStageStatus = 'pending' | 'running' | 'succeeded' | 'failed';
+
+/** stage 与后端固定阶段词表一致（postgres / object_store / milvus / sparse / summary / graph / cache）。 */
+export interface OpsRestoreStage {
+  readonly stage: string;
+  readonly status: OpsRestoreStageStatus;
+  readonly validated?: boolean;
+}
+
+/** repair queue 目标：open 可重试，succeeded 已修复。 */
+export type OpsRepairTargetStatus = 'open' | 'succeeded';
+
+export interface OpsRepairTarget {
+  readonly target_id: string;
+  readonly stage: string;
+  readonly resource_id: string;
+  readonly status: OpsRepairTargetStatus;
+  readonly failure_classification: string;
+  readonly attempts?: number;
+}
+
+export interface OpsRestoreDetail extends OpsRestoreItem {
+  readonly failure_reason?: string | null;
+  readonly stages: readonly OpsRestoreStage[];
+  readonly repair_targets: readonly OpsRepairTarget[];
+}
+
+/** POST repair-target retry 202 受理响应（target 保持 open，attempts 递增）。 */
+export interface OpsRepairTargetRetryResponse {
+  readonly target_id: string;
+  readonly status: OpsRepairTargetStatus;
+}
+
+export type BackupPolicyFrequency = 'daily' | 'weekly';
+
+export interface BackupPolicy {
+  readonly enabled: boolean;
+  readonly frequency: BackupPolicyFrequency;
+  /** HH:MM（策略时区本地时间）。 */
+  readonly local_time: string;
+  /** 仅 weekly 使用；星期取值 0=周一 … 6=周日（与后端 Python date.weekday() 一致），至少一天。 */
+  readonly weekdays: readonly number[];
+  /** IANA 时区名。 */
+  readonly timezone: string;
+  readonly keep_last: number;
+  readonly retention_days: number;
+  readonly version: number;
+  readonly next_run_at: string | null;
+  readonly last_scheduled_for?: string | null;
+  readonly last_outcome?: string | null;
+}
+
+/** PATCH /ops/backup-policy 请求体：expected_version 必填 + 字段子集。 */
+export interface BackupPolicyPatchInput {
+  readonly expected_version: number;
+  readonly enabled?: boolean;
+  readonly frequency?: BackupPolicyFrequency;
+  readonly local_time?: string;
+  readonly weekdays?: readonly number[];
+  readonly timezone?: string;
+  readonly keep_last?: number;
+  readonly retention_days?: number;
+}

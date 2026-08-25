@@ -925,12 +925,17 @@ def build_runtime(
     # Backup/restore orchestration: the gate reader backs the API read-gate
     # middleware; the orchestration service itself is only registered when
     # its schema is available (fresh databases before the migration resolve
-    # it to None and the API simply runs with the gate open).
+    # it to None and the API simply runs with the gate open). The provider
+    # ports are registered as adapters so the backup maintenance worker shares
+    # the exact instances the orchestration service was built with.
     from app.backup.gate import MaintenanceGateReader
+    from app.backup.ports import EmptyObjectManifest, NoopObjectSnapshot, NoopPostgresBackup
 
     configured.setdefault("maintenance_gate_reader", MaintenanceGateReader(engine))
+    configured.setdefault("backup_postgres_port", NoopPostgresBackup())
+    configured.setdefault("backup_object_snapshot_port", NoopObjectSnapshot())
+    configured.setdefault("backup_object_manifest_port", EmptyObjectManifest())
     if "backup_restore_service" not in configured:
-        from app.backup.ports import EmptyObjectManifest, NoopObjectSnapshot, NoopPostgresBackup
         from app.backup.service import BackupRestoreService
 
         with engine.connect() as connection:
@@ -938,9 +943,31 @@ def build_runtime(
         if backup_schema_available:
             configured["backup_restore_service"] = BackupRestoreService(
                 engine,
-                postgres_backup=NoopPostgresBackup(),
-                object_snapshot=NoopObjectSnapshot(),
-                object_manifest=EmptyObjectManifest(),
+                postgres_backup=configured["backup_postgres_port"],
+                object_snapshot=configured["backup_object_snapshot_port"],
+                object_manifest=configured["backup_object_manifest_port"],
+            )
+    # Backup operations layer: the write gate reader backs the write-gate
+    # middleware and the in-process tracker lets the backup worker drain
+    # in-flight business writes; both are unconditional (fail-open/absent
+    # schema simply keeps writes flowing). The ops service itself requires
+    # the 0033 schema and the internal orchestration service.
+    from app.backup.write_gate import BackupWriteGateReader, InFlightWriteTracker
+
+    configured.setdefault("backup_write_gate_reader", BackupWriteGateReader(engine))
+    configured.setdefault("backup_write_tracker", InFlightWriteTracker())
+    if "backup_ops_service" not in configured:
+        backup_restore = configured.get("backup_restore_service")
+        with engine.connect() as connection:
+            backup_ops_schema_available = inspect(connection).has_table("backup_policy")
+        if backup_ops_schema_available and backup_restore is not None:
+            from app.backup.ops_service import BackupOpsService
+
+            configured["backup_ops_service"] = BackupOpsService(
+                engine,
+                backup_service=backup_restore,
+                write_gate_reader=configured["backup_write_gate_reader"],
+                now=clock.now_utc,
             )
     runtime = PlatformRuntime(settings=settings, adapters=configured)
     # Assemble the scoped workers around THIS runtime. Both workers use the
@@ -1062,6 +1089,32 @@ def build_runtime(
         "retention_worker",
         configured.get("retention_worker") or RetentionMaintenanceWorker(worker_runtime),
     )
+    # Resident backup maintenance (schedule/execute/restore/retention). Only
+    # registered when the ops layer schema and services exist; the worker
+    # shares the write tracker and provider ports with the API process wiring.
+    backup_ops = configured.get("backup_ops_service")
+    backup_restore = configured.get("backup_restore_service")
+    if (
+        "backup_maintenance_worker" not in configured
+        and backup_ops is not None
+        and backup_restore is not None
+    ):
+        from app.backup.worker import BackupMaintenanceWorker
+
+        configured["backup_maintenance_worker"] = BackupMaintenanceWorker(
+            worker_runtime,
+            ops_service=backup_ops,
+            backup_service=backup_restore,
+            engine=engine,
+            postgres_backup=configured["backup_postgres_port"],
+            object_snapshot=configured["backup_object_snapshot_port"],
+            object_manifest=configured["backup_object_manifest_port"],
+            write_tracker=configured["backup_write_tracker"],
+            gate_settle_seconds=settings.backup.gate_settle_seconds,
+            gate_drain_timeout_seconds=settings.backup.gate_drain_timeout_seconds,
+            retention_batch_limit=settings.backup.retention_batch_limit,
+            now=clock.now_utc,
+        )
     return runtime
 
 

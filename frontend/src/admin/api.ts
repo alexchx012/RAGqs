@@ -26,6 +26,8 @@ import type {
   AdminUserListQuery,
   AdminUserListResponse,
   AdminUserPatchInput,
+  BackupPolicy,
+  BackupPolicyPatchInput,
   CalibrationWindow,
   CalibrationWindowAction,
   CalibrationWindowKind,
@@ -37,8 +39,15 @@ import type {
   LeaderboardResponse,
   MetricsWindow,
   OperationsMetricsResponse,
+  OpsBackupCreateResponse,
+  OpsBackupDetail,
+  OpsBackupListResponse,
   OpsJobsResponse,
   OpsJobsView,
+  OpsRepairTargetRetryResponse,
+  OpsRestoreCreateResponse,
+  OpsRestoreDetail,
+  OpsRestoreListResponse,
   PermissionMatrixResponse,
   QuotaApproveResponse,
   QuotaRejectResponse,
@@ -101,6 +110,25 @@ export interface AdminApi {
 
   /* ---------- §10 任务队列（行操作复用 settings api.cancelJob/replayJob） ---------- */
   listOpsJobs(view: OpsJobsView): Promise<OpsJobsResponse>;
+
+  /* ---------- 备份与恢复（backup-restore-operations-layer 规格 §2；严格 ops-only） ---------- */
+  listOpsBackups(page: number, pageSize: number): Promise<OpsBackupListResponse>;
+  /** 202 受理；无请求体；携带 Idempotency-Key。 */
+  createOpsBackup(idempotencyKey: string): Promise<OpsBackupCreateResponse>;
+  getOpsBackup(backupId: string): Promise<OpsBackupDetail>;
+  listOpsRestores(page: number, pageSize: number): Promise<OpsRestoreListResponse>;
+  /** 202 受理；body { backup_id }；携带 Idempotency-Key。 */
+  createOpsRestore(backupId: string, idempotencyKey: string): Promise<OpsRestoreCreateResponse>;
+  getOpsRestore(restoreId: string): Promise<OpsRestoreDetail>;
+  /** 202 受理；可无请求体；携带 Idempotency-Key。 */
+  retryOpsRepairTarget(
+    restoreId: string,
+    targetId: string,
+    idempotencyKey: string,
+  ): Promise<OpsRepairTargetRetryResponse>;
+  getOpsBackupPolicy(): Promise<BackupPolicy>;
+  /** 版本化策略更新：body 含 expected_version + 字段子集；携带 Idempotency-Key。 */
+  patchOpsBackupPolicy(input: BackupPolicyPatchInput, idempotencyKey: string): Promise<BackupPolicy>;
 
   /* ---------- §11 评测与校准 ---------- */
   getLeaderboard(): Promise<LeaderboardResponse>;
@@ -293,6 +321,84 @@ export function createAdminApi(client: ApiClient): AdminApi {
     listOpsJobs(view) {
       const authSessionGuard = guard();
       return client.request<OpsJobsResponse>(`/ops/jobs?view=${view}`, { authSessionGuard });
+    },
+
+    /* ---------- 备份与恢复（严格 ops-only；写操作全部携带 Idempotency-Key） ---------- */
+
+    listOpsBackups(page, pageSize) {
+      const authSessionGuard = guard();
+      const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+      return client.request<OpsBackupListResponse>(`/ops/backups?${query.toString()}`, {
+        authSessionGuard,
+      });
+    },
+
+    createOpsBackup(idempotencyKey) {
+      const authSessionGuard = guard();
+      return client.request<OpsBackupCreateResponse>('/ops/backups', {
+        method: 'POST',
+        headers: idempotencyHeaders(idempotencyKey),
+        authSessionGuard,
+      });
+    },
+
+    getOpsBackup(backupId) {
+      const authSessionGuard = guard();
+      return client.request<OpsBackupDetail>(`/ops/backups/${encodeURIComponent(backupId)}`, {
+        authSessionGuard,
+      });
+    },
+
+    listOpsRestores(page, pageSize) {
+      const authSessionGuard = guard();
+      const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+      return client.request<OpsRestoreListResponse>(`/ops/restores?${query.toString()}`, {
+        authSessionGuard,
+      });
+    },
+
+    createOpsRestore(backupId, idempotencyKey) {
+      const authSessionGuard = guard();
+      return client.request<OpsRestoreCreateResponse>('/ops/restores', {
+        method: 'POST',
+        body: { backup_id: backupId },
+        headers: idempotencyHeaders(idempotencyKey),
+        authSessionGuard,
+      });
+    },
+
+    getOpsRestore(restoreId) {
+      const authSessionGuard = guard();
+      return client.request<OpsRestoreDetail>(`/ops/restores/${encodeURIComponent(restoreId)}`, {
+        authSessionGuard,
+      });
+    },
+
+    retryOpsRepairTarget(restoreId, targetId, idempotencyKey) {
+      const authSessionGuard = guard();
+      return client.request<OpsRepairTargetRetryResponse>(
+        `/ops/restores/${encodeURIComponent(restoreId)}/repair-targets/${encodeURIComponent(targetId)}/retry`,
+        {
+          method: 'POST',
+          headers: idempotencyHeaders(idempotencyKey),
+          authSessionGuard,
+        },
+      );
+    },
+
+    getOpsBackupPolicy() {
+      const authSessionGuard = guard();
+      return client.request<BackupPolicy>('/ops/backup-policy', { authSessionGuard });
+    },
+
+    patchOpsBackupPolicy(input, idempotencyKey) {
+      const authSessionGuard = guard();
+      return client.request<BackupPolicy>('/ops/backup-policy', {
+        method: 'PATCH',
+        body: input,
+        headers: idempotencyHeaders(idempotencyKey),
+        authSessionGuard,
+      });
     },
 
     getLeaderboard() {

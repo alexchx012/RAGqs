@@ -156,7 +156,10 @@ describe('内置占位模块：管理段（按角色渲染）', () => {
     const approvals = modules2.find((module) => module.id === 'approvals' && module.roles?.includes('ops'));
     expect(ids(approvals?.children ?? [])).toEqual(['quota', 'submissions']);
     const operations = modules2.find((module) => module.id === 'operations');
-    expect(ids(operations?.children ?? [])).toEqual(['jobs', 'metrics']);
+    // 备份与恢复（backup-restore-operations-layer）：严格 ops-only 第三下钻子层
+    expect(ids(operations?.children ?? [])).toEqual(['jobs', 'metrics', 'backups']);
+    const backups = operations?.children?.find((child) => child.id === 'backups');
+    expect(backups?.roles).toEqual(['ops']);
     const usersAdmin = modules2.find(
       (module) => module.id === 'users' && module.roles?.includes('admin'),
     );

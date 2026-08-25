@@ -455,3 +455,31 @@ def test_load_platform_settings_replaces_pydantic_errors_with_safe_boundary() ->
         repr(vars(error)),
     )
     assert all(sentinel not in representation for representation in visible_representations)
+
+
+def test_backup_settings_defaults_and_env_overrides() -> None:
+    settings = load_platform_settings(development_environment())
+    assert settings.backup.schedule_interval_seconds == 60
+    assert settings.backup.gate_settle_seconds == 2.0
+    assert settings.backup.gate_drain_timeout_seconds == 30.0
+    assert settings.backup.retention_batch_limit == 50
+
+    overridden = load_platform_settings(
+        development_environment(
+            RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS="120",
+            RAG_BACKUP_GATE_SETTLE_SECONDS="0.5",
+            RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS="10",
+            RAG_BACKUP_RETENTION_BATCH_LIMIT="5",
+        )
+    )
+    assert overridden.backup.schedule_interval_seconds == 120
+    assert overridden.backup.gate_settle_seconds == 0.5
+    assert overridden.backup.gate_drain_timeout_seconds == 10.0
+    assert overridden.backup.retention_batch_limit == 5
+
+
+def test_backup_settings_reject_out_of_range_values() -> None:
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(development_environment(RAG_BACKUP_RETENTION_BATCH_LIMIT="0"))
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(development_environment(RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS="1"))

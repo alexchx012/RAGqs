@@ -11,6 +11,7 @@
 
 import { http, HttpResponse } from 'msw';
 import type {
+  BackupPolicyPatchInput,
   CalibrationWindowAction,
   CalibrationWindowKind,
   DepartmentStatusFilter,
@@ -189,6 +190,86 @@ function optionalIntField(body: Record<string, unknown>, key: string): number | 
 
 function optionalQuery(value: string | null): string | undefined {
   return value === null || value === '' ? undefined : value;
+}
+
+/** HH:MM 本地时间（小时 00–23 / 分钟 00–59）。 */
+function parseLocalTimeField(value: unknown): string {
+  if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    throw new MockHttpError(422, 'validation_error', { field: 'local_time' });
+  }
+  return value;
+}
+
+/** 星期数组（0=周一 … 6=周日，与后端 Python date.weekday() 一致）；空数组合法与否由控制器按 frequency 判定。 */
+function parseWeekdaysField(value: unknown): number[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((day) => !Number.isInteger(day) || (day as number) < 0 || (day as number) > 6)
+  ) {
+    throw new MockHttpError(422, 'validation_error', { field: 'weekdays' });
+  }
+  return value as number[];
+}
+
+/** IANA 时区：经 Intl 构造校验（无效名抛 RangeError）。 */
+function parseTimezoneField(value: unknown): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new MockHttpError(422, 'validation_error', { field: 'timezone' });
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+  } catch {
+    throw new MockHttpError(422, 'validation_error', { field: 'timezone' });
+  }
+  return value;
+}
+
+/** 策略 PATCH 请求体解析：expected_version 必填 + 字段子集（各字段独立校验）。 */
+function parsePolicyPatch(body: Record<string, unknown>): BackupPolicyPatchInput {
+  requireKeyShape(
+    body,
+    [
+      'expected_version',
+      'enabled',
+      'frequency',
+      'local_time',
+      'weekdays',
+      'timezone',
+      'keep_last',
+      'retention_days',
+    ],
+    ['expected_version'],
+  );
+  const input: {
+    -readonly [K in keyof BackupPolicyPatchInput]?: BackupPolicyPatchInput[K];
+  } = { expected_version: requireExpectedVersion(body) };
+  if (Object.hasOwn(body, 'enabled')) {
+    if (typeof body['enabled'] !== 'boolean') {
+      throw new MockHttpError(422, 'validation_error', { field: 'enabled' });
+    }
+    input.enabled = body['enabled'];
+  }
+  if (Object.hasOwn(body, 'frequency')) {
+    input.frequency = parseEnumField(body['frequency'], ['daily', 'weekly'] as const, 'frequency');
+  }
+  if (Object.hasOwn(body, 'local_time')) {
+    input.local_time = parseLocalTimeField(body['local_time']);
+  }
+  if (Object.hasOwn(body, 'weekdays')) {
+    input.weekdays = parseWeekdaysField(body['weekdays']);
+  }
+  if (Object.hasOwn(body, 'timezone')) {
+    input.timezone = parseTimezoneField(body['timezone']);
+  }
+  const keepLast = optionalIntField(body, 'keep_last');
+  if (keepLast !== undefined) {
+    input.keep_last = keepLast;
+  }
+  const retentionDays = optionalIntField(body, 'retention_days');
+  if (retentionDays !== undefined) {
+    input.retention_days = retentionDays;
+  }
+  return input as BackupPolicyPatchInput;
 }
 
 export function createAdminHandlers(
@@ -384,6 +465,135 @@ export function createAdminHandlers(
         const url = new URL(request.url);
         const view = parseEnumParam(url.searchParams.get('view'), OPS_JOBS_VIEWS, 'all', 'view');
         return HttpResponse.json(knowledge.listOpsJobs(request.headers.get('Authorization'), view));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    /* ---------- 备份与恢复（backup-restore-operations-layer 规格 §2；严格 ops-only） ---------- */
+
+    http.get('/v1/ops/backups', ({ request }) => {
+      try {
+        const url = new URL(request.url);
+        const page = parseIntParam(url.searchParams.get('page'), 1, 'page');
+        const pageSize = parseIntParam(url.searchParams.get('page_size'), 10, 'page_size');
+        return HttpResponse.json(
+          controller.listOpsBackups(request.headers.get('Authorization'), page, pageSize),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.post('/v1/ops/backups', ({ request }) => {
+      try {
+        // 无请求体；Idempotency-Key 必填
+        const idempotencyKey = requireIdempotencyKey(request);
+        return HttpResponse.json(
+          controller.createOpsBackup(request.headers.get('Authorization'), idempotencyKey),
+          { status: 202 },
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.get('/v1/ops/backups/:backupId', ({ request, params }) => {
+      try {
+        return HttpResponse.json(
+          controller.getOpsBackup(request.headers.get('Authorization'), String(params['backupId'])),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.get('/v1/ops/restores', ({ request }) => {
+      try {
+        const url = new URL(request.url);
+        const page = parseIntParam(url.searchParams.get('page'), 1, 'page');
+        const pageSize = parseIntParam(url.searchParams.get('page_size'), 10, 'page_size');
+        return HttpResponse.json(
+          controller.listOpsRestores(request.headers.get('Authorization'), page, pageSize),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.post('/v1/ops/restores', async ({ request }) => {
+      try {
+        const body = await jsonObject(request);
+        requireExactKeys(body, ['backup_id']);
+        const backupId = requireStringField(body, 'backup_id');
+        const idempotencyKey = requireIdempotencyKey(request);
+        return HttpResponse.json(
+          controller.createOpsRestore(
+            request.headers.get('Authorization'),
+            backupId,
+            idempotencyKey,
+          ),
+          { status: 202 },
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.get('/v1/ops/restores/:restoreId', ({ request, params }) => {
+      try {
+        return HttpResponse.json(
+          controller.getOpsRestore(request.headers.get('Authorization'), String(params['restoreId'])),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.post('/v1/ops/restores/:restoreId/repair-targets/:targetId/retry', async ({ request, params }) => {
+      try {
+        // 可无请求体；有则必须是空对象
+        const body = await request.json().catch(() => null);
+        if (body !== null && (typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0)) {
+          throw new MockHttpError(422, 'validation_error');
+        }
+        const idempotencyKey = requireIdempotencyKey(request);
+        return HttpResponse.json(
+          controller.retryOpsRepairTarget(
+            request.headers.get('Authorization'),
+            String(params['restoreId']),
+            String(params['targetId']),
+            idempotencyKey,
+          ),
+          { status: 202 },
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.get('/v1/ops/backup-policy', ({ request }) => {
+      try {
+        return HttpResponse.json(
+          controller.getOpsBackupPolicy(request.headers.get('Authorization')),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    http.patch('/v1/ops/backup-policy', async ({ request }) => {
+      try {
+        const body = await jsonObject(request);
+        const input = parsePolicyPatch(body);
+        const idempotencyKey = requireIdempotencyKey(request);
+        return HttpResponse.json(
+          controller.patchOpsBackupPolicy(
+            request.headers.get('Authorization'),
+            input,
+            idempotencyKey,
+          ),
+        );
       } catch (error) {
         return errorResponse(error);
       }

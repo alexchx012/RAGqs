@@ -72,6 +72,16 @@ class WorkerSettings(_StrictModel):
     lease_seconds: int = Field(default=60, ge=5, le=3600)
 
 
+class BackupSettings(_StrictModel):
+    """Resident backup maintenance worker tuning (schedule poll, write-gate
+    drain protocol and retention sweep batch size)."""
+
+    schedule_interval_seconds: int = Field(default=60, ge=5, le=3600)
+    gate_settle_seconds: float = Field(default=2.0, ge=0.0, le=300.0)
+    gate_drain_timeout_seconds: float = Field(default=30.0, ge=1.0, le=900.0)
+    retention_batch_limit: int = Field(default=50, ge=1, le=1000)
+
+
 class LoggingSettings(_StrictModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
@@ -213,6 +223,7 @@ class PlatformSettings(BaseSettings):
     object_storage: ObjectStorageSettings
     provider: ProviderSettings
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
+    backup: BackupSettings = Field(default_factory=BackupSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
     documents: DocumentsSettings = Field(default_factory=DocumentsSettings)
@@ -251,6 +262,10 @@ _ENV_KEYS = {
     "RAG_PROVIDER_BASE_URL",
     "RAG_WORKER_CONCURRENCY",
     "RAG_WORKER_LEASE_SECONDS",
+    "RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS",
+    "RAG_BACKUP_GATE_SETTLE_SECONDS",
+    "RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS",
+    "RAG_BACKUP_RETENTION_BATCH_LIMIT",
     "RAG_LOG_LEVEL",
     "RAG_INDEX_NAMESPACE",
     "RAG_INDEX_SPARSE_PROVIDER",
@@ -447,6 +462,16 @@ def load_platform_settings(
             for key, value in {
                 "concurrency": _int(env, "RAG_WORKER_CONCURRENCY"),
                 "lease_seconds": _int(env, "RAG_WORKER_LEASE_SECONDS"),
+            }.items()
+            if value is not None
+        },
+        "backup": {
+            key: value
+            for key, value in {
+                "schedule_interval_seconds": _int(env, "RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS"),
+                "gate_settle_seconds": _float(env, "RAG_BACKUP_GATE_SETTLE_SECONDS"),
+                "gate_drain_timeout_seconds": _float(env, "RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS"),
+                "retention_batch_limit": _int(env, "RAG_BACKUP_RETENTION_BATCH_LIMIT"),
             }.items()
             if value is not None
         },
