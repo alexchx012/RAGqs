@@ -483,3 +483,40 @@ def test_backup_settings_reject_out_of_range_values() -> None:
         load_platform_settings(development_environment(RAG_BACKUP_RETENTION_BATCH_LIMIT="0"))
     with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
         load_platform_settings(development_environment(RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS="1"))
+
+
+def test_effort_rag_call_limits_default_and_env_overrides() -> None:
+    settings = load_platform_settings(development_environment())
+    assert settings.chat.effort_rag_call_limits == {"quick": 1, "think": 8, "deep": 10}
+
+    overridden = load_platform_settings(
+        development_environment(
+            RAG_EFFORT_RAG_CALL_LIMIT_QUICK="2",
+            RAG_EFFORT_RAG_CALL_LIMIT_THINK="6",
+            RAG_EFFORT_RAG_CALL_LIMIT_DEEP="12",
+        )
+    )
+    assert overridden.chat.effort_rag_call_limits == {"quick": 2, "think": 6, "deep": 12}
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0", "-1"],
+)
+def test_effort_rag_call_limits_reject_non_positive_values(value: str) -> None:
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(development_environment(RAG_EFFORT_RAG_CALL_LIMIT_THINK=value))
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1.5", "abc"],
+)
+def test_effort_rag_call_limits_reject_non_integer_values(value: str) -> None:
+    with pytest.raises(ValueError, match="invalid integer for RAG_EFFORT_RAG_CALL_LIMIT_THINK"):
+        load_platform_settings(development_environment(RAG_EFFORT_RAG_CALL_LIMIT_THINK=value))
+
+
+def test_effort_rag_call_limits_reject_unknown_effort_keys() -> None:
+    with pytest.raises(ValueError, match="unknown|legacy"):
+        load_platform_settings(development_environment(RAG_EFFORT_RAG_CALL_LIMIT_FAST="2"))

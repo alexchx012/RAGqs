@@ -140,6 +140,22 @@ class IndexSettings(_StrictModel):
     contextual_prefix_cache_provider: Literal["memory", "disabled"] = "memory"
 
 
+class ChatSettings(_StrictModel):
+    """Per-effort logical RAG operation caps (deployment-level, restart to apply)."""
+
+    effort_rag_call_limit_quick: int = Field(default=1, ge=1)
+    effort_rag_call_limit_think: int = Field(default=8, ge=1)
+    effort_rag_call_limit_deep: int = Field(default=10, ge=1)
+
+    @property
+    def effort_rag_call_limits(self) -> dict[str, int]:
+        return {
+            "quick": self.effort_rag_call_limit_quick,
+            "think": self.effort_rag_call_limit_think,
+            "deep": self.effort_rag_call_limit_deep,
+        }
+
+
 class DocumentsSettings(_StrictModel):
     upload_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     cleanup_max_attempts: int = Field(default=3, ge=1)
@@ -226,6 +242,7 @@ class PlatformSettings(BaseSettings):
     backup: BackupSettings = Field(default_factory=BackupSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
     documents: DocumentsSettings = Field(default_factory=DocumentsSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     business_timezone: str | None = None
@@ -298,6 +315,9 @@ _ENV_KEYS = {
     "RAG_INDEX_SPARSE_INDEX",
     "RAG_INDEX_SPARSE_DATA_PATH",
     "RAG_INDEX_TEXT_CHUNK_MAX_CHARS",
+    "RAG_EFFORT_RAG_CALL_LIMIT_QUICK",
+    "RAG_EFFORT_RAG_CALL_LIMIT_THINK",
+    "RAG_EFFORT_RAG_CALL_LIMIT_DEEP",
     "RAG_INDEX_XLSX_MERGED_CELLS_MAX",
     "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD",
     "RAG_INDEX_MINERU_PROVIDER",
@@ -564,6 +584,15 @@ def load_platform_settings(
                 "upload_max_bytes": _int(env, "RAG_DOCUMENTS_UPLOAD_MAX_BYTES"),
                 "cleanup_max_attempts": _int(env, "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS"),
                 "version_retention_days": _int(env, "DOCUMENT_VERSION_RETENTION_DAYS"),
+            }.items()
+            if value is not None
+        },
+        "chat": {
+            key: value
+            for key, value in {
+                "effort_rag_call_limit_quick": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_QUICK"),
+                "effort_rag_call_limit_think": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_THINK"),
+                "effort_rag_call_limit_deep": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_DEEP"),
             }.items()
             if value is not None
         },

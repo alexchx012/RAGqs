@@ -791,6 +791,7 @@ def build_runtime(
         calibration=chat_calibration,
         budget_meter=generation_budget_meter,
         self_evaluator=configured.get("agents_self_evaluator"),
+        effort_rag_limits=settings.chat.effort_rag_call_limits,
     )
     configured.setdefault("chat_generation_worker", chat_worker)
     evaluation_repository = configured.get("evaluation_repository") or (
