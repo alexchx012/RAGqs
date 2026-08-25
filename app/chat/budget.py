@@ -71,12 +71,14 @@ class BudgetPolicy:
         price_version: str,
         max_estimated_cost_amount: float,
         pricer: Callable[[str, int], float | None] = default_pricer,
+        effort_rag_limits: Mapping[str, int] | None = None,
     ) -> BudgetPolicy:
         if effort_level not in EFFORT_RAG_LIMITS:
             raise PlatformError("validation_error", "budget effort level is invalid", {}, 422)
+        limits = {**EFFORT_RAG_LIMITS, **(effort_rag_limits or {})}
         return cls(
             effort_level=effort_level,
-            max_rag_calls=EFFORT_RAG_LIMITS[effort_level],
+            max_rag_calls=limits[effort_level],
             max_wall_seconds=EFFORT_WALL_LIMITS[effort_level],
             max_total_tokens=EFFORT_TOKEN_LIMITS[effort_level],
             max_estimated_cost_amount=max_estimated_cost_amount,
@@ -286,8 +288,6 @@ class BudgetMeter:
             "policy_version": RAG_BUDGET_POLICY_VERSION,
             "price_version": self.policy.price_version,
         }
-
-
 
 
 def select_budget_candidates(

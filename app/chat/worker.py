@@ -87,6 +87,7 @@ class ChatGenerationWorker:
         self_evaluator: SelfEvaluationPort | None = None,
         lease_seconds: int = EXECUTION_LEASE_SECONDS,
         max_physical_executions: int = MAX_PHYSICAL_EXECUTIONS,
+        effort_rag_limits: Mapping[str, int] | None = None,
     ) -> None:
         self._engine = engine
         self._clock = clock
@@ -101,6 +102,7 @@ class ChatGenerationWorker:
         self._self_evaluator = self_evaluator or HeuristicSelfEvaluationPort()
         self._lease_seconds = lease_seconds
         self._max_physical_executions = max_physical_executions
+        self._effort_rag_limits = effort_rag_limits
 
     def _now(self, connection: Connection | None = None) -> datetime:
         value = self._clock.now_utc(connection)
@@ -547,6 +549,7 @@ class ChatGenerationWorker:
             price_version=price_version,
             max_estimated_cost_amount=max(0.01, max_cost),
             pricer=pricer,
+            effort_rag_limits=self._effort_rag_limits,
         )
         return BudgetMeter(policy=policy, deadline=deadline)
 
