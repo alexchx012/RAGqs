@@ -73,6 +73,8 @@ class FakeCalibration:
         self.window = window
         self.opt_out_users: set[str] = set()
         self.collected: list[str] = []
+        self.golden_seeds: list[dict[str, Any]] = []
+        self.adoptions: list[dict[str, Any]] = []
 
     def get_open_window(
         self, connection: Connection, *, now: datetime, user_id: str
@@ -87,6 +89,45 @@ class FakeCalibration:
     def increment_pairs_collected(self, connection: Connection, window_id: str) -> None:
         del connection
         self.collected.append(window_id)
+
+    def record_golden_seed(
+        self,
+        connection: Connection,
+        *,
+        pair_id: str,
+        space_id: str,
+        question_text: str,
+        preferred_candidate: int,
+        preferred_content: str,
+        preferred_citations: Any,
+        rejected_candidate: int,
+        policy_version: str,
+        now: datetime,
+    ) -> None:
+        del connection
+        self.golden_seeds.append(
+            {
+                "pair_id": pair_id,
+                "space_id": space_id,
+                "question_text": question_text,
+                "preferred_candidate": preferred_candidate,
+                "preferred_content": preferred_content,
+                "preferred_citations": list(preferred_citations),
+                "rejected_candidate": rejected_candidate,
+                "policy_version": policy_version,
+                "now": now,
+            }
+        )
+
+    def maybe_adopt_active_default(
+        self, connection: Connection, *, space_id: str, now: datetime
+    ) -> None:
+        del connection
+        self.adoptions.append({"space_id": space_id, "now": now})
+
+    def count_effective_ab_votes(self, connection: Connection, *, space_id: str) -> int:
+        del connection, space_id
+        return 0
 
 
 class RecordingUsageSubmission:
@@ -185,6 +226,7 @@ def build_test_env(
     calibration: FakeCalibration | None = None,
     generation_service: Any | None = None,
     sampler: Any | None = None,
+    ab_source_filter: Any | None = None,
     outcomes: dict[str, RetrievalOutcome] | None = None,
 ):
     engine = make_engine()
@@ -212,6 +254,7 @@ def build_test_env(
             clock=clock,
             authorization=build_runtime_authorization(identity),
             calibration=calibration,
+            ab_source_filter=ab_source_filter,
             sampler=sampler or (lambda: 0.0),
         )
     usage = RecordingUsageSubmission()
@@ -240,6 +283,7 @@ def build_test_env(
         "retrieval": retrieval,
         "provider": provider,
         "calibration": calibration,
+        "ab_source_filter": ab_source_filter,
         "usage": usage,
     }
 
