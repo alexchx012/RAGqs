@@ -27,6 +27,63 @@ MRR_WEIGHT = 0.15
 
 DEFAULT_POLICY_VERSION = "eval-v1"
 
+# 模型家族清单（后端设计 §8.1：判官不得与被评测管线模型同族）。
+# provider + 模型名前缀 → 家族；只收录当前实际使用的家族（qwen 系、deepseek 系）。
+# 多族网关（dashscope、bailian）不按 provider 整体映射；仅自名厂商（deepseek、
+# qwen）在缺少模型名时可按 provider 名判族，未知组合返回 None、不施加约束。
+_MODEL_PREFIX_FAMILIES: tuple[tuple[str, str, str], ...] = (
+    ("bailian", "qwen", "qwen"),
+    ("dashscope", "qwen", "qwen"),
+    ("dashscope", "ds", "deepseek"),
+    ("deepseek", "deepseek", "deepseek"),
+    ("deepseek", "ds", "deepseek"),
+)
+_PROVIDER_FAMILIES: tuple[tuple[str, str], ...] = (("deepseek", "deepseek"), ("qwen", "qwen"))
+
+
+def model_family(*, provider: str, model: str | None = None) -> str | None:
+    """Resolve the static model family of a (provider, model) pair.
+
+    Model-name prefixes win over provider names; ``None`` means the family is
+    unknown and imposes no isolation constraint.
+    """
+    normalized_provider = provider.strip().casefold()
+    if model is not None:
+        normalized_model = model.strip().casefold()
+        for family_provider, prefix, family in _MODEL_PREFIX_FAMILIES:
+            if normalized_provider == family_provider and normalized_model.startswith(prefix):
+                return family
+    for family_provider, family in _PROVIDER_FAMILIES:
+        if normalized_provider == family_provider:
+            return family
+    return None
+
+
+def assert_judge_family_isolation(
+    *,
+    judge_provider: str,
+    judge_model: str,
+    pipeline_models: Mapping[str, tuple[str, str | None]],
+) -> None:
+    """Reject a judge model that shares a family with an evaluated-pipeline model.
+
+    ``pipeline_models`` maps a role name (generation, contextual_retrieval,
+    reranker, ...) to its ``(provider, model)`` pair; ``model`` may be ``None``
+    when settings only carry a provider identity.
+    """
+    judge = model_family(provider=judge_provider, model=judge_model)
+    if judge is None:
+        return
+    for role, (provider, model) in pipeline_models.items():
+        family = model_family(provider=provider, model=model)
+        if family == judge:
+            raise ValueError(
+                "production judge model family conflicts with the evaluated pipeline: "
+                f"judge ({judge_provider}/{judge_model}) and {role} "
+                f"({provider}/{model if model is not None else provider}) are both "
+                f"{family} family"
+            )
+
 
 def default_policy_snapshot(*, now: datetime | None = None) -> EvaluationPolicySnapshot:
     """Build the V1 deployment default policy fact."""
