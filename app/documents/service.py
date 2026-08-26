@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, insert, select, text, update
+from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.engine import Connection, Engine
 
 from app.documents.upload_security import validate_upload_security
@@ -68,6 +68,23 @@ class DocumentUpload:
             raise PlatformError("validation_error", "filename is too long", {}, 422)
         if not self.media_kind or len(self.media_kind) > 128:
             raise PlatformError("validation_error", "media_kind is invalid", {}, 422)
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentVersionReference:
+    """A renewable read lease on one document version.
+
+    Readers hold the `(reference_id, owner_id, lease_token)` triple and renew
+    with it before `expires_at`; the token stays stable across renewals and is
+    never reused across acquisitions.
+    """
+
+    reference_id: str
+    owner_id: str
+    lease_token: str
+    document_id: str
+    document_version_id: str
+    expires_at: datetime
 
 
 # Supported upload media kinds, mirroring the frontend upload contract
@@ -611,32 +628,124 @@ class DocumentsService:
         document_id: str,
         document_version_id: str,
         principal_id: str,
-    ) -> None:
+    ) -> DocumentVersionReference:
         now = self._current_time()
-        _insert_do_nothing(
-            connection,
-            document_read_leases_table,
-            {
-                "id": _new_id("read_lease"),
-                "document_id": document_id,
-                "document_version_id": document_version_id,
-                "principal_id": principal_id,
-                "expires_at_utc": now + self._read_lease_ttl,
-                "created_at_utc": now,
-                "updated_at_utc": now,
-            },
-            index_elements=["document_version_id", "principal_id"],
-        )
+        expires = now + self._read_lease_ttl
+        reference_id = _new_id("read_lease")
+        lease_token = secrets.token_hex(16)
+        # A re-acquisition supersedes the caller's previous reference so
+        # references and tokens are never reused across requests.
         connection.execute(
-            update(document_read_leases_table)
-            .where(
+            delete(document_read_leases_table).where(
                 and_(
                     document_read_leases_table.c.document_version_id == document_version_id,
                     document_read_leases_table.c.principal_id == principal_id,
                 )
             )
-            .values(expires_at_utc=now + self._read_lease_ttl, updated_at_utc=now)
         )
+        connection.execute(
+            document_read_leases_table.insert().values(
+                id=reference_id,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                principal_id=principal_id,
+                lease_token=lease_token,
+                expires_at_utc=expires,
+                created_at_utc=now,
+                updated_at_utc=now,
+            )
+        )
+        return DocumentVersionReference(
+            reference_id=reference_id,
+            owner_id=principal_id,
+            lease_token=lease_token,
+            document_id=document_id,
+            document_version_id=document_version_id,
+            expires_at=expires,
+        )
+
+    def renew_read_lease(
+        self,
+        *,
+        reference_id: str,
+        owner_id: str,
+        lease_token: str,
+    ) -> DocumentVersionReference:
+        """Conditionally renew a read lease before it expires.
+
+        Mirrors the acquisition lock order (logical document, then document
+        version) so renewal stays mutually exclusive with entering ``purging``
+        and deletion acceptance.  Every failure means the reader must stop
+        reading immediately and must not return unfinished content.
+        """
+        with self._engine.begin() as connection:
+            lease = (
+                connection.execute(
+                    select(document_read_leases_table).where(
+                        and_(
+                            document_read_leases_table.c.id == reference_id,
+                            document_read_leases_table.c.principal_id == owner_id,
+                            document_read_leases_table.c.lease_token == lease_token,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if lease is None:
+                raise PlatformError(
+                    "read_lease_unavailable", "The read lease is no longer renewable", {}, 409
+                )
+            document = self._locked_document(connection, str(lease["document_id"]))
+            if (
+                document is None
+                or document["lifecycle_status"] != DocumentLifecycle.ACTIVE.value
+            ):
+                raise PlatformError(
+                    "read_lease_unavailable", "The read lease is no longer renewable", {}, 409
+                )
+            version = (
+                connection.execute(
+                    select(document_versions_table)
+                    .where(document_versions_table.c.id == str(lease["document_version_id"]))
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if version is None or version["status"] in {
+                DocumentVersionState.PURGING.value,
+                DocumentVersionState.PURGED.value,
+            }:
+                raise PlatformError(
+                    "read_lease_unavailable", "The read lease is no longer renewable", {}, 409
+                )
+            now = self._current_time()
+            expires = now + self._read_lease_ttl
+            renewed = connection.execute(
+                update(document_read_leases_table)
+                .where(
+                    and_(
+                        document_read_leases_table.c.id == reference_id,
+                        document_read_leases_table.c.principal_id == owner_id,
+                        document_read_leases_table.c.lease_token == lease_token,
+                        document_read_leases_table.c.expires_at_utc > now,
+                    )
+                )
+                .values(expires_at_utc=expires, updated_at_utc=now)
+            )
+            if renewed.rowcount != 1:
+                raise PlatformError(
+                    "read_lease_unavailable", "The read lease is no longer renewable", {}, 409
+                )
+            return DocumentVersionReference(
+                reference_id=reference_id,
+                owner_id=owner_id,
+                lease_token=lease_token,
+                document_id=str(lease["document_id"]),
+                document_version_id=str(lease["document_version_id"]),
+                expires_at=expires,
+            )
 
     @staticmethod
     def _tombstone_version(connection: Connection, version_id: str, now: datetime) -> None:

@@ -98,6 +98,7 @@ document_read_leases_table = Table(
     Column("document_id", String(128), ForeignKey("documents.id"), nullable=False),
     Column("document_version_id", String(128), ForeignKey("document_versions.id"), nullable=False),
     Column("principal_id", String(64), nullable=False),
+    Column("lease_token", String(128), nullable=False),
     Column("expires_at_utc", DateTime(timezone=True), nullable=False),
     *_timestamps(),
     UniqueConstraint(
