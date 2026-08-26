@@ -203,6 +203,24 @@ evaluation_active_default_table = Table(
     Column("source_run_id", String(64), nullable=True),
 )
 
+evaluation_ab_golden_seed_table = Table(
+    "evaluation_ab_golden_seed",
+    evaluation_metadata,
+    Column("seed_id", String(64), primary_key=True),
+    Column("pair_id", String(64), nullable=False, unique=True),
+    Column("space_id", String(128), nullable=False),
+    Column("question_text", Text, nullable=False),
+    Column("preferred_candidate", Integer, nullable=False),
+    Column("preferred_content", Text, nullable=False),
+    Column("preferred_citations_json", JSON, nullable=False),
+    Column("rejected_candidate", Integer, nullable=False),
+    Column("policy_version", String(64), nullable=False),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    CheckConstraint("preferred_candidate IN (0,1)", name="ck_evaluation_ab_golden_seed_preferred"),
+    CheckConstraint("rejected_candidate IN (0,1)", name="ck_evaluation_ab_golden_seed_rejected"),
+    Index("ix_evaluation_ab_golden_seed_space", "space_id"),
+)
+
 calibration_window_suggestion_table = Table(
     "calibration_window_suggestion",
     evaluation_metadata,
@@ -287,6 +305,7 @@ __all__ = [
     "calibration_window_command_table",
     "calibration_window_suggestion_table",
     "calibration_window_table",
+    "evaluation_ab_golden_seed_table",
     "evaluation_active_default_table",
     "evaluation_golden_item_table",
     "evaluation_golden_set_version_table",

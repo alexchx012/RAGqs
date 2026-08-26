@@ -12,6 +12,7 @@ from app.chat.generation import GenerationService
 from app.chat.ports import (
     ChatGenerationRevocationPort,
     IdentityChatAuthorizationPort,
+    IndexingAbSourceFilterPort,
     IndexingChatRetrievalPort,
     PromptEnhancePort,
     SqlAlchemyChatPairExpiry,
@@ -788,6 +789,10 @@ def build_runtime(
         ConversationService(engine, now=clock)
     )
     configured.setdefault("chat_conversation_service", chat_conversation_service)
+    chat_ab_source_filter = configured.get("chat_ab_source_filter") or (
+        IndexingAbSourceFilterPort(indexing_service)
+    )
+    configured.setdefault("chat_ab_source_filter", chat_ab_source_filter)
     chat_generation_service = configured.get("chat_generation_service") or (
         GenerationService(
             engine,
@@ -795,6 +800,7 @@ def build_runtime(
             authorization=chat_authorization,
             calibration=chat_calibration,
             budget_meter=generation_budget_meter,
+            ab_source_filter=chat_ab_source_filter,
         )
     )
     configured.setdefault("chat_generation_service", chat_generation_service)
