@@ -726,10 +726,7 @@ class DocumentsService:
                     "read_lease_unavailable", "The read lease is no longer renewable", {}, 409
                 )
             document = self._locked_document(connection, str(lease["document_id"]))
-            if (
-                document is None
-                or document["lifecycle_status"] != DocumentLifecycle.ACTIVE.value
-            ):
+            if document is None or document["lifecycle_status"] != DocumentLifecycle.ACTIVE.value:
                 raise PlatformError(
                     "read_lease_unavailable", "The read lease is no longer renewable", {}, 409
                 )
@@ -1472,9 +1469,7 @@ class DocumentsService:
             content_hash=content_hash,
         )
         target_claim = (
-            connection.execute(
-                select(upload_dedup_claims_table).where(predicate).with_for_update()
-            )
+            connection.execute(select(upload_dedup_claims_table).where(predicate).with_for_update())
             .mappings()
             .one_or_none()
         )
@@ -1525,11 +1520,7 @@ class DocumentsService:
                 raise PlatformError(
                     "duplicate_document",
                     "A document with the same name and content already exists",
-                    (
-                        {"document_id": str(winner)}
-                        if winner is not None
-                        else {}
-                    )
+                    ({"document_id": str(winner)} if winner is not None else {})
                     | {"publication_claim_conflict": True},
                     409,
                 )
@@ -2518,9 +2509,7 @@ class DocumentsService:
             )
         except PlatformError as exc:
             details = dict(exc.details)
-            if exc.code != "duplicate_document" or not details.get(
-                "publication_claim_conflict"
-            ):
+            if exc.code != "duplicate_document" or not details.get("publication_claim_conflict"):
                 raise
             attempt_id = details.get("attempt_id")
             fencing_token = details.get("fencing_token")
@@ -2535,9 +2524,11 @@ class DocumentsService:
             raise PlatformError(
                 "duplicate_document",
                 "A document with the same name and content already exists",
-                {"document_id": details["document_id"]}
-                if details.get("document_id") is not None
-                else {},
+                (
+                    {"document_id": details["document_id"]}
+                    if details.get("document_id") is not None
+                    else {}
+                ),
                 409,
             ) from exc
 

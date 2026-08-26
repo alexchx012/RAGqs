@@ -62,12 +62,15 @@ def test_read_lease_acquisition_returns_fresh_reference(service, principal) -> N
     assert error.value.code == "read_lease_unavailable"
 
     with service._engine.connect() as connection:
-        rows = connection.execute(
-            select(document_read_leases_table.c.id).where(
-                document_read_leases_table.c.document_version_id
-                == item["document_version_id"]
+        rows = (
+            connection.execute(
+                select(document_read_leases_table.c.id).where(
+                    document_read_leases_table.c.document_version_id == item["document_version_id"]
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert rows == [second.reference_id]
 
 
@@ -77,9 +80,7 @@ def test_content_read_acquires_a_renewable_reference(service, principal) -> None
     assert service.content(principal=principal, document_id=item["document_id"]).body == b"hello"
 
     with service._engine.connect() as connection:
-        lease = (
-            connection.execute(select(document_read_leases_table)).mappings().one()
-        )
+        lease = connection.execute(select(document_read_leases_table)).mappings().one()
     renewed = service.renew_read_lease(
         reference_id=str(lease["id"]),
         owner_id=str(lease["principal_id"]),
@@ -175,7 +176,7 @@ def test_active_read_lease_blocks_version_purge_until_expired(service, principal
     _accept(service, principal, replacement)
     service._now = lambda: datetime(2026, 2, 1, tzinfo=UTC)
 
-    reference = _acquire(service, created)
+    _acquire(service, created)
     assert service.purge_retained_versions(limit=10) == []
 
     service._now = lambda: datetime(2026, 2, 1, 0, 6, tzinfo=UTC)

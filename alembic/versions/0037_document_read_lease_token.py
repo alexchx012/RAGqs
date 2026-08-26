@@ -1,7 +1,7 @@
 """Add the read-lease token to document_read_leases.
 
-Revision ID: 0035_document_read_lease_token
-Revises: 0034_backup_skipped_missed
+Revision ID: 0037_document_read_lease_token
+Revises: 0036_merge_documents_leases
 
 Read leases become renewable document_version_reference leases keyed by
 ``(reference_id, owner_id, lease_token)``.  Databases created after this
@@ -19,8 +19,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0035_document_read_lease_token"
-down_revision: str | None = "0034_backup_skipped_missed"
+revision: str = "0037_document_read_lease_token"
+down_revision: str | None = "0036_merge_documents_leases"
 branch_labels: tuple[str, ...] | Sequence[str] | None = None
 depends_on: tuple[str, ...] | Sequence[str] | None = None
 
