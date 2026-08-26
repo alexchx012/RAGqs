@@ -582,6 +582,9 @@ class ChatGenerationWorker:
         hits: tuple[RetrievalHitOutcome, ...] = ()
 
         round_index = 0
+        # Deep-tier progress rows: one step index per retrieval round, with the
+        # active/done pair sharing that index (frontend contract §3.7).
+        step_index = 0
         while True:
             if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
                 # Fail atomically through _fail_execution before any retrieval,
@@ -665,6 +668,19 @@ class ChatGenerationWorker:
                     estimated_cost=Decimal("0"),
                     is_rag=True,
                 )
+            round_step = None
+            if budget.effort_level == "deep":
+                step_index += 1
+                round_step = step_index
+                self._emit_step(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    index=round_step,
+                    label=f"retrieve_round_{round_step}",
+                    state="active",
+                )
             outcome = self._retrieval.search(
                 str(generation["request_content"]),
                 principal=_principal_from_generation(generation),
@@ -716,6 +732,16 @@ class ChatGenerationWorker:
                     generation=generation,
                 )
             citations = self._resolve_citations(hits, generation)
+            if round_step is not None:
+                self._emit_step(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    index=round_step,
+                    label=f"retrieve_round_{round_step}",
+                    state="done",
+                )
             if len(citations) == len(hits):
                 break
             visible_ids = {(str(item["document_id"]), str(item["chunk_id"])) for item in citations}
@@ -831,6 +857,19 @@ class ChatGenerationWorker:
                 generation=generation,
             )
             effective_query = str(evaluation.rewritten_query)
+            rewrite_step = None
+            if budget.effort_level == "deep":
+                step_index += 1
+                rewrite_step = step_index
+                self._emit_step(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    index=rewrite_step,
+                    label=f"retrieve_round_{rewrite_step}",
+                    state="active",
+                )
             outcome = self._retrieval.search(
                 effective_query,
                 principal=_principal_from_generation(generation),
@@ -862,6 +901,16 @@ class ChatGenerationWorker:
                     generation=generation,
                 )
             citations = self._resolve_citations(hits, generation)
+            if rewrite_step is not None:
+                self._emit_step(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    index=rewrite_step,
+                    label=f"retrieve_round_{rewrite_step}",
+                    state="done",
+                )
             if len(citations) != len(hits):
                 visible_ids = {
                     (str(item["document_id"]), str(item["chunk_id"])) for item in citations
@@ -1666,6 +1715,39 @@ class ChatGenerationWorker:
                 generation_id=generation_id,
                 event_type="stage",
                 data={"phase": phase, **(dict(detail) if detail is not None else {})},
+                now=self._now(connection),
+            )
+
+    def _emit_step(
+        self,
+        *,
+        generation_id: str,
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        index: int,
+        label: str,
+        state: str,
+    ) -> None:
+        with self._engine.begin() as connection:
+            if not self._fence_current(
+                connection,
+                generation_id=generation_id,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+            ):
+                raise PlatformError(
+                    "generation_state_conflict",
+                    "The generation control fence was invalidated",
+                    {},
+                    409,
+                )
+            self._append_terminal(
+                connection,
+                generation_id=generation_id,
+                event_type="step",
+                data={"index": index, "label": label, "state": state},
                 now=self._now(connection),
             )
 
