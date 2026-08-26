@@ -1,10 +1,12 @@
 /*
- * 检索范围 chip（共用基座 §3.3；契约 §6.1/§6.2；spec §3）。
- * ghost pill，展开浮层 280px max-h 360px；行完全由 GET /spaces?usage=retrieval 返回项决定，
- * 前端不硬编码、不过滤、不按角色补出；>8 行时浮层顶部搜索框按空间名实时过滤。
- * 本人个人库行尾下钻箭头 → 行内缩进展开单文档多选（GET /spaces/{id}/documents，按文档名过滤）；
- * 只有本人个人库有此箭头。默认「全部范围」；非默认时文案摘要 + 左侧 6px 墨点。
- * 范围选择本组件本地记忆（当前会话内记住，新会话重置由父组件卸载/重置实现）。
+ * 检索范围（共用基座 §3.3；契约 §6.1/§6.2；spec §3；动效 AI Agent Input：迁入 composer「+」菜单）。
+ * ScopeChip = ghost pill 触发器 + Radix 浮层；ScopeSelector = 选择内容（空间列表 + 个人库文档
+ * 下钻），两者共用同一份交互逻辑，ScopeSelector 同时供 composer「+」菜单 flyout 内嵌。
+ * 行完全由 GET /spaces?usage=retrieval 返回项决定，前端不硬编码、不过滤、不按角色补出；
+ * >8 行时浮层顶部搜索框按空间名实时过滤。本人个人库行尾下钻箭头 → 行内缩进展开单文档多选
+ * （GET /spaces/{id}/documents，按文档名过滤）；只有本人个人库有此箭头。默认「全部范围」；
+ * 非默认时文案摘要 + 左侧 6px 墨点（chip 触发器与 composer 菜单行共用 scopeSummary）。
+ * 范围选择由父组件记忆（会话内记住，新会话重置由父组件卸载/重置实现）。
  */
 
 import * as Popover from '@radix-ui/react-popover';
@@ -37,35 +39,80 @@ function personalSpaceId(spaces: readonly SpaceItem[]): string | null {
   return spaces.find((space) => space.kind === 'personal')?.id ?? null;
 }
 
-export function ScopeChip({
+/** 范围摘要（chip 触发器与 composer「+」菜单行共用）：默认「全部范围」，否则选中空间名串联。 */
+export function scopeSummary(
+  spaces: readonly SpaceItem[],
+  selection: ScopeSelection,
+): { summary: string; isDefault: boolean } {
+  const isDefault = selection.space_ids.length === 0 && selection.document_ids.length === 0;
+  const names = spaces
+    .filter((space) => selection.space_ids.includes(space.id))
+    .map((space) => space.name)
+    .join(' + ');
+  return { summary: names === '' ? copy.chat.composer.scopeAll : names, isDefault };
+}
+
+export function ScopeChip(props: ScopeChipProps) {
+  const [open, setOpen] = useState(false);
+  useEscShield(open);
+  const { summary, isDefault } = scopeSummary(props.spaces, props.selection);
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          aria-label={copy.chat.composer.scopeAria}
+          className={
+            'relative inline-flex h-8 items-center gap-1 rounded-[var(--radius-buttons)] border px-3 ' +
+            'text-[14px] text-ink-black transition-colors duration-[var(--duration-fast)] ' +
+            (open ? 'border-hairline bg-mist-gray' : 'border-hairline hover:bg-mist-gray')
+          }
+        >
+          {!isDefault && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-ink-black" />}
+          <span className="max-w-[160px] truncate">{summary}</span>
+          <ChevronDown
+            aria-hidden="true"
+            className={`h-4 w-4 text-slate-gray transition-transform duration-[var(--duration-base)] ease-[var(--ease-in-out)] ${
+              open ? 'rotate-180' : ''
+            }`}
+          />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="top"
+          sideOffset={8}
+          align="start"
+          className="ui-menu-content flex max-h-[360px] w-[280px] flex-col rounded-[var(--radius-elevatedcards)] bg-paper-white p-1 shadow-[var(--shadow-subtle)]"
+        >
+          <ScopeSelector {...props} />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+/** 范围选择内容（>8 行搜索框 + 空间行 + 个人库文档下钻）：ScopeChip 浮层与 composer「+」菜单 flyout 共用。 */
+export function ScopeSelector({
   spaces,
   onFetchDocuments,
   selection,
   onSelectionChange,
 }: ScopeChipProps) {
-  const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const [documents, setDocuments] = useState<ScopeDocument[]>([]);
   const [docFilter, setDocFilter] = useState('');
   const [docOpen, setDocOpen] = useState<string | null>(null);
   /** 文档列表请求序号：过滤/清空/下钻并发时只采纳最新一次结果，避免乱序覆盖。 */
   const docFetchSeq = useRef(0);
-  useEscShield(open);
 
   const personalId = personalSpaceId(spaces);
-  const selectedAll = selection.space_ids.length === 0 && selection.document_ids.length === 0;
 
   const applyDocuments = (seq: number, docs: ScopeDocument[] | null) => {
     if (seq !== docFetchSeq.current) return;
     if (docs !== null) setDocuments(docs);
   };
-
-  // 摘要：选中空间名（全部 → 「全部范围」）；非默认时 + 墨点
-  const selectedSpaces = spaces.filter((space) => selection.space_ids.includes(space.id));
-  const summary =
-    selectedAll && selection.document_ids.length === 0
-      ? copy.chat.composer.scopeAll
-      : selectedSpaces.map((space) => space.name).join(' + ') || copy.chat.composer.scopeAll;
 
   const visibleSpaces = spaces.filter((space) =>
     filter.trim() === '' ? true : space.name.toLowerCase().includes(filter.trim().toLowerCase()),
@@ -106,13 +153,14 @@ export function ScopeChip({
     }
   };
 
-  // 浮层打开时若处于文档级选择态且个人库文档未加载，则自动加载
+  // 挂载时若处于文档级选择态且个人库文档未加载，则自动加载
+  //（宿主浮层关闭即卸载，重开等效重新挂载，与原 popover open 触发等价）
   useEffect(() => {
-    if (!open || personalId === null || selection.document_ids.length === 0 || documents.length > 0) return;
+    if (personalId === null || selection.document_ids.length === 0 || documents.length > 0) return;
     const seq = ++docFetchSeq.current;
     void onFetchDocuments(personalId).then((docs) => applyDocuments(seq, docs));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
   // m4：文档名过滤即时把 q 传给服务端（客户端同时过滤已加载集；>分页页量的服务端过滤
   // 受「仅首页」限制，注释登记：全量分页拉取留给上传结果层，检索 chip 收窄按名称命中足够）。
@@ -132,126 +180,97 @@ export function ScopeChip({
   );
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          aria-label={copy.chat.composer.scopeAria}
-          className={
-            'relative inline-flex h-8 items-center gap-1 rounded-[var(--radius-buttons)] border px-3 ' +
-            'text-[14px] text-ink-black transition-colors duration-[var(--duration-fast)] ' +
-            (open ? 'border-hairline bg-mist-gray' : 'border-hairline hover:bg-mist-gray')
-          }
-        >
-          {!selectedAll && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-ink-black" />}
-          <span className="max-w-[160px] truncate">{summary}</span>
-          <ChevronDown
-            aria-hidden="true"
-            className={`h-4 w-4 text-slate-gray transition-transform duration-[var(--duration-base)] ease-[var(--ease-in-out)] ${
-              open ? 'rotate-180' : ''
-            }`}
-          />
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          side="top"
-          sideOffset={8}
-          align="start"
-          className="ui-menu-content flex max-h-[360px] w-[280px] flex-col rounded-[var(--radius-elevatedcards)] bg-paper-white p-1 shadow-[var(--shadow-subtle)]"
-        >
-          {spaces.length > 8 && (
-            <div className="border-b border-hairline p-2">
-              <div className="relative">
-                <Search aria-hidden="true" className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-smoke-gray" />
-                <input
-                  type="search"
-                  value={filter}
-                  onChange={(event) => setFilter(event.target.value)}
-                  placeholder={copy.chat.composer.scopeSearchPlaceholder}
-                  aria-label={copy.chat.composer.scopeSearchPlaceholder}
-                  className="h-9 w-full rounded-[var(--radius-inputs)] border border-hairline bg-paper-white pl-9 pr-3 text-[15px] outline-none placeholder:text-smoke-gray focus:border-ink-black"
-                />
+    <>
+      {spaces.length > 8 && (
+        <div className="border-b border-hairline p-2">
+          <div className="relative">
+            <Search aria-hidden="true" className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-smoke-gray" />
+            <input
+              type="search"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder={copy.chat.composer.scopeSearchPlaceholder}
+              aria-label={copy.chat.composer.scopeSearchPlaceholder}
+              className="h-9 w-full rounded-[var(--radius-inputs)] border border-hairline bg-paper-white pl-9 pr-3 text-[15px] outline-none placeholder:text-smoke-gray focus:border-ink-black"
+            />
+          </div>
+        </div>
+      )}
+      <div className="overflow-y-auto">
+        {visibleSpaces.map((space) => {
+          const checked = selection.space_ids.includes(space.id);
+          const isPersonal = space.id === personalId;
+          return (
+            <div key={space.id}>
+              <div className="group flex h-9 items-center rounded-[var(--radius-images)] px-3 hover:bg-mist-gray">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={checked}
+                  onClick={() => toggleSpace(space.id)}
+                  className="flex min-w-0 flex-1 items-center justify-between text-left"
+                >
+                  <span className="truncate text-[15px] text-ink-black">{space.name}</span>
+                  {checked && <Check aria-hidden="true" className="ml-2 h-4 w-4 shrink-0 text-ink-black" />}
+                </button>
+                {isPersonal && (
+                  <button
+                    type="button"
+                    aria-label={copy.chat.composer.scopeDocumentDrillAria}
+                    onClick={() => toggleDrill(space.id)}
+                    className="ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-images)] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black"
+                  >
+                    <ChevronRight
+                      aria-hidden="true"
+                      className={`h-4 w-4 transition-transform duration-[var(--duration-base)] ease-[var(--ease-in-out)] ${
+                        docOpen === space.id ? 'rotate-90' : ''
+                      }`}
+                    />
+                  </button>
+                )}
               </div>
-            </div>
-          )}
-          <div className="overflow-y-auto">
-            {visibleSpaces.map((space) => {
-              const checked = selection.space_ids.includes(space.id);
-              const isPersonal = space.id === personalId;
-              return (
-                <div key={space.id}>
-                  <div className="group flex h-9 items-center rounded-[var(--radius-images)] px-3 hover:bg-mist-gray">
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={checked}
-                      onClick={() => toggleSpace(space.id)}
-                      className="flex min-w-0 flex-1 items-center justify-between text-left"
-                    >
-                      <span className="truncate text-[15px] text-ink-black">{space.name}</span>
-                      {checked && <Check aria-hidden="true" className="ml-2 h-4 w-4 shrink-0 text-ink-black" />}
-                    </button>
-                    {isPersonal && (
-                      <button
-                        type="button"
-                        aria-label={copy.chat.composer.scopeDocumentDrillAria}
-                        onClick={() => toggleDrill(space.id)}
-                        className="ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-images)] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black"
-                      >
-                        <ChevronRight
-                          aria-hidden="true"
-                          className={`h-4 w-4 transition-transform duration-[var(--duration-base)] ease-[var(--ease-in-out)] ${
-                            docOpen === space.id ? 'rotate-90' : ''
-                          }`}
-                        />
-                      </button>
-                    )}
+              {isPersonal && docOpen === space.id && (
+                <div className="ml-4 border-l border-hairline pl-2">
+                  <div className="relative p-1">
+                    <Search aria-hidden="true" className="absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-smoke-gray" />
+                    <input
+                      type="search"
+                      value={docFilter}
+                      onChange={(event) => onDocFilterChange(event.target.value)}
+                      placeholder={copy.chat.composer.scopeDocumentSearchPlaceholder}
+                      aria-label={copy.chat.composer.scopeDocumentSearchPlaceholder}
+                      className="h-8 w-full rounded-[var(--radius-inputs)] border border-hairline bg-paper-white pl-8 pr-2 text-[14px] outline-none placeholder:text-smoke-gray focus:border-ink-black"
+                    />
                   </div>
-                  {isPersonal && docOpen === space.id && (
-                    <div className="ml-4 border-l border-hairline pl-2">
-                      <div className="relative p-1">
-                        <Search aria-hidden="true" className="absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-smoke-gray" />
-                        <input
-                          type="search"
-                          value={docFilter}
-                          onChange={(event) => onDocFilterChange(event.target.value)}
-                          placeholder={copy.chat.composer.scopeDocumentSearchPlaceholder}
-                          aria-label={copy.chat.composer.scopeDocumentSearchPlaceholder}
-                          className="h-8 w-full rounded-[var(--radius-inputs)] border border-hairline bg-paper-white pl-8 pr-2 text-[14px] outline-none placeholder:text-smoke-gray focus:border-ink-black"
-                        />
-                      </div>
-                      {visibleDocuments.length === 0 ? (
-                        <p className="px-3 py-2 text-[14px] text-smoke-gray">{copy.states.empty}</p>
-                      ) : (
-                        visibleDocuments.map((doc) => {
-                          const docChecked = selection.document_ids.includes(doc.id);
-                          return (
-                            <button
-                              key={doc.id}
-                              type="button"
-                              role="checkbox"
-                              aria-checked={docChecked}
-                              onClick={() => toggleDocument(doc.id)}
-                              className="flex h-8 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left hover:bg-mist-gray"
-                            >
-                              <span className="truncate text-[14px] text-ink-black">{doc.name}</span>
-                              {docChecked && <Check aria-hidden="true" className="ml-2 h-3.5 w-3.5 shrink-0 text-ink-black" />}
-                            </button>
-                          );
-                        })
-                      )}
-                    </div>
+                  {visibleDocuments.length === 0 ? (
+                    <p className="px-3 py-2 text-[14px] text-smoke-gray">{copy.states.empty}</p>
+                  ) : (
+                    visibleDocuments.map((doc) => {
+                      const docChecked = selection.document_ids.includes(doc.id);
+                      return (
+                        <button
+                          key={doc.id}
+                          type="button"
+                          role="checkbox"
+                          aria-checked={docChecked}
+                          onClick={() => toggleDocument(doc.id)}
+                          className="flex h-8 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left hover:bg-mist-gray"
+                        >
+                          <span className="truncate text-[14px] text-ink-black">{doc.name}</span>
+                          {docChecked && <Check aria-hidden="true" className="ml-2 h-3.5 w-3.5 shrink-0 text-ink-black" />}
+                        </button>
+                      );
+                    })
                   )}
                 </div>
-              );
-            })}
-            {visibleSpaces.length === 0 && (
-              <p className="px-3 py-4 text-center text-[15px] text-smoke-gray">{copy.states.empty}</p>
-            )}
-          </div>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+              )}
+            </div>
+          );
+        })}
+        {visibleSpaces.length === 0 && (
+          <p className="px-3 py-4 text-center text-[15px] text-smoke-gray">{copy.states.empty}</p>
+        )}
+      </div>
+    </>
   );
 }

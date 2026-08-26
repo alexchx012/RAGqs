@@ -51,6 +51,18 @@ interface ComposerMemory {
 
 const DEFAULT_MEMORY: ComposerMemory = { effortLevel: 'quick', selection: { space_ids: [], document_ids: [] } };
 
+// 增强演示接缝（动效 AI Agent Input）：仅 mock 环境注入；VITE_ENABLE_MSW 只在 .env.development 置 true，
+// 生产构建该分支被静态消除（与 main.tsx 同模式）。接真实 API 后移除。
+const DEMO_ENHANCE =
+  import.meta.env.VITE_ENABLE_MSW === 'true'
+    ? async (_prompt: string, signal?: AbortSignal): Promise<string> => {
+        // 2.5s 假延迟返回示例优化文案，便于查看增强描边环 + shimmer 动效
+        await new Promise((r) => setTimeout(r, 2500));
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        return copy.chat.composer.enhanceDemoResult;
+      }
+    : undefined;
+
 export function HomePage() {
   const { user } = useAuthState();
   const authStore = useAuthStore();
@@ -296,6 +308,7 @@ function ChatHomeInner({
                   stopping={stopping}
                   onSend={send}
                   onStop={() => store.stop()}
+                  onEnhance={DEMO_ENHANCE}
                 />
               }
             />
