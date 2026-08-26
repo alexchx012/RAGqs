@@ -118,15 +118,15 @@ describe('聊天主页（fe-chat-home 集成）', () => {
       screen.getAllByRole('button', { name: copy.shell.home.openDrawerAria })[0] as HTMLElement,
     );
     const dialog = await screen.findByRole('dialog', { name: copy.shell.drawer.personalTitle });
-    // 抽屉打开期间主页仍在下方挂载
-    expect(composer).toHaveValue('报销流程怎么走');
+    // 抽屉打开期间主页仍在下方挂载（contentEditable 编辑器无 value，断言 textContent）
+    expect(composer).toHaveTextContent('报销流程怎么走');
     await user.click(within(dialog).getByRole('button', { name: copy.shell.drawer.closeAria }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {
       timeout: 2000,
     });
     expect(
       screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
-    ).toHaveValue('报销流程怎么走');
+    ).toHaveTextContent('报销流程怎么走');
   });
 
   it('主页右上角挂铃铛（共用基座 §3.1）', async () => {
@@ -161,7 +161,8 @@ describe('聊天主页（fe-chat-home 集成）', () => {
 
     await user.type(composer, '空会话首问');
     await user.click(screen.getByRole('button', { name: copy.chat.composer.sendAria }));
-    await waitFor(() => expect(composer).toHaveValue(''));
+    // contentEditable 编辑器无 value，发送被接受后断言 textContent 清空
+    await waitFor(() => expect(composer.textContent).toBe(''));
     await waitFor(() => {
       const created = mockChat
         .listConversations(`Bearer ${accessToken}`)
@@ -309,8 +310,9 @@ describe('聊天主页（fe-chat-home 集成）', () => {
     renderWithShell(<AppRoutes />, store, ['/']);
     const user = userEvent.setup();
     await landingComposer();
-    // 展开检索范围
-    await user.click(screen.getByRole('button', { name: copy.chat.composer.scopeAria }));
+    // 展开「+」菜单，再展开检索范围 flyout
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
+    await user.click(screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria }));
     // 下钻个人库文档
     await user.click(await screen.findByRole('button', { name: copy.chat.composer.scopeDocumentDrillAria }));
     // 初始列表含员工手册 / 报销制度

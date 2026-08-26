@@ -1,6 +1,6 @@
 /*
  * SegmentedControl 测试（共用基座 §3.3/§5.5）：受控渲染、点击切换、键盘左右方向键
- * roving tabindex、accent 段选中时滑块桃底棕文。
+ * roving tabindex、各段统一白底滑块。
  */
 
 import { render, screen } from '@testing-library/react';
@@ -12,7 +12,7 @@ import { SegmentedControl, type SegmentedOption } from './SegmentedControl';
 const OPTIONS: SegmentedOption[] = [
   { value: 'fast', label: 'fast' },
   { value: 'think', label: 'think' },
-  { value: 'deep', label: 'deep', accent: true },
+  { value: 'deep', label: 'deep' },
 ];
 
 function Harness({ initial = 'fast', onChange }: { initial?: string; onChange?: (v: string) => void }) {
@@ -70,7 +70,7 @@ describe('SegmentedControl', () => {
     expect(onChange).toHaveBeenLastCalledWith('deep');
   });
 
-  it('滑块按选中段实测定位（left/width，非等分 transform）；accent 段选中时滑块桃底', () => {
+  it('滑块按选中段实测定位（left/width，非等分 transform）；各段统一白底滑块', () => {
     const { container, rerender } = render(
       <SegmentedControl options={OPTIONS} value="fast" onChange={() => {}} ariaLabel="effort" />,
     );
@@ -81,10 +81,11 @@ describe('SegmentedControl', () => {
     expect(slider().style.transform).toBe('none');
     expect(slider().className).toContain('bg-paper-white');
 
+    // 任何段选中都同一白底滑块（无高亮例外段）
     rerender(<SegmentedControl options={OPTIONS} value="deep" onChange={() => {}} ariaLabel="effort" />);
     expect(slider().style.left).toMatch(/^0px$|^\d+px$/);
     expect(slider().style.transform).toBe('none');
-    expect(slider().className).toContain('bg-blush-peach');
-    expect(screen.getByRole('radio', { name: 'deep' }).className).toContain('text-sienna-brown');
+    expect(slider().className).toContain('bg-paper-white');
+    expect(screen.getByRole('radio', { name: 'deep' }).className).toContain('text-ink-black');
   });
 });

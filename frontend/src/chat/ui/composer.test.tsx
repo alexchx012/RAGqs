@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -8,8 +8,10 @@ import { Composer } from './composer';
 import type { SpaceItem, ConversationScope } from '../types';
 
 /*
- * 输入区组件测试（共用基座 §3.3）：发送键禁用/启用、努力档位分段开关切换、
- * 检索范围 chip 浮层（行来自 retrieval 返回、个人库下钻文档、摘要与墨点）。
+ * 输入区组件测试（共用基座 §3.3；动效 AI Agent Input 移植）：发送键禁用/启用、
+ * 「+」菜单内努力档位分段开关与检索范围 flyout（行来自 retrieval 返回、个人库下钻文档、摘要与墨点）、
+ * contentEditable 编辑器（「/」技能药丸、「+」附件 chips、onEnhance 优化/还原）。
+ * 编辑器为 contentEditable div：无 value，一律断言 textContent；getByRole('textbox') 查询靠 aria-label 不变。
  * useEscShield 需要 EscStackProvider；selection 为受控 prop，摘要断言用有状态包装。
  */
 
@@ -49,64 +51,69 @@ describe('输入区（Composer）', () => {
     renderComposer({ onSend });
     const send = screen.getByRole('button', { name: copy.chat.composer.sendAria });
     expect(send).toBeDisabled();
-    const textarea = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
-    await user.type(textarea, '报销流程怎么走');
+    const editor = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
+    await user.type(editor, '报销流程怎么走');
     expect(screen.getByRole('button', { name: copy.chat.composer.sendAria })).toBeEnabled();
     await user.keyboard('{Enter}');
     expect(onSend).toHaveBeenCalledWith('报销流程怎么走');
-    expect(textarea).toHaveValue('');
+    // contentEditable 编辑器无 value，断言 textContent
+    expect(editor.textContent).toBe('');
   });
 
   it('发送未被接受或失败时保留输入，避免首问 no-op 后丢稿', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => false);
     renderComposer({ onSend });
-    const textarea = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
-    await user.type(textarea, '首问不能丢');
+    const editor = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
+    await user.type(editor, '首问不能丢');
     await user.keyboard('{Enter}');
     expect(onSend).toHaveBeenCalledWith('首问不能丢');
-    expect(textarea).toHaveValue('首问不能丢');
+    expect(editor.textContent).toBe('首问不能丢');
 
     onSend.mockRejectedValueOnce(new Error('network'));
     await user.keyboard('{Enter}');
-    expect(textarea).toHaveValue('首问不能丢');
+    expect(editor.textContent).toBe('首问不能丢');
   });
 
   it('Shift+Enter 换行不发送', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
     renderComposer({ onSend });
-    const textarea = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
-    await user.type(textarea, '第一行');
+    const editor = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
+    await user.type(editor, '第一行');
     await user.keyboard('{Shift>}{Enter}{/Shift}');
-    await user.type(textarea, '第二行');
+    await user.type(editor, '第二行');
     expect(onSend).not.toHaveBeenCalled();
-    expect(textarea).toHaveValue('第一行\n第二行');
+    // jsdom 无真实编辑引擎：Shift+Enter 的换行符不一定进入 textContent，断言两段文字都在即可
+    expect(editor.textContent).toContain('第一行');
+    expect(editor.textContent).toContain('第二行');
   });
 
-  it('努力档位分段开关：默认快速，切换调用 onEffortChange', async () => {
+  it('努力档位（「+」菜单内分段开关）：默认快速，切换调用 onEffortChange', async () => {
     const user = userEvent.setup();
     const onEffortChange = vi.fn();
     renderComposer({ onEffortChange });
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
     const group = screen.getByRole('radiogroup', { name: copy.chat.composer.effortAria });
     expect(within(group).getByRole('radio', { name: copy.chat.composer.effortQuick })).toHaveAttribute('aria-checked', 'true');
     await user.click(within(group).getByRole('radio', { name: copy.chat.composer.effortDeep }));
     expect(onEffortChange).toHaveBeenCalledWith('deep');
   });
 
-  it('检索范围 chip：默认「全部范围」；展开浮层按 retrieval 返回渲染行（不硬编码）', async () => {
+  it('检索范围：菜单行默认「全部范围」；展开 flyout 按 retrieval 返回渲染行（不硬编码）', async () => {
     const user = userEvent.setup();
     renderComposer();
-    const chip = screen.getByRole('button', { name: copy.chat.composer.scopeAria });
-    expect(within(chip).getByText(copy.chat.composer.scopeAll)).toBeInTheDocument();
-    await user.click(chip);
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
+    const row = screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria });
+    expect(within(row).getByText(copy.chat.composer.scopeAll)).toBeInTheDocument();
+    await user.click(row);
     // 行名完全来自 spaces 数据
     for (const space of SPACES) {
       expect(await screen.findByText(space.name)).toBeInTheDocument();
     }
   });
 
-  it('检索范围 chip：选中空间后摘要 + 墨点；非默认态', async () => {
+  it('检索范围：选中空间后菜单行摘要 + 墨点；非默认态', async () => {
     const user = userEvent.setup();
     // 受控 selection：有状态包装使摘要随选择更新
     function StatefulHarness() {
@@ -130,12 +137,13 @@ describe('输入区（Composer）', () => {
       );
     }
     render(<StatefulHarness />);
-    await user.click(screen.getByRole('button', { name: copy.chat.composer.scopeAria }));
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
+    await user.click(screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria }));
     await user.click(await screen.findByText('公共库'));
-    const chip = screen.getByRole('button', { name: copy.chat.composer.scopeAria });
-    expect(within(chip).getByText('公共库')).toBeInTheDocument();
+    const row = screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria });
+    expect(within(row).getByText('公共库')).toBeInTheDocument();
     // 墨点在场
-    expect(chip.querySelector('span[aria-hidden="true"]')).not.toBeNull();
+    expect(row.querySelector('span[aria-hidden="true"]')).not.toBeNull();
   });
 
   it('本人个人库行有下钻箭头：展开后拉取文档并多选', async () => {
@@ -146,7 +154,8 @@ describe('输入区（Composer）', () => {
     ]);
     const onSelectionChange = vi.fn();
     renderComposer({ onFetchDocuments, onSelectionChange });
-    await user.click(screen.getByRole('button', { name: copy.chat.composer.scopeAria }));
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
+    await user.click(screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria }));
     await user.click(screen.getByRole('button', { name: copy.chat.composer.scopeDocumentDrillAria }));
     expect(onFetchDocuments).toHaveBeenCalledWith('personal:u_user');
     await user.click(await screen.findByText('员工手册.pdf'));
@@ -165,7 +174,8 @@ describe('输入区（Composer）', () => {
       return allDocs.filter((doc) => doc.name.includes(q));
     });
     renderComposer({ onFetchDocuments });
-    await user.click(screen.getByRole('button', { name: copy.chat.composer.scopeAria }));
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
+    await user.click(screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria }));
     await user.click(screen.getByRole('button', { name: copy.chat.composer.scopeDocumentDrillAria }));
     expect(await screen.findByText('员工手册.pdf')).toBeInTheDocument();
     expect(screen.getByText('报销制度.docx')).toBeInTheDocument();
@@ -205,5 +215,96 @@ describe('输入区（Composer）', () => {
     renderComposer({ generating: true, canStop: true, stopping: true });
     const stoppingBtn = screen.getByRole('button', { name: copy.chat.composer.stoppingAria });
     expect(stoppingBtn).toBeDisabled();
+  });
+
+  it('「/」斜杠面板：输入 / 打开，Enter 应用后编辑器出现技能药丸且面板关闭', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    renderComposer({ onSend });
+    const editor = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
+    await user.type(editor, '/');
+    expect(
+      await screen.findByRole('listbox', { name: copy.chat.composer.skillsLabel }),
+    ).toBeInTheDocument();
+    // 空 query 命中全部技能，默认高亮第一项（deep-research）
+    await user.keyboard('{Enter}');
+    expect(editor.querySelector('[data-skill="deep-research"]')).not.toBeNull();
+    expect(editor.textContent).toContain(copy.chat.composer.skillDeepResearch);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    // 斜杠面板消费 Enter（capture 阶段 stopPropagation），不得触发发送
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('优化输入药丸：注入 onEnhance 时增强 → 展示结果并变「还原」→ 还原恢复原文', async () => {
+    const user = userEvent.setup();
+    const onEnhance = vi.fn(async (_prompt: string) => '优化后的内容');
+    renderComposer({ onEnhance });
+    await user.type(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+      '原始问题',
+    );
+    await user.click(await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }));
+    expect(onEnhance).toHaveBeenCalledWith('原始问题', expect.any(AbortSignal));
+    // 增强完成：编辑器展示优化结果，药丸变「还原」（增强期间编辑器换成 shimmer 文本，此处重新查询）
+    await screen.findByRole('button', { name: copy.chat.composer.revertEnhance });
+    expect(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }).textContent,
+    ).toBe('优化后的内容');
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.revertEnhance }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }).textContent,
+      ).toBe('原始问题'),
+    );
+  });
+
+  it('未注入 onEnhance 时不显示「优化输入」入口', async () => {
+    const user = userEvent.setup();
+    renderComposer();
+    await user.type(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+      '有问题',
+    );
+    expect(
+      screen.queryByRole('button', { name: copy.chat.composer.enhancePrompt }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('「+」菜单：添加图片/文件/技能在场；选文件出附件 chip，点 × 后退场移除', async () => {
+    const user = userEvent.setup();
+    renderComposer();
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
+    expect(
+      screen.getByRole('menuitem', { name: copy.chat.composer.addPhotos }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: copy.chat.composer.attachFiles }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: copy.chat.composer.skillsLabel }),
+    ).toBeInTheDocument();
+    // 检索范围行与努力档位分段开关同在「+」菜单内
+    expect(
+      screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('radiogroup', { name: copy.chat.composer.effortAria }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('menuitem', { name: copy.chat.composer.attachFiles }));
+    // jsdom 无文件选择对话框：直接打 hidden file input（user.upload 无可见性检查）
+    const fileInput = document.querySelector('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    await user.upload(
+      fileInput as HTMLInputElement,
+      new File(['x'], '报告.pdf', { type: 'application/pdf' }),
+    );
+    expect(await screen.findByText('报告.pdf')).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: copy.chat.composer.removeItemAria('报告.pdf') }),
+    );
+    // 退场动画 200ms：jsdom 不触发 CSS 动画事件，组件内 setTimeout 兜底后移除
+    await waitFor(() => expect(screen.queryByText('报告.pdf')).not.toBeInTheDocument());
   });
 });
