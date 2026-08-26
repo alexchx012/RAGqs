@@ -168,6 +168,51 @@ def test_own_personal_library_listing_is_not_audited(service, principal) -> None
     assert count == 0
 
 
+def test_management_department_drilldown_is_audited(service, principal) -> None:
+    service.list_documents(principal=principal, space_id="department:dept_1")
+    service.list_documents(principal=principal, space_id="department:dept_1")
+
+    with service._engine.connect() as connection:
+        rows = connection.execute(
+            select(platform_audit_table.c.resource_type, platform_audit_table.c.resource_id).where(
+                platform_audit_table.c.resource_type == "documents.department_library_view"
+            )
+        ).all()
+
+    assert rows == [
+        ("documents.department_library_view", "department:dept_1"),
+        ("documents.department_library_view", "department:dept_1"),
+    ]
+
+
+def test_member_department_listing_is_not_audited(service, principal) -> None:
+    member = AuthPrincipal(
+        user_id="user_2",
+        auth_session_id="session_2",
+        username="bob",
+        role="user",
+        department_id="dept_1",
+    )
+    service.list_documents(principal=member, space_id="department:dept_1")
+
+    with service._engine.connect() as connection:
+        count = connection.execute(
+            select(func.count()).select_from(platform_audit_table)
+        ).scalar_one()
+
+    assert count == 0
+
+
+def test_audit_failure_does_not_block_drilldown_listing(service, principal, monkeypatch) -> None:
+    def _raise(*args, **kwargs):
+        raise RuntimeError("audit store down")
+
+    monkeypatch.setattr(DocumentsService, "_audit", _raise)
+    result = service.list_documents(principal=principal, space_id="department:dept_1")
+
+    assert result == {"items": [], "total": 0, "page": 1, "page_size": 50}
+
+
 def test_submission_review_writes_audit_event(service, principal) -> None:
     upload = DocumentUpload(
         filename="share.txt", content=b"shared knowledge", media_kind="text/plain"

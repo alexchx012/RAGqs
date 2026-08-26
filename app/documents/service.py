@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
@@ -55,6 +56,8 @@ from .schema import (
     upload_batches_table,
     upload_dedup_claims_table,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2220,16 +2223,31 @@ class DocumentsService:
                     "usage": {"pages": metered_pages, "images": images},
                 }
             )
+        audit_resource_type = None
         if space_id.startswith("personal:") and space_id != f"personal:{principal.user_id}":
             # Directory-privileged view of another user's personal library: observable read.
-            with self._engine.begin() as connection:
-                self._audit(
-                    connection,
-                    actor_id=str(principal.user_id),
-                    resource_type="documents.personal_library_view",
-                    resource_id=space_id,
-                    result="succeeded",
-                    occurred_at=self._current_time(),
+            audit_resource_type = "documents.personal_library_view"
+        elif space_id.startswith("department:") and str(getattr(principal, "role", "")) in {
+            "ops",
+            "admin",
+        }:
+            # Management drilldown of a department library: observable read.
+            audit_resource_type = "documents.department_library_view"
+        if audit_resource_type is not None:
+            try:
+                with self._engine.begin() as connection:
+                    self._audit(
+                        connection,
+                        actor_id=str(principal.user_id),
+                        resource_type=audit_resource_type,
+                        resource_id=space_id,
+                        result="succeeded",
+                        occurred_at=self._current_time(),
+                    )
+            except Exception:
+                # The drilldown is read-only; the audit write is best-effort and never blocks it.
+                logger.warning(
+                    "library view audit write failed for %s", audit_resource_type, exc_info=True
                 )
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 

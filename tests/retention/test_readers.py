@@ -12,11 +12,13 @@ from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 from app.chat.schema import chat_message_table, chat_metadata
 from app.documents.schema import (
     documents_metadata,
+    ingestion_attempts_table,
     ingestion_jobs_table,
     knowledge_submissions_table,
 )
 from app.identity.schema import identity_metadata, identity_user_table
-from app.platform.database import core_metadata
+from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
+from app.platform.database import core_metadata, platform_observability_sample_table
 from app.platform.observability import (
     ApiRead,
     LatencyRead,
@@ -528,7 +530,7 @@ def test_admin_dashboard_has_fixed_four_packs_and_no_operational_facets() -> Non
     assert cards["question_trend"]["value"] == 1
 
 
-def test_operations_has_exactly_three_cards_and_never_calls_port() -> None:
+def test_operations_has_exactly_four_cards_and_never_calls_port() -> None:
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
@@ -541,13 +543,151 @@ def test_operations_has_exactly_three_cards_and_never_calls_port() -> None:
         "cache_hit_rate",
         "ocr_confidence_dist",
         "graph_basic_split",
+        "sparse_exact_match",
     ]
     kinds = {card["key"]: card["kind"] for card in response["cards"]}
     assert kinds == {
         "cache_hit_rate": "stat",
         "ocr_confidence_dist": "distribution",
         "graph_basic_split": "distribution",
+        "sparse_exact_match": "stat",
     }
+    sparse = next(card for card in response["cards"] if card["key"] == "sparse_exact_match")
+    assert sparse["value"] is None
+    assert sparse["sparkline"] == []
+
+
+def test_sparse_exact_match_card_reads_observability_samples() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    now = fixed_now()
+    start = now - timedelta(days=7)
+    with engine.begin() as connection:
+        for offset, weight in ((0.1, 1.0), (0.5, 3.0)):
+            observed = start + timedelta(days=7 * offset)
+            connection.execute(
+                platform_observability_sample_table.insert().values(
+                    observed_at_utc=observed,
+                    route_template=SPARSE_EXACT_MATCH_ROUTE,
+                    method="POST",
+                    outcome_class="success",
+                    status_family="2xx",
+                    latency_ms=0,
+                    sample_weight=weight,
+                    retention_days=30,
+                    expires_at_utc=observed + timedelta(days=30),
+                )
+            )
+        connection.execute(
+            platform_observability_sample_table.insert().values(
+                observed_at_utc=now - timedelta(hours=1),
+                route_template="/v1/health",
+                method="GET",
+                outcome_class="success",
+                status_family="2xx",
+                latency_ms=1,
+                sample_weight=9.0,
+                retention_days=30,
+                expires_at_utc=now + timedelta(days=30),
+            )
+        )
+    response = _reader(engine, RaisingObservabilityPort()).operations(window="7d")
+    sparse = next(card for card in response["cards"] if card["key"] == "sparse_exact_match")
+    assert sparse["value"] == 4.0
+    assert sparse["sparkline"] == [1.0, 3.0]
+
+
+def test_ops_jobs_stale_count_is_global_across_views() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    now = fixed_now()
+    with engine.begin() as connection:
+        connection.execute(
+            ingestion_jobs_table.insert().values(
+                id="job_stale",
+                document_id="doc_1",
+                operation="initial",
+                state="running",
+                stage=None,
+                upload_batch_id=None,
+                active_attempt_id="attempt_1",
+                active_publication_id=None,
+                version=1,
+                replay_generation=0,
+                next_attempt_at_utc=None,
+                failure_reason=None,
+                degradations_json=[],
+                processing_summary_json={},
+                usage_json=None,
+                ocr_low_confidence=False,
+                notification_event_ids_json=[],
+                created_by_user_id="u_ops",
+                quota_role_snapshot="ops",
+                quota_department_id_snapshot=None,
+                quota_exempt_reason=None,
+                created_at_utc=now - timedelta(minutes=5),
+                updated_at_utc=now - timedelta(minutes=5),
+            )
+        )
+        connection.execute(
+            ingestion_attempts_table.insert().values(
+                id="attempt_1",
+                job_id="job_stale",
+                attempt_number=1,
+                cycle_attempt_number=1,
+                replay_generation=0,
+                state="running",
+                lease_owner="worker_1",
+                lease_expires_at_utc=now - timedelta(minutes=1),
+                fencing_token=1,
+                publication_id="pub_1",
+                staging_request_json={},
+                processing_receipt_json=None,
+                failure_class=None,
+                failure_reason=None,
+                created_at_utc=now - timedelta(minutes=5),
+                updated_at_utc=now - timedelta(minutes=5),
+            )
+        )
+    rows = [
+        {
+            "job_id": "job_stale",
+            "name": "stale.pdf",
+            "state": "running",
+            "allowed_actions": ["cancel"],
+            "created_at": (now - timedelta(minutes=5)).isoformat(),
+            "next_attempt_at": None,
+        },
+        {
+            "job_id": "job_failed",
+            "name": "failed.pdf",
+            "state": "failed",
+            "allowed_actions": ["replay"],
+            "created_at": (now - timedelta(minutes=4)).isoformat(),
+            "next_attempt_at": None,
+        },
+    ]
+    reader = OpsJobsReadModel(
+        engine=engine,
+        now=lambda connection=None: now,
+        documents_service=FakeDocumentsJobsService(rows),
+    )
+    principal = SimpleNamespace(role="ops")
+
+    for view, expected_ids in (
+        ("all", {"job_stale", "job_failed"}),
+        ("active", {"job_stale"}),
+        ("replayable", {"job_failed"}),
+        ("stale", {"job_stale"}),
+    ):
+        response = reader.jobs(principal=principal, view=view)
+        assert {item["job_id"] for item in response["items"]} == expected_ids
+        assert response["stale_count"] == 1
 
 
 def test_admin_dashboard_uses_provider_facts_and_expands_real_user_rank() -> None:
