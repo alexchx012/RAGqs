@@ -129,6 +129,9 @@ function makeStubApi(): StubApi {
     async listDocuments() {
       return { items: [], total: 0, page: 1, page_size: 50 };
     },
+    async enhancePrompt(prompt) {
+      return prompt;
+    },
   };
   const stopGeneration = vi.fn(api.stopGeneration);
   api.stopGeneration = stopGeneration;

@@ -2,8 +2,11 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { createApiClient } from '../../api/client';
 import { EscStackProvider } from '../../lib/esc-stack-provider';
 import { copy } from '../../copy';
+import { createChatApi } from '../api';
+import { createPromptEnhanceHandler } from '../enhance';
 import { Composer } from './composer';
 import type { SpaceItem, ConversationScope } from '../types';
 
@@ -36,12 +39,12 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onStop: vi.fn(),
     ...overrides,
   };
-  render(
+  const view = render(
     <EscStackProvider>
       <Composer {...props} />
     </EscStackProvider>,
   );
-  return props;
+  return { props, view };
 }
 
 describe('输入区（Composer）', () => {
@@ -306,5 +309,106 @@ describe('输入区（Composer）', () => {
     );
     // 退场动画 200ms：jsdom 不触发 CSS 动画事件，组件内 setTimeout 兜底后移除
     await waitFor(() => expect(screen.queryByText('报告.pdf')).not.toBeInTheDocument());
+  });
+});
+
+/*
+ * 优化输入真实接线（prompt-enhance §3.2 / §4）：onEnhance 为生产同款装配
+ * （createApiClient + createChatApi + createPromptEnhanceHandler），fetch 经 fetchFn 注入。
+ */
+describe('优化输入真实接线', () => {
+  const jsonResponse = (status: number, body: unknown): Response =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  function realOnEnhance(fetchMock: ReturnType<typeof vi.fn<typeof fetch>>, onFailed = vi.fn()) {
+    const client = createApiClient({
+      getAccessToken: () => 'tok_1',
+      refresh: vi.fn(),
+      fetchFn: fetchMock,
+    });
+    return { onEnhance: createPromptEnhanceHandler(createChatApi(client), onFailed), onFailed };
+  }
+
+  it('成功：POST /v1/prompt-enhancements 返回 enhanced_prompt，编辑器整体替换、药丸变「还原」', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse(200, { enhanced_prompt: '优化后的内容' }),
+    );
+    const { onEnhance } = realOnEnhance(fetchMock);
+    renderComposer({ onEnhance });
+    await user.type(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+      '原始问题',
+    );
+    await user.click(await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }));
+    await screen.findByRole('button', { name: copy.chat.composer.revertEnhance });
+    expect(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }).textContent,
+    ).toBe('优化后的内容');
+    // 请求形状：路径 / 方法 / Bearer / body
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/v1/prompt-enhancements');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer tok_1');
+    expect(JSON.parse(String(init.body))).toEqual({ prompt: '原始问题' });
+  });
+
+  it('失败（非中止）：onFailed 触发提示，原文不动、药丸回到「优化输入」可重试', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse(503, {
+        error: {
+          code: 'prompt_enhance_unavailable',
+          message: 'prompt_enhance_unavailable',
+          details: {},
+          request_id: 'req_test_1',
+        },
+      }),
+    );
+    const onFailed = vi.fn();
+    const { onEnhance } = realOnEnhance(fetchMock, onFailed);
+    renderComposer({ onEnhance });
+    await user.type(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+      '原始问题',
+    );
+    await user.click(await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }));
+    // 失败后药丸回到「优化输入」（enhancing 期间按钮不在场，findBy 等到恢复）
+    await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt });
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }).textContent,
+    ).toBe('原始问题');
+  });
+
+  it('中止（还原/卸载中止进行中请求）：fetch signal 兑现中止，静默不触发 onFailed', async () => {
+    const user = userEvent.setup();
+    let fetchedSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn<typeof fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          fetchedSignal = init?.signal ?? undefined;
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        }),
+    );
+    const onFailed = vi.fn();
+    const { onEnhance } = realOnEnhance(fetchMock, onFailed);
+    const { view } = renderComposer({ onEnhance });
+    await user.type(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+      '原始问题',
+    );
+    await user.click(await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }));
+    // 请求挂起中卸载：composer 卸载中止 AbortController，沿接缝兑现到 fetch
+    view.unmount();
+    expect(fetchedSignal?.aborted).toBe(true);
+    // 冲刷微任务：AbortError 经接缝静默（只 rethrow 还原，不弹错误提示）
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onFailed).not.toHaveBeenCalled();
   });
 });

@@ -366,3 +366,10 @@ export interface SpaceItem {
 export interface SpacesResponse {
   readonly items: readonly SpaceItem[];
 }
+
+/* ---------- prompt-enhancements：输入优化（非流式单次） ---------- */
+
+/** POST /prompt-enhancements 成功响应（200，响应模型直接为 pydantic，不走 ApiEnvelope 信封）。 */
+export interface PromptEnhanceResponse {
+  readonly enhanced_prompt: string;
+}

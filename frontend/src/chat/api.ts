@@ -18,6 +18,7 @@ import type {
   CreateConversationResponse,
   FeedbackVoteRequest,
   PatchConversationRequest,
+  PromptEnhanceResponse,
   SpacesResponse,
   SpaceUsage,
   StopGenerationResponse,
@@ -75,6 +76,14 @@ export interface ChatApi {
   listSpaces(usage: SpaceUsage): Promise<SpacesResponse>;
   /** §6.2 空间文档列表（检索范围 chip 个人库文档级收窄；q 按文档名过滤）。 */
   listDocuments(spaceId: string, q?: string): Promise<SpaceDocumentsResponse>;
+
+  /* ---------- prompt-enhancements：输入优化（非流式单次，无聊天副作用） ---------- */
+  /**
+   * POST /prompt-enhancements：返回 enhanced_prompt 优化文本。
+   * 30s 超时与端点 enhance_timeout_seconds 默认对齐；signal 由 composer 中止（还原/卸载）透传，
+   * 中止以 AbortError 拒绝（不算失败）。
+   */
+  enhancePrompt(prompt: string, signal?: AbortSignal): Promise<string>;
 }
 
 /** §6.2 文档行（检索范围 chip 只消费 id + name；其余字段透传读模型/预览用）。 */
@@ -107,6 +116,9 @@ interface SseCallParams {
   readonly onEvent: SseStreamOptions['onEvent'];
   readonly options?: Pick<SseStreamOptions, 'onOpen' | 'onError' | 'signal'>;
 }
+
+/** prompt-enhance 端点客户端超时（与后端 chat.enhance_timeout_seconds 默认 30s 对齐）。 */
+const PROMPT_ENHANCE_TIMEOUT_MS = 30_000;
 
 function stream(params: SseCallParams): Promise<void> {
   // SSE 流不经过 ApiClient 的 JSON 请求/响应归一化，仅复用其路径前缀约定
@@ -231,6 +243,16 @@ export function createChatApi(client: ApiClient): ChatApi {
       return client.request<SpaceDocumentsResponse>(
         `/spaces/${encodeURIComponent(spaceId)}/documents${query}`,
       );
+    },
+
+    async enhancePrompt(prompt, signal) {
+      const result = await client.request<PromptEnhanceResponse>('/prompt-enhancements', {
+        method: 'POST',
+        body: { prompt },
+        timeoutMs: PROMPT_ENHANCE_TIMEOUT_MS,
+        signal,
+      });
+      return result.enhanced_prompt;
     },
   };
 }

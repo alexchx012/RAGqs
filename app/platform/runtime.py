@@ -13,10 +13,16 @@ from app.chat.ports import (
     ChatGenerationRevocationPort,
     IdentityChatAuthorizationPort,
     IndexingChatRetrievalPort,
+    PromptEnhancePort,
     SqlAlchemyChatPairExpiry,
     UnavailableChatProviderPort,
+    UnavailablePromptEnhanceProviderPort,
 )
 from app.chat.preview import SqlAlchemyMessageCitationPreviewAdapter
+from app.chat.prompt_enhance import (
+    PROMPT_ENHANCE_DEFAULT_BASE_URL,
+    DashScopePromptEnhanceProvider,
+)
 from app.chat.streaming import GenerationStreamService
 from app.chat.worker import ChatGenerationWorker
 from app.documents.preview import ProcessingReceiptPreviewRenderer
@@ -204,6 +210,20 @@ class _LazyUsageSubmission:
         if submission is None:
             return None
         return submission.submit_local_usage(**kwargs)
+
+
+def _default_prompt_enhance_provider(settings: PlatformSettings) -> PromptEnhancePort:
+    """「优化输入」装配：复用全局 ProviderSettings；无 api key 时 fail-closed（503）。"""
+
+    api_key = settings.provider.api_key
+    if api_key is None or not api_key.get_secret_value().strip():
+        return UnavailablePromptEnhanceProviderPort()
+    return DashScopePromptEnhanceProvider(
+        base_url=settings.provider.base_url or PROMPT_ENHANCE_DEFAULT_BASE_URL,
+        api_key=api_key.get_secret_value(),
+        model=settings.chat.enhance_model,
+        timeout_seconds=settings.chat.enhance_timeout_seconds,
+    )
 
 
 def build_runtime(
@@ -744,6 +764,10 @@ def build_runtime(
     configured.setdefault("chat_retrieval_port", chat_retrieval)
     chat_provider = configured.get("chat_provider_port") or UnavailableChatProviderPort()
     configured.setdefault("chat_provider_port", chat_provider)
+    prompt_enhance_provider = configured.get("prompt_enhance_provider_port") or (
+        _default_prompt_enhance_provider(settings)
+    )
+    configured.setdefault("prompt_enhance_provider_port", prompt_enhance_provider)
     evaluation_calibration_port = configured.get("evaluation_calibration_port") or (
         EvaluationCalibrationWindowPort(engine)
     )

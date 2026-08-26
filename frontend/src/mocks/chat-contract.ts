@@ -30,6 +30,7 @@ import type {
   FeedbackState,
   GenerationStatus,
   Notice,
+  PromptEnhanceResponse,
   SpaceItem,
   SpaceKind,
   SpacePermission,
@@ -40,6 +41,19 @@ import type {
 import { MockHttpError } from './auth-contract';
 
 export { MockHttpError };
+
+/**
+ * prompt-enhance 演示优化文本（仅 mock 环境供动效审查；演示文案随 mock 数据，不占 copy 键）。
+ * 沿用已移除的 enhanceDemoResult 措辞。
+ */
+export const MOCK_ENHANCE_DEMO_RESULT =
+  '这是一个示例优化结果——说明你的目标，补充相关背景与约束，指定期望的输出格式和语气，并注明已有假设；如果关键信息缺失，先向我提问。';
+
+/** prompt-enhance mock 校验上限（与后端 chat.enhance_max_prompt_chars 默认 4000 对齐）。 */
+const MOCK_ENHANCE_MAX_PROMPT_CHARS = 4000;
+
+/** prompt-enhance mock 演示延迟默认值（ms；约 2.5s 供增强描边环 + shimmer 动效审查）。 */
+const MOCK_ENHANCE_DELAY_MS = 2_500;
 
 /** 鉴权注入：装配处用 MockAuthController.me 实现；无有效 Bearer 时抛 MockHttpError(401)。 */
 export interface ValidateChatAuth {
@@ -228,6 +242,8 @@ export class MockChatController {
   private liveStreams = new Map<string, Set<LiveStreamHandle>>();
   /** 夹具：后续 ask 命中 A/B 采样（§3.7 ab_start）。 */
   abEnabled = false;
+  /** 夹具：prompt-enhance 演示延迟（ms）；测试置 0 跳过延迟。 */
+  enhanceDelayMs = MOCK_ENHANCE_DELAY_MS;
   /** 夹具：后续 ask 以 error 终态结束（code 可覆盖）。 */
   private nextErrorCode: string | null = null;
   /** 夹具：后续 ask 以 stopped 终态结束（stop_reason 可覆盖）。 */
@@ -252,6 +268,7 @@ export class MockChatController {
     this.liveStreams.clear();
     this.seq = 0;
     this.abEnabled = false;
+    this.enhanceDelayMs = MOCK_ENHANCE_DELAY_MS;
     this.nextErrorCode = null;
     this.nextStopReason = null;
     this.seedFixtures();
@@ -303,6 +320,17 @@ export class MockChatController {
     if (!found) {
       throw new MockHttpError(404, 'not_found');
     }
+  }
+
+  /* ---------- prompt-enhance：输入优化演示（无会话副作用） ---------- */
+
+  /** 校验鉴权与 prompt（去除首尾空白后非空、原始长度不超上限），返回固定演示优化文本。 */
+  enhancePrompt(auth: string | null, prompt: string): PromptEnhanceResponse {
+    this.requireAuth(auth);
+    if (prompt.trim() === '' || prompt.length > MOCK_ENHANCE_MAX_PROMPT_CHARS) {
+      throw new MockHttpError(422, 'validation_error', { field: 'prompt' });
+    }
+    return { enhanced_prompt: MOCK_ENHANCE_DEMO_RESULT };
   }
 
   /**
