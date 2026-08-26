@@ -425,6 +425,7 @@ class DashboardReadModels:
             start, end = facts.window_bounds(window, now)
             quality = facts.ingestion_quality_facts(connection, start=start, end=end)
             cache_hit_rate = facts.cache_hit_rate_facts(connection, start=start, end=end)
+            sparse_exact_match = facts.sparse_exact_match_facts(connection, start=start, end=end)
         ocr_rows = [
             (
                 {"label": row["label"], "value": row["count"], "tone": "warning"}
@@ -444,6 +445,12 @@ class DashboardReadModels:
             ),
             _distribution("ocr_confidence_dist", "OCR 置信度分布", ocr_rows),
             _distribution("graph_basic_split", "建树/basic 分流比例", tree_rows),
+            _stat(
+                "sparse_exact_match",
+                "稀疏精确匹配抽样",
+                value=sparse_exact_match["value"],
+                sparkline=sparse_exact_match["sparkline"],
+            ),
         ]
         return {"window": window, "cards": cards}
 
@@ -487,8 +494,8 @@ class OpsJobsReadModel:
             ]
         elif view == "stale":
             items = [item for item in items if item["stale"]]
-        stale_count = sum(1 for item in items if item["stale"])
-        return {"items": items, "stale_count": stale_count}
+        # §10.1: the badge count is global, taken before the view filter narrows the items.
+        return {"items": items, "stale_count": len(stale_ids)}
 
     @staticmethod
     def _wait_seconds(row: Mapping[str, Any], now: datetime) -> int:

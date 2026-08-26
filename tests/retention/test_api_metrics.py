@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from retention_helpers import (
@@ -12,14 +12,20 @@ from retention_helpers import (
     make_settings,
     provision_user,
 )
+from sqlalchemy import select
 
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata, documents_table, ingestion_jobs_table
 from app.identity.schema import identity_metadata
+from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 from app.indexing.schema import indexing_metadata
 from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
-from app.platform.database import core_metadata
+from app.platform.database import (
+    core_metadata,
+    platform_audit_table,
+    platform_observability_sample_table,
+)
 from app.platform.runtime import build_runtime
 from app.retention.schema import retention_metadata
 from app.usage.schema import usage_metadata
@@ -101,7 +107,7 @@ def test_ops_dashboard_and_operations_shapes() -> None:
             assert isinstance(pack["cards"], list)
         operations = client.get("/v1/metrics/operations?window=today", headers=headers)
         assert operations.status_code == 200
-        assert len(operations.json()["cards"]) == 3
+        assert len(operations.json()["cards"]) == 4
 
 
 def test_admin_dashboard_is_read_only_and_admin_jobs_have_no_actions() -> None:
@@ -271,3 +277,122 @@ def test_ops_jobs_views_and_item_shape() -> None:
         assert not any(item["job_id"] == "job_1" for item in active.json()["items"])
         pending = next(item for item in active.json()["items"] if item["job_id"] == "job_2")
         assert isinstance(pending["wait_seconds"], int)
+
+
+def _standalone_app():
+    configured = make_settings()
+    engine = build_engine()
+    for metadata in (
+        core_metadata,
+        identity_metadata,
+        documents_metadata,
+        usage_metadata,
+        outbox_metadata,
+        indexing_metadata,
+        chat_metadata,
+        retention_metadata,
+    ):
+        metadata.create_all(engine)
+    identity = build_identity_service(engine)
+    runtime = build_runtime(
+        configured, adapters={"database_engine": engine, "identity_access": identity}
+    )
+    return configured, engine, runtime, identity
+
+
+def test_operations_sparse_exact_match_card_contract() -> None:
+    configured, engine, runtime, identity = _standalone_app()
+    ops = provision_user(identity, "ops", "ops")
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        for age_days, weight in ((1, 1.0), (2, 3.0)):
+            observed = now - timedelta(days=age_days)
+            connection.execute(
+                platform_observability_sample_table.insert().values(
+                    observed_at_utc=observed,
+                    route_template=SPARSE_EXACT_MATCH_ROUTE,
+                    method="POST",
+                    outcome_class="success",
+                    status_family="2xx",
+                    latency_ms=0,
+                    sample_weight=weight,
+                    retention_days=30,
+                    expires_at_utc=observed + timedelta(days=30),
+                )
+            )
+        connection.execute(
+            platform_observability_sample_table.insert().values(
+                observed_at_utc=now - timedelta(days=1),
+                route_template="/v1/health",
+                method="GET",
+                outcome_class="success",
+                status_family="2xx",
+                latency_ms=1,
+                sample_weight=9.0,
+                retention_days=30,
+                expires_at_utc=now + timedelta(days=30),
+            )
+        )
+    app = create_platform_app(configured, runtime=runtime)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {ops['token']}"}
+        empty = client.get("/v1/metrics/operations?window=today", headers=headers)
+        assert empty.status_code == 200
+        empty_card = next(
+            card for card in empty.json()["cards"] if card["key"] == "sparse_exact_match"
+        )
+        assert empty_card["value"] is None
+        assert empty_card["sparkline"] == []
+        populated = client.get("/v1/metrics/operations?window=7d", headers=headers)
+        assert populated.status_code == 200
+        card = next(
+            card for card in populated.json()["cards"] if card["key"] == "sparse_exact_match"
+        )
+    assert card["kind"] == "stat"
+    assert card["value"] == 4.0
+    assert card["sparkline"] == [3.0, 1.0]
+
+
+def test_admin_document_drilldown_writes_audit_records() -> None:
+    configured, engine, runtime, identity = _standalone_app()
+    admin = provision_user(identity, "admin", "admin")
+    ops = provision_user(identity, "ops", "ops")
+    app = create_platform_app(configured, runtime=runtime)
+    with TestClient(app) as client:
+        admin_headers = {"Authorization": f"Bearer {admin['token']}"}
+        ops_headers = {"Authorization": f"Bearer {ops['token']}"}
+        department = client.post(
+            "/v1/admin/departments",
+            headers={**admin_headers, "Idempotency-Key": "audit-drilldown"},
+            json={"name": "Audit"},
+        )
+        assert department.status_code == 201
+        department_id = department.json()["id"]
+        for _ in range(2):
+            department_documents = client.get(
+                f"/v1/admin/departments/{department_id}/documents", headers=ops_headers
+            )
+            assert department_documents.status_code == 200
+            assert department_documents.json() == {
+                "items": [],
+                "total": 0,
+                "page": 1,
+                "page_size": 50,
+            }
+        personal = client.get(
+            f"/v1/admin/users/{ops['record']['id']}/documents", headers=admin_headers
+        )
+        assert personal.status_code == 200
+    with engine.connect() as connection:
+        department_rows = connection.execute(
+            select(platform_audit_table.c.actor_id, platform_audit_table.c.resource_id).where(
+                platform_audit_table.c.resource_type == "documents.department_library_view"
+            )
+        ).all()
+        personal_rows = connection.execute(
+            select(platform_audit_table.c.actor_id, platform_audit_table.c.resource_id).where(
+                platform_audit_table.c.resource_type == "documents.personal_library_view"
+            )
+        ).all()
+    assert department_rows == [(str(ops["record"]["id"]), f"department:{department_id}")] * 2
+    assert personal_rows == [(str(admin["record"]["id"]), f"personal:{ops['record']['id']}")]
