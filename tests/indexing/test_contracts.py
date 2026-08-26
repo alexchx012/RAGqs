@@ -47,6 +47,7 @@ from app.indexing import (
 )
 from app.indexing.models import RetrievalHit
 from app.indexing.processing import _xlsx_merged_ranges
+from app.indexing.release_gates import RetrievalReleaseGateService
 from app.indexing.retrieval import CitationService, ScoreReranker
 from app.indexing.schema import index_chunks_table, index_generation_heads_table
 from app.platform.errors import PlatformError
@@ -156,6 +157,55 @@ def _release_metrics() -> dict[str, float]:
         "ndcg": 0.9,
         "refusal": 1.0,
     }
+
+
+_GATE_AGGREGATIONS = {
+    "p50_ms": "p50",
+    "p95_ms": "p95",
+    "p99_ms": "p99",
+    "error_rate": "rate",
+    "vram_mb": "max",
+    "hit_at_k": "mean",
+    "mrr": "mean",
+    "ndcg": "mean",
+    "refusal": "mean",
+}
+
+
+def _register_release_gate(engine, *, regression: float = 0.0) -> str:
+    """Register a gate version mirroring the suite's absolute thresholds."""
+
+    suite = _release_suite()
+    metrics = [
+        {
+            "metric": name,
+            "direction": "below",
+            "absolute_threshold": suite["thresholds"][name],
+            "allowed_regression": regression,
+            "min_samples": 1,
+            "aggregation": _GATE_AGGREGATIONS[name],
+            "severity": "blocking",
+        }
+        for name in ("p50_ms", "p95_ms", "p99_ms", "error_rate", "vram_mb")
+    ] + [
+        {
+            "metric": name,
+            "direction": "above",
+            "absolute_threshold": suite["quality_thresholds"][name],
+            "allowed_regression": regression,
+            "min_samples": 1,
+            "aggregation": _GATE_AGGREGATIONS[name],
+            "severity": "blocking",
+        }
+        for name in ("hit_at_k", "mrr", "ndcg", "refusal")
+    ]
+    gate = RetrievalReleaseGateService(engine).register(
+        version=f"gate_{regression}",
+        hardware_profile=suite["hardware_profile"],
+        concurrency=1,
+        metrics=metrics,
+    )
+    return str(gate["id"])
 
 
 def _insert_active_publication(
@@ -1466,10 +1516,12 @@ def test_retrieval_release_resolves_only_for_its_generation() -> None:
     indexing_metadata.create_all(engine)
     SqlAlchemyIndexingRepository(engine).active_generation_id()
     releases = RetrievalReleaseService(engine)
+    gate_version_id = _register_release_gate(engine)
     staged = releases.stage(
         generation_id="generation_initial",
         profile=RetrievalProfile(),
         acceptance_suite=_release_suite(),
+        gate_version_id=gate_version_id,
     )
     releases.release(
         str(staged["id"]),
@@ -1489,10 +1541,12 @@ def test_retrieval_release_rejects_metrics_outside_the_staged_acceptance_suite()
     indexing_metadata.create_all(engine)
     SqlAlchemyIndexingRepository(engine).active_generation_id()
     releases = RetrievalReleaseService(engine)
+    gate_version_id = _register_release_gate(engine)
     staged = releases.stage(
         generation_id="generation_initial",
         profile=RetrievalProfile(),
         acceptance_suite=_release_suite(),
+        gate_version_id=gate_version_id,
     )
 
     with pytest.raises(PlatformError) as error:
@@ -1511,10 +1565,12 @@ def test_retrieval_release_rejects_hardware_profile_mismatch() -> None:
     indexing_metadata.create_all(engine)
     SqlAlchemyIndexingRepository(engine).active_generation_id()
     releases = RetrievalReleaseService(engine)
+    gate_version_id = _register_release_gate(engine)
     staged = releases.stage(
         generation_id="generation_initial",
         profile=RetrievalProfile(),
         acceptance_suite=_release_suite(),
+        gate_version_id=gate_version_id,
     )
 
     with pytest.raises(PlatformError) as error:
@@ -2942,11 +2998,13 @@ def test_retrieval_release_gate_rejects_regression_beyond_tolerance() -> None:
     indexing_metadata.create_all(engine)
     SqlAlchemyIndexingRepository(engine).active_generation_id()
     releases = RetrievalReleaseService(engine)
-    suite = {**_release_suite(), "regression_tolerance": 0.05}
+    gate_version_id = _register_release_gate(engine, regression=0.05)
+    suite = _release_suite()
     first = releases.stage(
         generation_id="generation_initial",
         profile=RetrievalProfile(),
         acceptance_suite=suite,
+        gate_version_id=gate_version_id,
     )
     releases.release(
         str(first["id"]),
@@ -2958,6 +3016,7 @@ def test_retrieval_release_gate_rejects_regression_beyond_tolerance() -> None:
         generation_id="generation_initial",
         profile=RetrievalProfile(version="2"),
         acceptance_suite=suite,
+        gate_version_id=gate_version_id,
     )
     # 0.83 clears the absolute 0.8 floor but falls below 0.9 * (1 - 0.05) = 0.855,
     # so only the relative-regression gate can reject it.
@@ -2974,6 +3033,7 @@ def test_retrieval_release_gate_rejects_regression_beyond_tolerance() -> None:
         generation_id="generation_initial",
         profile=RetrievalProfile(version="3"),
         acceptance_suite=suite,
+        gate_version_id=gate_version_id,
     )
     # 0.86 stays above 0.9 * (1 - 0.05) = 0.855, so it passes the gate.
     releases.release(
@@ -2989,11 +3049,13 @@ def test_retrieval_release_gate_rejects_latency_regression_beyond_tolerance() ->
     indexing_metadata.create_all(engine)
     SqlAlchemyIndexingRepository(engine).active_generation_id()
     releases = RetrievalReleaseService(engine)
-    suite = {**_release_suite(), "regression_tolerance": 0.1}
+    gate_version_id = _register_release_gate(engine, regression=0.1)
+    suite = _release_suite()
     first = releases.stage(
         generation_id="generation_initial",
         profile=RetrievalProfile(),
         acceptance_suite=suite,
+        gate_version_id=gate_version_id,
     )
     releases.release(
         str(first["id"]),
@@ -3004,6 +3066,7 @@ def test_retrieval_release_gate_rejects_latency_regression_beyond_tolerance() ->
         generation_id="generation_initial",
         profile=RetrievalProfile(version="2"),
         acceptance_suite=suite,
+        gate_version_id=gate_version_id,
     )
     # p50_ms doubling from 1ms to 3ms exceeds the 10% latency tolerance.
     with pytest.raises(PlatformError) as error:

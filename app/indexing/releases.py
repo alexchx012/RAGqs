@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,9 +12,11 @@ from sqlalchemy import Connection, Engine, select, update
 from app.platform.errors import PlatformError
 
 from .models import RetrievalProfile
+from .release_gates import REQUIRED_LATENCY_METRICS as _REQUIRED_METRICS
+from .release_gates import REQUIRED_QUALITY_METRICS as _REQUIRED_QUALITY_METRICS
+from .release_gates import load_gate_version
 from .schema import index_generations_table, retrieval_releases_table
 
-_REQUIRED_METRICS = frozenset({"p50_ms", "p95_ms", "p99_ms", "error_rate", "vram_mb"})
 _REQUIRED_SAMPLES = frozenset(
     {
         "phrase_query",
@@ -27,7 +29,6 @@ _REQUIRED_SAMPLES = frozenset(
         "source_conflict",
     }
 )
-_REQUIRED_QUALITY_METRICS = frozenset({"hit_at_k", "mrr", "ndcg", "refusal"})
 # Quality metrics must improve (higher is better); latency/error/vram metrics
 # must not regress beyond the tolerance against the current released baseline.
 _HIGHER_IS_BETTER = frozenset(_REQUIRED_QUALITY_METRICS)
@@ -139,6 +140,84 @@ def _generation_binding(connection: Connection, generation_id: str) -> dict[str,
     }
 
 
+def _judge_with_gate(
+    metrics: Mapping[str, Any],
+    *,
+    gate_row: Mapping[str, Any],
+    gate_metrics: Sequence[Mapping[str, Any]],
+    sample_count: int,
+    baseline_metrics: Mapping[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    """Judge a release run against one frozen gate version.
+
+    Blocking 违规抛 ``release_gate_failed``；advisory 违规只记入判定输入，
+    不阻断发布。返回写入库的判定记录（判定输入与结论）。
+    """
+
+    names = {str(entry["metric"]) for entry in gate_metrics}
+    if not names <= metrics.keys():
+        raise PlatformError("release_gate_failed", "retrieval metrics are incomplete", {}, 409)
+    advisory: list[dict[str, Any]] = []
+
+    def _violation(name: str, check: str, severity: Any, **details: Any) -> None:
+        if severity == "blocking":
+            raise PlatformError(
+                "release_gate_failed",
+                "retrieval release gate check failed",
+                {"metric": name, "check": check, **details},
+                409,
+            )
+        advisory.append({"metric": name, "check": check, **details})
+
+    for entry in gate_metrics:
+        name = str(entry["metric"])
+        value = float(metrics[name])
+        direction = str(entry["direction"])
+        if direction == "below":
+            if value > float(entry["absolute_threshold"]):
+                _violation(name, "absolute_threshold", entry["severity"])
+        elif value < float(entry["absolute_threshold"]):
+            _violation(name, "absolute_threshold", entry["severity"])
+        if sample_count < int(entry["min_samples"]):
+            raise PlatformError(
+                "release_gate_failed",
+                "retrieval samples are below the gate minimum",
+                {
+                    "metric": name,
+                    "check": "min_samples",
+                    "min_samples": int(entry["min_samples"]),
+                    "sample_count": sample_count,
+                },
+                409,
+            )
+        baseline = baseline_metrics.get(name)
+        if baseline is None:
+            continue
+        regression = float(entry["allowed_regression"])
+        if direction == "below":
+            if value > float(baseline) * (1.0 + regression):
+                _violation(
+                    name,
+                    "allowed_regression",
+                    entry["severity"],
+                    baseline=float(baseline),
+                )
+        elif value < float(baseline) * (1.0 - regression):
+            _violation(name, "allowed_regression", entry["severity"], baseline=float(baseline))
+    return {
+        "gate_version_id": str(gate_row["id"]),
+        "gate_version": str(gate_row["version"]),
+        "hardware_profile": dict(gate_row["hardware_profile_json"] or {}),
+        "concurrency": int(gate_row["concurrency"]),
+        "sample_count": sample_count,
+        "metrics": {name: metrics[name] for name in sorted(names)},
+        "advisory_violations": advisory,
+        "passed": True,
+        "evaluated_at_utc": now.isoformat(),
+    }
+
+
 class RetrievalReleaseService:
     """Immutable retrieval-profile releases backed by indexing-owned metadata."""
 
@@ -152,6 +231,7 @@ class RetrievalReleaseService:
         generation_id: str,
         profile: RetrievalProfile,
         acceptance_suite: Mapping[str, Any],
+        gate_version_id: str | None = None,
     ) -> Mapping[str, Any]:
         suite = _acceptance_suite(acceptance_suite)
         snapshot = {
@@ -173,9 +253,13 @@ class RetrievalReleaseService:
         }
         with self._engine.begin() as connection:
             binding = _generation_binding(connection, generation_id)
+            gate: Mapping[str, Any] | None = None
+            if gate_version_id is not None:
+                gate, _ = load_gate_version(connection, gate_version_id)
             evidence = {
                 **suite,
                 **binding,
+                "gate_version_id": gate_version_id,
                 "profile_config_hash": _fingerprint(snapshot),
                 "results": None,
             }
@@ -200,6 +284,7 @@ class RetrievalReleaseService:
                         "thresholds",
                         "samples",
                         "quality_thresholds",
+                        "gate_version_id",
                         "component_manifest",
                         "component_manifest_hash",
                         "generation_config",
@@ -211,6 +296,22 @@ class RetrievalReleaseService:
                         "idempotency_key_conflict", "retrieval release conflicts", {}, 409
                     )
                 return dict(existing)
+            # 新 run 一律引用 gate 版本；只有迁移前的历史 staged 行可以没有 gate
+            # 引用并沿用内嵌 suite 判定路径。
+            if gate is None:
+                raise PlatformError(
+                    "validation_error",
+                    "retrieval release gate version is required",
+                    {},
+                    422,
+                )
+            if dict(gate["hardware_profile_json"] or {}) != dict(suite["hardware_profile"]):
+                raise PlatformError(
+                    "validation_error",
+                    "retrieval acceptance suite hardware profile does not match the gate",
+                    {},
+                    422,
+                )
             release_id = _id()
             connection.execute(
                 retrieval_releases_table.insert().values(
@@ -220,6 +321,7 @@ class RetrievalReleaseService:
                     version=profile.version,
                     profile_json=snapshot,
                     acceptance_suite_json=evidence,
+                    gate_version_id=gate_version_id,
                     state="staged",
                     created_at_utc=self._now(),
                 )
@@ -228,6 +330,7 @@ class RetrievalReleaseService:
                 "id": release_id,
                 "generation_id": generation_id,
                 "profile_json": snapshot,
+                "gate_version_id": gate_version_id,
                 "state": "staged",
             }
 
@@ -257,12 +360,6 @@ class RetrievalReleaseService:
                 raise PlatformError(
                     "release_gate_failed", "retrieval release is not staged", {}, 409
                 )
-            thresholds = _acceptance_suite(dict(release["acceptance_suite_json"] or {}))[
-                "thresholds"
-            ]
-            quality_thresholds = _acceptance_suite(dict(release["acceptance_suite_json"] or {}))[
-                "quality_thresholds"
-            ]
             binding = _generation_binding(connection, str(release["generation_id"]))
             frozen = dict(release["acceptance_suite_json"] or {})
             if dict(hardware_profile) != dict(frozen.get("hardware_profile") or {}):
@@ -284,61 +381,83 @@ class RetrievalReleaseService:
                 raise PlatformError(
                     "release_gate_failed", "retrieval release generation binding changed", {}, 409
                 )
-            if any(float(metrics[name]) > float(thresholds[name]) for name in _REQUIRED_METRICS):
-                raise PlatformError(
-                    "release_gate_failed", "retrieval metrics exceed acceptance thresholds", {}, 409
+            baseline_row = connection.execute(
+                select(retrieval_releases_table.c.acceptance_suite_json)
+                .where(
+                    retrieval_releases_table.c.generation_id == str(release["generation_id"]),
+                    retrieval_releases_table.c.profile_id == release["profile_id"],
+                    retrieval_releases_table.c.state == "released",
+                    retrieval_releases_table.c.id != release_id,
                 )
-            if not _REQUIRED_QUALITY_METRICS <= metrics.keys() or any(
-                float(metrics[name]) < float(quality_thresholds[name])
-                for name in _REQUIRED_QUALITY_METRICS
-            ):
-                raise PlatformError(
-                    "release_gate_failed",
-                    "retrieval quality metrics do not meet acceptance thresholds",
-                    {},
-                    409,
-                )
-            baseline_row = (
-                connection.execute(
-                    select(retrieval_releases_table.c.acceptance_suite_json)
-                    .where(
-                        retrieval_releases_table.c.generation_id == str(release["generation_id"]),
-                        retrieval_releases_table.c.profile_id == release["profile_id"],
-                        retrieval_releases_table.c.state == "released",
-                        retrieval_releases_table.c.id != release_id,
-                    )
-                    .order_by(retrieval_releases_table.c.created_at_utc.desc())
-                    .limit(1)
-                )
-                .scalar_one_or_none()
+                .order_by(retrieval_releases_table.c.created_at_utc.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            baseline_metrics = dict(
+                dict(baseline_row or {}).get("results", {}).get("metrics", {}) or {}
             )
-            tolerance = _regression_tolerance(frozen)
-            if baseline_row is not None:
-                baseline_metrics = dict(
-                    dict(baseline_row or {}).get("results", {}).get("metrics", {}) or {}
+            gate_version_id = release["gate_version_id"]
+            judgment: dict[str, Any] | None = None
+            if gate_version_id is not None:
+                gate_row, gate_metrics = load_gate_version(connection, str(gate_version_id))
+                judgment = _judge_with_gate(
+                    metrics,
+                    gate_row=gate_row,
+                    gate_metrics=gate_metrics,
+                    sample_count=sum(
+                        len(entries) for entries in dict(frozen.get("samples") or {}).values()
+                    ),
+                    baseline_metrics=baseline_metrics,
+                    now=self._now(),
                 )
-                for name in sorted(_REQUIRED_METRICS | _REQUIRED_QUALITY_METRICS):
-                    baseline = baseline_metrics.get(name)
-                    if baseline is None:
-                        continue
-                    if name in _HIGHER_IS_BETTER:
-                        floor = float(baseline) * (1.0 - tolerance)
-                        if float(metrics[name]) < floor:
-                            raise PlatformError(
-                                "release_gate_failed",
-                                "retrieval quality metrics regress beyond tolerance",
-                                {"metric": name, "baseline": float(baseline)},
-                                409,
-                            )
-                    else:
-                        ceiling = float(baseline) * (1.0 + tolerance)
-                        if float(metrics[name]) > ceiling:
-                            raise PlatformError(
-                                "release_gate_failed",
-                                "retrieval latency metrics regress beyond tolerance",
-                                {"metric": name, "baseline": float(baseline)},
-                                409,
-                            )
+            else:
+                # 迁移前的历史 staged 行没有 gate 引用，沿用内嵌 suite 判定；
+                # 既有 release 记录不受 gate 机制影响。
+                suite = _acceptance_suite(frozen)
+                thresholds = suite["thresholds"]
+                quality_thresholds = suite["quality_thresholds"]
+                if any(
+                    float(metrics[name]) > float(thresholds[name]) for name in _REQUIRED_METRICS
+                ):
+                    raise PlatformError(
+                        "release_gate_failed",
+                        "retrieval metrics exceed acceptance thresholds",
+                        {},
+                        409,
+                    )
+                if not _REQUIRED_QUALITY_METRICS <= metrics.keys() or any(
+                    float(metrics[name]) < float(quality_thresholds[name])
+                    for name in _REQUIRED_QUALITY_METRICS
+                ):
+                    raise PlatformError(
+                        "release_gate_failed",
+                        "retrieval quality metrics do not meet acceptance thresholds",
+                        {},
+                        409,
+                    )
+                tolerance = _regression_tolerance(frozen)
+                if baseline_row is not None:
+                    for name in sorted(_REQUIRED_METRICS | _REQUIRED_QUALITY_METRICS):
+                        baseline = baseline_metrics.get(name)
+                        if baseline is None:
+                            continue
+                        if name in _HIGHER_IS_BETTER:
+                            floor = float(baseline) * (1.0 - tolerance)
+                            if float(metrics[name]) < floor:
+                                raise PlatformError(
+                                    "release_gate_failed",
+                                    "retrieval quality metrics regress beyond tolerance",
+                                    {"metric": name, "baseline": float(baseline)},
+                                    409,
+                                )
+                        else:
+                            ceiling = float(baseline) * (1.0 + tolerance)
+                            if float(metrics[name]) > ceiling:
+                                raise PlatformError(
+                                    "release_gate_failed",
+                                    "retrieval latency metrics regress beyond tolerance",
+                                    {"metric": name, "baseline": float(baseline)},
+                                    409,
+                                )
             evidence = frozen
             evidence["results"] = {
                 "hardware_profile": dict(hardware_profile),
@@ -355,7 +474,11 @@ class RetrievalReleaseService:
                     retrieval_releases_table.c.id == release_id,
                     retrieval_releases_table.c.state == "staged",
                 )
-                .values(state="released", acceptance_suite_json=evidence)
+                .values(
+                    state="released",
+                    acceptance_suite_json=evidence,
+                    gate_judgment_json=judgment,
+                )
             ).rowcount
             assert updated == 1
 

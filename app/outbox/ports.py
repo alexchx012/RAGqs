@@ -25,6 +25,7 @@ EventType = Literal[
     "graph_build_completed",
     "evaluation_judge_configuration_missing",
     "public_graph_source_changed",
+    "retrieval_context_hard_gate_exceeded",
 ]
 
 V1_CONSUMER = "in_app_notification"
@@ -45,7 +46,9 @@ NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
 ACKNOWLEDGEABLE_EVENT_TYPES: frozenset[str] = frozenset(
     {"ingestion_completed", "ocr_low_confidence"}
 )
-OUTBOX_ONLY_EVENT_TYPES: frozenset[str] = frozenset({"public_graph_source_changed"})
+OUTBOX_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
+    {"public_graph_source_changed", "retrieval_context_hard_gate_exceeded"}
+)
 
 
 @dataclass(frozen=True, slots=True)

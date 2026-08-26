@@ -326,6 +326,104 @@ def test_conservative_context_counter_does_not_underestimate_chinese_text() -> N
     assert result.degradations[-1]["code"] == "retrieval_context_budget_exceeded"
 
 
+class _RecordingHardGateAlert:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def publish_hard_gate_exceeded(self, **kwargs: object) -> str:
+        self.calls.append(dict(kwargs))
+        return "evt_retrieval_hard_gate_test"
+
+
+def test_hard_gate_truncation_publishes_an_explicit_alert() -> None:
+    # A3：超过跨库硬闸（总量 cap）发生截断时必须显式告警，不得静默。
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    alert = _RecordingHardGateAlert()
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        token_counter=len,
+        hard_gate_alert=alert,
+    )
+
+    result = service.search(
+        "text",
+        principal="user_1",
+        # "text chunk_1" 共 12 字符：放进单库预算（4）无法满足，总量硬闸 4 直接截断。
+        profile=RetrievalProfile(
+            retrieval_context_tokens_per_space=4, retrieval_context_tokens_cap=4
+        ),
+    )
+
+    assert result.hits == ()
+    assert result.degradations[-1]["code"] == "retrieval_context_budget_exceeded"
+    assert len(alert.calls) == 1
+    call = alert.calls[0]
+    assert call["space_ids"] == ["space_1"]
+    assert call["cap_tokens"] == 4
+    assert call["used_tokens"] == 0
+    assert call["excess_tokens"] == 12 - 4
+    assert call["dropped_hit_count"] == 1
+
+
+def test_per_space_budget_truncation_does_not_raise_the_hard_gate_alert() -> None:
+    # 仅单库预算超限、总量硬闸未越限时只记录 degradation，不产生硬闸告警。
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    alert = _RecordingHardGateAlert()
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        token_counter=len,
+        hard_gate_alert=alert,
+    )
+
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            retrieval_context_tokens_per_space=2, retrieval_context_tokens_cap=100
+        ),
+    )
+
+    assert result.hits == ()
+    assert result.degradations[-1]["code"] == "retrieval_context_budget_exceeded"
+    assert alert.calls == []
+
+
+def test_hard_gate_alert_failure_does_not_break_retrieval() -> None:
+    class _FailingAlert:
+        def publish_hard_gate_exceeded(self, **kwargs: object) -> str:
+            raise RuntimeError("outbox unavailable")
+
+    provider = InMemorySparseIndexProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        token_counter=len,
+        hard_gate_alert=_FailingAlert(),
+    )
+
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            retrieval_context_tokens_per_space=4, retrieval_context_tokens_cap=4
+        ),
+    )
+
+    assert result.hits == ()
+    assert result.degradations[-1]["code"] == "retrieval_context_budget_exceeded"
+
+
 def test_production_runtime_requires_image_ports_and_rejects_memory_adapters() -> None:
     settings = _production_settings()
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)

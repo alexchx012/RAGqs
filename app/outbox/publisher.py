@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -66,6 +66,7 @@ PRODUCER_MATRIX: dict[str, tuple[frozenset[str], str]] = {
         "startup_invocation",
     ),
     "public_graph_source_changed": (frozenset({"documents"}), "public_graph_source"),
+    "retrieval_context_hard_gate_exceeded": (frozenset({"retrieval"}), "retrieval_context"),
 }
 
 # strict field -> type map per event type; None allows an explicit null value.
@@ -113,6 +114,13 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
         "source_manifest_hash": str,
         "document_id": str,
         "change_type": str,
+    },
+    "retrieval_context_hard_gate_exceeded": {
+        "space_ids": list,
+        "cap_tokens": int,
+        "used_tokens": int,
+        "excess_tokens": int,
+        "dropped_hit_count": int,
     },
 }
 
@@ -1065,6 +1073,57 @@ class SqlAlchemyPublicGraphSourceOutboxAdapter:
             connection=connection,
             caller="documents",
         )
+        return command.event_id
+
+
+class SqlAlchemyRetrievalHardGateAlertAdapter:
+    """Retrieval-owned facade publishing the context hard-gate breach alert.
+
+    检索运行期实际超过跨库硬闸发生截断时经既有 outbox/observability 通道显式
+    告警（含 space_id 与超限量级），不得静默（design §7.4③）。检索路径没有
+    环境事务，适配器自开短事务落事件。
+    """
+
+    def __init__(self, engine: Engine, publisher: SqlAlchemyOutboxPublisher) -> None:
+        self._engine = engine
+        self._publisher = publisher
+
+    def publish_hard_gate_exceeded(
+        self,
+        *,
+        space_ids: Sequence[str],
+        cap_tokens: int,
+        used_tokens: int,
+        excess_tokens: int,
+        dropped_hit_count: int,
+    ) -> str:
+        invocation_id = secrets.token_urlsafe(18)
+        context = current_context()
+        command = OutboxPublishCommand(
+            event_id=f"evt_retrieval_hard_gate_{invocation_id}",
+            caller_principal="retrieval",
+            event_type="retrieval_context_hard_gate_exceeded",
+            schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
+            aggregate_type="retrieval_context",
+            aggregate_id=f"hard_gate_{invocation_id}",
+            transition_version=1,
+            occurred_at=datetime.now(UTC),
+            payload={
+                "space_ids": sorted({str(item) for item in space_ids}),
+                "cap_tokens": int(cap_tokens),
+                "used_tokens": int(used_tokens),
+                "excess_tokens": int(excess_tokens),
+                "dropped_hit_count": int(dropped_hit_count),
+            },
+            recipients=(),
+            trace_id=context.trace_id if context is not None else None,
+        )
+        with self._engine.begin() as connection:
+            self._publisher._publish_authorized(
+                command,
+                connection=connection,
+                caller="retrieval",
+            )
         return command.event_id
 
 
