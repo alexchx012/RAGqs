@@ -1088,11 +1088,12 @@ class DocumentsService:
         key: str,
         fingerprint: str,
     ) -> dict[str, Any] | None:
+        key_hash = self._hash(key.encode("utf-8"))
         predicate = and_(
             documents_idempotency_table.c.actor_id == actor_id,
             documents_idempotency_table.c.endpoint == endpoint,
             documents_idempotency_table.c.target_id == target_id,
-            documents_idempotency_table.c.idempotency_key == key,
+            documents_idempotency_table.c.idempotency_key_hash == key_hash,
         )
 
         def resolve(row: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1126,14 +1127,14 @@ class DocumentsService:
                 "actor_id": actor_id,
                 "endpoint": endpoint,
                 "target_id": target_id,
-                "idempotency_key": key,
+                "idempotency_key_hash": key_hash,
                 "request_fingerprint": fingerprint,
                 "status": "reserved",
                 "response_json": None,
                 "created_at_utc": self._current_time(),
                 "completed_at_utc": None,
             },
-            ["actor_id", "endpoint", "target_id", "idempotency_key"],
+            ["actor_id", "endpoint", "target_id", "idempotency_key_hash"],
         )
         if inserted:
             return None
@@ -1162,6 +1163,7 @@ class DocumentsService:
         fingerprint: str,
         response: dict[str, Any],
     ) -> None:
+        key_hash = self._hash(key.encode("utf-8"))
         updated = connection.execute(
             update(documents_idempotency_table)
             .where(
@@ -1169,7 +1171,7 @@ class DocumentsService:
                     documents_idempotency_table.c.actor_id == actor_id,
                     documents_idempotency_table.c.endpoint == endpoint,
                     documents_idempotency_table.c.target_id == target_id,
-                    documents_idempotency_table.c.idempotency_key == key,
+                    documents_idempotency_table.c.idempotency_key_hash == key_hash,
                     documents_idempotency_table.c.request_fingerprint == fingerprint,
                     documents_idempotency_table.c.status == "reserved",
                 )
@@ -1263,6 +1265,153 @@ class DocumentsService:
             "size_bytes": len(file.content),
             "content_hash_sha256": self._hash(file.content),
         }
+
+    @staticmethod
+    def _dedup_claim_predicate(
+        *, space_id: str, normalized_filename: str, content_hash: str
+    ) -> Any:
+        return and_(
+            upload_dedup_claims_table.c.space_id == space_id,
+            upload_dedup_claims_table.c.normalized_filename == normalized_filename,
+            upload_dedup_claims_table.c.content_hash_sha256 == content_hash,
+        )
+
+    def _assert_replacement_claim_available(
+        self,
+        connection: Connection,
+        *,
+        document: Mapping[str, Any],
+        info: Mapping[str, Any],
+    ) -> None:
+        claim = (
+            connection.execute(
+                select(upload_dedup_claims_table)
+                .where(
+                    self._dedup_claim_predicate(
+                        space_id=str(document["space_id"]),
+                        normalized_filename=str(info["normalized_filename"]),
+                        content_hash=str(info["content_hash_sha256"]),
+                    )
+                )
+                .with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if claim is None or str(claim["document_id"]) == str(document["id"]):
+            return
+        owner = connection.execute(
+            select(documents_table.c.lifecycle_status).where(
+                documents_table.c.id == claim["document_id"]
+            )
+        ).scalar_one_or_none()
+        if owner not in {
+            None,
+            DocumentLifecycle.DELETED.value,
+            DocumentLifecycle.PENDING_DELETE.value,
+        }:
+            raise PlatformError(
+                "duplicate_document",
+                "A document with the same name and content already exists",
+                {"document_id": str(claim["document_id"])},
+                409,
+            )
+
+    def _replace_dedup_claim(
+        self,
+        connection: Connection,
+        *,
+        document: Mapping[str, Any],
+        version: Mapping[str, Any],
+        now: datetime,
+    ) -> None:
+        space_id = str(document["space_id"])
+        normalized_filename = self._normalize_filename(str(version["file_name"]))[1]
+        content_hash = str(version["content_hash_sha256"])
+        predicate = self._dedup_claim_predicate(
+            space_id=space_id,
+            normalized_filename=normalized_filename,
+            content_hash=content_hash,
+        )
+        target_claim = (
+            connection.execute(
+                select(upload_dedup_claims_table).where(predicate).with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+
+        if target_claim is not None and str(target_claim["document_id"]) != str(document["id"]):
+            owner = connection.execute(
+                select(documents_table.c.lifecycle_status).where(
+                    documents_table.c.id == target_claim["document_id"]
+                )
+            ).scalar_one_or_none()
+            if owner not in {
+                None,
+                DocumentLifecycle.DELETED.value,
+                DocumentLifecycle.PENDING_DELETE.value,
+            }:
+                raise PlatformError(
+                    "duplicate_document",
+                    "A document with the same name and content already exists",
+                    {
+                        "document_id": str(target_claim["document_id"]),
+                        "publication_claim_conflict": True,
+                    },
+                    409,
+                )
+            connection.execute(upload_dedup_claims_table.delete().where(predicate))
+            target_claim = None
+
+        if target_claim is None:
+            claimed = _insert_do_nothing(
+                connection,
+                upload_dedup_claims_table,
+                {
+                    "space_id": space_id,
+                    "normalized_filename": normalized_filename,
+                    "content_hash_sha256": content_hash,
+                    "document_id": str(document["id"]),
+                    "document_version_id": str(version["id"]),
+                    "created_at_utc": now,
+                },
+                index_elements=["space_id", "normalized_filename", "content_hash_sha256"],
+            )
+            if not claimed:
+                winner = connection.execute(
+                    select(upload_dedup_claims_table.c.document_id)
+                    .where(predicate)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                raise PlatformError(
+                    "duplicate_document",
+                    "A document with the same name and content already exists",
+                    (
+                        {"document_id": str(winner)}
+                        if winner is not None
+                        else {}
+                    )
+                    | {"publication_claim_conflict": True},
+                    409,
+                )
+        else:
+            connection.execute(
+                upload_dedup_claims_table.update()
+                .where(predicate)
+                .values(document_version_id=str(version["id"]))
+            )
+
+        # A document owns exactly one effective claim.  Delete its old claim
+        # only after the replacement claim has been secured.
+        connection.execute(
+            upload_dedup_claims_table.delete().where(
+                and_(
+                    upload_dedup_claims_table.c.document_id == str(document["id"]),
+                    ~predicate,
+                )
+            )
+        )
 
     def _put_original(
         self, document_id: str, version_id: str, file: DocumentUpload
@@ -1512,6 +1661,7 @@ class DocumentsService:
                         "normalized_filename": info["normalized_filename"],
                         "content_hash_sha256": content_hash,
                         "document_id": document_id,
+                        "document_version_id": version_id,
                         "created_at_utc": now,
                     },
                     index_elements=["space_id", "normalized_filename", "content_hash_sha256"],
@@ -1631,6 +1781,11 @@ class DocumentsService:
             if replay is not None:
                 return replay
             self._assert_document_writable(document, expected_version)
+            self._assert_replacement_claim_available(
+                connection,
+                document=document,
+                info=info,
+            )
             active = None
             if document["active_version_id"]:
                 active = (
@@ -2044,6 +2199,15 @@ class DocumentsService:
                 raise PlatformError(
                     "document_version_not_restorable", "The version cannot be restored", {}, 409
                 )
+            restore_info = {
+                "normalized_filename": self._normalize_filename(str(source["file_name"]))[1],
+                "content_hash_sha256": str(source["content_hash_sha256"]),
+            }
+            self._assert_replacement_claim_available(
+                connection,
+                document=document,
+                info=restore_info,
+            )
             now = self._current_time()
             if (
                 source["purge_after_at_utc"] is not None
@@ -2201,6 +2365,44 @@ class DocumentsService:
             return response
 
     def accept_processing_receipt(
+        self,
+        *,
+        principal: Any | None = None,
+        job_id: str,
+        receipt: IndexProcessingReceipt | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self._accept_processing_receipt_transaction(
+                principal=principal,
+                job_id=job_id,
+                receipt=receipt,
+            )
+        except PlatformError as exc:
+            details = dict(exc.details)
+            if exc.code != "duplicate_document" or not details.get(
+                "publication_claim_conflict"
+            ):
+                raise
+            attempt_id = details.get("attempt_id")
+            fencing_token = details.get("fencing_token")
+            if isinstance(attempt_id, str) and fencing_token is not None:
+                self.fail_job(
+                    job_id=job_id,
+                    reason="duplicate_document",
+                    retryable=False,
+                    attempt_id=attempt_id,
+                    fencing_token=int(fencing_token),
+                )
+            raise PlatformError(
+                "duplicate_document",
+                "A document with the same name and content already exists",
+                {"document_id": details["document_id"]}
+                if details.get("document_id") is not None
+                else {},
+                409,
+            ) from exc
+
+    def _accept_processing_receipt_transaction(
         self,
         *,
         principal: Any | None = None,
@@ -2535,6 +2737,27 @@ class DocumentsService:
                     .mappings()
                     .one()
                 )
+                try:
+                    self._replace_dedup_claim(
+                        connection,
+                        document=document,
+                        version=version,
+                        now=now,
+                    )
+                except PlatformError as exc:
+                    if exc.code != "duplicate_document":
+                        raise
+                    raise PlatformError(
+                        exc.code,
+                        exc.message,
+                        {
+                            **dict(exc.details),
+                            "attempt_id": active_attempt_id,
+                            "fencing_token": int(attempt["fencing_token"]),
+                        },
+                        exc.status_code,
+                        exc.retryable,
+                    ) from exc
                 connection.execute(
                     update(document_versions_table)
                     .where(document_versions_table.c.id == version["id"])
@@ -3502,6 +3725,15 @@ class DocumentsService:
                         updated_at_utc=now,
                     )
                 )
+                connection.execute(
+                    upload_dedup_claims_table.delete().where(
+                        and_(
+                            upload_dedup_claims_table.c.document_id == job["document_id"],
+                            upload_dedup_claims_table.c.document_version_id
+                            == job["document_version_id"],
+                        )
+                    )
+                )
             else:
                 connection.execute(
                     update(documents_table)
@@ -3670,6 +3902,15 @@ class DocumentsService:
                             pending_version_id=None,
                             active_operation_job_id=None,
                             updated_at_utc=now,
+                        )
+                    )
+                    connection.execute(
+                        upload_dedup_claims_table.delete().where(
+                            and_(
+                                upload_dedup_claims_table.c.document_id == job["document_id"],
+                                upload_dedup_claims_table.c.document_version_id
+                                == job["document_version_id"],
+                            )
                         )
                     )
                 else:

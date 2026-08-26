@@ -841,6 +841,7 @@ class SubmissionService:
                         "normalized_filename": normalized_name,
                         "content_hash_sha256": submission["content_hash_sha256"],
                         "document_id": document_id,
+                        "document_version_id": version_id,
                         "created_at_utc": now,
                     },
                     index_elements=["space_id", "normalized_filename", "content_hash_sha256"],
