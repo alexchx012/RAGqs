@@ -213,3 +213,72 @@
 .ui-dialog-content[data-state='closed'] {
   animation: ui-dialog-exit var(--duration-fast) var(--ease-in-out) both;
 }
+
+/* Orb 状态指示（动效 orbs B2，ui/Orb.tsx）：三圆绕同一轨道旋转，前方清晰后方模糊，
+ * 3.3s 线性循环、相位三等分（-1.1s 步进），保证始终有一圆在前排。 */
+.ui-orb {
+  position: relative;
+  display: block;
+  flex: none;
+  overflow: hidden;
+  contain: strict;
+}
+
+.ui-orb-lens {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 28px;
+  transform: scale(var(--orb-k, 1));
+  transform-origin: 0 0;
+}
+
+.ui-orb-shape {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ui-orb-revolve 3.3s linear infinite both;
+}
+
+.ui-orb-shape:nth-child(2) {
+  animation-delay: -1.1s;
+}
+
+.ui-orb-shape:nth-child(3) {
+  animation-delay: -2.2s;
+}
+
+/* rotate() 再 translateY() 走出圆周；opacity/blur/scale 在远侧（180°）最低，读作退到深处。 */
+@keyframes ui-orb-revolve {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+    transform: rotate(0deg) translateY(6.5px) scale(1);
+  }
+  25% {
+    opacity: 0.55;
+    filter: blur(1.3px);
+    transform: rotate(90deg) translateY(6.5px) scale(0.82);
+  }
+  50% {
+    opacity: 0.28;
+    filter: blur(2.4px);
+    transform: rotate(180deg) translateY(6.5px) scale(0.66);
+  }
+  75% {
+    opacity: 0.55;
+    filter: blur(1.3px);
+    transform: rotate(270deg) translateY(6.5px) scale(0.82);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: rotate(360deg) translateY(6.5px) scale(1);
+  }
+}

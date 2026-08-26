@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -23,7 +23,7 @@ _EFFORTS = ("quick", "think", "deep")
 _UPGRADES = {"quick": "think", "think": "deep"}
 _DEFAULT_EFFORT_LIMITS = {
     "quick": (1, 20, 12000, 5),
-    "think": (4, 60, 24000, 7),
+    "think": (8, 60, 24000, 7),
     "deep": (10, 180, 48000, 9),
 }
 
@@ -71,10 +71,12 @@ class BudgetMeterPolicy:
         currency_code: str,
         max_estimated_cost_amounts: dict[str, Decimal],
         cost_estimator: Callable[[str, int], Decimal],
+        effort_rag_limits: Mapping[str, int] | None = None,
     ) -> BudgetMeterPolicy:
+        effort_rag_overrides = dict(effort_rag_limits or {})
         efforts = {
             effort: BudgetEffortPolicy(
-                max_rag_calls=limits[0],
+                max_rag_calls=effort_rag_overrides.get(effort, limits[0]),
                 max_wall_seconds=limits[1],
                 max_total_tokens=limits[2],
                 max_estimated_cost_amount=max_estimated_cost_amounts[effort],

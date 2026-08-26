@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { resolveUrl } from '../api/client';
-import { MockHttpError } from './chat-contract';
+import { MOCK_ENHANCE_DEMO_RESULT, MockHttpError } from './chat-contract';
 import { mockAuth, mockChat } from './testing';
 
 function bearerOf(username: string): string {
@@ -622,6 +622,59 @@ describe('会话与问答契约 mock', () => {
       }
       // comment 帧不产生 id 行（若 comment 占了序号，ids 会含 0 或跳号）
       expect(ids.some((id) => id === 0)).toBe(false);
+    });
+  });
+
+  describe('prompt-enhance 输入优化 mock（演示接缝）', () => {
+    it('enhancePrompt：未认证 401；空/纯空白/超长 prompt 422；合法 prompt 返回演示文本', () => {
+      const auth = bearerOf('zhangsan');
+      expectHttpError(() => mockChat.enhancePrompt(null, '帮我优化'), 401, 'invalid_token');
+      expectHttpError(() => mockChat.enhancePrompt(auth, ''), 422, 'validation_error');
+      expectHttpError(() => mockChat.enhancePrompt(auth, '   '), 422, 'validation_error');
+      expectHttpError(() => mockChat.enhancePrompt(auth, 'x'.repeat(4001)), 422, 'validation_error');
+      expect(mockChat.enhancePrompt(auth, '帮我优化这句话').enhanced_prompt).toBe(
+        MOCK_ENHANCE_DEMO_RESULT,
+      );
+    });
+
+    it('POST /v1/prompt-enhancements 经 MSW：200 返回 {enhanced_prompt}（enhanceDelayMs=0 跳过演示延迟）', async () => {
+      mockChat.enhanceDelayMs = 0;
+      const { accessToken } = mockAuth.login('zhangsan', 'password123', 'vitest');
+      const response = await fetch(resolveUrl('/v1/prompt-enhancements'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt: '原始问题' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ enhanced_prompt: MOCK_ENHANCE_DEMO_RESULT });
+    });
+
+    it('POST /v1/prompt-enhancements 未认证：401 标准错误 envelope；空 prompt：422', async () => {
+      mockChat.enhanceDelayMs = 0;
+      const unauthorized = await fetch(resolveUrl('/v1/prompt-enhancements'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: '原始问题' }),
+      });
+      expect(unauthorized.status).toBe(401);
+      const unauthorizedBody = (await unauthorized.json()) as { error: { code: string } };
+      expect(unauthorizedBody.error.code).toBe('invalid_token');
+
+      const { accessToken } = mockAuth.login('zhangsan', 'password123', 'vitest');
+      const invalid = await fetch(resolveUrl('/v1/prompt-enhancements'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt: '   ' }),
+      });
+      expect(invalid.status).toBe(422);
+      const invalidBody = (await invalid.json()) as { error: { code: string } };
+      expect(invalidBody.error.code).toBe('validation_error');
     });
   });
 });

@@ -119,8 +119,32 @@ class UnavailableChatProviderPort:
         )
 
 
+class PromptEnhancePort(Protocol):
+    """Single-shot prompt-enhancement transport contract (prompt → text).
+
+    Consumed by the ``POST /v1/prompt-enhancements`` route: one call in, one
+    rewritten prompt out, no persistence or chat side effects.
+    """
+
+    def enhance(self, prompt: str) -> str: ...
+
+
+class UnavailablePromptEnhanceProviderPort:
+    """Fail-closed placeholder when no prompt-enhance provider is configured."""
+
+    def enhance(self, prompt: str) -> str:
+        del prompt
+        raise PlatformError(
+            "prompt_enhance_unavailable",
+            "Prompt enhancement is not configured",
+            {"retryable": True},
+            503,
+            True,
+        )
+
+
 class CalibrationWindowPort(Protocol):
-    """Read-only calibration window facts owned by the evaluation domain."""
+    """Calibration window facts and vote-time hooks owned by the evaluation domain."""
 
     def get_open_window(
         self,
@@ -133,6 +157,27 @@ class CalibrationWindowPort(Protocol):
     def user_ab_opt_out(self, connection: Connection, *, user_id: str) -> bool: ...
 
     def increment_pairs_collected(self, connection: Connection, window_id: str) -> None: ...
+
+    def record_golden_seed(
+        self,
+        connection: Connection,
+        *,
+        pair_id: str,
+        space_id: str,
+        question_text: str,
+        preferred_candidate: int,
+        preferred_content: str,
+        preferred_citations: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+        rejected_candidate: int,
+        policy_version: str,
+        now: datetime,
+    ) -> None: ...
+
+    def maybe_adopt_active_default(
+        self, connection: Connection, *, space_id: str, now: datetime
+    ) -> None: ...
+
+    def count_effective_ab_votes(self, connection: Connection, *, space_id: str) -> int: ...
 
 
 class NoCalibrationWindowPort:
@@ -154,6 +199,51 @@ class NoCalibrationWindowPort:
 
     def increment_pairs_collected(self, connection: Connection, window_id: str) -> None:
         del connection, window_id
+
+    def record_golden_seed(
+        self,
+        connection: Connection,
+        *,
+        pair_id: str,
+        space_id: str,
+        question_text: str,
+        preferred_candidate: int,
+        preferred_content: str,
+        preferred_citations: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+        rejected_candidate: int,
+        policy_version: str,
+        now: datetime,
+    ) -> None:
+        del connection, pair_id, space_id, question_text, preferred_candidate
+        del preferred_content, preferred_citations, rejected_candidate, policy_version, now
+
+    def maybe_adopt_active_default(
+        self, connection: Connection, *, space_id: str, now: datetime
+    ) -> None:
+        del connection, space_id, now
+
+    def count_effective_ab_votes(self, connection: Connection, *, space_id: str) -> int:
+        del connection, space_id
+        return 0
+
+
+class AbSourceFilterPort(Protocol):
+    """Same-source pre-filter for A/B sampling (后端设计 §8.6).
+
+    Runs the two candidate configs' retrieval for a sampled question before
+    the A/B pair is created and reports whether their actual hit sets
+    (document_id + chunk_id) are identical.
+    """
+
+    def candidate_sources_identical(
+        self,
+        query: str,
+        *,
+        principal: Any,
+        narrowing_scope: Any,
+        candidate_profiles: tuple[tuple[str, str], tuple[str, str]],
+        effort: str,
+    ) -> bool: ...
 
 
 class ChatPairExpiryPort(Protocol):
@@ -328,6 +418,49 @@ class IndexingChatRetrievalPort:
     @staticmethod
     def _release_request(request: Any) -> None:
         request.__exit__(None, None, None)
+
+
+class IndexingAbSourceFilterPort:
+    """Same-source A/B pre-filter backed by the production indexing service.
+
+    Opens one short-lived retrieval request per candidate config and compares
+    the (document_id, chunk_id) sets, independently of the chat retrieval
+    port's single pending request state.
+    """
+
+    def __init__(self, indexing_service: Any) -> None:
+        self._indexing = indexing_service
+
+    def candidate_sources_identical(
+        self,
+        query: str,
+        *,
+        principal: Any,
+        narrowing_scope: Any,
+        candidate_profiles: tuple[tuple[str, str], tuple[str, str]],
+        effort: str,
+    ) -> bool:
+        sources: list[set[tuple[str, str]]] = []
+        for profile_id, profile_version in candidate_profiles:
+            profile = RetrievalProfile(
+                profile_id=profile_id,
+                version=profile_version,
+                effort=cast(Literal["quick", "think", "deep"], effort),
+            )
+            request = self._indexing.open_retrieval_request()
+            try:
+                result = request.search(
+                    query,
+                    principal=principal,
+                    narrowing_scope=narrowing_scope,
+                    profile=profile,
+                )
+            finally:
+                request.__exit__(None, None, None)
+            sources.append(
+                {(str(hit.chunk.document_id), str(hit.chunk.chunk_id)) for hit in result.candidates}
+            )
+        return sources[0] == sources[1]
 
 
 class RecordingChatRetrievalPort:
@@ -656,6 +789,7 @@ def consume_durable_revocation_commands(
 
 
 __all__ = [
+    "AbSourceFilterPort",
     "ChatAuthorizationPort",
     "ChatGenerationRevocationPort",
     "ChatPairExpiryPort",
@@ -665,12 +799,15 @@ __all__ = [
     "ChatUsageRecorder",
     "CalibrationWindowPort",
     "GenerationRevocationPort",
+    "IndexingAbSourceFilterPort",
     "IndexingChatRetrievalPort",
     "IdentityChatAuthorizationPort",
     "NoCalibrationWindowPort",
+    "PromptEnhancePort",
     "RecordingChatRetrievalPort",
     "SqlAlchemyChatPairExpiry",
     "UnavailableChatProviderPort",
+    "UnavailablePromptEnhanceProviderPort",
     "apply_revocation_effects",
     "consume_durable_revocation_commands",
 ]

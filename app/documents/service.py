@@ -109,11 +109,19 @@ _UPLOAD_MEDIA_KINDS_BY_EXTENSION: dict[str, str] = {
 }
 
 
-def _metered_pages(*, page_count: Any, image_count: Any) -> int:
-    """Metering folds images in at one page per image (1 image = 1 page).
+CODE_TOKENS_PER_PAGE = 500
 
-    Storage, parsing, and retrieval keep their own counts; this only converts
-    the summary counts into the page figure used by quota debits and reports.
+
+def _metered_pages(
+    *, page_count: Any, image_count: Any, summary: Mapping[str, Any] | None = None
+) -> int:
+    """Metering converts the processing summary into billable pages.
+
+    Document carriers keep the existing page_count + image_count fold (1 image
+    = 1 page). Routed carriers follow the quota conversion rules: code files
+    meter at ceil(tokens/500) with a 1-page minimum, config files meter only
+    above 500 tokens, structured-table routes are free, and internvl images
+    record usage without debiting pages.
     """
 
     pages = (
@@ -126,6 +134,22 @@ def _metered_pages(*, page_count: Any, image_count: Any) -> int:
         if isinstance(image_count, int) and not isinstance(image_count, bool) and image_count > 0
         else 0
     )
+    metering = summary.get("metering") if isinstance(summary, Mapping) else None
+    metering_class = str(metering.get("class", "")) if isinstance(metering, Mapping) else ""
+    if metering_class == "table":
+        return 0
+    if metering_class in {"code", "config"}:
+        tokens = metering.get("token_count") if isinstance(metering, Mapping) else None
+        token_count = (
+            tokens if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0 else 0
+        )
+        metered = -(-token_count // CODE_TOKENS_PER_PAGE)
+        if metering_class == "code":
+            return max(metered, 1)
+        return 0 if token_count <= CODE_TOKENS_PER_PAGE else metered
+    if metering_class == "image":
+        provider = metering.get("image_provider") if isinstance(metering, Mapping) else None
+        return 0 if provider == "internvl" else images
     return pages + images
 
 
@@ -202,7 +226,9 @@ class DocumentsDepartmentWorkCheckPort:
             pending_submission_count=submissions,
         )
 
-    def directory_counts(self, department_id: str, *, connection: Connection) -> DepartmentWorkState:
+    def directory_counts(
+        self, department_id: str, *, connection: Connection
+    ) -> DepartmentWorkState:
         work = self.inspect(department_id, connection=connection)
         documents = int(
             connection.execute(
@@ -365,10 +391,13 @@ class DocumentsService:
                 "validation_error", "Processing receipt has no frozen processing list", {}, 422
             )
         pages = _metered_pages(
-            page_count=receipt.get("page_count", summary.get("page_count", summary.get("pages", 1))),
+            page_count=receipt.get(
+                "page_count", summary.get("page_count", summary.get("pages", 1))
+            ),
             image_count=summary.get("image_count", summary.get("images", 0)),
+            summary=summary,
         )
-        if pages < 1:
+        if pages < 1 and not isinstance(summary.get("metering"), Mapping):
             raise PlatformError(
                 "validation_error", "Processing receipt page count is invalid", {}, 422
             )
@@ -1197,11 +1226,12 @@ class DocumentsService:
         key: str,
         fingerprint: str,
     ) -> dict[str, Any] | None:
+        key_hash = self._hash(key.encode("utf-8"))
         predicate = and_(
             documents_idempotency_table.c.actor_id == actor_id,
             documents_idempotency_table.c.endpoint == endpoint,
             documents_idempotency_table.c.target_id == target_id,
-            documents_idempotency_table.c.idempotency_key == key,
+            documents_idempotency_table.c.idempotency_key_hash == key_hash,
         )
 
         def resolve(row: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1235,14 +1265,14 @@ class DocumentsService:
                 "actor_id": actor_id,
                 "endpoint": endpoint,
                 "target_id": target_id,
-                "idempotency_key": key,
+                "idempotency_key_hash": key_hash,
                 "request_fingerprint": fingerprint,
                 "status": "reserved",
                 "response_json": None,
                 "created_at_utc": self._current_time(),
                 "completed_at_utc": None,
             },
-            ["actor_id", "endpoint", "target_id", "idempotency_key"],
+            ["actor_id", "endpoint", "target_id", "idempotency_key_hash"],
         )
         if inserted:
             return None
@@ -1271,6 +1301,7 @@ class DocumentsService:
         fingerprint: str,
         response: dict[str, Any],
     ) -> None:
+        key_hash = self._hash(key.encode("utf-8"))
         updated = connection.execute(
             update(documents_idempotency_table)
             .where(
@@ -1278,7 +1309,7 @@ class DocumentsService:
                     documents_idempotency_table.c.actor_id == actor_id,
                     documents_idempotency_table.c.endpoint == endpoint,
                     documents_idempotency_table.c.target_id == target_id,
-                    documents_idempotency_table.c.idempotency_key == key,
+                    documents_idempotency_table.c.idempotency_key_hash == key_hash,
                     documents_idempotency_table.c.request_fingerprint == fingerprint,
                     documents_idempotency_table.c.status == "reserved",
                 )
@@ -1372,6 +1403,153 @@ class DocumentsService:
             "size_bytes": len(file.content),
             "content_hash_sha256": self._hash(file.content),
         }
+
+    @staticmethod
+    def _dedup_claim_predicate(
+        *, space_id: str, normalized_filename: str, content_hash: str
+    ) -> Any:
+        return and_(
+            upload_dedup_claims_table.c.space_id == space_id,
+            upload_dedup_claims_table.c.normalized_filename == normalized_filename,
+            upload_dedup_claims_table.c.content_hash_sha256 == content_hash,
+        )
+
+    def _assert_replacement_claim_available(
+        self,
+        connection: Connection,
+        *,
+        document: Mapping[str, Any],
+        info: Mapping[str, Any],
+    ) -> None:
+        claim = (
+            connection.execute(
+                select(upload_dedup_claims_table)
+                .where(
+                    self._dedup_claim_predicate(
+                        space_id=str(document["space_id"]),
+                        normalized_filename=str(info["normalized_filename"]),
+                        content_hash=str(info["content_hash_sha256"]),
+                    )
+                )
+                .with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if claim is None or str(claim["document_id"]) == str(document["id"]):
+            return
+        owner = connection.execute(
+            select(documents_table.c.lifecycle_status).where(
+                documents_table.c.id == claim["document_id"]
+            )
+        ).scalar_one_or_none()
+        if owner not in {
+            None,
+            DocumentLifecycle.DELETED.value,
+            DocumentLifecycle.PENDING_DELETE.value,
+        }:
+            raise PlatformError(
+                "duplicate_document",
+                "A document with the same name and content already exists",
+                {"document_id": str(claim["document_id"])},
+                409,
+            )
+
+    def _replace_dedup_claim(
+        self,
+        connection: Connection,
+        *,
+        document: Mapping[str, Any],
+        version: Mapping[str, Any],
+        now: datetime,
+    ) -> None:
+        space_id = str(document["space_id"])
+        normalized_filename = self._normalize_filename(str(version["file_name"]))[1]
+        content_hash = str(version["content_hash_sha256"])
+        predicate = self._dedup_claim_predicate(
+            space_id=space_id,
+            normalized_filename=normalized_filename,
+            content_hash=content_hash,
+        )
+        target_claim = (
+            connection.execute(
+                select(upload_dedup_claims_table).where(predicate).with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+
+        if target_claim is not None and str(target_claim["document_id"]) != str(document["id"]):
+            owner = connection.execute(
+                select(documents_table.c.lifecycle_status).where(
+                    documents_table.c.id == target_claim["document_id"]
+                )
+            ).scalar_one_or_none()
+            if owner not in {
+                None,
+                DocumentLifecycle.DELETED.value,
+                DocumentLifecycle.PENDING_DELETE.value,
+            }:
+                raise PlatformError(
+                    "duplicate_document",
+                    "A document with the same name and content already exists",
+                    {
+                        "document_id": str(target_claim["document_id"]),
+                        "publication_claim_conflict": True,
+                    },
+                    409,
+                )
+            connection.execute(upload_dedup_claims_table.delete().where(predicate))
+            target_claim = None
+
+        if target_claim is None:
+            claimed = _insert_do_nothing(
+                connection,
+                upload_dedup_claims_table,
+                {
+                    "space_id": space_id,
+                    "normalized_filename": normalized_filename,
+                    "content_hash_sha256": content_hash,
+                    "document_id": str(document["id"]),
+                    "document_version_id": str(version["id"]),
+                    "created_at_utc": now,
+                },
+                index_elements=["space_id", "normalized_filename", "content_hash_sha256"],
+            )
+            if not claimed:
+                winner = connection.execute(
+                    select(upload_dedup_claims_table.c.document_id)
+                    .where(predicate)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                raise PlatformError(
+                    "duplicate_document",
+                    "A document with the same name and content already exists",
+                    (
+                        {"document_id": str(winner)}
+                        if winner is not None
+                        else {}
+                    )
+                    | {"publication_claim_conflict": True},
+                    409,
+                )
+        else:
+            connection.execute(
+                upload_dedup_claims_table.update()
+                .where(predicate)
+                .values(document_version_id=str(version["id"]))
+            )
+
+        # A document owns exactly one effective claim.  Delete its old claim
+        # only after the replacement claim has been secured.
+        connection.execute(
+            upload_dedup_claims_table.delete().where(
+                and_(
+                    upload_dedup_claims_table.c.document_id == str(document["id"]),
+                    ~predicate,
+                )
+            )
+        )
 
     def _put_original(
         self, document_id: str, version_id: str, file: DocumentUpload
@@ -1621,6 +1799,7 @@ class DocumentsService:
                         "normalized_filename": info["normalized_filename"],
                         "content_hash_sha256": content_hash,
                         "document_id": document_id,
+                        "document_version_id": version_id,
                         "created_at_utc": now,
                     },
                     index_elements=["space_id", "normalized_filename", "content_hash_sha256"],
@@ -1740,6 +1919,11 @@ class DocumentsService:
             if replay is not None:
                 return replay
             self._assert_document_writable(document, expected_version)
+            self._assert_replacement_claim_available(
+                connection,
+                document=document,
+                info=info,
+            )
             active = None
             if document["active_version_id"]:
                 active = (
@@ -2012,6 +2196,7 @@ class DocumentsService:
             metered_pages = _metered_pages(
                 page_count=pages,
                 image_count=images,
+                summary=processing_summary,
             )
             items.append(
                 {
@@ -2153,6 +2338,15 @@ class DocumentsService:
                 raise PlatformError(
                     "document_version_not_restorable", "The version cannot be restored", {}, 409
                 )
+            restore_info = {
+                "normalized_filename": self._normalize_filename(str(source["file_name"]))[1],
+                "content_hash_sha256": str(source["content_hash_sha256"]),
+            }
+            self._assert_replacement_claim_available(
+                connection,
+                document=document,
+                info=restore_info,
+            )
             now = self._current_time()
             if (
                 source["purge_after_at_utc"] is not None
@@ -2316,6 +2510,44 @@ class DocumentsService:
         job_id: str,
         receipt: IndexProcessingReceipt | Mapping[str, Any],
     ) -> dict[str, Any]:
+        try:
+            return self._accept_processing_receipt_transaction(
+                principal=principal,
+                job_id=job_id,
+                receipt=receipt,
+            )
+        except PlatformError as exc:
+            details = dict(exc.details)
+            if exc.code != "duplicate_document" or not details.get(
+                "publication_claim_conflict"
+            ):
+                raise
+            attempt_id = details.get("attempt_id")
+            fencing_token = details.get("fencing_token")
+            if isinstance(attempt_id, str) and fencing_token is not None:
+                self.fail_job(
+                    job_id=job_id,
+                    reason="duplicate_document",
+                    retryable=False,
+                    attempt_id=attempt_id,
+                    fencing_token=int(fencing_token),
+                )
+            raise PlatformError(
+                "duplicate_document",
+                "A document with the same name and content already exists",
+                {"document_id": details["document_id"]}
+                if details.get("document_id") is not None
+                else {},
+                409,
+            ) from exc
+
+    def _accept_processing_receipt_transaction(
+        self,
+        *,
+        principal: Any | None = None,
+        job_id: str,
+        receipt: IndexProcessingReceipt | Mapping[str, Any],
+    ) -> dict[str, Any]:
         with self._engine.begin() as connection:
             job_document_id = connection.execute(
                 select(ingestion_jobs_table.c.document_id).where(
@@ -2351,9 +2583,7 @@ class DocumentsService:
             raw_receipt_attempt_id = (
                 receipt.attempt_id
                 if isinstance(receipt, IndexProcessingReceipt)
-                else receipt.get("attempt_id")
-                if isinstance(receipt, Mapping)
-                else None
+                else receipt.get("attempt_id") if isinstance(receipt, Mapping) else None
             )
             if (
                 not isinstance(raw_receipt_attempt_id, str)
@@ -2644,6 +2874,27 @@ class DocumentsService:
                     .mappings()
                     .one()
                 )
+                try:
+                    self._replace_dedup_claim(
+                        connection,
+                        document=document,
+                        version=version,
+                        now=now,
+                    )
+                except PlatformError as exc:
+                    if exc.code != "duplicate_document":
+                        raise
+                    raise PlatformError(
+                        exc.code,
+                        exc.message,
+                        {
+                            **dict(exc.details),
+                            "attempt_id": active_attempt_id,
+                            "fencing_token": int(attempt["fencing_token"]),
+                        },
+                        exc.status_code,
+                        exc.retryable,
+                    ) from exc
                 connection.execute(
                     update(document_versions_table)
                     .where(document_versions_table.c.id == version["id"])
@@ -2763,9 +3014,7 @@ class DocumentsService:
             raise PlatformError("validation_error", "expected_version is invalid", {}, 422)
         actor_id = system_actor or str(principal.user_id)
         endpoint = "documents.delete"
-        with (
-            self._engine.begin() if connection is None else nullcontext(connection)
-        ) as connection:
+        with self._engine.begin() if connection is None else nullcontext(connection) as connection:
             document = self._locked_document(connection, document_id)
             if document is None:
                 raise PlatformError("document_not_found", "Document was not found", {}, 404)
@@ -3070,19 +3319,21 @@ class DocumentsService:
         contributions are never touched here.
         """
 
-        rows = connection.execute(
-            text(
-                """
+        rows = (
+            connection.execute(
+                text("""
                 SELECT d.id, d.version
                 FROM documents d
                 JOIN identity_space s ON s.id = d.space_id
                 WHERE s.owner_user_id = :user_id
                   AND d.lifecycle_status != 'deleted'
                 ORDER BY d.id
-                """
-            ),
-            {"user_id": user_id},
-        ).mappings().all()
+                """),
+                {"user_id": user_id},
+            )
+            .mappings()
+            .all()
+        )
         for row in rows:
             self.delete_document(
                 principal=_AccountDeletionPrincipal(user_id),
@@ -3093,14 +3344,12 @@ class DocumentsService:
                 system_actor="system:account-deletion",
             )
         remaining = connection.execute(
-            text(
-                """
+            text("""
                 SELECT COUNT(*) FROM documents d
                 JOIN identity_space s ON s.id = d.space_id
                 WHERE s.owner_user_id = :user_id
                   AND d.lifecycle_status != 'deleted'
-                """
-            ),
+                """),
             {"user_id": user_id},
         ).scalar_one()
         return int(remaining)
@@ -3611,6 +3860,15 @@ class DocumentsService:
                         updated_at_utc=now,
                     )
                 )
+                connection.execute(
+                    upload_dedup_claims_table.delete().where(
+                        and_(
+                            upload_dedup_claims_table.c.document_id == job["document_id"],
+                            upload_dedup_claims_table.c.document_version_id
+                            == job["document_version_id"],
+                        )
+                    )
+                )
             else:
                 connection.execute(
                     update(documents_table)
@@ -3779,6 +4037,15 @@ class DocumentsService:
                             pending_version_id=None,
                             active_operation_job_id=None,
                             updated_at_utc=now,
+                        )
+                    )
+                    connection.execute(
+                        upload_dedup_claims_table.delete().where(
+                            and_(
+                                upload_dedup_claims_table.c.document_id == job["document_id"],
+                                upload_dedup_claims_table.c.document_version_id
+                                == job["document_version_id"],
+                            )
                         )
                     )
                 else:

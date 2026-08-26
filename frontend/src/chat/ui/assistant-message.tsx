@@ -1,8 +1,8 @@
 /*
- * 单条 assistant 回答渲染（共用基座 §3.4；spec §4–§6）。
- * 组合：系统提示条 → 正文（Markdown + 引用角标 + 打字光标）→ 分档占位区（思考状态行 / 深度研究步骤）
- * → 停止态小字 / 失败错误行+重试 → 常设 👍👎（A/B voted:false 期间隐藏）→ A/B 对比视图
- * → hover 淡入相对时间（与用户气泡一致，§3.4）。
+ * 单条 assistant 回答渲染（共用基座 §3.4；spec §4–§6；动效 Streaming Text / orbs / web search）。
+ * 组合：系统提示条 → 正文（Markdown + 引用角标 + 块状打字光标）→ 分档占位区（Orb 状态行 /
+ * 深度研究步骤三态子弹头）→ 停止态小字 / 失败错误行+重试 → 常设 👍👎（A/B voted:false 期间隐藏）
+ * → A/B 对比视图 → hover 淡入相对时间（与用户气泡一致，§3.4）。
  * 模拟流式正文来自 store 合并视图的 generation.content（实时进度）；终态后由读模型收敛。
  */
 
@@ -10,7 +10,7 @@ import { Info } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { copy } from '../../copy';
 import { formatRelativeTime } from '../../notifications/relative-time';
-import { StatusDot } from '../../ui/StatusDot';
+import { Orb } from '../../ui/Orb';
 import { TextLink } from '../../ui/TextLink';
 import type { AssistantMessageView } from '../store';
 import type {
@@ -115,7 +115,7 @@ export function AssistantMessage({
             <span className="chat-caret" aria-hidden="true" />
             {generation.stage !== null && (
               <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-gray">
-                <StatusDot intent="slate" pulse />
+                <Orb size={16} className="text-ink-black" />
                 {STAGE_TEXT[generation.stage]}
               </div>
             )}
@@ -142,7 +142,7 @@ export function AssistantMessage({
         {generating && <span className="chat-caret" aria-hidden="true" />}
         {generating && message.content === '' && generation.stage !== null && (
           <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-gray">
-            <StatusDot intent="slate" pulse />
+            <Orb size={16} className="text-ink-black" />
             {STAGE_TEXT[generation.stage]}
           </div>
         )}
@@ -214,6 +214,12 @@ function stopReasonText(reason: StopReason): string {
   }
 }
 
+type DeepStep = {
+  readonly index: number;
+  readonly label: string;
+  readonly state: 'active' | 'done';
+};
+
 /** 深度研究步骤列表：进行中底部追加；完成后折叠为「已完成 N 步」可展开。 */
 function DeepSteps({
   steps,
@@ -221,7 +227,7 @@ function DeepSteps({
   onToggle,
   collapsed,
 }: {
-  steps: readonly { readonly index: number; readonly label: string; readonly state: 'active' | 'done' }[];
+  steps: readonly DeepStep[];
   open: boolean;
   onToggle: () => void;
   collapsed: boolean;
@@ -243,39 +249,99 @@ function DeepSteps({
           {copy.chat.stepsDone(doneCount)}
         </button>
         <div className="chat-steps-collapse" data-open={open}>
-          <div className="mt-2 flex flex-col gap-1">
-            {steps.map((step, index) => (
-              <StepRow key={`${step.index}:${step.label}:${index}`} step={step} />
-            ))}
-          </div>
+          <StepsRail steps={steps} className="mt-2" />
         </div>
       </div>
     );
   }
+  return <StepsRail steps={steps} className="mt-2" />;
+}
+
+/** 步骤列表（动效 web search）：左侧 1px 轨道线贯穿全部行，行内子弹头三态切换。 */
+function StepsRail({ steps, className = '' }: { steps: readonly DeepStep[]; className?: string }) {
   return (
-    <div className="mt-2 flex flex-col gap-1">
-      {steps.map((step, index) => (
-        <StepRow key={`${step.index}:${step.label}:${index}`} step={step} />
-      ))}
+    <div className={`chat-steps-list ${className}`}>
+      <span className="chat-steps-rail" aria-hidden="true" />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {steps.map((step, index) => (
+          <StepRow key={`${step.index}:${step.label}:${index}`} step={step} />
+        ))}
+      </div>
     </div>
   );
 }
 
-function StepRow({ step }: { step: { readonly index: number; readonly label: string; readonly state: 'active' | 'done' } }) {
+/* 步骤行（动效 web search）：12px 子弹头两态切换——active 经线地球淡入、done 成功勾弹入；
+ * active 文案 shimmer 扫光。 */
+function StepRow({ step }: { step: DeepStep }) {
   return (
-    <div className="chat-step-enter flex items-center gap-2 text-[15px]">
+    <div
+      className="chat-step-enter chat-step-row flex items-center gap-2 text-[15px]"
+      data-state={step.state}
+    >
+      <span className="chat-step-bullet" aria-hidden="true">
+        <span className="chat-step-globe">
+          <Globe />
+        </span>
+        <Check className="chat-step-check h-3 w-3" />
+      </span>
       {step.state === 'active' ? (
-        <>
-          <StatusDot intent="slate" pulse />
-          <span className="text-ink-black">{copy.chat.stepLabel(step.label)}</span>
-        </>
+        <span className="chat-step-label-active">{copy.chat.stepLabel(step.label)}</span>
       ) : (
-        <>
-          <Check className="h-3 w-3 text-ink-black" aria-hidden="true" />
-          <span className="text-slate-gray">{copy.chat.stepLabel(step.label)}</span>
-        </>
+        <span className="text-slate-gray">{copy.chat.stepLabel(step.label)}</span>
       )}
     </div>
+  );
+}
+
+/* 转场地球（动效 web search）：六条经线相位偏移 1/6 周期，SMIL 形变读作一颗旋转球体。 */
+const MERIDIAN = {
+  L: 'M6.057 11.565 C2.081 11.565 0.371 8.159 0.371 5.964 C0.371 3.642 2.152 0.329 6.05 0.329',
+  ML: 'M6.012 11.55 C4.575 10.496 3.333 8.116 3.321 5.964 C3.307 3.399 4.974 0.977 6.012 0.329',
+  MR: 'M6.012 11.55 C7.211 10.781 8.715 8.287 8.715 5.964 C8.715 3.399 7.24 1.233 6.012 0.329',
+  R: 'M6.012 11.55 C9.677 11.55 11.65 8.487 11.65 5.964 C11.65 3.499 9.748 0.329 6.012 0.329',
+};
+
+function Globe() {
+  const values = [MERIDIAN.L, MERIDIAN.ML, MERIDIAN.MR, MERIDIAN.R, MERIDIAN.L].join(';');
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="0.85"
+      strokeLinecap="round"
+      style={{ overflow: 'visible' }}
+      aria-hidden="true"
+    >
+      <circle cx="6" cy="6" r="5.7" opacity="0.9" />
+      <line x1="0.3" y1="6" x2="11.7" y2="6" opacity="0.9" />
+      {['0s', '-1.2s', '-2.4s', '-3.6s', '-4.8s', '-6s'].map((begin) => (
+        <path key={begin} d={MERIDIAN.L} opacity="0">
+          <animate
+            attributeName="d"
+            dur="7.2s"
+            begin={begin}
+            repeatCount="indefinite"
+            calcMode="spline"
+            keyTimes="0;0.25;0.5;0.75;1"
+            keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1"
+            values={values}
+          />
+          <animate
+            attributeName="opacity"
+            dur="7.2s"
+            begin={begin}
+            repeatCount="indefinite"
+            calcMode="linear"
+            keyTimes="0;0.05;0.7;0.75;1"
+            values="0;0.9;0.9;0;0"
+          />
+        </path>
+      ))}
+    </svg>
   );
 }
 

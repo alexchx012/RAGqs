@@ -21,6 +21,7 @@ from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
+from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
 from app.usage.schema import usage_metadata
 
@@ -73,6 +74,8 @@ class FakeCalibration:
         self.window = window
         self.opt_out_users: set[str] = set()
         self.collected: list[str] = []
+        self.golden_seeds: list[dict[str, Any]] = []
+        self.adoptions: list[dict[str, Any]] = []
 
     def get_open_window(
         self, connection: Connection, *, now: datetime, user_id: str
@@ -87,6 +90,60 @@ class FakeCalibration:
     def increment_pairs_collected(self, connection: Connection, window_id: str) -> None:
         del connection
         self.collected.append(window_id)
+
+    def record_golden_seed(
+        self,
+        connection: Connection,
+        *,
+        pair_id: str,
+        space_id: str,
+        question_text: str,
+        preferred_candidate: int,
+        preferred_content: str,
+        preferred_citations: Any,
+        rejected_candidate: int,
+        policy_version: str,
+        now: datetime,
+    ) -> None:
+        del connection
+        self.golden_seeds.append(
+            {
+                "pair_id": pair_id,
+                "space_id": space_id,
+                "question_text": question_text,
+                "preferred_candidate": preferred_candidate,
+                "preferred_content": preferred_content,
+                "preferred_citations": list(preferred_citations),
+                "rejected_candidate": rejected_candidate,
+                "policy_version": policy_version,
+                "now": now,
+            }
+        )
+
+    def maybe_adopt_active_default(
+        self, connection: Connection, *, space_id: str, now: datetime
+    ) -> None:
+        del connection
+        self.adoptions.append({"space_id": space_id, "now": now})
+
+    def count_effective_ab_votes(self, connection: Connection, *, space_id: str) -> int:
+        del connection, space_id
+        return 0
+
+
+class FakePromptEnhanceProvider:
+    """Deterministic prompt-enhance transport for tests."""
+
+    def __init__(self, *, result: str = "enhanced prompt") -> None:
+        self.calls: list[str] = []
+        self.result = result
+        self.error: PlatformError | None = None
+
+    def enhance(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 class RecordingUsageSubmission:
@@ -185,7 +242,9 @@ def build_test_env(
     calibration: FakeCalibration | None = None,
     generation_service: Any | None = None,
     sampler: Any | None = None,
+    ab_source_filter: Any | None = None,
     outcomes: dict[str, RetrievalOutcome] | None = None,
+    prompt_enhance_provider: Any | None = None,
 ):
     engine = make_engine()
     clock = FixedClock(NOW)
@@ -212,9 +271,11 @@ def build_test_env(
             clock=clock,
             authorization=build_runtime_authorization(identity),
             calibration=calibration,
+            ab_source_filter=ab_source_filter,
             sampler=sampler or (lambda: 0.0),
         )
     usage = RecordingUsageSubmission()
+    prompt_enhance_provider = prompt_enhance_provider or FakePromptEnhanceProvider()
     runtime = build_runtime(
         settings,
         adapters={
@@ -228,6 +289,7 @@ def build_test_env(
             "chat_calibration_port": calibration,
             "chat_generation_service": generation_service,
             "chat_usage_submission": usage,
+            "prompt_enhance_provider_port": prompt_enhance_provider,
         },
     )
     client = TestClient(create_platform_app(settings, runtime=runtime))
@@ -240,7 +302,9 @@ def build_test_env(
         "retrieval": retrieval,
         "provider": provider,
         "calibration": calibration,
+        "ab_source_filter": ab_source_filter,
         "usage": usage,
+        "prompt_enhance_provider": prompt_enhance_provider,
     }
 
 

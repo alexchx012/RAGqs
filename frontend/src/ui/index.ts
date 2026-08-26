@@ -9,6 +9,7 @@ export { CountBadge, type CountBadgeProps } from './CountBadge';
 export { HeaderNotice, type HeaderNoticeProps } from './HeaderNotice';
 export { HoverCard, type HoverCardProps } from './HoverCard';
 export { MeatballMenu, type MeatballMenuItem, type MeatballMenuProps } from './MeatballMenu';
+export { Orb, type OrbProps } from './Orb';
 export { Paginator, type PaginatorProps } from './Paginator';
 export { Pill, type PillProps, type PillSize, type PillVariant } from './Pill';
 export {

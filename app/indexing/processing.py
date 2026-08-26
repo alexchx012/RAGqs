@@ -904,6 +904,26 @@ class ContentProcessor:
                 )
         else:
             raise PlatformError("unsupported_media_type", "Media type is not supported", {}, 415)
+        summary = dict(summary)
+        if (
+            route_adapter == "structured-table"
+            or kind in {"text/csv", "csv"}
+            or kind.endswith("csv")
+        ):
+            summary["metering"] = {"class": "table"}
+        elif route_adapter == "image-vlm":
+            provider_summary = summary.get("image_provider")
+            summary["metering"] = {
+                "class": "image",
+                "image_provider": (
+                    str(provider_summary.get("provider"))
+                    if isinstance(provider_summary, Mapping)
+                    and provider_summary.get("provider") is not None
+                    else "none"
+                ),
+            }
+        elif route_adapter in {"text", "mineru-pipeline"} and "metering" not in summary:
+            summary["metering"] = {"class": "document"}
         chunks, summary, degradations = self._apply_contextual_retrieval(
             request,
             chunks,
@@ -1059,9 +1079,7 @@ class ContentProcessor:
             concurrency=self._contextual_concurrency,
             max_attempts=self._contextual_max_attempts,
             token_limit=self._contextual_prefix_token_limit,
-            token_counter=(
-                self._contextual_token_counter or approximate_token_count
-            ),
+            token_counter=(self._contextual_token_counter or approximate_token_count),
             tokenization_config_version=(
                 (
                     "runtime-tokenizer-v1"
@@ -1680,7 +1698,7 @@ class ContentProcessor:
         if isinstance(value, list) and value and all(isinstance(item, Mapping) for item in value):
             headers = sorted({str(key) for item in value for key in item})
             rows = [[str(item.get(header, "")) for header in headers] for item in value]
-            return self._table_chunks(
+            chunks, summary, degradations = self._table_chunks(
                 request,
                 headers,
                 rows,
@@ -1688,13 +1706,27 @@ class ContentProcessor:
                 sheet="structured",
                 media_kind=kind,
             )
+            summary = dict(summary)
+            summary["metering"] = {"class": "table"}
+            return chunks, summary, degradations
+        token_count = approximate_token_count(text)
         if isinstance(value, Mapping) and any(
             key in value for key in ("$schema", "schema", "type", "properties")
         ):
-            return self._code_chunks(request, text, manifest_hash)
+            chunks, summary, degradations = self._code_chunks(
+                request,
+                text,
+                manifest_hash,
+                metering_class="config",
+            )
+            summary = dict(summary)
+            summary["metering"] = {"class": "config", "token_count": token_count}
+            if token_count <= 500:
+                summary["contextual_input_ready"] = False
+            return chunks, summary, degradations
         pairs = _flatten(value)
         body = "\n".join(f"{key}: {item}" for key, item in pairs)
-        large = len(body.split()) > 500
+        large = token_count > 500
         chunk = IndexChunk(
             chunk_id="chunk_1",
             generation_id=request.expected_generation_id,
@@ -1727,6 +1759,8 @@ class ContentProcessor:
                 "ocr": {},
                 "tree": {"tree_indexed": False, "tree_reason": "structured"},
                 "cr": {"applied": large, "unit": "chunk" if large else "key_path"},
+                "metering": {"class": "config", "token_count": token_count},
+                **({} if large else {"contextual_input_ready": False}),
             },
             (),
         )
@@ -1805,6 +1839,8 @@ class ContentProcessor:
         request: IndexStagingRequest,
         text: str,
         manifest_hash: str,
+        *,
+        metering_class: str = "code",
     ) -> tuple[list[IndexChunk], Mapping[str, Any], tuple[Mapping[str, Any], ...]]:
         symbols: list[tuple[str, str]] = []
         try:
@@ -1862,6 +1898,10 @@ class ContentProcessor:
                 "ocr": {},
                 "tree": {"tree_indexed": False, "tree_reason": "code"},
                 "cr": {"applied": True, "unit": "symbol"},
+                "metering": {
+                    "class": metering_class,
+                    "token_count": approximate_token_count(text),
+                },
             },
             (),
         )

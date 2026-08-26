@@ -12,11 +12,18 @@ from app.chat.generation import GenerationService
 from app.chat.ports import (
     ChatGenerationRevocationPort,
     IdentityChatAuthorizationPort,
+    IndexingAbSourceFilterPort,
     IndexingChatRetrievalPort,
+    PromptEnhancePort,
     SqlAlchemyChatPairExpiry,
     UnavailableChatProviderPort,
+    UnavailablePromptEnhanceProviderPort,
 )
 from app.chat.preview import SqlAlchemyMessageCitationPreviewAdapter
+from app.chat.prompt_enhance import (
+    PROMPT_ENHANCE_DEFAULT_BASE_URL,
+    DashScopePromptEnhanceProvider,
+)
 from app.chat.streaming import GenerationStreamService
 from app.chat.worker import ChatGenerationWorker
 from app.documents.preview import ProcessingReceiptPreviewRenderer
@@ -204,6 +211,20 @@ class _LazyUsageSubmission:
         if submission is None:
             return None
         return submission.submit_local_usage(**kwargs)
+
+
+def _default_prompt_enhance_provider(settings: PlatformSettings) -> PromptEnhancePort:
+    """「优化输入」装配：复用全局 ProviderSettings；无 api key 时 fail-closed（503）。"""
+
+    api_key = settings.provider.api_key
+    if api_key is None or not api_key.get_secret_value().strip():
+        return UnavailablePromptEnhanceProviderPort()
+    return DashScopePromptEnhanceProvider(
+        base_url=settings.provider.base_url or PROMPT_ENHANCE_DEFAULT_BASE_URL,
+        api_key=api_key.get_secret_value(),
+        model=settings.chat.enhance_model,
+        timeout_seconds=settings.chat.enhance_timeout_seconds,
+    )
 
 
 def build_runtime(
@@ -744,6 +765,10 @@ def build_runtime(
     configured.setdefault("chat_retrieval_port", chat_retrieval)
     chat_provider = configured.get("chat_provider_port") or UnavailableChatProviderPort()
     configured.setdefault("chat_provider_port", chat_provider)
+    prompt_enhance_provider = configured.get("prompt_enhance_provider_port") or (
+        _default_prompt_enhance_provider(settings)
+    )
+    configured.setdefault("prompt_enhance_provider_port", prompt_enhance_provider)
     evaluation_calibration_port = configured.get("evaluation_calibration_port") or (
         EvaluationCalibrationWindowPort(engine)
     )
@@ -764,6 +789,10 @@ def build_runtime(
         ConversationService(engine, now=clock)
     )
     configured.setdefault("chat_conversation_service", chat_conversation_service)
+    chat_ab_source_filter = configured.get("chat_ab_source_filter") or (
+        IndexingAbSourceFilterPort(indexing_service)
+    )
+    configured.setdefault("chat_ab_source_filter", chat_ab_source_filter)
     chat_generation_service = configured.get("chat_generation_service") or (
         GenerationService(
             engine,
@@ -771,6 +800,7 @@ def build_runtime(
             authorization=chat_authorization,
             calibration=chat_calibration,
             budget_meter=generation_budget_meter,
+            ab_source_filter=chat_ab_source_filter,
         )
     )
     configured.setdefault("chat_generation_service", chat_generation_service)
@@ -791,6 +821,7 @@ def build_runtime(
         calibration=chat_calibration,
         budget_meter=generation_budget_meter,
         self_evaluator=configured.get("agents_self_evaluator"),
+        effort_rag_limits=settings.chat.effort_rag_call_limits,
     )
     configured.setdefault("chat_generation_worker", chat_worker)
     evaluation_repository = configured.get("evaluation_repository") or (

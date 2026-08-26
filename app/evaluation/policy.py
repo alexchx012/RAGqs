@@ -11,7 +11,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from math import inf
+from math import ceil, inf
 from typing import Any
 
 from app.platform.errors import PlatformError
@@ -184,6 +184,32 @@ def weighted_score(metrics: Mapping[str, float]) -> float:
     )
 
 
+def aggregate_result_metrics(results: list[Mapping[str, Any]]) -> dict[str, float]:
+    """Mean aggregation per candidate config; p95 latency uses the rank method."""
+    keys = (
+        "faithfulness",
+        "answer_relevancy",
+        "refusal_rate",
+        "hit_at_k_final",
+        "mrr",
+        "p95_latency_ms",
+        "cost_per_query",
+    )
+    aggregates: dict[str, float] = {}
+    for key in keys:
+        numbers = [
+            float(result["metrics_json"].get(key))
+            for result in results
+            if result["metrics_json"] and result["metrics_json"].get(key) is not None
+        ]
+        if key == "p95_latency_ms" and numbers:
+            rank = ceil(len(numbers) * 0.95)
+            aggregates[key] = sorted(numbers)[rank - 1]
+        else:
+            aggregates[key] = (sum(numbers) / len(numbers)) if numbers else 0.0
+    return aggregates
+
+
 def policy_view(policy: EvaluationPolicySnapshot) -> dict[str, Any]:
     """The policy subset exposed to the frontend (leaderboard response)."""
     return {
@@ -199,6 +225,7 @@ def policy_view(policy: EvaluationPolicySnapshot) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_POLICY_VERSION",
+    "aggregate_result_metrics",
     "build_comparator_key",
     "default_policy_snapshot",
     "policy_view",

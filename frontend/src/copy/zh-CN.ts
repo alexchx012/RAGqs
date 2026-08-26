@@ -1004,11 +1004,12 @@ export const zhCN = {
 
     // 输入区（共用基座 §3.3）
     composer: {
-      effortAria: '努力档位', // 措辞后定
+      effortAria: '思考深度',
       effortQuick: '快速', // 措辞后定
       effortThink: '思考', // 措辞后定
       effortDeep: '深度研究', // 措辞后定
       scopeAria: '检索范围', // 措辞后定
+      scopeLabel: '检索范围', // 措辞后定：「+」菜单行可见文案
       scopeAll: '全部范围', // 措辞后定
       scopeSearchPlaceholder: '搜索空间', // 措辞后定
       scopePersonalDocuments: '个人库文档', // 措辞后定
@@ -1018,6 +1019,22 @@ export const zhCN = {
       stopAria: '停止生成', // 措辞后定
       stoppingAria: '正在停止', // 措辞后定
       inputPlaceholder: '输入你的问题…', // 措辞后定
+      // 「+」菜单：附件与技能（动效 AI Agent Input）
+      addMenuAria: '添加附件或技能', // 措辞后定
+      addPhotos: '添加图片', // 措辞后定
+      attachFiles: '添加文件', // 措辞后定
+      skillsLabel: '技能', // 措辞后定
+      skillDeepResearch: '深度研究', // 措辞后定
+      skillCodeReview: '代码评审', // 措辞后定
+      skillWebSearch: '联网搜索', // 措辞后定
+      skillSummarize: '总结', // 措辞后定
+      noMatchingSkills: '没有匹配的技能', // 措辞后定
+      removeItemAria: (name: string) => `移除 ${name}`, // 措辞后定
+      // 输入优化（prompt-enhance §3：药丸/动效为既有行为，这里只留文案）
+      enhancePrompt: '优化输入', // 措辞后定
+      revertEnhance: '还原', // 措辞后定
+      enhancingAria: '正在优化输入', // 措辞后定
+      enhanceFailed: '优化失败，请稍后重试', // 措辞后定：非中止失败轻提示（原文不动，可重试）
     },
 
     // 消息区（共用基座 §3.4）

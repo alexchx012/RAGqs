@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import secrets
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -23,6 +22,7 @@ from .models import (
     RunReadModel,
 )
 from .policy import (
+    aggregate_result_metrics,
     build_comparator_key,
     default_policy_snapshot,
     policy_view,
@@ -430,28 +430,7 @@ class EvaluationService:
 
     @staticmethod
     def _aggregate_result_metrics(results: list[Mapping[str, Any]]) -> dict[str, float]:
-        keys = (
-            "faithfulness",
-            "answer_relevancy",
-            "refusal_rate",
-            "hit_at_k_final",
-            "mrr",
-            "p95_latency_ms",
-            "cost_per_query",
-        )
-        aggregates: dict[str, float] = {}
-        for key in keys:
-            numbers = [
-                float(result["metrics_json"].get(key))
-                for result in results
-                if result["metrics_json"] and result["metrics_json"].get(key) is not None
-            ]
-            if key == "p95_latency_ms" and numbers:
-                rank = math.ceil(len(numbers) * 0.95)
-                aggregates[key] = sorted(numbers)[rank - 1]
-            else:
-                aggregates[key] = (sum(numbers) / len(numbers)) if numbers else 0.0
-        return aggregates
+        return aggregate_result_metrics(results)
 
     # -------------------------------------------------------------- suggestion
 

@@ -172,6 +172,80 @@ describe('API 客户端基座（规格 §2）', () => {
     expect(error.code).toBe('timeout');
   });
 
+  it('外部 signal 中止：fetch 的 signal 同步中止，以 AbortError 拒绝（不归一化为 timeout）', async () => {
+    const external = new AbortController();
+    let fetchedSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn<typeof fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          fetchedSignal = init?.signal ?? undefined;
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        }),
+    );
+    const client = createApiClient({
+      getAccessToken: () => 'tok',
+      refresh: vi.fn(),
+      fetchFn: fetchMock,
+      timeoutMs: 10_000,
+    });
+    const pending = client.request('/x', { signal: external.signal });
+    external.abort();
+    const error = await pending.catch((caught: unknown) => caught);
+    // 外部与内部共用同一 controller 语义：传给 fetch 的 signal 必须兑现中止
+    expect(fetchedSignal?.aborted).toBe(true);
+    expect(error).toBeInstanceOf(DOMException);
+    expect((error as DOMException).name).toBe('AbortError');
+  });
+
+  it('外部 signal 传入前已中止：不发请求，立即以 AbortError 拒绝', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(200, {}));
+    const client = createApiClient({ getAccessToken: () => 'tok', refresh: vi.fn(), fetchFn: fetchMock });
+    const external = new AbortController();
+    external.abort();
+    const error = await client.request('/x', { signal: external.signal }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DOMException);
+    expect((error as DOMException).name).toBe('AbortError');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('外部中止优先于 401：不 refresh/重试（fetch 未兑现 signal 时的兜底路径）', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => contractError(401, 'invalid_token'));
+    const refresh = vi.fn(async () => 'tok_new');
+    const client = createApiClient({ getAccessToken: () => 'tok', refresh, fetchFn: fetchMock });
+    const external = new AbortController();
+    const pending = client.request('/x', { signal: external.signal });
+    external.abort();
+    const error = await pending.catch((caught: unknown) => caught);
+    expect((error as DOMException).name).toBe('AbortError');
+    expect(refresh).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('外部 signal 未中止时不改变内部超时语义（仍归一化为 timeout）', async () => {
+    const external = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        }),
+    );
+    const client = createApiClient({
+      getAccessToken: () => null,
+      refresh: vi.fn(),
+      fetchFn: fetchMock,
+      timeoutMs: 10,
+    });
+    const error = (await client
+      .request('/x', { signal: external.signal })
+      .catch((caught: unknown) => caught)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.code).toBe('timeout');
+  });
+
   it('204 响应解析为 undefined', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
     const client = createApiClient({ getAccessToken: () => 'tok', refresh: vi.fn(), fetchFn: fetchMock });

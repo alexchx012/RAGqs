@@ -71,7 +71,7 @@ def test_default_policy_locks_effort_wall_and_candidate_limits() -> None:
         for item in ("quick", "think", "deep")
     ] == [
         (1, 20),
-        (4, 60),
+        (8, 60),
         (10, 180),
     ]
     assert [limits[item].max_total_tokens for item in ("quick", "think", "deep")] == [
@@ -316,3 +316,33 @@ def test_budget_meter_and_reservation_rows_are_persisted() -> None:
     assert meter["status"] == "active"
     assert meter["price_version_id"] == "price-1"
     assert reservation["status"] == "reserved"
+
+
+def test_configured_policy_honors_effort_rag_limit_overrides() -> None:
+    service = make_service()
+    assert service.policy.efforts["think"].max_rag_calls == 8
+    service = BudgetMeterService(
+        service.engine,
+        MutableClock(NOW),
+        BudgetMeterPolicy.configured(
+            price_version_id="price-1",
+            currency_code="USD",
+            max_estimated_cost_amounts={
+                "quick": Decimal("0.100"),
+                "think": Decimal("0.200"),
+                "deep": Decimal("0.500"),
+            },
+            cost_estimator=lambda operation, tokens: Decimal("0.00001") * tokens,
+            effort_rag_limits={"quick": 2, "think": 12},
+        ),
+    )
+    limits = service.policy.efforts
+    assert [limits[item].max_rag_calls for item in ("quick", "think", "deep")] == [2, 12, 10]
+    assert limits["think"].max_wall_seconds == 60
+    # The generation meter snapshot records the configured limit.
+    meter = service.ensure_meter(
+        generation_id="gen-override",
+        effort_level="think",
+        deadline_at_utc=NOW + timedelta(seconds=1800),
+    )
+    assert meter.max_rag_calls == 12

@@ -10,26 +10,15 @@
   font-size: var(--text-body-lg);
 }
 
-/* 打字光标：文末 2px×1em 墨色竖条，1000ms 明灭阶跃（共用基座 §2.5 循环动画表，不用缓动）。 */
-@keyframes chat-caret-blink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
+/* 打字光标（动效 Streaming Text）：文末 8px×1.05em 墨色方块，流式期间常亮跟随写头。
+ * 设计稿的明灭闪烁态只在流式结束后出现，而本产品生成完成即隐藏光标，故不引入闪烁动画。 */
 .chat-caret {
   display: inline-block;
-  width: 2px;
-  height: 1em;
+  width: 8px;
+  height: 1.05em;
   margin-left: 2px;
   vertical-align: text-bottom;
   background-color: var(--color-ink-black);
-  animation: chat-caret-blink 1000ms steps(1) infinite;
 }
 
 /* 新消息进入：opacity 0→1 + 上移 8px→0，--duration-base --ease-out（共用基座 §3.4）。 */
@@ -212,6 +201,91 @@
   transform: rotate(-90deg);
 }
 
+/* 深度研究步骤列表（动效 web search）：左侧 1px 轨道线贯穿全部行。 */
+.chat-steps-list {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.chat-steps-rail {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin-left: 5.5px;
+  border-left: 1px solid var(--color-hairline);
+}
+
+/* 步骤子弹头 12px 两态切换：active 经线地球淡入放大、done 成功勾缩小弹入（交叉过渡）。 */
+.chat-step-bullet {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+}
+
+.chat-step-globe {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-slate-gray);
+  opacity: 0;
+  transform: scale(0.88);
+  transition:
+    opacity 320ms var(--ease-out),
+    transform 360ms var(--ease-out);
+}
+
+.chat-step-row[data-state='active'] .chat-step-globe {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.chat-step-check {
+  color: var(--color-success);
+  opacity: 0;
+  transform: scale(1.175);
+  transition:
+    opacity 240ms var(--ease-out) 60ms,
+    transform 280ms var(--ease-out) 60ms;
+}
+
+.chat-step-row[data-state='done'] .chat-step-check {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* active 步骤文案 shimmer 扫光：墨色 45%↔100% 的亮带 2.7s 单向往返。 */
+.chat-step-label-active {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-ink-black) 45%, transparent) 0%,
+    var(--color-ink-black) 44%,
+    color-mix(in srgb, var(--color-ink-black) 45%, transparent) 80%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: chat-step-shimmer 2.7s linear infinite;
+}
+
+@keyframes chat-step-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
 /* A/B 对比：第一条容器 100%→50% 宽度过渡 --duration-slow --ease-in-out；投票后收拢/回全宽（§3.4）。 */
 .chat-ab-column {
   transition:
@@ -232,3 +306,720 @@
 }
 
 /* 引用角标 hover：悬停卡由 Radix HoverCard 驱动（ui-hovercard-content 已含进入动效）。 */
+
+/* ===== 输入区 composer frame（动效 AI Agent Input 移植；项目无 CSS Modules，chat-composer- 前缀全局类） =====
+ * 结构/几何/动效便签式忠于设计稿；颜色映射 token（暗色经 [data-theme='dark'] token 换值自动适配）：
+ *   文字 #1a1a1a → --color-ink-black；#a1a1a1 → --color-smoke-gray；边 #e6e8ec → --color-hairline；
+ *   白底 → --color-paper-white；rgba(26,26,26,x) 填充 → color-mix(--color-ink-black x%)；
+ *   发送键激活 #0b0d12 → --color-ink-black。
+ * 彩色素例外（技能药丸蓝、增强 conic 环）保留设计稿色值硬编码，暗色覆盖见文末（值取设计稿 dark media query）。
+ * frame 投影亮/暗不同源（亮=黑基投影，暗=白环+深投影）无法 token 化，两态均按设计稿写死。
+ * reduced-motion 不在组件内处理：base.css 已全局直出。设计稿 .wrap 的 420px 限宽与字体声明为演示约束，不移植。 */
+
+.chat-composer {
+  width: 100%;
+}
+
+.chat-composer-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 10px 10px;
+  background: var(--color-paper-white);
+  /* transparent border 保持盒几何不变：增强态 ::after 描边环依赖它；
+     可见的 0.5px 发丝环 + 下落投影与周边卡片一致 */
+  border: 0.5px solid transparent;
+  border-radius: var(--radius-xl); /* 设计稿 12px */
+  /* 发丝环放最前先绘制，压在投影之上，四条边保持均匀（否则底边被下落投影遮住） */
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.05),
+    0 2px 4px rgba(0, 0, 0, 0.02);
+}
+
+/* 有附件 chips 时，顶 padding 与两侧 10px 对齐 */
+.chat-composer-frame:has(.chat-composer-chips) {
+  padding-top: 10px;
+}
+
+/* 增强中：conic 渐变环沿边框扫转（彩色素例外，硬编码） */
+@property --chat-composer-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.chat-composer-frame[data-enhancing] {
+  border-color: transparent;
+}
+
+.chat-composer-frame[data-enhancing]::after {
+  content: '';
+  position: absolute;
+  inset: -0.5px;
+  border-radius: 12.5px;
+  /* border + padding-box mask 保持每边环宽均匀 0.75px ——
+     旧的 content-box/padding 技巧会把底边渲染得更细 */
+  border: 0.75px solid transparent;
+  background: conic-gradient(
+      from var(--chat-composer-angle),
+      #2b7fff,
+      #8b5cf6,
+      #d946ef,
+      #22d3ee,
+      #2b7fff
+    )
+    border-box;
+  -webkit-mask:
+    linear-gradient(#000 0 0) padding-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation:
+    chat-composer-border-spin 1.1s linear infinite,
+    chat-composer-border-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+}
+
+@keyframes chat-composer-border-spin {
+  to {
+    --chat-composer-angle: 360deg;
+  }
+}
+
+@keyframes chat-composer-border-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 可编辑字段 —— contentEditable div，技能药丸得以 inline 流式排布 */
+.chat-composer-editor-wrap {
+  position: relative;
+}
+
+.chat-composer-field {
+  position: relative;
+  width: 100%;
+  margin: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-ink-black);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  letter-spacing: -0.12px;
+  min-height: 18px;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-composer-field ::selection,
+.chat-composer-field::selection {
+  background: Highlight;
+  color: HighlightText;
+}
+
+.chat-composer-field ::-moz-selection,
+.chat-composer-field::-moz-selection {
+  background: Highlight;
+  color: HighlightText;
+}
+
+.chat-composer-field[data-empty]::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--color-ink-black);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* inline 技能药丸 —— 增强药丸尺寸 + 蓝色 tint 与 ×（彩色素例外，硬编码） */
+.chat-composer-skill-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  /* 比字段 18px 行高矮，药丸不会撑大行盒（middle + 18px 会撑高字段、跳动操作行间距） */
+  height: 16px;
+  padding: 0 0 0 5px;
+  margin: 0 2px;
+  border-radius: 999px;
+  background: rgba(43, 127, 255, 0.12);
+  color: #1f6feb;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.12px;
+  white-space: nowrap;
+  position: relative;
+  top: -1px;
+  vertical-align: baseline;
+  user-select: none;
+}
+
+/* 位于字段最开头时去掉左 margin 只留右侧（data-start 由 JS 设置：:first-child 忽略前导文本节点） */
+.chat-composer-skill-pill[data-start] {
+  margin-left: 0;
+}
+
+.chat-composer-skill-pill-label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-composer-skill-pill-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+  transition:
+    opacity 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-composer-skill-pill-x:hover {
+  opacity: 1;
+  background: rgba(43, 127, 255, 0.16);
+}
+
+/* 以来时同样的柔和方式离开 */
+.chat-composer-skill-pill[data-exit] {
+  animation: chat-composer-pill-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+}
+
+/* 「/」命令面板 —— 与「+」菜单同一容器样式，钉在字段上方 */
+.chat-composer-slash-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 25;
+  width: 200px;
+  padding: 3px;
+  background: var(--color-paper-white);
+  border: 0.5px solid var(--color-hairline);
+  border-radius: 10px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.02),
+    0 1px 1px rgba(0, 0, 0, 0.04);
+  transform-origin: bottom left;
+  animation: chat-composer-menu-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.chat-composer-slash-label {
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 425;
+  color: var(--color-smoke-gray);
+}
+
+.chat-composer-slash-empty {
+  padding: 6px 7px;
+  font-size: 11px;
+  color: var(--color-smoke-gray);
+}
+
+/* 增强中：当前文本 shimmer，模型正在改写 */
+.chat-composer-enhancing-text {
+  font-size: 12px;
+  line-height: 18px;
+  letter-spacing: -0.12px;
+  word-break: break-word;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--color-ink-black) 0%,
+    var(--color-ink-black) 30%,
+    color-mix(in srgb, var(--color-ink-black) 45%, transparent) 45%,
+    color-mix(in srgb, var(--color-ink-black) 45%, transparent) 55%,
+    var(--color-ink-black) 70%,
+    var(--color-ink-black) 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: chat-composer-shine 2.25s cubic-bezier(0.25, 0.1, 0.25, 1) infinite;
+}
+
+@keyframes chat-composer-shine {
+  0%,
+  18% {
+    background-position: 100% 0;
+  }
+  82%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+
+/* 附件 chips —— 与 frame 同白纸面 + 发丝描边 */
+.chat-composer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* 只收紧 chips→文本间距（frame gap 为 12px），不动 文本→按钮行 间距 */
+  margin-bottom: -6px;
+}
+
+.chat-composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 4px 3px 5px;
+  border-radius: 999px;
+  background: var(--color-paper-white);
+  border: 0.5px solid var(--color-hairline);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  color: var(--color-ink-black);
+  font-size: 11px;
+  line-height: 14px;
+  animation: chat-composer-chip-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 与技能药丸同样的柔和淡出/缩放退场 */
+.chat-composer-chip[data-exit] {
+  animation: chat-composer-pill-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+}
+
+.chat-composer-chip-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-smoke-gray);
+}
+
+.chat-composer-chip-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-composer-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 向文件名拉近 2px，不改变 图标→文本 间距 */
+  margin-left: -2px;
+  width: 15px;
+  height: 15px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-smoke-gray);
+  cursor: pointer;
+  transition:
+    background 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-composer-chip-remove:hover {
+  background: color-mix(in srgb, var(--color-ink-black) 8%, transparent);
+  color: var(--color-ink-black);
+}
+
+@keyframes chat-composer-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.chat-composer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-composer-plus-wrap {
+  position: relative;
+  display: flex;
+}
+
+.chat-composer-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 圆形软按钮 22px。
+   填充承载在 ::before 上：按下只缩放容器（0.98），上面的图标不动。 */
+.chat-composer-icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-black);
+  cursor: pointer;
+}
+
+.chat-composer-icon-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-ink-black) 6%, transparent);
+  transition:
+    background 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-composer-icon-btn:hover::before {
+  background: color-mix(in srgb, var(--color-ink-black) 10%, transparent);
+}
+
+.chat-composer-icon-btn:active::before {
+  transform: scale(0.98);
+}
+
+/* 图标保持在（激活时不透明的）::before 填充之上 */
+.chat-composer-icon-btn > svg {
+  position: relative;
+}
+
+.chat-composer-plus-icon {
+  position: relative;
+  display: inline-flex;
+  transition: transform 200ms cubic-bezier(0.35, 1.55, 0.65, 1);
+}
+
+.chat-composer-plus[data-open]::before {
+  background: color-mix(in srgb, var(--color-ink-black) 12%, transparent);
+}
+
+.chat-composer-plus[data-open] .chat-composer-plus-icon {
+  transform: rotate(45deg);
+}
+
+/* 增强 / 还原药丸 —— 与图标按钮同填充与按压行为 */
+.chat-composer-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-black);
+  font-size: 11px;
+  line-height: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  animation: chat-composer-pill-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.chat-composer-pill::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-ink-black) 6%, transparent);
+  transition:
+    background 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-composer-pill:hover::before {
+  background: color-mix(in srgb, var(--color-ink-black) 10%, transparent);
+}
+
+.chat-composer-pill:active::before {
+  transform: scale(0.98);
+}
+
+@keyframes chat-composer-pill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+/* 对称退场 —— 镜像 pill-in，增强药丸（与 inline 技能药丸）以来时同样的柔和方式离开 */
+@keyframes chat-composer-pill-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+    filter: blur(2px);
+  }
+}
+
+.chat-composer-pill.chat-composer-pill-exit {
+  animation: chat-composer-pill-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+}
+
+.chat-composer-send {
+  color: var(--color-smoke-gray);
+}
+
+.chat-composer-send:disabled {
+  cursor: default;
+}
+
+.chat-composer-send:disabled:active::before {
+  transform: none;
+}
+
+.chat-composer-send-active {
+  color: var(--color-paper-white);
+}
+
+.chat-composer-send-active::before {
+  background: var(--color-ink-black);
+}
+
+/* 激活态 hover：设计稿亮 #2a2f3a / 暗 #ffffff，同为向白提亮，按 88% 墨色 + 白 混合两态通吃 */
+.chat-composer-send-active:hover::before {
+  background: color-mix(in srgb, var(--color-ink-black) 88%, #ffffff);
+}
+
+.chat-composer-spinner-btn {
+  cursor: default;
+}
+
+.chat-composer-spinner {
+  position: relative;
+  color: var(--color-smoke-gray);
+  animation: chat-composer-spin 0.7s linear infinite;
+}
+
+@keyframes chat-composer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 「+」菜单 —— 与输入 frame 同一容器样式 */
+.chat-composer-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  /* 232px：容纳努力档位分段开关与检索范围行（设计稿菜单 180px 仅放短行文本） */
+  width: 232px;
+  padding: 3px;
+  background: var(--color-paper-white);
+  border: 0.5px solid var(--color-hairline);
+  border-radius: 10px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.02),
+    0 1px 1px rgba(0, 0, 0, 0.04);
+  transform-origin: bottom left;
+  animation: chat-composer-menu-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.chat-composer-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 26px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-ink-black);
+  font-size: 11px;
+  font-weight: 425;
+  line-height: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-composer-menu-item:hover {
+  background: color-mix(in srgb, var(--color-ink-black) 6%, transparent);
+}
+
+.chat-composer-menu-item:active {
+  background: color-mix(in srgb, var(--color-ink-black) 9%, transparent);
+}
+
+.chat-composer-menu-item.chat-composer-menu-item-active {
+  background: color-mix(in srgb, var(--color-ink-black) 6%, transparent);
+}
+
+.chat-composer-slash-menu[data-keyboard] .chat-composer-menu-item:hover {
+  background: transparent;
+}
+
+.chat-composer-slash-menu[data-keyboard] .chat-composer-menu-item.chat-composer-menu-item-active,
+.chat-composer-slash-menu[data-keyboard]
+  .chat-composer-menu-item.chat-composer-menu-item-active:hover {
+  background: color-mix(in srgb, var(--color-ink-black) 6%, transparent);
+}
+
+/* 设计稿：框内所有图标统一 1.5px 描边（lucide 默认 2px） */
+.chat-composer svg {
+  stroke-width: 1.5px;
+}
+
+.chat-composer-menu-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-smoke-gray);
+}
+
+.chat-composer-menu-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 技能 —— 从「技能」行右侧展开的侧向 flyout */
+.chat-composer-menu-sub {
+  position: relative;
+}
+
+.chat-composer-menu-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-smoke-gray);
+}
+
+.chat-composer-menu-flyout {
+  position: absolute;
+  top: -3px;
+  left: calc(100% + 6px);
+  width: 168px;
+  padding: 3px;
+  background: var(--color-paper-white);
+  border: 0.5px solid var(--color-hairline);
+  border-radius: 10px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.02),
+    0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+/* 跨越 6px 缝隙的隐形桥：指针从菜单行移入 flyout 时 hover 不掉 */
+.chat-composer-menu-flyout::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  width: 7px;
+}
+
+.chat-composer-menu-divider {
+  height: 0.5px;
+  margin: 4px -3px;
+  background: var(--color-hairline);
+}
+
+.chat-composer-menu-label {
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 425;
+  color: var(--color-smoke-gray);
+}
+
+/* 努力档位区块：分段开关入菜单，铺满菜单宽度 */
+.chat-composer-menu-effort {
+  padding: 2px 4px 7px;
+}
+
+/* 检索范围行：摘要小字右对齐截断；非默认态左侧 6px 墨点（与 ScopeChip 触发器同规则） */
+.chat-composer-scope-summary {
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-smoke-gray);
+}
+
+.chat-composer-scope-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ink-black);
+}
+
+/* 检索范围 flyout：比技能 flyout 宽（同原 ScopeChip 浮层 280px），超高内部滚动 */
+.chat-composer-scope-flyout {
+  width: 280px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+@keyframes chat-composer-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+/* 暗色覆盖：仅设计稿 dark media query 中无法由 token 换值自动适配的两处彩色素 + frame 投影。
+   其余（底/边/文字/填充）均经 --color-* token 在 [data-theme='dark'] 换值自动适配。 */
+:root[data-theme='dark'] .chat-composer-frame {
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-theme='dark'] .chat-composer-frame[data-enhancing]::after {
+  background: conic-gradient(
+      from var(--chat-composer-angle),
+      #3b6fb5,
+      #6b5aa6,
+      #9a4f96,
+      #3a8a9a,
+      #3b6fb5
+    )
+    border-box;
+}
+
+:root[data-theme='dark'] .chat-composer-skill-pill {
+  background: rgba(43, 127, 255, 0.22);
+  color: #9ec5ff;
+}

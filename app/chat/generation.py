@@ -23,7 +23,7 @@ from .models import (
     FeedbackRequest,
     canonical_request_fingerprint,
 )
-from .ports import CalibrationWindowPort, ChatAuthorizationPort
+from .ports import AbSourceFilterPort, CalibrationWindowPort, ChatAuthorizationPort
 from .schema import (
     chat_ab_candidate_table,
     chat_ab_pair_table,
@@ -96,6 +96,7 @@ class GenerationService:
         authorization: ChatAuthorizationPort,
         calibration: CalibrationWindowPort,
         budget_meter: Any | None = None,
+        ab_source_filter: AbSourceFilterPort | None = None,
         sampler: Any = None,
         max_running_per_user: int = DEFAULT_MAX_RUNNING_GENERATIONS_PER_USER,
         absolute_deadline_seconds: int = GENERATION_ABSOLUTE_DEADLINE_SECONDS,
@@ -105,6 +106,7 @@ class GenerationService:
         self._authorization = authorization
         self._calibration = calibration
         self._budget_meter = budget_meter
+        self._ab_source_filter = ab_source_filter
         self._sampler = sampler or _default_sampler
         self._max_running_per_user = max_running_per_user
         self._absolute_deadline_seconds = absolute_deadline_seconds
@@ -254,6 +256,24 @@ class GenerationService:
                 .limit(1)
             ).scalar_one_or_none()
             if existing_pair is not None:
+                create_ab = False
+        if create_ab and self._ab_source_filter is not None:
+            # Same-source skip (A10): decide before the pair-creation
+            # transaction commits. Identical retrieval hits under both
+            # candidate configs make the comparison pointless, so the question
+            # continues as a normal answer without pair, ab_start, window
+            # quota or notice.
+            assert window is not None
+            if self._ab_source_filter.candidate_sources_identical(
+                content,
+                principal=principal,
+                narrowing_scope=scope_json,
+                candidate_profiles=(
+                    (DEFAULT_RETRIEVAL_PROFILE_ID, DEFAULT_RETRIEVAL_PROFILE_VERSION),
+                    (DEFAULT_RETRIEVAL_PROFILE_ID, DEFAULT_RETRIEVAL_PROFILE_VERSION),
+                ),
+                effort=effort_level,
+            ):
                 create_ab = False
         if parent is None:
             user_message_content = content
@@ -942,12 +962,14 @@ class GenerationService:
             )
             content = ""
             answer_mode = None
+            preferred_citations: list[Any] = []
             if request.choice in {"0", "1"}:
                 candidate = (
                     connection.execute(
                         select(
                             chat_ab_candidate_table.c.content,
                             chat_ab_candidate_table.c.answer_mode,
+                            chat_ab_candidate_table.c.citations_json,
                         ).where(
                             chat_ab_candidate_table.c.pair_id == request.pair_id,
                             chat_ab_candidate_table.c.candidate == int(request.choice),
@@ -958,6 +980,7 @@ class GenerationService:
                 )
                 content = str(candidate["content"])
                 answer_mode = str(candidate["answer_mode"])
+                preferred_citations = list(candidate["citations_json"] or ())
             connection.execute(
                 update(chat_message_table)
                 .where(chat_message_table.c.id == message_id)
@@ -980,6 +1003,31 @@ class GenerationService:
             )
             if pair["window_id"] is not None:
                 self._calibration.increment_pairs_collected(connection, str(pair["window_id"]))
+            if request.choice in {"0", "1"} and pair_space_id:
+                # Effective vote: seed the golden pool (A8) and rerun the
+                # active-default adoption gate (A5) in the same transaction.
+                generation_facts = connection.execute(
+                    select(
+                        chat_generation_table.c.request_content,
+                        chat_generation_table.c.window_policy_version,
+                    ).where(chat_generation_table.c.id == str(pair["generation_id"]))
+                ).one()
+                preferred = int(request.choice)
+                self._calibration.record_golden_seed(
+                    connection,
+                    pair_id=str(pair["pair_id"]),
+                    space_id=pair_space_id,
+                    question_text=str(generation_facts.request_content),
+                    preferred_candidate=preferred,
+                    preferred_content=content,
+                    preferred_citations=preferred_citations,
+                    rejected_candidate=1 - preferred,
+                    policy_version=str(generation_facts.window_policy_version or ""),
+                    now=now,
+                )
+                self._calibration.maybe_adopt_active_default(
+                    connection, space_id=pair_space_id, now=now
+                )
             self._record_idempotency(
                 connection,
                 user_id=user_id,

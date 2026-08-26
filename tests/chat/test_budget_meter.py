@@ -100,3 +100,25 @@ def test_effort_upgrade_is_limited_to_once_and_keeps_consumed_usage() -> None:
     assert meter.tokens_used == 10
     assert meter.upgrade_policy(_policy("deep")) is False
     assert meter.policy.effort_level == "think"
+
+
+def test_effort_rag_limit_overrides_replace_only_rag_calls() -> None:
+    policy = BudgetPolicy.for_effort(
+        "quick",
+        price_version="v1",
+        max_estimated_cost_amount=1.0,
+        effort_rag_limits={"quick": 3, "think": 2},
+    )
+    assert policy.max_rag_calls == 3
+    assert policy.max_wall_seconds == EFFORT_WALL_LIMITS["quick"]
+    assert policy.max_total_tokens == EFFORT_TOKEN_LIMITS["quick"]
+    # Untouched tiers keep their table defaults.
+    assert (
+        BudgetPolicy.for_effort(
+            "deep",
+            price_version="v1",
+            max_estimated_cost_amount=1.0,
+            effort_rag_limits={"quick": 3, "think": 2},
+        ).max_rag_calls
+        == EFFORT_RAG_LIMITS["deep"]
+    )

@@ -7,14 +7,17 @@
  * 布局（§3.1）：左侧边栏 280px fog-white + 1px hairline；主区域对话列限宽 760px 居中 padding 24px；
  * 输入区粘底同宽、底距 24px；窄屏 <768px 侧边栏收为滑出抽屉（chat/ui/sidebar）。
  * ChatStore 在此以惰性 useState 装配（复用 auth 会话层 single-flight refresh 与 token）。
+ * 优化输入（prompt-enhance §3.2）：无条件注入真实端点（createPromptEnhanceHandler），
+ * 失败经 HeaderNotice 轻提示 + composer 还原原文，用户中止静默。
  */
 
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { createApiClient } from '../api/client';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
-import { createChatApi } from '../chat/api';
+import { createChatApi, type ChatApi } from '../chat/api';
 import { ChatProvider, useChatStore, useChatState } from '../chat/chat-context';
+import { createPromptEnhanceHandler } from '../chat/enhance';
 import { ChatStore } from '../chat/store';
 import { ChatMenuButton, ChatSidebar } from '../chat/ui/sidebar';
 import { Composer } from '../chat/ui/composer';
@@ -22,25 +25,35 @@ import { MessageList } from '../chat/ui/message-list';
 import { copy } from '../copy';
 import { useNotifications } from '../notifications/NotificationsProvider';
 import { AUTO_OPEN_ADMIN_DRAWER_STATE_KEY } from '../router/landing';
+import { HeaderNotice } from '../ui';
 import { ShellBell } from './ShellBell';
 import type { ConversationScope, EffortLevel } from '../chat/types';
 import type { ScopeSelection } from '../chat/ui/scope-chip';
 
-function createChatStore(authStore: ReturnType<typeof useAuthStore>): ChatStore {
+/** 聊天装配：ChatStore 与其依赖的 ChatApi（优化输入端点复用同一 client 的 401 refresh 链路）。 */
+interface ChatRuntime {
+  readonly store: ChatStore;
+  readonly api: ChatApi;
+}
+
+function createChatRuntime(authStore: ReturnType<typeof useAuthStore>): ChatRuntime {
   const client = createApiClient({
     getAccessToken: () => authStore.getState().token,
     refresh: () => authStore.refresh(),
   });
   const api = createChatApi(client);
-  return new ChatStore({
+  return {
     api,
-    getToken: () => authStore.getState().token,
-    refresh: () => authStore.refresh(),
-    getReducedMotion: () =>
-      typeof window.matchMedia === 'function'
-        ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        : false,
-  });
+    store: new ChatStore({
+      api,
+      getToken: () => authStore.getState().token,
+      refresh: () => authStore.refresh(),
+      getReducedMotion: () =>
+        typeof window.matchMedia === 'function'
+          ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          : false,
+    }),
+  };
 }
 
 /** 会话内记住档位与范围、新会话重置（共用基座 §3.3）：以 conversationId 为键的记忆表。 */
@@ -57,7 +70,7 @@ export function HomePage() {
   const navigate = useNavigate();
   const location = useLocation();
   const notifications = useNotifications();
-  const [chat] = useState(() => createChatStore(authStore));
+  const [chat] = useState(() => createChatRuntime(authStore));
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [composerMemory, setComposerMemory] = useState<ComposerMemory>(DEFAULT_MEMORY);
   const memoryByConversation = useRef(new Map<string, ComposerMemory>());
@@ -67,7 +80,7 @@ export function HomePage() {
 
   // m8：卸载时 dispose ChatStore（中止 SSE / 退避计时器 / 模拟器计时器）
   useEffect(() => {
-    const store = chat;
+    const store = chat.store;
     return () => {
       store.dispose();
     };
@@ -86,10 +99,11 @@ export function HomePage() {
   };
 
   return (
-    <ChatProvider store={chat}>
+    <ChatProvider store={chat.store}>
       <ChatHomeInner
         user={user}
         notifications={notifications}
+        chatApi={chat.api}
         drawerOpen={drawerOpen}
         onDrawerOpenChange={setDrawerOpen}
         onOpenDrawer={openDrawer}
@@ -105,6 +119,8 @@ export function HomePage() {
 interface ChatHomeInnerProps {
   readonly user: ReturnType<typeof useAuthState>['user'];
   readonly notifications: ReturnType<typeof useNotifications>;
+  /** 聊天域 API（优化输入端点；与 ChatStore 同一 client 装配）。 */
+  readonly chatApi: ChatApi;
   readonly drawerOpen: boolean;
   readonly onDrawerOpenChange: (open: boolean) => void;
   readonly onOpenDrawer: () => void;
@@ -118,6 +134,7 @@ interface ChatHomeInnerProps {
 function ChatHomeInner({
   user,
   notifications,
+  chatApi,
   drawerOpen,
   onDrawerOpenChange,
   onOpenDrawer,
@@ -130,6 +147,11 @@ function ChatHomeInner({
   const authStore = useAuthStore();
   const state = useChatState();
   const [spaces, setSpaces] = useState<readonly import('../chat/types').SpaceItem[]>([]);
+  // 优化输入失败轻提示（HeaderNotice 3s 自动淡出；seq 递增加 key 重挂载，连续失败重新计时）
+  const [enhanceFailedSeq, setEnhanceFailedSeq] = useState(0);
+  // 优化输入（prompt-enhance §3.2）：无条件真实端点；失败弹提示后 rethrow（composer 还原原文），
+  // 用户中止（还原/卸载）静默。setState 函数引用稳定，handler 每渲染新建无妨
+  const onEnhance = createPromptEnhanceHandler(chatApi, () => setEnhanceFailedSeq((seq) => seq + 1));
 
   // 首次挂载：拉会话列表 + 检索空间；随后自动打开最近会话（登录落地恢复）
   useEffect(() => {
@@ -275,6 +297,15 @@ function ChatHomeInner({
                 </p>
               </div>
             )}
+            {enhanceFailedSeq > 0 && (
+              <div className="chat-notice-enter mt-4">
+                <HeaderNotice
+                  key={enhanceFailedSeq}
+                  message={copy.chat.composer.enhanceFailed}
+                  onDismiss={() => setEnhanceFailedSeq(0)}
+                />
+              </div>
+            )}
             <MessageList
               conversationId={state.conversationId}
               conversationStatus={state.conversationStatus}
@@ -296,6 +327,7 @@ function ChatHomeInner({
                   stopping={stopping}
                   onSend={send}
                   onStop={() => store.stop()}
+                  onEnhance={onEnhance}
                 />
               }
             />
