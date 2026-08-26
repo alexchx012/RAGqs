@@ -92,11 +92,19 @@ _UPLOAD_MEDIA_KINDS_BY_EXTENSION: dict[str, str] = {
 }
 
 
-def _metered_pages(*, page_count: Any, image_count: Any) -> int:
-    """Metering folds images in at one page per image (1 image = 1 page).
+CODE_TOKENS_PER_PAGE = 500
 
-    Storage, parsing, and retrieval keep their own counts; this only converts
-    the summary counts into the page figure used by quota debits and reports.
+
+def _metered_pages(
+    *, page_count: Any, image_count: Any, summary: Mapping[str, Any] | None = None
+) -> int:
+    """Metering converts the processing summary into billable pages.
+
+    Document carriers keep the existing page_count + image_count fold (1 image
+    = 1 page). Routed carriers follow the quota conversion rules: code files
+    meter at ceil(tokens/500) with a 1-page minimum, config files meter only
+    above 500 tokens, structured-table routes are free, and internvl images
+    record usage without debiting pages.
     """
 
     pages = (
@@ -109,6 +117,22 @@ def _metered_pages(*, page_count: Any, image_count: Any) -> int:
         if isinstance(image_count, int) and not isinstance(image_count, bool) and image_count > 0
         else 0
     )
+    metering = summary.get("metering") if isinstance(summary, Mapping) else None
+    metering_class = str(metering.get("class", "")) if isinstance(metering, Mapping) else ""
+    if metering_class == "table":
+        return 0
+    if metering_class in {"code", "config"}:
+        tokens = metering.get("token_count") if isinstance(metering, Mapping) else None
+        token_count = (
+            tokens if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0 else 0
+        )
+        metered = -(-token_count // CODE_TOKENS_PER_PAGE)
+        if metering_class == "code":
+            return max(metered, 1)
+        return 0 if token_count <= CODE_TOKENS_PER_PAGE else metered
+    if metering_class == "image":
+        provider = metering.get("image_provider") if isinstance(metering, Mapping) else None
+        return 0 if provider == "internvl" else images
     return pages + images
 
 
@@ -185,7 +209,9 @@ class DocumentsDepartmentWorkCheckPort:
             pending_submission_count=submissions,
         )
 
-    def directory_counts(self, department_id: str, *, connection: Connection) -> DepartmentWorkState:
+    def directory_counts(
+        self, department_id: str, *, connection: Connection
+    ) -> DepartmentWorkState:
         work = self.inspect(department_id, connection=connection)
         documents = int(
             connection.execute(
@@ -348,10 +374,13 @@ class DocumentsService:
                 "validation_error", "Processing receipt has no frozen processing list", {}, 422
             )
         pages = _metered_pages(
-            page_count=receipt.get("page_count", summary.get("page_count", summary.get("pages", 1))),
+            page_count=receipt.get(
+                "page_count", summary.get("page_count", summary.get("pages", 1))
+            ),
             image_count=summary.get("image_count", summary.get("images", 0)),
+            summary=summary,
         )
-        if pages < 1:
+        if pages < 1 and not isinstance(summary.get("metering"), Mapping):
             raise PlatformError(
                 "validation_error", "Processing receipt page count is invalid", {}, 422
             )
@@ -1903,6 +1932,7 @@ class DocumentsService:
             metered_pages = _metered_pages(
                 page_count=pages,
                 image_count=images,
+                summary=processing_summary,
             )
             items.append(
                 {
@@ -2242,9 +2272,7 @@ class DocumentsService:
             raw_receipt_attempt_id = (
                 receipt.attempt_id
                 if isinstance(receipt, IndexProcessingReceipt)
-                else receipt.get("attempt_id")
-                if isinstance(receipt, Mapping)
-                else None
+                else receipt.get("attempt_id") if isinstance(receipt, Mapping) else None
             )
             if (
                 not isinstance(raw_receipt_attempt_id, str)
@@ -2654,9 +2682,7 @@ class DocumentsService:
             raise PlatformError("validation_error", "expected_version is invalid", {}, 422)
         actor_id = system_actor or str(principal.user_id)
         endpoint = "documents.delete"
-        with (
-            self._engine.begin() if connection is None else nullcontext(connection)
-        ) as connection:
+        with self._engine.begin() if connection is None else nullcontext(connection) as connection:
             document = self._locked_document(connection, document_id)
             if document is None:
                 raise PlatformError("document_not_found", "Document was not found", {}, 404)
@@ -2961,19 +2987,21 @@ class DocumentsService:
         contributions are never touched here.
         """
 
-        rows = connection.execute(
-            text(
-                """
+        rows = (
+            connection.execute(
+                text("""
                 SELECT d.id, d.version
                 FROM documents d
                 JOIN identity_space s ON s.id = d.space_id
                 WHERE s.owner_user_id = :user_id
                   AND d.lifecycle_status != 'deleted'
                 ORDER BY d.id
-                """
-            ),
-            {"user_id": user_id},
-        ).mappings().all()
+                """),
+                {"user_id": user_id},
+            )
+            .mappings()
+            .all()
+        )
         for row in rows:
             self.delete_document(
                 principal=_AccountDeletionPrincipal(user_id),
@@ -2984,14 +3012,12 @@ class DocumentsService:
                 system_actor="system:account-deletion",
             )
         remaining = connection.execute(
-            text(
-                """
+            text("""
                 SELECT COUNT(*) FROM documents d
                 JOIN identity_space s ON s.id = d.space_id
                 WHERE s.owner_user_id = :user_id
                   AND d.lifecycle_status != 'deleted'
-                """
-            ),
+                """),
             {"user_id": user_id},
         ).scalar_one()
         return int(remaining)
