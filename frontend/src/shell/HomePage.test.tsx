@@ -9,13 +9,15 @@
 
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
 import { useLocation } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { copy } from '../copy';
+import { MOCK_ENHANCE_DEMO_RESULT } from '../mocks/chat-contract';
 import { NotificationsStore } from '../notifications/store';
 import { AppRoutes } from '../router/AppRoutes';
 import { AUTO_OPEN_ADMIN_DRAWER_STATE_KEY } from '../router/landing';
-import { mockAuth, mockChat } from '../mocks/testing';
+import { mockAuth, mockChat, mockServer } from '../mocks/testing';
 import {
   createTestStore,
   fakeAuthApi,
@@ -340,5 +342,66 @@ describe('通知轮询生命周期（规格 §4：仅已认证时运行）', () 
     expect(unreadCount).toHaveBeenCalledTimes(1);
     unmount();
     expect(notifications.getState().unreadCount).toBeNull();
+  });
+});
+
+/*
+ * 优化输入真实接线（prompt-enhance §3.2 / §4）：onEnhance 无条件走真实端点
+ * （不再有 VITE_ENABLE_MSW 分支注入——vitest 环境未置该变量，入口仍在即证明）。
+ */
+describe('优化输入（真实端点接线）', () => {
+  it('成功：端点结果整体替换草稿、药丸变「还原」，还原恢复原文', async () => {
+    mockChat.enhanceDelayMs = 0; // 跳过 2.5s 演示延迟
+    const store = await createAuthedChatStore();
+    renderWithShell(<AppRoutes />, store, ['/']);
+    const user = userEvent.setup();
+    const composer = await landingComposer();
+    await user.type(composer, '原始问题');
+    await user.click(await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }));
+    await screen.findByRole('button', { name: copy.chat.composer.revertEnhance });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+      ).toHaveTextContent(MOCK_ENHANCE_DEMO_RESULT),
+    );
+    await user.click(screen.getByRole('button', { name: copy.chat.composer.revertEnhance }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+      ).toHaveTextContent('原始问题'),
+    );
+  });
+
+  it('失败（非中止）：弹出 enhanceFailed 轻提示，原文不动、药丸回到「优化输入」可重试', async () => {
+    mockServer.use(
+      http.post('/v1/prompt-enhancements', () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'prompt_enhance_unavailable',
+              message: 'prompt_enhance_unavailable',
+              details: {},
+              request_id: 'req_mock_x',
+            },
+          },
+          { status: 503 },
+        ),
+      ),
+    );
+    const store = await createAuthedChatStore();
+    renderWithShell(<AppRoutes />, store, ['/']);
+    const user = userEvent.setup();
+    const composer = await landingComposer();
+    await user.type(composer, '原始问题');
+    await user.click(await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }));
+    expect(await screen.findByText(copy.chat.composer.enhanceFailed)).toBeInTheDocument();
+    // 原文不动（composer 还原 preEnhance 原文）
+    expect(
+      screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder }),
+    ).toHaveTextContent('原始问题');
+    // 药丸回到「优化输入」可重试
+    expect(
+      await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }),
+    ).toBeInTheDocument();
   });
 });

@@ -146,6 +146,11 @@ class ChatSettings(_StrictModel):
     effort_rag_call_limit_quick: int = Field(default=1, ge=1)
     effort_rag_call_limit_think: int = Field(default=8, ge=1)
     effort_rag_call_limit_deep: int = Field(default=10, ge=1)
+    # 「优化输入」端点：模型名以 Literal 锁死（平台唯一支持的增强模型），密钥与
+    # 地址复用全局 ProviderSettings；超时与输入上限为可部署配置。
+    enhance_model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
+    enhance_timeout_seconds: int = Field(default=30, ge=1, le=600)
+    enhance_max_prompt_chars: int = Field(default=4000, ge=1)
 
     @property
     def effort_rag_call_limits(self) -> dict[str, int]:
@@ -318,6 +323,9 @@ _ENV_KEYS = {
     "RAG_EFFORT_RAG_CALL_LIMIT_QUICK",
     "RAG_EFFORT_RAG_CALL_LIMIT_THINK",
     "RAG_EFFORT_RAG_CALL_LIMIT_DEEP",
+    "RAG_CHAT_ENHANCE_MODEL",
+    "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS",
+    "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS",
     "RAG_INDEX_XLSX_MERGED_CELLS_MAX",
     "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD",
     "RAG_INDEX_MINERU_PROVIDER",
@@ -593,6 +601,9 @@ def load_platform_settings(
                 "effort_rag_call_limit_quick": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_QUICK"),
                 "effort_rag_call_limit_think": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_THINK"),
                 "effort_rag_call_limit_deep": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_DEEP"),
+                "enhance_model": _optional(env, "RAG_CHAT_ENHANCE_MODEL"),
+                "enhance_timeout_seconds": _int(env, "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS"),
+                "enhance_max_prompt_chars": _int(env, "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS"),
             }.items()
             if value is not None
         },
@@ -701,6 +712,9 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
                 raise ValueError("production InternVL image VLM requires a model ID")
         if settings.provider.api_key is None or not settings.provider.api_key.get_secret_value():
             raise ValueError("production provider api key is required")
+        # 「优化输入」复用全局 provider 凭证/地址（上方已强制 api key）；enhance_model
+        # 由 Literal 锁死，enhance_timeout_seconds/enhance_max_prompt_chars 由 Field
+        # 边界约束，无额外生产规则。
         if settings.index.contextual_retrieval_provider == "disabled":
             raise ValueError("production contextual retrieval provider cannot be disabled")
         if not settings.index.contextual_retrieval_base_url:

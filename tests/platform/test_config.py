@@ -520,3 +520,55 @@ def test_effort_rag_call_limits_reject_non_integer_values(value: str) -> None:
 def test_effort_rag_call_limits_reject_unknown_effort_keys() -> None:
     with pytest.raises(ValueError, match="unknown|legacy"):
         load_platform_settings(development_environment(RAG_EFFORT_RAG_CALL_LIMIT_FAST="2"))
+
+
+def test_chat_enhance_settings_default_and_env_overrides() -> None:
+    settings = load_platform_settings(development_environment())
+    assert settings.chat.enhance_model == "qwen3.7-plus"
+    assert settings.chat.enhance_timeout_seconds == 30
+    assert settings.chat.enhance_max_prompt_chars == 4000
+
+    overridden = load_platform_settings(
+        development_environment(
+            RAG_CHAT_ENHANCE_MODEL="qwen3.7-plus",
+            RAG_CHAT_ENHANCE_TIMEOUT_SECONDS="45",
+            RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS="2000",
+        )
+    )
+    assert overridden.chat.enhance_model == "qwen3.7-plus"
+    assert overridden.chat.enhance_timeout_seconds == 45
+    assert overridden.chat.enhance_max_prompt_chars == 2000
+
+
+def test_chat_enhance_settings_load_in_production(tmp_path) -> None:
+    """生产校验覆盖 enhance 配置：凭证复用全局 provider 要求，合法增强配置正常加载。"""
+    settings = load_platform_settings(
+        production_environment(
+            RAG_CHAT_ENHANCE_TIMEOUT_SECONDS="45",
+            RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS="2000",
+            USER_DELETION_ARCHIVE_DIR=str(tmp_path / "user-deletion-archive"),
+        )
+    )
+    assert settings.chat.enhance_timeout_seconds == 45
+    assert settings.chat.enhance_max_prompt_chars == 2000
+
+
+def test_chat_enhance_model_is_locked_to_the_literal_whitelist() -> None:
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(development_environment(RAG_CHAT_ENHANCE_MODEL="some-other-model"))
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["RAG_CHAT_ENHANCE_TIMEOUT_SECONDS", "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS"],
+)
+def test_chat_enhance_numeric_settings_reject_invalid_values(key: str) -> None:
+    with pytest.raises(ValueError, match=f"invalid integer for {key}"):
+        load_platform_settings(development_environment(**{key: "abc"}))
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(development_environment(**{key: "0"}))
+
+
+def test_chat_enhance_rejects_unknown_enhance_keys() -> None:
+    with pytest.raises(ValueError, match="unknown|legacy"):
+        load_platform_settings(development_environment(RAG_CHAT_ENHANCE_RETRIES="2"))

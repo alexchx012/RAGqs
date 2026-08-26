@@ -21,6 +21,7 @@ from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
+from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
 from app.usage.schema import usage_metadata
 
@@ -87,6 +88,21 @@ class FakeCalibration:
     def increment_pairs_collected(self, connection: Connection, window_id: str) -> None:
         del connection
         self.collected.append(window_id)
+
+
+class FakePromptEnhanceProvider:
+    """Deterministic prompt-enhance transport for tests."""
+
+    def __init__(self, *, result: str = "enhanced prompt") -> None:
+        self.calls: list[str] = []
+        self.result = result
+        self.error: PlatformError | None = None
+
+    def enhance(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 class RecordingUsageSubmission:
@@ -186,6 +202,7 @@ def build_test_env(
     generation_service: Any | None = None,
     sampler: Any | None = None,
     outcomes: dict[str, RetrievalOutcome] | None = None,
+    prompt_enhance_provider: Any | None = None,
 ):
     engine = make_engine()
     clock = FixedClock(NOW)
@@ -215,6 +232,7 @@ def build_test_env(
             sampler=sampler or (lambda: 0.0),
         )
     usage = RecordingUsageSubmission()
+    prompt_enhance_provider = prompt_enhance_provider or FakePromptEnhanceProvider()
     runtime = build_runtime(
         settings,
         adapters={
@@ -228,6 +246,7 @@ def build_test_env(
             "chat_calibration_port": calibration,
             "chat_generation_service": generation_service,
             "chat_usage_submission": usage,
+            "prompt_enhance_provider_port": prompt_enhance_provider,
         },
     )
     client = TestClient(create_platform_app(settings, runtime=runtime))
@@ -241,6 +260,7 @@ def build_test_env(
         "provider": provider,
         "calibration": calibration,
         "usage": usage,
+        "prompt_enhance_provider": prompt_enhance_provider,
     }
 
 

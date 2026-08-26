@@ -1,13 +1,14 @@
 /*
  * 会话与问答 MSW handlers（fe-chat-home 规格 §8；契约《前端接口需求.md》§3、§6.1）。
  * 把 §3.1–§3.6 会话与分组 CRUD、§3.7 提问/停止/重试/恢复（SSE）、§3.8 反馈、§3.9 A/B 投票、
- * §6.1 GET /spaces 接到 MockChatController。
+ * §6.1 GET /spaces 接到 MockChatController；prompt-enhancements 输入优化为 mock 环境演示接缝
+ * （约 2.5s 延迟返回固定演示文本，供增强动效审查；测试经 enhanceDelayMs=0 跳过）。
  * SSE 流：事件带标准 id 字段 = generation 内单调递增 event_seq（start=1）；
  * 流首发送心跳 comment（`: heartbeat`），不计入事件序号；Last-Event-ID 只重放其后事件。
  * 非 2xx（含 406 streaming_response_required、幂等键冲突等）一律按 §1 HTTP 请求级错误对象返回。
  */
 
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import type { AskRequest } from '../chat/types';
 import { MockHttpError, sseEventFrame, type MockChatController } from './chat-contract';
 
@@ -349,6 +350,25 @@ export function createChatHandlers(controller: MockChatController) {
         return HttpResponse.json(
           controller.listDocuments(request.headers.get('Authorization'), String(params['id']), q),
         );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
+    /* ---------- prompt-enhance：输入优化演示（仅 mock 环境；延迟供动效审查，测试置 0 跳过） ---------- */
+
+    http.post('/v1/prompt-enhancements', async ({ request }) => {
+      try {
+        const body = (await request.json().catch(() => ({}))) as { prompt?: unknown };
+        const result = controller.enhancePrompt(
+          request.headers.get('Authorization'),
+          String(body.prompt ?? ''),
+        );
+        // 校验通过后才延迟（与真实端点一致：校验错误立即返回）
+        if (controller.enhanceDelayMs > 0) {
+          await delay(controller.enhanceDelayMs);
+        }
+        return HttpResponse.json(result);
       } catch (error) {
         return errorResponse(error);
       }

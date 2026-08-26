@@ -164,6 +164,68 @@ describe('会话与问答域 API 封装（JSON 端点）', () => {
     expect(url).toContain('/v1/spaces?usage=retrieval');
   });
 
+  it('POST /prompt-enhancements：body 为 {prompt}，返回 enhanced_prompt 字符串', async () => {
+    const mock = vi.fn<typeof fetch>(async () => jsonResponse(200, { enhanced_prompt: '优化后的内容' }));
+    const api = makeClient(mock);
+    await expect(api.enhancePrompt('原始问题')).resolves.toBe('优化后的内容');
+    const { url, init } = captureFetch(mock);
+    expect(url).toContain('/v1/prompt-enhancements');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer tok_1');
+    expect(JSON.parse(String(init.body))).toEqual({ prompt: '原始问题' });
+  });
+
+  it('POST /prompt-enhancements：外部 signal 透传，中止即 AbortError 拒绝', async () => {
+    const mock = vi.fn<typeof fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        }),
+    );
+    const api = makeClient(mock);
+    const external = new AbortController();
+    const pending = api.enhancePrompt('原始问题', external.signal);
+    external.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('POST /prompt-enhancements：30s 客户端超时与端点对齐（归一化为 timeout）', async () => {
+    vi.useFakeTimers();
+    try {
+      const mock = vi.fn<typeof fetch>(
+        (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(new DOMException('The operation was aborted.', 'AbortError')),
+            );
+          }),
+      );
+      const api = makeClient(mock);
+      let settled = false;
+      const pending = api.enhancePrompt('原始问题').then(
+        () => {
+          settled = true;
+          return 'resolved';
+        },
+        (caught: unknown) => {
+          settled = true;
+          return caught;
+        },
+      );
+      // 10s（基座默认超时）时不得触发
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(20_000);
+      const error = (await pending) as ApiError;
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error.code).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('错误归一化走现有 client：409 feedback_already_submitted → ApiError（code/details/request_id）', async () => {
     const mock = vi.fn<typeof fetch>(async () =>
       jsonResponse(409, {

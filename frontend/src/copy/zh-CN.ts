@@ -1030,12 +1030,11 @@ export const zhCN = {
       skillSummarize: '总结', // 措辞后定
       noMatchingSkills: '没有匹配的技能', // 措辞后定
       removeItemAria: (name: string) => `移除 ${name}`, // 措辞后定
-      // 输入优化（动效 AI Agent Input；未注入 onEnhance 时不显示入口）
+      // 输入优化（prompt-enhance §3：药丸/动效为既有行为，这里只留文案）
       enhancePrompt: '优化输入', // 措辞后定
       revertEnhance: '还原', // 措辞后定
       enhancingAria: '正在优化输入', // 措辞后定
-      enhanceDemoResult:
-        '这是一个示例优化结果——说明你的目标，补充相关背景与约束，指定期望的输出格式和语气，并注明已有假设；如果关键信息缺失，先向我提问。', // 措辞后定：mock 环境演示接缝，接真实 API 后移除
+      enhanceFailed: '优化失败，请稍后重试', // 措辞后定：非中止失败轻提示（原文不动，可重试）
     },
 
     // 消息区（共用基座 §3.4）

@@ -119,6 +119,30 @@ class UnavailableChatProviderPort:
         )
 
 
+class PromptEnhancePort(Protocol):
+    """Single-shot prompt-enhancement transport contract (prompt → text).
+
+    Consumed by the ``POST /v1/prompt-enhancements`` route: one call in, one
+    rewritten prompt out, no persistence or chat side effects.
+    """
+
+    def enhance(self, prompt: str) -> str: ...
+
+
+class UnavailablePromptEnhanceProviderPort:
+    """Fail-closed placeholder when no prompt-enhance provider is configured."""
+
+    def enhance(self, prompt: str) -> str:
+        del prompt
+        raise PlatformError(
+            "prompt_enhance_unavailable",
+            "Prompt enhancement is not configured",
+            {"retryable": True},
+            503,
+            True,
+        )
+
+
 class CalibrationWindowPort(Protocol):
     """Read-only calibration window facts owned by the evaluation domain."""
 
@@ -668,9 +692,11 @@ __all__ = [
     "IndexingChatRetrievalPort",
     "IdentityChatAuthorizationPort",
     "NoCalibrationWindowPort",
+    "PromptEnhancePort",
     "RecordingChatRetrievalPort",
     "SqlAlchemyChatPairExpiry",
     "UnavailableChatProviderPort",
+    "UnavailablePromptEnhanceProviderPort",
     "apply_revocation_effects",
     "consume_durable_revocation_commands",
 ]
