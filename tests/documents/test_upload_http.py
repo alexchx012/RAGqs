@@ -189,6 +189,27 @@ def test_upload_and_replacement_reject_oversized_files_before_persistence() -> N
         client.close()
 
 
+def test_malware_upload_rejected_at_http_layer_without_persistence() -> None:
+    client, runtime, object_store = _make_client()
+    token, space_id = _seed_user(runtime)
+    eicar = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+    try:
+        rejected = client.post(
+            f"/v1/spaces/{space_id}/documents",
+            files=[("files", ("eicar.txt", eicar, "text/plain"))],
+            headers={"Authorization": token, "Idempotency-Key": "malware-initial"},
+        )
+        assert rejected.status_code == 422
+        body = rejected.json()["error"]
+        assert body["code"] == "malware_detected"
+        # No scan detail, object key or storage location in the error object.
+        serialized = str(body)
+        assert "documents/" not in serialized and "object" not in serialized
+        assert _document_state(runtime, object_store) == (0, 0, 0, 0)
+    finally:
+        client.close()
+
+
 def test_delete_document_uses_query_parameter_without_body() -> None:
     client, runtime, _ = _make_client()
     token, space_id = _seed_user(runtime)

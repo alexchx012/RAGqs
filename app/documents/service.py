@@ -12,7 +12,11 @@ from typing import Any
 from sqlalchemy import and_, func, insert, select, text, update
 from sqlalchemy.engine import Connection, Engine
 
-from app.documents.upload_security import validate_upload_security
+from app.documents.upload_security import (
+    INJECTION_RISK_KIND,
+    scan_prompt_injection_risk,
+    validate_upload_security,
+)
 from app.identity.ports import DepartmentWorkState
 from app.outbox.ports import DocumentNotificationRedactionCommand
 from app.platform.context import current_context
@@ -185,7 +189,9 @@ class DocumentsDepartmentWorkCheckPort:
             pending_submission_count=submissions,
         )
 
-    def directory_counts(self, department_id: str, *, connection: Connection) -> DepartmentWorkState:
+    def directory_counts(
+        self, department_id: str, *, connection: Connection
+    ) -> DepartmentWorkState:
         work = self.inspect(department_id, connection=connection)
         documents = int(
             connection.execute(
@@ -250,6 +256,7 @@ class DocumentsService:
         read_lease_ttl: timedelta = timedelta(minutes=5),
         max_upload_bytes: int = 25 * 1024 * 1024,
         cleanup_max_attempts: int = 3,
+        malware_scanner: Any | None = None,
     ) -> None:
         if max_upload_bytes < 1:
             raise ValueError("max_upload_bytes must be positive")
@@ -271,6 +278,7 @@ class DocumentsService:
         self._read_lease_ttl = read_lease_ttl
         self._max_upload_bytes = max_upload_bytes
         self._cleanup_max_attempts = cleanup_max_attempts
+        self._malware_scanner = malware_scanner
 
     def _current_time(self) -> datetime:
         return _utc(self._now())
@@ -348,7 +356,9 @@ class DocumentsService:
                 "validation_error", "Processing receipt has no frozen processing list", {}, 422
             )
         pages = _metered_pages(
-            page_count=receipt.get("page_count", summary.get("page_count", summary.get("pages", 1))),
+            page_count=receipt.get(
+                "page_count", summary.get("page_count", summary.get("pages", 1))
+            ),
             image_count=summary.get("image_count", summary.get("images", 0)),
         )
         if pages < 1:
@@ -1247,7 +1257,9 @@ class DocumentsService:
             )
 
     def _file_fingerprint(self, file: DocumentUpload) -> dict[str, Any]:
-        validate_upload_security(media_kind=file.media_kind, content=file.content)
+        validate_upload_security(
+            media_kind=file.media_kind, content=file.content, scanner=self._malware_scanner
+        )
         if len(file.content) > self._max_upload_bytes:
             raise PlatformError(
                 "upload_too_large",
@@ -1262,7 +1274,17 @@ class DocumentsService:
             "media_kind": file.media_kind,
             "size_bytes": len(file.content),
             "content_hash_sha256": self._hash(file.content),
+            # Deterministic function of the payload: stable across idempotent
+            # replays. Metadata only — a hit never rejects the upload (A2).
+            "security_risk_fact": scan_prompt_injection_risk(
+                media_kind=file.media_kind, content=file.content
+            ),
         }
+
+    @staticmethod
+    def _security_degradations(info: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        fact = info.get("security_risk_fact")
+        return [fact] if fact is not None else []
 
     def _put_original(
         self, document_id: str, version_id: str, file: DocumentUpload
@@ -1475,7 +1497,7 @@ class DocumentsService:
                         replay_generation=0,
                         next_attempt_at_utc=None,
                         failure_reason=None,
-                        degradations_json=[],
+                        degradations_json=_json(self._security_degradations(info)),
                         processing_summary_json={},
                         usage_json=None,
                         ocr_low_confidence=False,
@@ -1721,7 +1743,7 @@ class DocumentsService:
                     replay_generation=0,
                     next_attempt_at_utc=None,
                     failure_reason=None,
-                    degradations_json=[],
+                    degradations_json=_json(self._security_degradations(info)),
                     processing_summary_json={},
                     usage_json=None,
                     ocr_low_confidence=False,
@@ -2242,9 +2264,7 @@ class DocumentsService:
             raw_receipt_attempt_id = (
                 receipt.attempt_id
                 if isinstance(receipt, IndexProcessingReceipt)
-                else receipt.get("attempt_id")
-                if isinstance(receipt, Mapping)
-                else None
+                else receipt.get("attempt_id") if isinstance(receipt, Mapping) else None
             )
             if (
                 not isinstance(raw_receipt_attempt_id, str)
@@ -2615,7 +2635,20 @@ class DocumentsService:
                     usage_json=usage,
                     quota_charge_status=quota_charge_status,
                     quota_charge_reason=quota_charge_reason,
-                    degradations_json=_json(receipt.get("degradations", [])),
+                    # Upload-time security facts (A2) survive the receipt
+                    # replacing the column: preserve them ahead of the
+                    # pipeline's own degradations.
+                    degradations_json=_json(
+                        [
+                            *(
+                                item
+                                for item in (job["degradations_json"] or [])
+                                if isinstance(item, Mapping)
+                                and item.get("kind") == INJECTION_RISK_KIND
+                            ),
+                            *receipt.get("degradations", []),
+                        ]
+                    ),
                     ocr_low_confidence=bool(receipt.get("ocr_low_confidence", False)),
                     notification_event_ids_json=notification_event_ids,
                     updated_at_utc=now,
@@ -2654,9 +2687,7 @@ class DocumentsService:
             raise PlatformError("validation_error", "expected_version is invalid", {}, 422)
         actor_id = system_actor or str(principal.user_id)
         endpoint = "documents.delete"
-        with (
-            self._engine.begin() if connection is None else nullcontext(connection)
-        ) as connection:
+        with self._engine.begin() if connection is None else nullcontext(connection) as connection:
             document = self._locked_document(connection, document_id)
             if document is None:
                 raise PlatformError("document_not_found", "Document was not found", {}, 404)
@@ -2961,9 +2992,10 @@ class DocumentsService:
         contributions are never touched here.
         """
 
-        rows = connection.execute(
-            text(
-                """
+        rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT d.id, d.version
                 FROM documents d
                 JOIN identity_space s ON s.id = d.space_id
@@ -2971,9 +3003,12 @@ class DocumentsService:
                   AND d.lifecycle_status != 'deleted'
                 ORDER BY d.id
                 """
-            ),
-            {"user_id": user_id},
-        ).mappings().all()
+                ),
+                {"user_id": user_id},
+            )
+            .mappings()
+            .all()
+        )
         for row in rows:
             self.delete_document(
                 principal=_AccountDeletionPrincipal(user_id),
