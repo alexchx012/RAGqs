@@ -722,6 +722,25 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
         contextual_key = settings.index.contextual_retrieval_api_key
         if contextual_key is None or not contextual_key.get_secret_value():
             raise ValueError("production contextual retrieval provider requires an API key")
+        # 判官与被评测管线模型（生成/CR/rerank）不得同族（后端设计 §8.1）。
+        # 家族清单唯一维护在评测策略层；此处延迟导入避免拉宽 config 的加载面。
+        from app.evaluation.policy import assert_judge_family_isolation
+
+        pipeline_models: dict[str, tuple[str, str | None]] = {
+            "generation": (settings.provider.name, None),
+        }
+        if settings.index.contextual_retrieval_provider != "disabled":
+            pipeline_models["contextual_retrieval"] = (
+                settings.index.contextual_retrieval_provider,
+                settings.index.contextual_retrieval_model,
+            )
+        if settings.index.reranker_provider not in {"none", "configured"}:
+            pipeline_models["reranker"] = (settings.index.reranker_provider, None)
+        assert_judge_family_isolation(
+            judge_provider=settings.evaluation.judge_provider,
+            judge_model=settings.evaluation.judge_model,
+            pipeline_models=pipeline_models,
+        )
         if settings.debug:
             raise ValueError("production debug must be disabled")
         if settings.auth.secret_key is None or not settings.auth.secret_key.get_secret_value():
