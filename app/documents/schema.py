@@ -189,6 +189,12 @@ upload_dedup_claims_table = Table(
     Column("normalized_filename", String(512), primary_key=True),
     Column("content_hash_sha256", String(64), primary_key=True),
     Column("document_id", String(128), ForeignKey("documents.id"), nullable=False),
+    Column(
+        "document_version_id",
+        String(128),
+        ForeignKey("document_versions.id"),
+        nullable=True,
+    ),
     Column("created_at_utc", DateTime(timezone=True), nullable=False),
 )
 
@@ -524,7 +530,7 @@ documents_idempotency_table = Table(
     Column("actor_id", String(64), primary_key=True),
     Column("endpoint", String(256), primary_key=True),
     Column("target_id", String(128), primary_key=True),
-    Column("idempotency_key", String(256), primary_key=True),
+    Column("idempotency_key_hash", String(64), primary_key=True),
     Column("request_fingerprint", String(128), nullable=False),
     Column("status", String(32), nullable=False),
     Column("response_json", JSON, nullable=True),
