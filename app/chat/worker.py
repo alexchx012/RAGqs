@@ -40,6 +40,7 @@ from .ports import (
     ChatProviderRequest,
     ChatRetrievalPort,
     consume_durable_revocation_commands,
+    source_conflict_contract,
 )
 from .schema import (
     chat_ab_candidate_table,
@@ -791,20 +792,17 @@ class ChatGenerationWorker:
                     effective_query,
                     (hit.snippet for hit in hits),
                 )
-                if (
-                    upgraded is None
-                    or (
-                        self._budget_meter is not None
-                        and self._budget_meter.upgrade(
-                            generation_id=generation_id,
-                            next_step_tokens=next_step_tokens,
-                            next_step_cost=self._budget_meter.estimate_cost(
-                                "chat_generation", next_step_tokens
-                            ),
-                            next_step_is_rag=True,
-                        )
-                        != upgraded
+                if upgraded is None or (
+                    self._budget_meter is not None
+                    and self._budget_meter.upgrade(
+                        generation_id=generation_id,
+                        next_step_tokens=next_step_tokens,
+                        next_step_cost=self._budget_meter.estimate_cost(
+                            "chat_generation", next_step_tokens
+                        ),
+                        next_step_is_rag=True,
                     )
+                    != upgraded
                 ):
                     break
                 upgraded = budget.upgrade_effort()
@@ -834,9 +832,7 @@ class ChatGenerationWorker:
                 )
             rewrite_reservation_id = None
             if self._budget_meter is not None:
-                rewrite_reservation_id = (
-                    f"rag:{generation_id}:rewrite-{budget.rag_calls_used}"
-                )
+                rewrite_reservation_id = f"rag:{generation_id}:rewrite-{budget.rag_calls_used}"
                 self._budget_reserve(
                     generation=generation,
                     execution_id=execution_id,
@@ -915,9 +911,7 @@ class ChatGenerationWorker:
                 visible_ids = {
                     (str(item["document_id"]), str(item["chunk_id"])) for item in citations
                 }
-                hits = tuple(
-                    hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids
-                )
+                hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
                 if not hits:
                     citations = []
         self._publish(
@@ -1056,10 +1050,7 @@ class ChatGenerationWorker:
                 effort_level=str(generation["effective_effort_level"]),
                 candidate=None if pair is None else candidate,
                 context_items=context,
-                source_conflict_contract={
-                    "required_fields": ("library", "space_id", "publication/version", "locator"),
-                    "conflict_policy": "present_each_claim_and_citation_no_system_adjudication",
-                },
+                source_conflict_contract=source_conflict_contract(),
             )
             response = self._provider_call(
                 request,

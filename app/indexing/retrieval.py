@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -39,6 +40,9 @@ from .routing import MetadataPrefilter, RuleQueryRouter
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+logger = logging.getLogger(__name__)
 
 
 def intersect_scopes(
@@ -182,9 +186,7 @@ class RAGOperationBudgetPort(Protocol):
         self, operation: str, *, estimated_tokens: int, now: datetime
     ) -> Mapping[str, Any] | None: ...
 
-    def reserve(
-        self, operation: str, *, estimated_tokens: int, now: datetime
-    ) -> float: ...
+    def reserve(self, operation: str, *, estimated_tokens: int, now: datetime) -> float: ...
 
     def reconcile(
         self, reserved: float, *, actual_tokens: int, actual_cost: float = 0.0
@@ -392,6 +394,7 @@ class RetrievalService:
         graph_reader: GraphReader | None = None,
         token_counter: TokenCounter | None = None,
         exact_match_metrics: Any = None,
+        hard_gate_alert: Any | None = None,
     ) -> None:
         if not providers:
             raise ValueError("at least one retrieval provider is required")
@@ -412,6 +415,7 @@ class RetrievalService:
         self._graph_reader = graph_reader
         self._token_counter = token_counter or _conservative_token_count
         self._exact_match_metrics = exact_match_metrics
+        self._hard_gate_alert = hard_gate_alert
 
     def open_request(self) -> RetrievalRequest:
         return RetrievalRequest(self, self._generation.acquire_reference_lease())
@@ -903,9 +907,7 @@ class RetrievalService:
             if budget is not None:
                 allowed: list[RetrievalHit] = []
                 for hit in tree_candidates:
-                    tree_notice = budget.gate(
-                        "tree", estimated_tokens=len(query), now=_utc_now()
-                    )
+                    tree_notice = budget.gate("tree", estimated_tokens=len(query), now=_utc_now())
                     if tree_notice is not None:
                         degradations.append(_budget_notice_payload(tree_notice))
                         continue
@@ -977,7 +979,9 @@ class RetrievalService:
                             # and lifecycle before quota assembly (A58/A68).
                             result = document.result
                             text = str(
-                                (result.get("text") or result.get("answer") or "") if isinstance(result, Mapping) else ""
+                                (result.get("text") or result.get("answer") or "")
+                                if isinstance(result, Mapping)
+                                else ""
                             ).strip()
                             trigger = trigger_by_document.get(str(document.document_id))
                             if text and trigger is not None:
@@ -1071,6 +1075,8 @@ class RetrievalService:
         deferred: list[RetrievalHit] = []
         used_by_space: dict[str, int] = {}
         used_total = 0
+        # 超硬闸截断不得静默：记录越限事实，组装结束后经 observability 通道告警。
+        hard_gate_breaches: list[dict[str, Any]] = []
 
         def include(hit: RetrievalHit) -> bool:
             nonlocal used_total
@@ -1082,6 +1088,13 @@ class RetrievalService:
                 space_used + tokens > selected.retrieval_context_tokens_per_space
                 or used_total + tokens > selected.retrieval_context_tokens_cap
             ):
+                if used_total + tokens > selected.retrieval_context_tokens_cap:
+                    hard_gate_breaches.append(
+                        {
+                            "space_id": hit.chunk.space_id,
+                            "would_use_total": used_total + tokens,
+                        }
+                    )
                 degradations.append(
                     {
                         "code": "retrieval_context_budget_exceeded",
@@ -1131,6 +1144,12 @@ class RetrievalService:
                 if include(hit):
                     selected_per_library[library] = selected_per_library.get(library, 0) + 1
         result_limit = selected.top_k if not library_quota_enabled else len(budgeted)
+        if hard_gate_breaches:
+            self._alert_hard_gate_exceeded(
+                cap_tokens=selected.retrieval_context_tokens_cap,
+                used_tokens=used_total,
+                breaches=hard_gate_breaches,
+            )
         return RetrievalResult(
             tuple(budgeted[:result_limit]),
             lease.generation_id,
@@ -1139,6 +1158,27 @@ class RetrievalService:
             candidate_hits,
             route.to_mapping(),
         )
+
+    def _alert_hard_gate_exceeded(
+        self,
+        *,
+        cap_tokens: int,
+        used_tokens: int,
+        breaches: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if self._hard_gate_alert is None:
+            return
+        try:
+            self._hard_gate_alert.publish_hard_gate_exceeded(
+                space_ids=[str(entry["space_id"]) for entry in breaches],
+                cap_tokens=cap_tokens,
+                used_tokens=used_tokens,
+                excess_tokens=max(int(entry["would_use_total"]) for entry in breaches) - cap_tokens,
+                dropped_hit_count=len(breaches),
+            )
+        except Exception:
+            # 告警通道故障不得中断检索主路径；截断事实仍随 degradation 记录。
+            logger.warning("retrieval hard-gate alert publish failed", exc_info=True)
 
 
 class CitationService:

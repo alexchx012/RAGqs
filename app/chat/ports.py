@@ -50,6 +50,24 @@ class ChatProviderRequest:
     source_conflict_contract: Mapping[str, Any] | None = None
 
 
+# 跨库事实冲突不由系统裁决（design §7.4④）：prompt 必须明确要求分述各出处。
+# 指令文本是端口契约的一部分；生成侧 prompt 组装必须包含它。
+SOURCE_CONFLICT_INSTRUCTION = (
+    "来源冲突时分别陈述并各自标注出处，不要合并成单一结论；"
+    "三方冲突同样不裁决；措辞中必须点明各段依据来自哪个库。"
+)
+
+
+def source_conflict_contract() -> dict[str, Any]:
+    """Canonical non-adjudicating source-conflict contract for provider prompts."""
+
+    return {
+        "required_fields": ("library", "space_id", "publication/version", "locator"),
+        "conflict_policy": "present_each_claim_and_citation_no_system_adjudication",
+        "instruction": SOURCE_CONFLICT_INSTRUCTION,
+    }
+
+
 class ChatAuthorizationPort(Protocol):
     """Re-checks the authenticated principal inside the chat mutation transaction."""
 

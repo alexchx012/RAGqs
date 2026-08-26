@@ -7,7 +7,9 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Float,
     Index,
+    Integer,
     MetaData,
     String,
     Table,
@@ -152,10 +154,68 @@ retrieval_releases_table = Table(
     Column("version", String(64), nullable=False),
     Column("profile_json", JSON, nullable=False),
     Column("acceptance_suite_json", JSON, nullable=False),
+    Column("gate_version_id", String(128), nullable=True),
+    Column("gate_judgment_json", JSON, nullable=True),
     Column("state", String(32), nullable=False),
     Column("created_at_utc", DateTime(timezone=True), nullable=False),
     CheckConstraint("state IN ('staged','released','failed')", name="ck_retrieval_releases_state"),
     UniqueConstraint("generation_id", "profile_id", "version", name="uq_retrieval_release_version"),
+)
+
+
+retrieval_release_gate_table = Table(
+    "retrieval_release_gates",
+    indexing_metadata,
+    Column("id", String(128), primary_key=True),
+    Column("version", String(64), nullable=False),
+    Column("hardware_profile_json", JSON, nullable=False),
+    Column("concurrency", Integer, nullable=False),
+    Column("effective_from_utc", DateTime(timezone=True), nullable=False),
+    Column("effective_to_utc", DateTime(timezone=True), nullable=True),
+    Column("supersedes_version_id", String(128), nullable=True),
+    Column("created_at_utc", DateTime(timezone=True), nullable=False),
+    # 注意：与 price_catalog 同模式——append-only 语义（不可 DELETE；UPDATE 仅允许
+    # 一次性 close 且其余字段逐列不变）由 0038 迁移的 DB trigger 强制，metadata
+    # 无法表达 trigger 行为，此处不虚构。开放版本唯一性由服务注册事务保证
+    # （部署侧发布，无运行时并发注册路径）。
+    CheckConstraint(
+        "effective_to_utc IS NULL OR effective_to_utc > effective_from_utc",
+        name="ck_retrieval_release_gate_interval",
+    ),
+    CheckConstraint("concurrency >= 1", name="ck_retrieval_release_gate_concurrency"),
+    UniqueConstraint("version", name="uq_retrieval_release_gate_version"),
+)
+
+
+retrieval_release_gate_metric_table = Table(
+    "retrieval_release_gate_metrics",
+    indexing_metadata,
+    Column("id", String(128), primary_key=True),
+    Column("gate_version_id", String(128), nullable=False),
+    Column("metric", String(32), nullable=False),
+    Column("direction", String(8), nullable=False),
+    Column("absolute_threshold", Float, nullable=False),
+    Column("allowed_regression", Float, nullable=False),
+    Column("min_samples", Integer, nullable=False),
+    Column("aggregation", String(16), nullable=False),
+    Column("severity", String(16), nullable=False),
+    CheckConstraint("direction IN ('above','below')", name="ck_retrieval_gate_metric_direction"),
+    CheckConstraint(
+        "absolute_threshold >= 0", name="ck_retrieval_gate_metric_threshold_nonnegative"
+    ),
+    CheckConstraint(
+        "allowed_regression >= 0 AND allowed_regression < 1",
+        name="ck_retrieval_gate_metric_regression_range",
+    ),
+    CheckConstraint("min_samples >= 1", name="ck_retrieval_gate_metric_min_samples"),
+    CheckConstraint(
+        "aggregation IN ('mean','max','p50','p95','p99','rate')",
+        name="ck_retrieval_gate_metric_aggregation",
+    ),
+    CheckConstraint(
+        "severity IN ('blocking','advisory')", name="ck_retrieval_gate_metric_severity"
+    ),
+    UniqueConstraint("gate_version_id", "metric", name="uq_retrieval_gate_metric"),
 )
 
 

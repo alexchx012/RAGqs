@@ -22,6 +22,7 @@ from app.indexing import (
     SqlAlchemyIndexingRepository,
     indexing_metadata,
 )
+from app.indexing.release_gates import RetrievalReleaseGateService
 from app.indexing.schema import (
     index_chunks_table,
     index_operations_table,
@@ -71,6 +72,52 @@ def _acceptance_suite() -> dict[str, object]:
         },
         "quality_thresholds": {"hit_at_k": 0.8, "mrr": 0.8, "ndcg": 0.8, "refusal": 0.9},
     }
+
+
+_GATE_METRICS = [
+    {
+        "metric": name,
+        "direction": "below",
+        "absolute_threshold": threshold,
+        "allowed_regression": 0.0,
+        "min_samples": 1,
+        "aggregation": aggregation,
+        "severity": "blocking",
+    }
+    for name, threshold, aggregation in (
+        ("p50_ms", 10, "p50"),
+        ("p95_ms", 20, "p95"),
+        ("p99_ms", 30, "p99"),
+        ("error_rate", 1, "rate"),
+        ("vram_mb", 10, "max"),
+    )
+] + [
+    {
+        "metric": name,
+        "direction": "above",
+        "absolute_threshold": threshold,
+        "allowed_regression": 0.0,
+        "min_samples": 1,
+        "aggregation": "mean",
+        "severity": "blocking",
+    }
+    for name, threshold in (
+        ("hit_at_k", 0.8),
+        ("mrr", 0.8),
+        ("ndcg", 0.8),
+        ("refusal", 0.9),
+    )
+]
+
+
+def _register_gate(engine) -> str:
+    gate = RetrievalReleaseGateService(engine).register(
+        version="gate_1",
+        hardware_profile={"accelerator": "test"},
+        concurrency=1,
+        metrics=_GATE_METRICS,
+    )
+    return str(gate["id"])
 
 
 def _insert_active_publication(engine) -> str:
@@ -243,6 +290,7 @@ def test_generation_activation_requires_a_released_matching_retrieval_profile() 
         generation_id=candidate.generation_id,
         profile=RetrievalProfile(config_snapshot={"analyzer": "default"}),
         acceptance_suite=_acceptance_suite(),
+        gate_version_id=_register_gate(engine),
     )
     releases.release(
         str(staged["id"]),
@@ -262,6 +310,7 @@ def test_retrieval_release_freezes_metrics_and_rejects_changed_component_binding
         generation_id=candidate.generation_id,
         profile=RetrievalProfile(config_snapshot={"analyzer": "default"}),
         acceptance_suite=_acceptance_suite(),
+        gate_version_id=_register_gate(engine),
     )
     releases.release(
         str(staged["id"]),

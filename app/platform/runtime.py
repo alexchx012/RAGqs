@@ -113,6 +113,7 @@ from app.outbox.publisher import (
     SqlAlchemyOutboxPublisher,
     SqlAlchemyPublicGraphSourceOutboxAdapter,
     SqlAlchemyQuotaOutboxEnqueueAdapter,
+    SqlAlchemyRetrievalHardGateAlertAdapter,
     SqlAlchemyStartupConfigurationAlertAdapter,
     SqlAlchemySubmissionOutboxAdapter,
 )
@@ -389,6 +390,10 @@ def build_runtime(
         SqlAlchemyStartupConfigurationAlertAdapter(outbox_publisher)
     )
     configured.setdefault("startup_configuration_alert_port", startup_configuration_alert_port)
+    retrieval_hard_gate_alert_port = configured.get("retrieval_hard_gate_alert_port") or (
+        SqlAlchemyRetrievalHardGateAlertAdapter(engine, outbox_publisher)
+    )
+    configured.setdefault("retrieval_hard_gate_alert_port", retrieval_hard_gate_alert_port)
     public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (
         SqlAlchemyPublicGraphSourceOutboxAdapter(outbox_publisher)
     )
@@ -619,6 +624,7 @@ def build_runtime(
         embedding=embedding,
         exact_match_metrics=observability_metrics,
         prefix_cache=prefix_cache,
+        hard_gate_alert=retrieval_hard_gate_alert_port,
     )
     configured.setdefault("indexing_service", indexing_service)
     if _index_configuration_staging_table_exists(engine, "index_generations"):

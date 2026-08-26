@@ -56,6 +56,7 @@ class IndexingService:
         now: Callable[[], datetime] | None = None,
         exact_match_metrics: Any | None = None,
         prefix_cache: PrefixCacheManager | None = None,
+        hard_gate_alert: Any | None = None,
     ) -> None:
         if environment == "production":
             if (
@@ -103,6 +104,7 @@ class IndexingService:
             graph_reader=self.graph,
             token_counter=token_counter,
             exact_match_metrics=exact_match_metrics,
+            hard_gate_alert=hard_gate_alert,
         )
         self.citations = (
             CitationService(
