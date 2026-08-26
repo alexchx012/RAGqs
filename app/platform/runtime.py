@@ -689,6 +689,9 @@ def build_runtime(
             version_retention_days=settings.documents.version_retention_days,
             preview_renderer=preview_renderer,
             message_citation_preview_port=message_citation_preview_port,
+            # None keeps the always-on local signature scanner (A3); an
+            # external engine is injected here per deployment.
+            malware_scanner=configured.get("malware_scanner"),
         )
     elif isinstance(documents_service, DocumentsService):
         if documents_service._lifecycle_port is None:

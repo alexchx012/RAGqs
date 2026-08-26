@@ -119,7 +119,55 @@ def upgrade() -> None:
         )
 
 
+def _idempotency_hash_copy_table() -> sa.Table:
+    metadata = MetaData()
+    return sa.Table(
+        "documents_idempotency",
+        metadata,
+        Column("actor_id", sa.String(64), nullable=False),
+        Column("endpoint", sa.String(256), nullable=False),
+        Column("target_id", sa.String(128), nullable=False),
+        Column("idempotency_key_hash", sa.String(64), nullable=False),
+        Column("request_fingerprint", sa.String(128), nullable=False),
+        Column("status", sa.String(32), nullable=False),
+        Column("response_json", JSON, nullable=True),
+        Column("created_at_utc", DateTime(timezone=True), nullable=False),
+        Column("completed_at_utc", DateTime(timezone=True), nullable=True),
+        PrimaryKeyConstraint(
+            "actor_id",
+            "endpoint",
+            "target_id",
+            "idempotency_key_hash",
+            name="pk_documents_idempotency",
+        ),
+        CheckConstraint(
+            "status IN ('reserved','completed')",
+            name="ck_documents_idempotency_status",
+        ),
+    )
+
+
 def downgrade() -> None:
     bind = op.get_bind()
     if "idempotency_key_hash" in _columns(bind, "documents_idempotency"):
-        raise RuntimeError("downgrade cannot recover plaintext idempotency keys")
+        remaining = bind.execute(
+            sa.text("SELECT COUNT(*) FROM documents_idempotency")
+        ).scalar_one()
+        if remaining:
+            # Hashed keys cannot be turned back into plaintext.
+            raise RuntimeError("downgrade cannot recover plaintext idempotency keys")
+        # Empty table: restore the pre-hash plaintext shape so a fresh
+        # database can still roll all the way back to base.
+        with op.batch_alter_table(
+            "documents_idempotency",
+            recreate="always",
+            copy_from=_idempotency_hash_copy_table(),
+        ) as batch:
+            batch.drop_column("idempotency_key_hash")
+            batch.add_column(
+                sa.Column("idempotency_key", sa.String(length=256), nullable=False)
+            )
+            batch.create_primary_key(
+                "pk_documents_idempotency",
+                ["actor_id", "endpoint", "target_id", "idempotency_key"],
+            )
