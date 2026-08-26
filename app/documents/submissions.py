@@ -335,6 +335,10 @@ class SubmissionService:
                     object_manifest_json={
                         "object_key": object_key,
                         "size_bytes": len(file.content),
+                        # Carried to the ingestion job when the submission is
+                        # approved: the processing record keeps the upload-time
+                        # security fact (A10).
+                        "security_risk_fact": info["security_risk_fact"],
                     },
                     private_object_cleanup_requested_at_utc=None,
                     private_object_cleaned_at_utc=None,
@@ -743,6 +747,9 @@ class SubmissionService:
                         key=key,
                         fingerprint=fingerprint,
                     )
+                submission_risk_fact = (submission["object_manifest_json"] or {}).get(
+                    "security_risk_fact"
+                )
                 connection.execute(
                     documents_table.insert().values(
                         id=document_id,
@@ -804,7 +811,9 @@ class SubmissionService:
                         replay_generation=0,
                         next_attempt_at_utc=None,
                         failure_reason=None,
-                        degradations_json=[],
+                        degradations_json=(
+                            [submission_risk_fact] if submission_risk_fact is not None else []
+                        ),
                         processing_summary_json={},
                         usage_json=None,
                         ocr_low_confidence=False,
