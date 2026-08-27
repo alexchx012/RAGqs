@@ -204,7 +204,7 @@ chat_generation_execution_table = Table(
     *_timestamps(),
     CheckConstraint(
         "status IN ('queued','running','retry_wait','expired',"
-        "'completed','failed','cancelled')",
+        "'provider_reconciling','completed','failed','cancelled')",
         name="ck_chat_generation_execution_status",
     ),
     UniqueConstraint(

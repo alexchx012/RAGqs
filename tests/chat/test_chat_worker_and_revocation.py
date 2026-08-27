@@ -255,6 +255,135 @@ def test_expired_execution_lease_recovers_and_respects_physical_cap() -> None:
     assert frames[-1][0] == "done"
 
 
+def test_expired_execution_recovery_inherits_latest_checkpoint() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    principal = env["identity"].authenticate_access_token(token)
+    conversation_id = env["client"].post(
+        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+    result = _ask(env, principal, conversation_id, key="checkpoint-recovery-1")
+    checkpoint = {
+        "phase": "retrieval_complete",
+        "round_index": 1,
+        "completed_operations": ["retrieval:0"],
+        "retrieval_scope": {"index_generation": "idx-7"},
+    }
+
+    with env["engine"].begin() as connection:
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(chat_generation_execution_table.c.generation_id == result.generation_id)
+            .values(
+                status="running",
+                lease_expires_at_utc=NOW - timedelta(seconds=1),
+                checkpoint_version=3,
+                checkpoint_json=checkpoint,
+            )
+        )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    assert worker.run_maintenance()["executions_recovered"] == 1
+
+    with env["engine"].connect() as connection:
+        executions = (
+            connection.execute(
+                select(chat_generation_execution_table)
+                .where(chat_generation_execution_table.c.generation_id == result.generation_id)
+                .order_by(chat_generation_execution_table.c.execution_attempt_number)
+            )
+            .mappings()
+            .all()
+        )
+
+    assert executions[-1]["checkpoint_version"] == 3
+    assert executions[-1]["checkpoint_json"] == checkpoint
+
+
+def test_worker_resumes_after_retrieval_checkpoint_without_duplicate_stage_event() -> None:
+    retrieval = RecordingChatRetrievalPort()
+    env = build_test_env(retrieval=retrieval, outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    principal = env["identity"].authenticate_access_token(token)
+    conversation_id = env["client"].post(
+        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+    result = _ask(env, principal, conversation_id, key="checkpoint-recovery-2")
+    checkpoint = {
+        "phase": "retrieval_complete",
+        "round_index": 1,
+        "completed_operations": ["retrieval:0"],
+        "retrieval_scope": {},
+    }
+    with env["engine"].begin() as connection:
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(chat_generation_execution_table.c.generation_id == result.generation_id)
+            .values(
+                status="queued",
+                checkpoint_version=1,
+                checkpoint_json=checkpoint,
+                next_attempt_at_utc=NOW,
+            )
+        )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker.run_once()
+
+    assert len(retrieval.searches) == 1
+    with env["engine"].connect() as connection:
+        phases = [
+            row["data_json"]["phase"]
+            for row in connection.execute(
+                select(chat_generation_event_table)
+                .where(
+                    chat_generation_event_table.c.generation_id == result.generation_id,
+                    chat_generation_event_table.c.event_type == "stage",
+                )
+                .order_by(chat_generation_event_table.c.event_seq)
+            ).mappings()
+            if "phase" in row["data_json"]
+        ]
+    assert phases.count("retrieval_complete") == 0
+
+
+def test_provider_reconciling_fails_only_after_generation_deadline() -> None:
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    principal = env["identity"].authenticate_access_token(token)
+    conversation_id = env["client"].post(
+        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+    result = _ask(env, principal, conversation_id, key="reconciling-deadline-1")
+    with env["engine"].begin() as connection:
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(chat_generation_execution_table.c.generation_id == result.generation_id)
+            .values(status="provider_reconciling")
+        )
+        connection.execute(
+            update(chat_generation_table)
+            .where(chat_generation_table.c.id == result.generation_id)
+            .values(absolute_deadline_at_utc=NOW - timedelta(seconds=1))
+        )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker.run_maintenance()
+
+    with env["engine"].connect() as connection:
+        generation = connection.execute(
+            select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
+        ).mappings().one()
+        execution = connection.execute(
+            select(chat_generation_execution_table).where(
+                chat_generation_execution_table.c.generation_id == result.generation_id
+            )
+        ).mappings().one()
+    assert generation["status"] == "failed"
+    assert generation["last_error_code"] == "provider_result_unknown"
+    assert execution["status"] == "failed"
+
+
 def test_recovery_skips_execution_lost_to_another_maintenance_worker() -> None:
     env = build_test_env()
     worker = env["runtime"].resolve("chat_generation_worker")
