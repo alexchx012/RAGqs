@@ -1,6 +1,6 @@
 # RAGqs Core Platform
 
-这是 RAGqs 新后端的绿地平台基座。HTTP 只发布 `/v1` 路径；PostgreSQL 与 S3 兼容对象存储是事实源，索引与缓存由后续领域服务作为可重建派生数据接入。
+这是 RAGqs 新后端的绿地平台基座。同一 FastAPI 端口发布 `/v1` API、`/static/*` 前端构建产物和 SPA 路由 fallback；PostgreSQL 与 S3 兼容对象存储是事实源，索引与缓存由后续领域服务作为可重建派生数据接入。
 
 ## 配置
 
@@ -24,7 +24,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 9900
 
 上述 development 配置要求 S3 兼容对象存储在该 endpoint 可用；完整环境变量和生产约束见 `.env.example`。
 
-健康检查位于 `http://127.0.0.1:9900/v1/health`，OpenAPI 文档位于 `/v1/docs`。
+浏览器入口位于 `http://127.0.0.1:9900/`，健康检查位于 `/v1/health`，OpenAPI 文档位于 `/v1/docs`。发布包未包含 `static/index.html` 时，应用保持纯 API 模式并正常启动。
 
 ## 验证
 
