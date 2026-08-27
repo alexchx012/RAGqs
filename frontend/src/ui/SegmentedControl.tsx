@@ -69,15 +69,16 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
       onKeyDown={onKeyDown}
       className="relative flex h-8 items-center rounded-[var(--radius-buttons)] bg-mist-gray p-1"
     >
-      <span
-        aria-hidden="true"
-        className="absolute top-1 bottom-1 left-1 rounded-[var(--radius-buttons)] bg-paper-white shadow-[var(--shadow-subtle)] transition-[left,width] duration-[var(--duration-base)] ease-[var(--ease-in-out)]"
-        style={
-          thumb === null
-            ? undefined
-            : { left: `${thumb.left}px`, width: `${thumb.width}px`, transform: 'none' }
-        }
-      />
+      {/* 首测前不挂载滑块：无条件渲染会落在 left-1（第一段）起点，测量后的首次定位会
+          播放 left/width 过渡——进入模块时表现为「滑块从第一格滑向选中段」。条件挂载让
+          滑块以正确位置首次出现（新元素无过渡起点，直接落位），后续切换仍播滑动过渡。 */}
+      {thumb !== null && (
+        <span
+          aria-hidden="true"
+          className="absolute top-1 bottom-1 left-1 rounded-[var(--radius-buttons)] bg-paper-white shadow-[var(--shadow-subtle)] transition-[left,width] duration-[var(--duration-base)] ease-[var(--ease-in-out)]"
+          style={{ left: `${thumb.left}px`, width: `${thumb.width}px`, transform: 'none' }}
+        />
+      )}
       {options.map((option, index) => {
         const active = index === selectedIndex;
         return (

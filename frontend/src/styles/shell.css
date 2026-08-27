@@ -46,20 +46,22 @@
   pointer-events: none;
 }
 
-/* 第 4 步：下级菜单右栏渐变出现 opacity 0→1 + 右移 8px→0，250ms --duration-base --ease-out */
-@keyframes drill-content-enter {
+/* 下钻右栏内容进入（§5.2 左栏换选同语言）：FLIP 克隆自右栏行位飞向左栏标题槽途中，
+   越过内容区左边界（飞行起始 ~100ms）后，右栏新内容自下方 8px 淡入上移；
+   100ms 延迟 + backwards 填充，延迟期间保持透明，不与尚在原位的克隆交叠。 */
+@keyframes drill-content-rise {
   from {
     opacity: 0;
-    transform: translateX(-8px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
   }
 }
 
-.drill-content-enter {
-  animation: drill-content-enter var(--duration-base) var(--ease-out);
+.drill-content-rise {
+  animation: drill-content-rise var(--duration-base) var(--ease-out) 100ms backwards;
 }
 
 /* 反向（返回）：原右栏内容重新进入（同第 4 步镜像，缓动 --ease-in-out） */
@@ -100,30 +102,40 @@
 }
 
 /* 第 3 步：被点击项名称 FLIP 位移到左栏第一位，400ms --duration-slow --ease-in-out。
-   位置与字号由组件内联 style 驱动，这里只给过渡声明。 */
+   元素静态定位在终点槽位，起点 transform 由组件注入 CSS 变量 --flip-from，
+   挂载即播 keyframes（合成器动画，无 JS 回调、无逐帧重排）。 */
 .drill-flip-clone {
   position: absolute;
   z-index: 30;
   margin: 0;
   pointer-events: none;
   white-space: nowrap;
-  transition:
-    top var(--duration-slow) var(--ease-in-out),
-    left var(--duration-slow) var(--ease-in-out),
-    font-size var(--duration-slow) var(--ease-in-out),
-    font-weight var(--duration-slow) var(--ease-in-out);
+  transform-origin: left top;
+  animation: drill-flip-move var(--duration-slow) var(--ease-in-out) both;
 }
 
-/* 同层切换（左栏换选）：右栏内容交叉淡入淡出 --duration-fast（§5.2） */
+@keyframes drill-flip-move {
+  from {
+    transform: var(--flip-from, translate(0, 0) scale(1));
+  }
+  to {
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+/* 同层切换内容进入（§5.2 左栏换选）：序列为先旧内容原地淡出（drill-exit 150ms --duration-fast），
+   结束后本动画再起——新内容自下方 8px 淡入上移，250ms --duration-base --ease-out（先出后进不交叠）。 */
 @keyframes drill-switch {
   from {
     opacity: 0;
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
+    transform: translateY(0);
   }
 }
 
 .drill-switch {
-  animation: drill-switch var(--duration-fast) var(--ease-in-out);
+  animation: drill-switch var(--duration-base) var(--ease-out);
 }
