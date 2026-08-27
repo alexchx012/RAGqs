@@ -27,8 +27,8 @@ frontend/test-results/
 CLAUDE.md
 .kimi-code/
 AGENTS.md.bak
-# >>> Comet managed project state >>>
-/.comet/
-# <<< Comet managed project state <<<
 data/user-deletion-archives/
 /.opencode/
+# >>> Comet managed project state >>>
+!/.comet/
+.comet/*
