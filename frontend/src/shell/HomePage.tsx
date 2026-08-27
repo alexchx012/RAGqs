@@ -287,7 +287,7 @@ function ChatHomeInner({
         </div>
         <ChatMenuButton onOpen={() => onDrawerOpenChange(true)} />
         <main className="flex min-h-0 flex-1 flex-col">
-          <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col px-6">
+          <div className="relative mx-auto flex w-full max-w-[760px] flex-1 flex-col px-6">
             {state.actionNotice !== null && (
               <div className="chat-notice-enter mt-4 flex items-center gap-2 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2">
                 <p className="text-[15px] text-slate-gray">
@@ -297,10 +297,14 @@ function ChatHomeInner({
                 </p>
               </div>
             )}
+            {/* 优化输入失败轻提示：悬浮覆盖在对话上层（不推挤布局），w-fit 居中，3s 后淡出 */}
             {enhanceFailedSeq > 0 && (
-              <div className="chat-notice-enter mt-4">
+              <div
+                key={enhanceFailedSeq}
+                className="chat-notice-enter pointer-events-none absolute inset-x-0 top-4 z-20 flex justify-center"
+              >
                 <HeaderNotice
-                  key={enhanceFailedSeq}
+                  intent="danger"
                   message={copy.chat.composer.enhanceFailed}
                   onDismiss={() => setEnhanceFailedSeq(0)}
                 />
