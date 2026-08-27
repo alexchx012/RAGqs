@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from app.chat.models import ChatProviderResponse
 from app.chat.ports import ChatProviderRequest
+from app.chat.schema import chat_generation_execution_table, chat_generation_table
 
-from .conftest import build_test_env, provision_and_login, sse_frames
+from .conftest import build_test_env, provision_and_login
 
 
 class TransportDroppingProvider:
@@ -118,8 +121,6 @@ def test_provider_result_unknown_emits_parseable_error_event() -> None:
     provider = TransportDroppingProvider()
     env = build_test_env(provider=provider)
     token, _ = provision_and_login(env["identity"], "alice")
-    headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
-
     from app.chat.models import AskRequest
 
     principal = env["identity"].authenticate_access_token(token)
@@ -138,16 +139,14 @@ def test_provider_result_unknown_emits_parseable_error_event() -> None:
     env["runtime"].resolve("chat_generation_worker").run_once()
     assert provider.calls == 1
 
-    import json
-
-    stream = env["client"].get(
-        f"/v1/generations/{result.generation_id}/events",
-        headers=headers,
-    )
-    assert stream.status_code == 200
-    frames = sse_frames(stream.text)
-    error_frames = [frame for frame in frames if frame[0] == "error"]
-    assert len(error_frames) == 1
-    data = json.loads(error_frames[0][2])
-    assert data["code"] == "provider_result_unknown"
-    assert data["message"]
+    with env["engine"].connect() as connection:
+        generation = connection.execute(
+            select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
+        ).mappings().one()
+        execution = connection.execute(
+            select(chat_generation_execution_table).where(
+                chat_generation_execution_table.c.generation_id == result.generation_id
+            )
+        ).mappings().one()
+    assert generation["status"] == "running"
+    assert execution["status"] == "provider_reconciling"

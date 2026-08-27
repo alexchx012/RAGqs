@@ -111,13 +111,14 @@ class ChatGenerationWorker:
     # ------------------------------------------------------------- maintenance
 
     def run_maintenance(self) -> dict[str, Any]:
-        """Reap disconnect grace, recover expired leases, expire A/B pairs."""
+        """Reap disconnect grace, recover leases, reconcile deadlines, expire A/B pairs."""
 
         with self._engine.begin() as connection:
             now = self._now(connection)
             consumed = consume_durable_revocation_commands(connection, now=now)
             self._reap_disconnect_grace(connection, now=now)
             recovered = self._recover_expired_executions(connection, now=now)
+            self._expire_provider_reconciling_executions(connection, now=now)
             expired_pairs = self._expire_past_deadline_pairs(connection, now=now)
         return {
             "revocation_commands_consumed": consumed,
@@ -198,6 +199,8 @@ class ChatGenerationWorker:
                     chat_generation_execution_table.c.execution_attempt_number,
                     chat_generation_execution_table.c.fencing_token,
                     chat_generation_execution_table.c.lease_expires_at_utc,
+                    chat_generation_execution_table.c.checkpoint_version,
+                    chat_generation_execution_table.c.checkpoint_json,
                 ).where(
                     chat_generation_execution_table.c.status == "running",
                 )
@@ -266,8 +269,8 @@ class ChatGenerationWorker:
                     lease_expires_at_utc=None,
                     heartbeat_at_utc=None,
                     fencing_token=int(row["fencing_token"]) + 1,
-                    checkpoint_version=0,
-                    checkpoint_json=None,
+                    checkpoint_version=int(row["checkpoint_version"] or 0),
+                    checkpoint_json=row["checkpoint_json"],
                     next_attempt_at_utc=now,
                     last_error_classification=None,
                     created_at_utc=now,
@@ -276,6 +279,82 @@ class ChatGenerationWorker:
             )
             recovered += 1
         return recovered
+
+    def _expire_provider_reconciling_executions(
+        self, connection: Connection, *, now: datetime
+    ) -> int:
+        """Terminalize unknown provider results only after the generation deadline."""
+
+        rows = (
+            connection.execute(
+                select(
+                    chat_generation_execution_table.c.execution_id,
+                    chat_generation_execution_table.c.generation_id,
+                ).where(
+                    chat_generation_execution_table.c.status == "provider_reconciling",
+                )
+            )
+            .mappings()
+            .all()
+        )
+        expired = 0
+        for row in rows:
+            generation_id = str(row["generation_id"])
+            generation = self._lock_generation(connection, generation_id=generation_id)
+            if generation is None or str(generation["status"]) != "running":
+                continue
+            if _utc(generation["absolute_deadline_at_utc"]) > now:
+                continue
+            updated = connection.execute(
+                update(chat_generation_table)
+                .where(
+                    chat_generation_table.c.id == generation_id,
+                    chat_generation_table.c.status == "running",
+                )
+                .values(
+                    status="failed",
+                    last_error_code="provider_result_unknown",
+                    updated_at_utc=now,
+                )
+            ).rowcount
+            if updated != 1:
+                continue
+            connection.execute(
+                update(chat_message_table)
+                .where(chat_message_table.c.generation_id == generation_id)
+                .values(status="failed", updated_at_utc=now)
+            )
+            connection.execute(
+                update(chat_generation_execution_table)
+                .where(
+                    chat_generation_execution_table.c.execution_id == row["execution_id"],
+                    chat_generation_execution_table.c.generation_id == generation_id,
+                    chat_generation_execution_table.c.status == "provider_reconciling",
+                )
+                .values(
+                    status="failed",
+                    lease_owner=None,
+                    lease_expires_at_utc=None,
+                    checkpoint_json=None,
+                    last_error_classification="provider_result_unknown",
+                    updated_at_utc=now,
+                )
+            )
+            self._discard_unfinished_ab_pair(connection, generation_id=generation_id, now=now)
+            self._append_terminal(
+                connection,
+                generation_id=generation_id,
+                event_type="error",
+                data={
+                    "code": "provider_result_unknown",
+                    "message": "The provider result could not be reconciled before the deadline",
+                    "details": {},
+                    "request_id": "req_system",
+                },
+                now=now,
+            )
+            expired += 1
+        return expired
 
     def _terminalize_unrecoverable(
         self, connection: Connection, *, generation_id: str, now: datetime
@@ -559,10 +638,14 @@ class ChatGenerationWorker:
         control_version: int,
         fencing_token: int,
     ) -> None:
+        checkpoint = self._load_checkpoint(execution_id=execution_id)
         profile_id = str(generation["retrieval_profile_id"])
         profile_version = str(generation["retrieval_profile_version"])
         effort = str(generation["effective_effort_level"])
-        budget = GenerationBudget(effort_level=effort)
+        budget = GenerationBudget.from_checkpoint(
+            effort,
+            checkpoint.get("budget", checkpoint) if checkpoint else None,
+        )
         budget_meter_snapshot = None
         rag_budget_meter = None
         if self._budget_meter is not None:
@@ -578,7 +661,11 @@ class ChatGenerationWorker:
             )
         hits: tuple[RetrievalHitOutcome, ...] = ()
 
-        round_index = 0
+        round_index = int(checkpoint.get("round_index", 0)) if checkpoint else 0
+        skip_retrieval_events = bool(
+            checkpoint and checkpoint.get("phase") == "retrieval_complete"
+        )
+        citations: list[Mapping[str, Any]] = []
         while True:
             if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
                 # Fail atomically through _fail_execution before any retrieval,
@@ -679,15 +766,16 @@ class ChatGenerationWorker:
                     actual_cost=Decimal("0"),
                 )
             hits = outcome.hits
-            self._emit_stage(
-                generation_id=generation_id,
-                execution_id=execution_id,
-                fencing_token=fencing_token,
-                control_version=control_version,
-                phase="retrieval_routed",
-                generation=generation,
-                detail={"route": dict(outcome.route_output or {"kind": "no_rewrite"})},
-            )
+            if not skip_retrieval_events:
+                self._emit_stage(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    phase="retrieval_routed",
+                    generation=generation,
+                    detail={"route": dict(outcome.route_output or {"kind": "no_rewrite"})},
+                )
             hits, missing_identities = select_budget_candidates(
                 hits,
                 limit=(
@@ -714,6 +802,24 @@ class ChatGenerationWorker:
                 )
             citations = self._resolve_citations(hits, generation)
             if len(citations) == len(hits):
+                if not self._persist_checkpoint(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    checkpoint={
+                        "phase": "retrieval_complete",
+                        "round_index": round_index,
+                        "completed_operations": [f"retrieval:{round_index}"],
+                        "retrieval_scope": {
+                            "profile_id": profile_id,
+                            "profile_version": profile_version,
+                        },
+                        "query_config_version": profile_version,
+                        "budget": budget.to_checkpoint(),
+                    },
+                ):
+                    return
                 break
             visible_ids = {(str(item["document_id"]), str(item["chunk_id"])) for item in citations}
             hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
@@ -724,6 +830,7 @@ class ChatGenerationWorker:
                 citations = []
                 break
             round_index += 1
+            skip_retrieval_events = False
 
         # Generation with the bounded self-evaluation rewrite loop (A6):
         # quick skips the evaluation entirely; think/deep re-run retrieval
@@ -868,6 +975,38 @@ class ChatGenerationWorker:
                 )
                 if not hits:
                     citations = []
+            if not self._persist_checkpoint(
+                generation_id=generation_id,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                checkpoint={
+                    "phase": "retrieval_complete",
+                    "round_index": budget.rag_calls_used,
+                    "completed_operations": [f"rewrite:{budget.rag_calls_used}"],
+                    "retrieval_scope": {
+                        "profile_id": profile_id,
+                        "profile_version": profile_version,
+                    },
+                    "query_config_version": profile_version,
+                    "budget": budget.to_checkpoint(),
+                },
+            ):
+                return
+        if not self._persist_checkpoint(
+            generation_id=generation_id,
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+            checkpoint={
+                "phase": "generation_ready",
+                "round_index": budget.rag_calls_used,
+                "completed_operations": ["generation_candidates_ready"],
+                "query_config_version": profile_version,
+                "budget": budget.to_checkpoint(),
+            },
+        ):
+            return
         self._publish(
             generation=generation,
             execution_id=execution_id,
@@ -934,6 +1073,54 @@ class ChatGenerationWorker:
                 now=self._now(connection),
             )
             return False
+
+    def _load_checkpoint(self, *, execution_id: str) -> dict[str, Any]:
+        with self._engine.connect() as connection:
+            value = connection.execute(
+                select(chat_generation_execution_table.c.checkpoint_json).where(
+                    chat_generation_execution_table.c.execution_id == execution_id
+                )
+            ).scalar_one_or_none()
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    def _persist_checkpoint(
+        self,
+        *,
+        generation_id: str,
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        checkpoint: Mapping[str, Any],
+    ) -> bool:
+        """Persist one fenced, monotonic stage checkpoint."""
+
+        with self._engine.begin() as connection:
+            now = self._now(connection)
+            current_generation = (
+                select(chat_generation_table.c.id)
+                .where(
+                    chat_generation_table.c.id == generation_id,
+                    chat_generation_table.c.control_version == control_version,
+                    chat_generation_table.c.status == "running",
+                )
+                .exists()
+            )
+            updated = connection.execute(
+                update(chat_generation_execution_table)
+                .where(
+                    chat_generation_execution_table.c.execution_id == execution_id,
+                    chat_generation_execution_table.c.generation_id == generation_id,
+                    chat_generation_execution_table.c.status == "running",
+                    chat_generation_execution_table.c.fencing_token == fencing_token,
+                    current_generation,
+                )
+                .values(
+                    checkpoint_version=chat_generation_execution_table.c.checkpoint_version + 1,
+                    checkpoint_json=dict(checkpoint),
+                    updated_at_utc=now,
+                )
+            ).rowcount
+        return updated == 1
 
     def _resolve_citations(
         self,
@@ -1210,6 +1397,8 @@ class ChatGenerationWorker:
             measurement=measurement,
             ownership=ownership,
             result="succeeded",
+            provider_request_id=getattr(response, "provider_request_id", None),
+            started_at_utc=started_at,
         )
         if self._budget_meter is not None:
             actual_tokens = (
@@ -1393,7 +1582,7 @@ class ChatGenerationWorker:
             connection.execute(
                 update(chat_generation_execution_table)
                 .where(chat_generation_execution_table.c.execution_id == execution_id)
-                .values(status="completed", updated_at_utc=now)
+                .values(status="completed", checkpoint_json=None, updated_at_utc=now)
             )
             self._append_terminal(
                 connection,
@@ -1569,6 +1758,21 @@ class ChatGenerationWorker:
                 return
             if str(generation["status"]) != "running":
                 return
+            if error.code == "provider_result_unknown":
+                connection.execute(
+                    update(chat_generation_execution_table)
+                    .where(
+                        chat_generation_execution_table.c.execution_id == execution_id,
+                        chat_generation_execution_table.c.generation_id == generation_id,
+                        chat_generation_execution_table.c.status == "running",
+                    )
+                    .values(
+                        status="provider_reconciling",
+                        last_error_classification=error.code,
+                        updated_at_utc=now,
+                    )
+                )
+                return
             connection.execute(
                 update(chat_generation_table)
                 .where(chat_generation_table.c.id == generation_id)
@@ -1589,6 +1793,7 @@ class ChatGenerationWorker:
                 .values(
                     status="failed",
                     last_error_classification=error.code,
+                    checkpoint_json=None,
                     updated_at_utc=now,
                 )
             )
