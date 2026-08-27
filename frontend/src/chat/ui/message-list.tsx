@@ -106,7 +106,7 @@ export function MessageList({
 
       {!isEmpty && (
         <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="flex flex-col gap-6 px-6">
+          <div className="flex flex-col gap-6 px-6 py-6">
             {messages.map((message) =>
               message.role === 'user' ? (
                 <UserBubble key={message.id} content={message.content} createdAt={message.created_at} />

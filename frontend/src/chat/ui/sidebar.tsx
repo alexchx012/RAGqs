@@ -2,7 +2,7 @@
  * 侧边栏（共用基座 §3.1–§3.2；spec §2）。
  * 桌面 ≥768px 常驻（宽 280px fog-white 底 + 右侧 1px hairline）；窄屏 <768px 收为滑出抽屉
  * （280px 自左滑入 + 24% 墨色遮罩，Esc/点遮罩/选中会话后关闭）。
- * 自上而下：顶部工具行（搜索 + 新建会话 filled pill）、会话列表、底部头像区（64px，按角色开抽屉）。
+ * 自上而下：顶部工具行（搜索 + 新建会话 filled pill）、会话列表、底部头像区（内嵌 12px 圆角卡片，hover 选中态，按角色开抽屉）。
  */
 
 import { Menu, Plus } from 'lucide-react';
@@ -112,12 +112,14 @@ function SidebarContent({
         type="button"
         onClick={onOpenDrawer}
         aria-label={copy.shell.home.openDrawerAria}
-        className="flex h-16 shrink-0 items-center gap-3 border-t border-hairline px-3 text-left transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
+        className="chat-sidebar-footer-shadow shrink-0 border-t border-hairline bg-fog-white p-2 text-left"
       >
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-mist-gray text-body font-w480 text-ink-black">
-          {user?.display_name.slice(0, 2) ?? ''}
+        <span className="flex h-14 w-full items-center gap-3 rounded-[var(--radius-images)] px-2 transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-mist-gray text-body font-w480 text-ink-black">
+            {user?.display_name.slice(0, 2) ?? ''}
+          </span>
+          <span className="truncate text-body font-w480 text-ink-black">{user?.display_name}</span>
         </span>
-        <span className="truncate text-body font-w480 text-ink-black">{user?.display_name}</span>
       </button>
     </>
   );

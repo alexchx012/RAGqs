@@ -178,7 +178,7 @@ export function AssistantMessage({
           {notices.map((notice, index) => (
             <div
               key={index}
-              className="chat-notice-enter flex items-center gap-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2"
+              className="chat-notice-enter flex w-fit items-center gap-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2"
             >
               <Info aria-hidden="true" className="h-4 w-4 shrink-0 text-slate-gray" />
               <p className="text-[15px] text-slate-gray">{noticeText(notice)}</p>
