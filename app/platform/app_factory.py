@@ -5,11 +5,16 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from time import perf_counter
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
+from starlette.routing import Match
+from starlette.types import Scope
 
 from app.api.v1 import router as v1_router
 from app.identity.service import IdentityAccessService
@@ -25,6 +30,53 @@ from .observability import ObservabilityMetricsError, ObservabilitySample, sampl
 from .runtime import PlatformRuntime, build_runtime
 
 logger = logging.getLogger(__name__)
+
+_STATIC_DIRECTORY = Path(__file__).resolve().parents[2] / "static"
+_SPA_RESERVED_PATHS = ("/v1", "/static")
+
+
+class _SpaFallbackRoute(APIRoute):
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        path = scope.get("path", "")
+        if _is_spa_reserved_path(path):
+            return Match.NONE, {}
+        return super().matches(scope)
+
+
+def _is_spa_reserved_path(path: str) -> bool:
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in _SPA_RESERVED_PATHS)
+
+
+def _static_spa_route_template(path: str, method: str, *, installed: bool) -> str | None:
+    if not installed:
+        return None
+    if path == "/static" or path.startswith("/static/"):
+        return "/static"
+    if method == "GET" and not _is_spa_reserved_path(path):
+        return "/{full_path:path}"
+    return None
+
+
+def _install_static_spa(app: FastAPI) -> bool:
+    index_file = _STATIC_DIRECTORY / "index.html"
+    if not _STATIC_DIRECTORY.is_dir() or not index_file.is_file():
+        return False
+
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIRECTORY)), name="static")
+
+    async def serve_spa(full_path: str) -> FileResponse:
+        del full_path
+        return FileResponse(index_file)
+
+    app.router.add_api_route(
+        "/{full_path:path}",
+        serve_spa,
+        methods=["GET"],
+        include_in_schema=False,
+        name="spa-fallback",
+        route_class_override=_SpaFallbackRoute,
+    )
+    return True
 
 
 def create_platform_app(
@@ -85,6 +137,7 @@ def create_platform_app(
     app.state.platform_runtime = runtime
     register_exception_handlers(app)
     app.include_router(v1_router, prefix="/v1")
+    static_spa_installed = _install_static_spa(app)
     metrics = runtime.resolve("observability_metrics")
     configure_route_templates = getattr(metrics, "configure_route_templates", None)
     route_template_by_route_id: dict[int, str] = {}
@@ -142,9 +195,15 @@ def create_platform_app(
                 if metrics is not None:
                     status_code = response.status_code if response is not None else 500
                     matched_route = request.scope.get("route")
-                    route = route_template_by_route_id.get(
-                        id(matched_route), getattr(matched_route, "path", "other")
+                    route = _static_spa_route_template(
+                        request.url.path,
+                        request.method,
+                        installed=static_spa_installed,
                     )
+                    if route is None:
+                        route = route_template_by_route_id.get(
+                            id(matched_route), getattr(matched_route, "path", "other")
+                        )
                     outcome_class = _outcome_class(status_code)
                     selected, sample_weight = (
                         sample_success(context.request_id, metrics.success_sample_rate)
