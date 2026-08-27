@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-revision: str = "0039_merge_chat_recovery_and_release_gate"
+revision: str = "0039_chat_release_merge"
 down_revision: tuple[str, str] = (
     "0035_chat_generation_reconciling",
     "0038_retrieval_release_gate",

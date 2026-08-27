@@ -10,6 +10,9 @@ from sqlalchemy import create_engine, inspect
 
 from alembic import command
 from alembic.config import Config
+from app.chat.schema import chat_metadata
+from app.documents.schema import documents_metadata
+from app.indexing.schema import indexing_metadata
 
 
 def _config(database_url: str) -> Config:
@@ -198,6 +201,12 @@ def _create_legacy_occurrences_table(database_url: str) -> None:
     )
     engine = create_engine(database_url, future=True)
     legacy.create_all(engine)
+    # A real 0033 database went through 0012/0013/0016, whose create_all owns
+    # the documents/indexing/chat domain tables; the migrations from 0034 to
+    # head inspect or alter them.
+    documents_metadata.create_all(engine)
+    indexing_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
     with engine.begin() as connection:
         _insert_occurrence(connection, "o0", "2026-08-20 02:00:00", "executed")
     engine.dispose()
