@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from fastapi.testclient import TestClient
 from retention_helpers import (
@@ -17,15 +17,10 @@ from sqlalchemy import select
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata, documents_table, ingestion_jobs_table
 from app.identity.schema import identity_metadata
-from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 from app.indexing.schema import indexing_metadata
 from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
-from app.platform.database import (
-    core_metadata,
-    platform_audit_table,
-    platform_observability_sample_table,
-)
+from app.platform.database import core_metadata, platform_audit_table
 from app.platform.runtime import build_runtime
 from app.retention.schema import retention_metadata
 from app.usage.schema import usage_metadata
@@ -107,7 +102,7 @@ def test_ops_dashboard_and_operations_shapes() -> None:
             assert isinstance(pack["cards"], list)
         operations = client.get("/v1/metrics/operations?window=today", headers=headers)
         assert operations.status_code == 200
-        assert len(operations.json()["cards"]) == 4
+        assert len(operations.json()["cards"]) == 3
 
 
 def test_admin_dashboard_is_read_only_and_admin_jobs_have_no_actions() -> None:
@@ -300,57 +295,26 @@ def _standalone_app():
     return configured, engine, runtime, identity
 
 
-def test_operations_sparse_exact_match_card_contract() -> None:
+def test_operations_returns_exactly_three_designed_cards() -> None:
     configured, engine, runtime, identity = _standalone_app()
     ops = provision_user(identity, "ops", "ops")
-    now = datetime.now(UTC)
-    with engine.begin() as connection:
-        for age_days, weight in ((1, 1.0), (2, 3.0)):
-            observed = now - timedelta(days=age_days)
-            connection.execute(
-                platform_observability_sample_table.insert().values(
-                    observed_at_utc=observed,
-                    route_template=SPARSE_EXACT_MATCH_ROUTE,
-                    method="POST",
-                    outcome_class="success",
-                    status_family="2xx",
-                    latency_ms=0,
-                    sample_weight=weight,
-                    retention_days=30,
-                    expires_at_utc=observed + timedelta(days=30),
-                )
-            )
-        connection.execute(
-            platform_observability_sample_table.insert().values(
-                observed_at_utc=now - timedelta(days=1),
-                route_template="/v1/health",
-                method="GET",
-                outcome_class="success",
-                status_family="2xx",
-                latency_ms=1,
-                sample_weight=9.0,
-                retention_days=30,
-                expires_at_utc=now + timedelta(days=30),
-            )
-        )
     app = create_platform_app(configured, runtime=runtime)
     with TestClient(app) as client:
         headers = {"Authorization": f"Bearer {ops['token']}"}
-        empty = client.get("/v1/metrics/operations?window=today", headers=headers)
-        assert empty.status_code == 200
-        empty_card = next(
-            card for card in empty.json()["cards"] if card["key"] == "sparse_exact_match"
-        )
-        assert empty_card["value"] is None
-        assert empty_card["sparkline"] == []
-        populated = client.get("/v1/metrics/operations?window=7d", headers=headers)
-        assert populated.status_code == 200
-        card = next(
-            card for card in populated.json()["cards"] if card["key"] == "sparse_exact_match"
-        )
-    assert card["kind"] == "stat"
-    assert card["value"] == 4.0
-    assert card["sparkline"] == [3.0, 1.0]
+        for window in ("today", "7d", "30d"):
+            response = client.get(f"/v1/metrics/operations?window={window}", headers=headers)
+            assert response.status_code == 200
+            cards = response.json()["cards"]
+            assert [card["key"] for card in cards] == [
+                "cache_hit_rate",
+                "ocr_confidence_dist",
+                "graph_basic_split",
+            ]
+            assert {card["key"]: card["kind"] for card in cards} == {
+                "cache_hit_rate": "stat",
+                "ocr_confidence_dist": "distribution",
+                "graph_basic_split": "distribution",
+            }
 
 
 def test_admin_document_drilldown_writes_audit_records() -> None:

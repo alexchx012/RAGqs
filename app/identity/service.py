@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,6 +16,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.documents.schema import documents_table
 from app.platform.config import AuthSettings, _resolve_user_deletion_archive_dir
 from app.platform.context import current_context
 from app.platform.database import _insert_do_nothing, platform_audit_table
@@ -2767,11 +2768,31 @@ class IdentityAccessService:
             department_id=user["department_id"],
         )
 
+    @staticmethod
+    def _space_document_counts(
+        connection: Connection, space_ids: Collection[str]
+    ) -> dict[str, int]:
+        """Live per-space document counts, excluding deleted documents."""
+        if not space_ids:
+            return {}
+        rows = connection.execute(
+            select(documents_table.c.space_id, func.count())
+            .where(
+                and_(
+                    documents_table.c.space_id.in_(list(space_ids)),
+                    documents_table.c.lifecycle_status != "deleted",
+                )
+            )
+            .group_by(documents_table.c.space_id)
+        ).all()
+        return {str(space_id): int(count) for space_id, count in rows}
+
     def list_spaces(
         self,
         *,
         principal: AuthPrincipal,
         usage: Literal["retrieval", "upload", "manage"] = "manage",
+        with_document_counts: bool = False,
     ) -> list[dict[str, object]]:
         if usage not in {"retrieval", "upload", "manage"}:
             raise PlatformError("validation_error", "Space usage is invalid", {}, 422)
@@ -2790,6 +2811,11 @@ class IdentityAccessService:
                 .mappings()
                 .all()
             )
+            counts: dict[str, int] = {}
+            if with_document_counts:
+                counts = self._space_document_counts(
+                    connection, {str(row[identity_space_table.c.id]) for row in rows}
+                )
         items: list[dict[str, object]] = []
         for row in rows:
             kind = row[identity_space_table.c.kind]
@@ -2829,7 +2855,7 @@ class IdentityAccessService:
                 "kind": kind,
                 "name": row[identity_space_table.c.name],
                 "permission": permission,
-                "document_count": 0,
+                "document_count": counts.get(str(row[identity_space_table.c.id]), 0),
             }
             if kind == "department":
                 item["department_status"] = department_status

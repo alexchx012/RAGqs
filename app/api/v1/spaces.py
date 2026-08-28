@@ -17,4 +17,6 @@ def list_spaces(
     service: Annotated[IdentityAccessService, Depends(identity_access_service)],
     usage: Annotated[Literal["retrieval", "upload", "manage"], Query()] = "manage",
 ) -> dict[str, list[dict[str, object]]]:
-    return {"items": service.list_spaces(principal=principal, usage=usage)}
+    return {
+        "items": service.list_spaces(principal=principal, usage=usage, with_document_counts=True)
+    }
