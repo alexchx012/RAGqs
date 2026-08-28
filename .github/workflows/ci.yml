@@ -98,19 +98,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install migration dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[postgres]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked migration dependencies
+        run: uv sync --locked --extra postgres
 
       - name: Validate migration source and single head
         run: |
           set -euo pipefail
 
-          python -m compileall -q alembic
+          uv run --locked --extra postgres python -m compileall -q alembic
           head_file="$(mktemp)"
           trap 'rm -f "$head_file"' EXIT
-          alembic heads > "$head_file"
+          uv run --locked --extra postgres alembic heads > "$head_file"
           head_count="$(grep -cv '^[[:space:]]*$' "$head_file" || true)"
           test "$head_count" -eq 1 || {
             echo "expected exactly one Alembic head, found: $head_count"
@@ -121,12 +124,12 @@ jobs:
       - name: Apply migration to an empty PostgreSQL database
         env:
           RAG_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
-        run: alembic upgrade head
+        run: uv run --locked --extra postgres alembic upgrade head
 
       - name: Verify database migration head
         env:
           RAG_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
-        run: alembic current --check-heads
+        run: uv run --locked --extra postgres alembic current --check-heads
 
 # New runtime behavior belongs in design-driven contract tests written with each
 # reconstructed vertical slice. Do not add legacy tests or builds as substitutes.
