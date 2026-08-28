@@ -564,7 +564,7 @@ def test_receipt_discards_when_direct_acl_is_revoked(service, principal) -> None
     lease = service.claim_job(worker_id="worker-acl", job_id=created["job_id"])
 
     class _RevokedIdentity:
-        def authorize_space(self, *, principal, space_id, action):
+        def authorize_space(self, *, principal, space_id, action, connection=None):
             del principal, space_id, action
             raise PlatformError("space_action_forbidden", "Access was revoked", {}, 403)
 
@@ -758,7 +758,7 @@ def test_receipt_revalidates_direct_acl_after_handoff_publish(service, principal
             result = super().publish(request, connection=connection)
 
             class _RevokedIdentity:
-                def authorize_space(self, *, principal, space_id, action):
+                def authorize_space(self, *, principal, space_id, action, connection=None):
                     del principal, space_id, action
                     raise PlatformError("space_action_forbidden", "Access was revoked", {}, 403)
 

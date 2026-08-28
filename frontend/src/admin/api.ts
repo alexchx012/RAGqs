@@ -140,11 +140,19 @@ export interface AdminApi {
     idempotencyKey: string,
   ): Promise<CalibrationWindow>;
 
-  /* ---------- §12.1–12.4 用户管理（写操作不带 Idempotency-Key，仅 expected_version） ---------- */
+  /* ---------- §12.1–12.4 用户管理（写操作携带 Idempotency-Key） ---------- */
   listUsers(query: AdminUserListQuery): Promise<AdminUserListResponse>;
-  createUser(input: AdminUserCreateInput): Promise<AdminUserItem>;
-  patchUser(userId: string, input: AdminUserPatchInput): Promise<AdminUserItem>;
-  deleteUser(userId: string, expectedVersion: number): Promise<AdminUserDeleteResponse>;
+  createUser(input: AdminUserCreateInput, idempotencyKey: string): Promise<AdminUserItem>;
+  patchUser(
+    userId: string,
+    input: AdminUserPatchInput,
+    idempotencyKey: string,
+  ): Promise<AdminUserItem>;
+  deleteUser(
+    userId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<AdminUserDeleteResponse>;
 
   /* ---------- §12.5 部门目录与部门管理 ---------- */
   listDepartments(status?: DepartmentStatusFilter): Promise<AdminDepartmentListResponse>;
@@ -434,31 +442,34 @@ export function createAdminApi(client: ApiClient): AdminApi {
       return client.request<AdminUserListResponse>(`/admin/users${suffix}`, { authSessionGuard });
     },
 
-    createUser(input) {
+    createUser(input, idempotencyKey) {
       const authSessionGuard = guard();
       return client.request<AdminUserItem>('/admin/users', {
         method: 'POST',
         body: input,
+        headers: idempotencyHeaders(idempotencyKey),
         authSessionGuard,
       });
     },
 
-    patchUser(userId, input) {
+    patchUser(userId, input, idempotencyKey) {
       const authSessionGuard = guard();
       return client.request<AdminUserItem>(`/admin/users/${encodeURIComponent(userId)}`, {
         method: 'PATCH',
         body: input,
+        headers: idempotencyHeaders(idempotencyKey),
         authSessionGuard,
       });
     },
 
-    deleteUser(userId, expectedVersion) {
+    deleteUser(userId, expectedVersion, idempotencyKey) {
       const authSessionGuard = guard();
       return client.request<AdminUserDeleteResponse>(
         `/admin/users/${encodeURIComponent(userId)}`,
         {
           method: 'DELETE',
           body: { expected_version: expectedVersion },
+          headers: idempotencyHeaders(idempotencyKey),
           authSessionGuard,
         },
       );

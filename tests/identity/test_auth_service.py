@@ -1257,7 +1257,7 @@ def test_avatar_replacement_uses_the_shared_object_store() -> None:
         user_id=user["id"], content=b"fake-png", content_type="image/png"
     )
 
-    assert avatar["avatar_url"].startswith("object://avatars/")
+    assert avatar["avatar_url"] == "/v1/users/me/avatar"
     assert service.user_response(user["id"])["avatar_url"] == avatar["avatar_url"]
 
 
@@ -1397,29 +1397,36 @@ def test_deployment_admin_provisioning_honors_the_declared_roster() -> None:
         engine,
         AuthSettings(
             secret_key="test-secret-that-is-long-enough",
-            admin_roster=("admin",),
+            admin_roster=("user_seeded",),
         ),
     )
 
-    service.provision_user(
+    created = service.bootstrap_initial_admin(
         username="admin",
         password="Password1",
         real_name="Admin",
         display_name="Admin",
-        role="admin",
-        department_id=None,
+        user_id="user_seeded",
     )
+    assert created["role"] == "admin"
+    # 清单条目是不可变 user_id：预声明 id 之外的引导一律 403。
     with pytest.raises(PlatformError) as exc_info:
-        service.provision_user(
+        service.bootstrap_initial_admin(
             username="rogue",
             password="Password1",
             real_name="Rogue",
             display_name="Rogue",
-            role="admin",
-            department_id=None,
+            user_id="user_rogue",
         )
 
     assert exc_info.value.code == "forbidden_target"
+
+    # 403 在建号前抛出：预声明席位未被误建，rogue 引导未触碰数据库。
+    with engine.connect() as connection:
+        usernames = set(
+            connection.execute(select(identity_user_table.c.username)).scalars()
+        )
+    assert usernames == {"admin"}
 
 
 def test_bootstrap_initial_admin_creates_an_audited_rostered_admin_once() -> None:
@@ -1434,7 +1441,7 @@ def test_bootstrap_initial_admin_creates_an_audited_rostered_admin_once() -> Non
         engine,
         AuthSettings(
             secret_key="test-secret-that-is-long-enough",
-            admin_roster=("admin",),
+            admin_roster=("user_seeded",),
         ),
     )
 
@@ -1443,15 +1450,17 @@ def test_bootstrap_initial_admin_creates_an_audited_rostered_admin_once() -> Non
         password="Password1",
         real_name="Initial Admin",
         display_name="Admin",
+        user_id="user_seeded",
     )
     repeated = service.bootstrap_initial_admin(
         username="admin",
         password="Password1",
         real_name="Initial Admin",
         display_name="Admin",
+        user_id="user_seeded",
     )
 
-    assert created["id"] == repeated["id"]
+    assert created["id"] == repeated["id"] == "user_seeded"
     assert created["role"] == "admin"
     with engine.connect() as connection:
         audits = connection.execute(platform_audit_table.select()).mappings().all()
@@ -1472,7 +1481,7 @@ def test_bootstrap_initial_admin_refuses_a_nonempty_identity_database() -> None:
         engine,
         AuthSettings(
             secret_key="test-secret-that-is-long-enough",
-            admin_roster=("admin",),
+            admin_roster=("user_seeded",),
         ),
     )
     service.provision_user(
@@ -1490,6 +1499,7 @@ def test_bootstrap_initial_admin_refuses_a_nonempty_identity_database() -> None:
             password="Password1",
             real_name="Initial Admin",
             display_name="Admin",
+            user_id="user_seeded",
         )
 
     assert exc_info.value.code == "admin_bootstrap_conflict"
@@ -1530,10 +1540,10 @@ def test_roster_reconciliation_freezes_removed_admins_and_revokes_sessions() -> 
     secret = "test-secret-that-is-long-enough"
     first_deployment = IdentityAccessService(
         engine,
-        AuthSettings(secret_key=secret, admin_roster=("retained", "removed")),
+        AuthSettings(secret_key=secret),
         revocation_port=NoopGenerationRevocationPort(),
     )
-    first_deployment.provision_user(
+    retained = first_deployment.provision_user(
         username="retained",
         password="Password1",
         real_name="Retained",
@@ -1550,9 +1560,10 @@ def test_roster_reconciliation_freezes_removed_admins_and_revokes_sessions() -> 
         department_id=None,
     )
     login = first_deployment.login(username="removed", password="Password1")
+    # 清单条目是不可变 user_id：只有 id 命中清单的 admin 保留席位。
     after_deployment_change = IdentityAccessService(
         engine,
-        AuthSettings(secret_key=secret, admin_roster=("retained",)),
+        AuthSettings(secret_key=secret, admin_roster=(str(retained["id"]),)),
         revocation_port=NoopGenerationRevocationPort(),
     )
 
@@ -1579,7 +1590,7 @@ def test_roster_reconciliation_rejects_an_empty_active_admin_seat() -> None:
         engine,
         AuthSettings(
             secret_key="test-secret-that-is-long-enough",
-            admin_roster=("admin",),
+            admin_roster=("user_absent",),
         ),
     )
 

@@ -3,13 +3,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata
 from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
 from app.identity.ports import NoopAccountRetirementGateway
-from app.identity.schema import identity_deletion_workflow_table, identity_metadata
+from app.identity.schema import (
+    identity_deletion_workflow_table,
+    identity_metadata,
+    identity_user_table,
+)
 from app.identity.worker import IdentityDeletionWorker
 from app.outbox.schema import outbox_metadata
 from app.platform.config import load_platform_settings
@@ -18,6 +22,17 @@ from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
 from app.platform.storage import MemoryObjectStore, StorageKeyError
 from app.platform.worker import create_worker_runtime
+
+
+def _stored_avatar_url(engine, user_id: str) -> str:
+    """API 响应的 avatar_url 恒为内容端点路径；对象存储内部 key 需从 DB 读取。"""
+
+    with engine.connect() as connection:
+        return str(
+            connection.execute(
+                select(identity_user_table.c.avatar_url).where(identity_user_table.c.id == user_id)
+            ).scalar_one()
+        )
 
 
 def settings():
@@ -85,9 +100,8 @@ def test_default_runtime_worker_finalizes_due_deletions_and_cleans_avatar() -> N
         role="user",
         department_id=None,
     )
-    avatar_url = service.replace_avatar(
-        user_id=user["id"], content=b"image", content_type="image/png"
-    )["avatar_url"]
+    service.replace_avatar(user_id=user["id"], content=b"image", content_type="image/png")
+    avatar_url = _stored_avatar_url(engine, user["id"])
     service.delete_managed_user(
         actor=admin,
         user_id=user["id"],
@@ -150,12 +164,10 @@ def test_deletion_worker_processes_pending_avatar_cleanup() -> None:
         role="user",
         department_id=None,
     )
-    first_avatar = service.replace_avatar(
-        user_id=user["id"], content=b"first-image", content_type="image/png"
-    )["avatar_url"]
-    second_avatar = service.replace_avatar(
-        user_id=user["id"], content=b"second-image", content_type="image/png"
-    )["avatar_url"]
+    service.replace_avatar(user_id=user["id"], content=b"first-image", content_type="image/png")
+    first_avatar = _stored_avatar_url(engine, user["id"])
+    service.replace_avatar(user_id=user["id"], content=b"second-image", content_type="image/png")
+    second_avatar_key = _stored_avatar_url(engine, user["id"])
 
     worker_runtime = create_worker_runtime(configured, runtime=runtime)
     stats = IdentityDeletionWorker(worker_runtime).run_once(owner="worker-1")
@@ -164,7 +176,7 @@ def test_deletion_worker_processes_pending_avatar_cleanup() -> None:
     assert stats.deferred == 0
     with pytest.raises(StorageKeyError):
         object_store.get(first_avatar.removeprefix("object://"))
-    assert object_store.get(second_avatar.removeprefix("object://"))[0] == b"second-image"
+    assert object_store.get(second_avatar_key.removeprefix("object://"))[0] == b"second-image"
     worker_runtime.close()
     runtime.close()
 
@@ -213,9 +225,8 @@ def test_account_finalization_waits_for_replaced_avatar_cleanup() -> None:
         role="user",
         department_id=None,
     )
-    first_avatar = service.replace_avatar(
-        user_id=user["id"], content=b"first-image", content_type="image/png"
-    )["avatar_url"]
+    service.replace_avatar(user_id=user["id"], content=b"first-image", content_type="image/png")
+    first_avatar = _stored_avatar_url(engine, user["id"])
     object_store.blocked_key = first_avatar.removeprefix("object://")
     service.replace_avatar(user_id=user["id"], content=b"second-image", content_type="image/png")
     service.delete_managed_user(
@@ -288,9 +299,8 @@ def test_deletion_worker_retries_cleanup_after_a_fenced_transaction_rolls_back()
         role="user",
         department_id=None,
     )
-    avatar_url = service.replace_avatar(
-        user_id=user["id"], content=b"image", content_type="image/png"
-    )["avatar_url"]
+    service.replace_avatar(user_id=user["id"], content=b"image", content_type="image/png")
+    avatar_url = _stored_avatar_url(engine, user["id"])
     service.delete_managed_user(
         actor=admin,
         user_id=user["id"],

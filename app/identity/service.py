@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import Engine, and_, delete, exists, func, literal, select, text, update
 from sqlalchemy.engine import Connection
@@ -75,6 +75,8 @@ from .schema import (
 Role = Literal["user", "minister", "ops", "admin"]
 _ROLES = frozenset({"user", "minister", "ops", "admin"})
 _COMPLETED_HISTORY_RETENTION = timedelta(days=90)
+# 同源头像内容端点（前端接口需求 §2.5）：API 响应中的 avatar_url 恒为该相对路径。
+AVATAR_CONTENT_PATH = "/v1/users/me/avatar"
 
 
 class _ArchiveRestoreRequired(Exception):
@@ -373,7 +375,15 @@ class IdentityAccessService:
         )
 
     @staticmethod
-    def _user_response(record: dict[str, object]) -> dict[str, object]:
+    def _public_avatar_url(avatar_url: object) -> object:
+        # Storage keeps the internal object key; API consumers always receive
+        # the loadable same-origin content endpoint (前端接口需求 §2.5).
+        if isinstance(avatar_url, str) and avatar_url.startswith("object://avatars/"):
+            return AVATAR_CONTENT_PATH
+        return avatar_url
+
+    @classmethod
+    def _user_response(cls, record: dict[str, object]) -> dict[str, object]:
         department_id = record["department_id"]
         department_name = record.get("department_name")
         return {
@@ -383,7 +393,7 @@ class IdentityAccessService:
             "real_name": record["real_name"],
             "department": {"id": department_id, "name": department_name} if department_id else None,
             "role": record["role"],
-            "avatar_url": record["avatar_url"],
+            "avatar_url": cls._public_avatar_url(record["avatar_url"]),
         }
 
     def _user_response_for_id(self, connection: Connection, user_id: str) -> dict[str, object]:
@@ -468,13 +478,17 @@ class IdentityAccessService:
         role: Role,
         department_id: str | None,
         now: datetime,
+        user_id: str | None = None,
     ) -> dict[str, object]:
         if role not in _ROLES:
             raise PlatformError("validation_error", "Role is invalid", {}, 422)
         _validate_password_rule(password)
         normalized_username = _normalize_username(username)
-        roster = {item.strip().casefold() for item in self._settings.admin_roster if item.strip()}
-        if role == "admin" and roster and normalized_username not in roster:
+        record_id = user_id if user_id is not None else _new_id("user")
+        # Roster entries are immutable user_ids (§9.2): a new admin seat only
+        # exists when the deployment pre-declared the exact account id.
+        roster = {item.strip() for item in self._settings.admin_roster if item.strip()}
+        if role == "admin" and roster and record_id not in roster:
             raise PlatformError(
                 "forbidden_target", "Admin seats are managed by the deployment roster", {}, 403
             )
@@ -489,7 +503,7 @@ class IdentityAccessService:
         normalized_real_name = _normalize_name(real_name, subject="Real name")
         normalized_user_name = _normalize_name(username, subject="Username")
         return {
-            "id": _new_id("user"),
+            "id": record_id,
             "username": normalized_user_name,
             "normalized_username": normalized_username,
             "password_hash": hash_password(password),
@@ -848,6 +862,7 @@ class IdentityAccessService:
         password: str,
         real_name: str,
         display_name: str,
+        user_id: str | None = None,
     ) -> dict[str, object]:
         """Create the single deployment-managed administrator for an empty identity database."""
 
@@ -860,8 +875,9 @@ class IdentityAccessService:
             role="admin",
             department_id=None,
             now=now,
+            user_id=user_id,
         )
-        roster = {item.strip().casefold() for item in self._settings.admin_roster if item.strip()}
+        roster = {item.strip() for item in self._settings.admin_roster if item.strip()}
         if not roster:
             raise PlatformError(
                 "admin_roster_invalid",
@@ -908,7 +924,8 @@ class IdentityAccessService:
     def reconcile_admin_roster(self) -> list[str]:
         """Apply a deployment roster removal through the normal irreversible lifecycle."""
 
-        roster = {item.strip().casefold() for item in self._settings.admin_roster if item.strip()}
+        # Roster entries are immutable user_ids; renames never affect reconciliation.
+        roster = {item.strip() for item in self._settings.admin_roster if item.strip()}
         if not roster:
             raise PlatformError(
                 "admin_roster_invalid", "The admin roster must contain a seat", {}, 503
@@ -929,7 +946,7 @@ class IdentityAccessService:
                 .mappings()
                 .all()
             )
-            if not any(admin["normalized_username"] in roster for admin in admins):
+            if not any(str(admin["id"]) in roster for admin in admins):
                 raise PlatformError(
                     "admin_roster_invalid",
                     "The declared admin roster has no active seat",
@@ -937,7 +954,7 @@ class IdentityAccessService:
                     503,
                 )
             for admin in admins:
-                if admin["normalized_username"] in roster:
+                if str(admin["id"]) in roster:
                     continue
                 user_id = str(admin["id"])
                 self._invalidate_pending_submissions(
@@ -1293,7 +1310,13 @@ class IdentityAccessService:
                 actor_id=actor.user_id,
                 resource_type="user",
                 resource_id=user_id,
-                result="user_updated",
+                # Department moves carry their own fact code (设计 §9.3):
+                # generic user_updated would hide authorization-relevant moves.
+                result=(
+                    "user_department_changed"
+                    if final_department_id != target["department_id"]
+                    else "user_updated"
+                ),
                 occurred_at=now,
             )
             return result
@@ -1754,8 +1777,13 @@ class IdentityAccessService:
         workflow: Mapping[Any, Any],
         user_id: str,
         now: datetime,
-    ) -> None:
-        """§9.2.1 archive gate: verify the package, rebuild or stop-and-alert."""
+    ) -> tuple[str, int | None, str]:
+        """§9.2.1 archive gate: verify the package, rebuild or stop-and-alert.
+
+        Returns the authoritative (file_name, size_bytes, sha256) after the gate
+        so the caller's final verification uses the rebuilt record instead of the
+        pre-transaction workflow snapshot.
+        """
 
         from .archive_package import AccountArchivePackageBuilder
 
@@ -1771,14 +1799,18 @@ class IdentityAccessService:
         snapshot_dir = str(workflow["archive_dir_snapshot"] or self._effective_archive_dir())
         builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
         expected_sha256 = str(workflow["archive_sha256"] or "")
-        expected_size = workflow["archive_size_bytes"]
+        expected_size = cast("int | None", workflow["archive_size_bytes"])
         if builder.verify(
             user_id=user_id,
             deletion_id=deletion_id,
             expected_sha256=expected_sha256,
-            expected_size=int(expected_size) if expected_size is not None else None,
+            expected_size=expected_size,
         ):
-            return
+            return (
+                str(workflow["archive_file_name"] or ""),
+                expected_size,
+                expected_sha256,
+            )
         completed_targets = connection.execute(
             select(func.count())
             .select_from(identity_account_cleanup_target_table)
@@ -1802,7 +1834,7 @@ class IdentityAccessService:
                     archive_alert=None,
                 )
             )
-            return
+            return (record.file_name, record.size_bytes, record.sha256)
         # The alert must outlive this transaction's rollback, so it is
         # persisted by finalize_pending_deletion after the outer rollback.
         raise _ArchiveRestoreRequired()
@@ -2109,7 +2141,9 @@ class IdentityAccessService:
                     409,
                     True,
                 )
-            self._verify_or_restore_archive(connection, workflow=workflow, user_id=user_id, now=now)
+            _, archive_size_bytes, archive_sha256 = self._verify_or_restore_archive(
+                connection, workflow=workflow, user_id=user_id, now=now
+            )
             pending_personal_documents: int
             try:
                 pending_personal_documents = (
@@ -2276,10 +2310,14 @@ class IdentityAccessService:
                 str(workflow["archive_dir_snapshot"] or self._effective_archive_dir()),
                 self._object_store,
             )
+            # Final verification must compare against the record the gate just
+            # verified or rebuilt — not the stale in-transaction workflow row
+            # (a rebuild stamps a new manifest timestamp, hence a new sha256).
             if not final_builder.verify(
                 user_id=user_id,
                 deletion_id=str(workflow["cleanup_operation_id"]),
-                expected_sha256=str(workflow["archive_sha256"] or ""),
+                expected_sha256=archive_sha256,
+                expected_size=archive_size_bytes,
             ):
                 raise PlatformError(
                     "account_archive_verification_failed",
@@ -2793,29 +2831,52 @@ class IdentityAccessService:
         principal: AuthPrincipal,
         usage: Literal["retrieval", "upload", "manage"] = "manage",
         with_document_counts: bool = False,
+        connection: Connection | None = None,
     ) -> list[dict[str, object]]:
         if usage not in {"retrieval", "upload", "manage"}:
             raise PlatformError("validation_error", "Space usage is invalid", {}, 422)
-        with self._engine.begin() as connection:
-            principal = self._current_acl_principal(connection, principal)
-            self._ensure_public_space(connection, self._current_time())
-            rows = (
-                connection.execute(
-                    select(identity_space_table, identity_department_table.c.status)
-                    .outerjoin(
-                        identity_department_table,
-                        identity_space_table.c.department_id == identity_department_table.c.id,
-                    )
-                    .order_by(identity_space_table.c.id)
-                )
-                .mappings()
-                .all()
+        if connection is not None:
+            return self._list_spaces_on(
+                connection,
+                principal=principal,
+                usage=usage,
+                with_document_counts=with_document_counts,
             )
-            counts: dict[str, int] = {}
-            if with_document_counts:
-                counts = self._space_document_counts(
-                    connection, {str(row[identity_space_table.c.id]) for row in rows}
+        with self._engine.begin() as connection:
+            return self._list_spaces_on(
+                connection,
+                principal=principal,
+                usage=usage,
+                with_document_counts=with_document_counts,
+            )
+
+    def _list_spaces_on(
+        self,
+        connection: Connection,
+        *,
+        principal: AuthPrincipal,
+        usage: Literal["retrieval", "upload", "manage"],
+        with_document_counts: bool = False,
+    ) -> list[dict[str, object]]:
+        principal = self._current_acl_principal(connection, principal)
+        self._ensure_public_space(connection, self._current_time())
+        rows = (
+            connection.execute(
+                select(identity_space_table, identity_department_table.c.status)
+                .outerjoin(
+                    identity_department_table,
+                    identity_space_table.c.department_id == identity_department_table.c.id,
                 )
+                .order_by(identity_space_table.c.id)
+            )
+            .mappings()
+            .all()
+        )
+        counts: dict[str, int] = {}
+        if with_document_counts:
+            counts = self._space_document_counts(
+                connection, {str(row[identity_space_table.c.id]) for row in rows}
+            )
         items: list[dict[str, object]] = []
         for row in rows:
             kind = row[identity_space_table.c.kind]
@@ -2881,15 +2942,23 @@ class IdentityAccessService:
         principal: AuthPrincipal,
         space_id: str,
         action: Literal["read", "contribute", "manage"],
+        connection: Connection | None = None,
     ) -> Literal["read", "contribute", "manage"]:
         if action not in {"read", "contribute", "manage"}:
             raise PlatformError("validation_error", "Space action is invalid", {}, 422)
+        if connection is not None:
+            # Same-transaction ACL (设计 §9.1.1): lock the department rows in the
+            # caller's write transaction so a concurrent deactivation either
+            # commits first (this grant then sees "inactive") or waits until
+            # this creation commits — the interleaving window is closed.
+            connection.execute(select(identity_department_table.c.id).with_for_update())
+            candidates = self.list_spaces(
+                principal=principal, usage="manage", connection=connection
+            )
+        else:
+            candidates = self.list_spaces(principal=principal, usage="manage")
         item = next(
-            (
-                candidate
-                for candidate in self.list_spaces(principal=principal, usage="manage")
-                if candidate["id"] == space_id
-            ),
+            (candidate for candidate in candidates if candidate["id"] == space_id),
             None,
         )
         if item is None:
@@ -3101,7 +3170,28 @@ class IdentityAccessService:
         except Exception:
             self._delete_or_defer_uploaded_avatar(user_id=str(user_id), object_key=key, now=now)
             raise
-        return {"avatar_url": url}
+        return {"avatar_url": AVATAR_CONTENT_PATH}
+
+    def avatar_content(self, *, user_id: object) -> tuple[bytes, str]:
+        """Return (payload, content_type) for the caller's own uploaded avatar."""
+
+        if self._object_store is None:
+            raise PlatformError(
+                "avatar_storage_unavailable", "Avatar storage is unavailable", {}, 503, True
+            )
+        with self._engine.connect() as connection:
+            avatar_url = connection.execute(
+                select(identity_user_table.c.avatar_url).where(
+                    identity_user_table.c.id == str(user_id)
+                )
+            ).scalar_one_or_none()
+        if not isinstance(avatar_url, str) or not avatar_url.startswith("object://"):
+            raise PlatformError("avatar_not_found", "The account has no avatar", {}, 404)
+        try:
+            content, metadata = self._object_store.get(avatar_url.removeprefix("object://"))
+        except (StorageKeyError, KeyError) as exc:
+            raise PlatformError("avatar_not_found", "The account has no avatar", {}, 404) from exc
+        return bytes(content), str(metadata.content_type)
 
     @staticmethod
     def _object_cleanup_operation_id(object_key: str) -> str:

@@ -440,7 +440,7 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
     documents_metadata.create_all(engine)
 
     class _PermissiveIdentity:
-        def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+        def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
             del principal, action
             return "manage"
 

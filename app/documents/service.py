@@ -1003,6 +1003,7 @@ class DocumentsService:
         owner_id: str,
         *,
         resource_context: Mapping[str, Any],
+        retry_audit_resource_type: str | None = None,
     ) -> tuple[int, bool]:
         """Run one pass of staged cleanup deletions outside any caller transaction.
 
@@ -1116,6 +1117,16 @@ class DocumentsService:
                         )
                         .values(state="failed", last_error=error, updated_at_utc=now)
                     )
+                    if retry_audit_resource_type is not None:
+                        # §9.3 审计事实：清理重试（与失败标记同一事务边界）。
+                        self._audit(
+                            connection,
+                            actor_id="system_purge_worker",
+                            resource_type=retry_audit_resource_type,
+                            resource_id=str(owner_id),
+                            result="retried",
+                            occurred_at=now,
+                        )
                     return completed, True
         return completed, False
 
@@ -1174,7 +1185,13 @@ class DocumentsService:
             )
         return key
 
-    def _authorize(self, principal: Any, space_id: str, action: str) -> str:
+    def _authorize(
+        self,
+        principal: Any,
+        space_id: str,
+        action: str,
+        connection: Connection | None = None,
+    ) -> str:
         if self._identity_access is None:
             return "manage"
         return str(
@@ -1182,6 +1199,7 @@ class DocumentsService:
                 principal=principal,
                 space_id=space_id,
                 action=action,
+                connection=connection,
             )
         )
 
@@ -1649,7 +1667,6 @@ class DocumentsService:
         key = self._required_key(idempotency_key)
         if not files:
             raise PlatformError("validation_error", "At least one file is required", {}, 422)
-        self._authorize(principal, space_id, "manage")
         normalized_files = [self._file_fingerprint(file) for file in files]
         fingerprint = canonical_request_fingerprint(
             sorted(
@@ -1664,6 +1681,10 @@ class DocumentsService:
         actor_id = str(principal.user_id)
         endpoint = "documents.initial_upload"
         with self._engine.begin() as connection:
+            # Same-transaction ACL (设计 §9.1.1): the grant and the department-row
+            # lock live in this write transaction, so a concurrent deactivation
+            # cannot interleave between the check and the new job.
+            self._authorize(principal, space_id, "manage", connection=connection)
             replay = self._idempotency_replay(
                 connection,
                 actor_id=actor_id,
@@ -2135,6 +2156,34 @@ class DocumentsService:
             )
         )
 
+    def _audit_best_effort(
+        self,
+        *,
+        actor_id: str,
+        resource_type: str,
+        resource_id: str,
+        result: str,
+    ) -> None:
+        """Persist a failure/observation audit outside the rolled-back transaction.
+
+        Failure facts must outlive the failing transaction's rollback (same
+        pattern as identity's archive-restore alert); losing one is logged, never
+        propagated to the caller.
+        """
+
+        try:
+            with self._engine.begin() as connection:
+                self._audit(
+                    connection,
+                    actor_id=actor_id,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    result=result,
+                    occurred_at=self._current_time(),
+                )
+        except Exception:  # noqa: BLE001 - audit must never mask the original failure
+            logger.warning("documents audit write failed for %s/%s", resource_type, resource_id)
+
     def list_documents(
         self,
         *,
@@ -2322,6 +2371,34 @@ class DocumentsService:
         )
 
     def restore_version(
+        self,
+        *,
+        principal: Any,
+        document_id: str,
+        document_version_id: str,
+        expected_version: int,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        try:
+            return self._restore_version_locked(
+                principal=principal,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+            )
+        except PlatformError as exc:
+            # §9.3 审计事实：版本恢复失败（失败事实必须越过回滚落库）。
+            if exc.code in {"document_version_not_restorable", "document_version_purged"}:
+                self._audit_best_effort(
+                    actor_id=str(principal.user_id),
+                    resource_type="documents.version_restore",
+                    resource_id=document_id,
+                    result="failed",
+                )
+            raise
+
+    def _restore_version_locked(
         self,
         *,
         principal: Any,
@@ -2552,6 +2629,18 @@ class DocumentsService:
                 receipt=receipt,
             )
         except PlatformError as exc:
+            # §9.3 审计事实：执行中授权失效（部门停用/调动导致），越过回滚落库。
+            if exc.code in {"authorization_changed", "submission_grant_invalid"}:
+                self._audit_best_effort(
+                    actor_id=(
+                        str(principal.user_id)
+                        if principal is not None
+                        else "system:documents-worker"
+                    ),
+                    resource_type="documents.job_authorization",
+                    resource_id=job_id,
+                    result=exc.code,
+                )
             if exc.code == "generation_conflict":
                 # 07-4.9.21 代际冲突自动重暂存：废弃冲突 attempt 后按可重试失败
                 # 记账（预算沿用 4 次上限），下一 attempt 在 claim 时取当前活动
@@ -3286,7 +3375,7 @@ class DocumentsService:
                     updated_at_utc=now,
                 )
             )
-            connection.execute(
+            cancelled_jobs = connection.execute(
                 update(ingestion_jobs_table)
                 .where(
                     and_(
@@ -3302,6 +3391,16 @@ class DocumentsService:
                 )
                 .values(state=IngestionJobState.CANCELLED.value, stage=None, updated_at_utc=now)
             )
+            if active_attempts or (cancelled_jobs.rowcount or 0) > 0:
+                # §9.3 审计事实：在途 job 取消（确有取消时记录）。
+                self._audit(
+                    connection,
+                    actor_id=actor_id,
+                    resource_type="documents.deletion",
+                    resource_id=document_id,
+                    result="jobs_cancelled",
+                    occurred_at=now,
+                )
             connection.execute(
                 update(publications_table)
                 .where(
@@ -3548,6 +3647,16 @@ class DocumentsService:
                 .where(document_deletions_table.c.id == deletion_id)
                 .values(status="cleaning")
             )
+            if str(deletion["status"]) == "pending_delete":
+                # §9.3 审计事实：删除目标清单封存（仅首个 finalize pass 记录一次）。
+                self._audit(
+                    connection,
+                    actor_id="system_purge_worker",
+                    resource_type="documents.deletion",
+                    resource_id=document_id,
+                    result="cleanup_targets_sealed",
+                    occurred_at=now,
+                )
             all_targets_done = True
             for version in versions:
                 if not self._stage_cleanup_targets(
@@ -3583,12 +3692,23 @@ class DocumentsService:
                     .where(document_deletions_table.c.id == deletion_id)
                     .values(status="completed", completed_at_utc=now)
                 )
+                for fact in ("cleanup_completed", "document_deleted"):
+                    # §9.3 审计事实：清理完成、逻辑文档进入 deleted。
+                    self._audit(
+                        connection,
+                        actor_id="system_purge_worker",
+                        resource_type="documents.deletion",
+                        resource_id=document_id,
+                        result=fact,
+                        occurred_at=now,
+                    )
                 return {"document_id": document_id, "state": "deleted"}
         newly_completed, had_failure = self._execute_cleanup_targets(
             document_deletion_cleanup_targets_table,
             "deletion_id",
             deletion_id,
             resource_context={"document_id": document_id},
+            retry_audit_resource_type="documents.deletion",
         )
         if newly_completed and not had_failure:
             return self.finalize_deletion(document_id=document_id, deletion_id=deletion_id)
@@ -3696,6 +3816,7 @@ class DocumentsService:
                     "document_id": document_id,
                     "document_version_id": version_id,
                 },
+                retry_audit_resource_type="documents.version_cleanup",
             )
             if not newly_completed or had_failure:
                 continue

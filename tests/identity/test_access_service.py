@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 
 from app.chat.schema import chat_metadata
@@ -21,7 +21,7 @@ from app.identity.schema import identity_deletion_workflow_table, identity_metad
 from app.identity.service import IdentityAccessService
 from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
-from app.platform.database import core_metadata
+from app.platform.database import core_metadata, platform_audit_table
 from app.platform.errors import PlatformError
 
 
@@ -793,3 +793,63 @@ def test_department_deactivation_blocks_nonterminal_work() -> None:
         )
 
     assert exc_info.value.code == "department_has_active_work"
+
+
+def test_managed_user_department_move_writes_a_dedicated_audit_code() -> None:
+    """设计 §9.3：部门调动不再仅记通用 user_updated，需专属结果码。"""
+
+    service = make_service()
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    department = service.create_department(
+        actor=admin,
+        name="Finance",
+        idempotency_key="department-create-audit-1",
+    )
+
+    service.update_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=1,
+        role=None,
+        department_id=department["id"],
+        department_provided=True,
+        idempotency_key="user-update-dept-1",
+    )
+    service.update_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=2,
+        role="ops",
+        department_id=None,
+        department_provided=False,
+        idempotency_key="user-update-role-1",
+    )
+
+    with service._engine.connect() as connection:
+        results = [
+            str(row[0])
+            for row in connection.execute(
+                select(platform_audit_table.c.result).where(
+                    platform_audit_table.c.resource_id == user["id"],
+                )
+            ).all()
+        ]
+    assert results == ["user_department_changed", "user_updated"]

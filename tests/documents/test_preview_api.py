@@ -30,7 +30,7 @@ from .test_commands import _accept
 
 
 class _Identity:
-    def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+    def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
         assert principal.user_id == "user_1"
         assert space_id == "space_1"
         assert action in {"manage", "contribute", "read"}
