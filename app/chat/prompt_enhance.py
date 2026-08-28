@@ -12,9 +12,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import httpx
-
 from app.platform.errors import PlatformError
+from app.platform.model_http import build_model_http_client
 
 PROMPT_ENHANCE_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
@@ -38,13 +37,15 @@ class DashScopePromptEnhanceProvider:
         api_key: str,
         model: str,
         timeout_seconds: float = 30.0,
-        transport: httpx.BaseTransport | None = None,
+        transport: Any = None,
     ) -> None:
         self._model = model
-        self._client = httpx.Client(
-            base_url=base_url.rstrip("/"),
+        self._timeout_seconds = float(timeout_seconds)
+        # 连接池由 platform 层统一构造（唯一白名单）；dispose/close 语义保留在本类。
+        self._client = build_model_http_client(
+            base_url=base_url,
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=float(timeout_seconds),
+            timeout=timeout_seconds,
             transport=transport,
         )
 
@@ -59,41 +60,46 @@ class DashScopePromptEnhanceProvider:
         self.close()
 
     def enhance(self, prompt: str) -> str:
+        from app.platform.model_http import ModelHttpError, model_http_post
+        from app.platform.provider import CircuitOpen
+
         try:
-            response = self._client.post(
-                "/chat/completions",
-                json={
+            egress = model_http_post(
+                provider=self.provider,
+                operation="chat.prompt_enhance",
+                url=f"{self._client.base_url}/chat/completions",
+                headers=self._client.headers,
+                payload={
                     "model": self._model,
                     "messages": [
                         {"role": "system", "content": ENHANCE_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
                     ],
                 },
+                timeout_seconds=self._timeout_seconds,
+                client=self._client,
             )
-        except httpx.TimeoutException as exc:
-            raise PlatformError(
-                "prompt_enhance_timeout",
-                "Prompt enhancement timed out",
-                {"retryable": True},
-                504,
-                True,
-            ) from exc
-        except httpx.HTTPError as exc:
+        except CircuitOpen as exc:
             raise self._unavailable() from exc
-        if response.status_code == 429:
-            raise PlatformError(
-                "prompt_enhance_rate_limited",
-                "Prompt enhancement is rate limited",
-                {"retryable": True},
-                429,
-                True,
-            )
-        if response.status_code >= 400:
-            raise self._unavailable()
-        try:
-            payload = response.json()
-        except ValueError as exc:
+        except ModelHttpError as exc:
+            if exc.timeout:
+                raise PlatformError(
+                    "prompt_enhance_timeout",
+                    "Prompt enhancement timed out",
+                    {"retryable": True},
+                    504,
+                    True,
+                ) from exc
+            if exc.status_code == 429:
+                raise PlatformError(
+                    "prompt_enhance_rate_limited",
+                    "Prompt enhancement is rate limited",
+                    {"retryable": True},
+                    429,
+                    True,
+                ) from exc
             raise self._unavailable() from exc
+        payload = egress.body
         content: Any = None
         if isinstance(payload, Mapping):
             choices = payload.get("choices")

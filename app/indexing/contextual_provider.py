@@ -61,30 +61,35 @@ class DashScopeContextualRetriever:
     def _http_transport(
         self, url: str, payload: str, headers: _Headers, options: _Options
     ) -> Mapping[str, Any]:
-        import httpx
+        from app.platform.model_http import ModelHttpError, model_http_post
+        from app.platform.provider import CircuitOpen
 
         try:
-            response = httpx.post(
-                url,
-                content=payload,
-                headers=dict(headers),
-                timeout=float(options["timeout_seconds"]),
+            egress = model_http_post(
+                provider=self.provider,
+                operation="indexing.contextual",
+                url=url,
+                headers=headers,
+                payload=payload,
+                timeout_seconds=float(options["timeout_seconds"]),
+                asynchronous=True,
             )
-        except httpx.TimeoutException as exc:
-            raise ContextualProviderUnavailable("contextual provider timed out") from exc
-        except httpx.HTTPError as exc:
+        except CircuitOpen as exc:
             raise ContextualProviderUnavailable("contextual provider is unavailable") from exc
-        if response.status_code == 429 or response.status_code >= 500:
-            raise ContextualProviderUnavailable("contextual provider is retryable-unavailable")
-        if response.status_code >= 400:
-            raise ContextualProviderRejected("contextual provider rejected the request")
-        try:
-            value = json.loads(response.text)
-        except ValueError as exc:
-            raise ContextualProviderRejected("contextual provider response was malformed") from exc
-        if not isinstance(value, Mapping):
-            raise ContextualProviderRejected("contextual provider response was malformed")
-        return value
+        except ModelHttpError as exc:
+            if exc.error_class == "invalid_response_body":
+                raise ContextualProviderRejected(
+                    "contextual provider response was malformed"
+                ) from exc
+            if exc.timeout:
+                raise ContextualProviderUnavailable("contextual provider timed out") from exc
+            status = exc.status_code
+            if status is not None and status < 500 and status != 429:
+                raise ContextualProviderRejected(
+                    "contextual provider rejected the request"
+                ) from exc
+            raise ContextualProviderUnavailable("contextual provider is unavailable") from exc
+        return egress.body
 
     def generate(
         self,

@@ -153,42 +153,47 @@ class BailianImageDescriber:
     def _http_transport(
         self, url: str, payload: str, headers: Mapping[str, str], options: Mapping[str, Any]
     ) -> Mapping[str, Any]:
-        import httpx
+        from app.platform.model_http import ModelHttpError, model_http_post
+        from app.platform.provider import CircuitOpen
 
         try:
-            response = httpx.post(
-                url,
-                content=payload,
-                headers=dict(headers),
-                timeout=float(options.get("timeout_seconds", 60.0)),
+            egress = model_http_post(
+                provider=self.provider,
+                operation="indexing.image_vlm",
+                url=url,
+                headers=headers,
+                payload=payload,
+                timeout_seconds=float(options.get("timeout_seconds", 60.0)),
             )
-        except httpx.TimeoutException as exc:
-            raise PlatformError(
-                "image_provider_timeout", "Image VLM provider timed out", {}, 422
-            ) from exc
-        except httpx.HTTPError as exc:
+        except CircuitOpen as exc:
             raise PlatformError(
                 "image_provider_unavailable", "Image VLM provider is unavailable", {}, 422
             ) from exc
-        if response.status_code >= 500:
+        except ModelHttpError as exc:
+            if exc.error_class == "invalid_response_body":
+                raise PlatformError(
+                    "image_provider_schema_error", "Image VLM response was malformed", {}, 422
+                ) from exc
+            if exc.timeout:
+                raise PlatformError(
+                    "image_provider_timeout", "Image VLM provider timed out", {}, 422
+                ) from exc
+            status = exc.status_code
+            if status is not None and status >= 500:
+                raise PlatformError(
+                    "image_provider_unavailable", "Image VLM provider is unavailable", {}, 422
+                ) from exc
+            if status is not None and status >= 400:
+                raise PlatformError(
+                    "image_provider_schema_error",
+                    "Image VLM provider rejected the request",
+                    {},
+                    422,
+                ) from exc
             raise PlatformError(
                 "image_provider_unavailable", "Image VLM provider is unavailable", {}, 422
-            )
-        if response.status_code >= 400:
-            raise PlatformError(
-                "image_provider_schema_error", "Image VLM provider rejected the request", {}, 422
-            )
-        try:
-            value = json.loads(response.text)
-        except ValueError as exc:
-            raise PlatformError(
-                "image_provider_schema_error", "Image VLM response was malformed", {}, 422
             ) from exc
-        if not isinstance(value, Mapping):
-            raise PlatformError(
-                "image_provider_schema_error", "Image VLM response was malformed", {}, 422
-            )
-        return value
+        return egress.body
 
     def __call__(self, content: bytes, context: Mapping[str, Any]) -> ImageDescriptionResult:
         media_kind = str(context.get("media_kind", "image/png"))
