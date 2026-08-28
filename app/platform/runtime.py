@@ -126,6 +126,7 @@ from app.usage.metering import LocalUsageMeterService
 from app.usage.observability import UsageResourceMetrics
 from app.usage.price import PriceCatalogService
 from app.usage.quota import QuotaService
+from app.usage.reconcile import LedgerBackedProviderReconciliationPort
 from app.usage.requests import QuotaRequestService
 
 from .config import PlatformSettings, validate_startup_settings
@@ -225,6 +226,27 @@ def _default_prompt_enhance_provider(settings: PlatformSettings) -> PromptEnhanc
         api_key=api_key.get_secret_value(),
         model=settings.chat.enhance_model,
         timeout_seconds=settings.chat.enhance_timeout_seconds,
+    )
+
+
+def _default_chat_provider(settings: PlatformSettings) -> Any:
+    """生成 provider 装配：全局 ProviderSettings（DASHSCOPE_API_KEY）就绪时接
+    DashScope 生产 chat adapter；未配置保持 Unavailable（dev/test 503 fail-closed）。"""
+
+    from app.platform.chat_provider import (
+        CHAT_GENERATION_MODEL,
+        CHAT_GENERATION_TIMEOUT_SECONDS,
+        DashScopeChatProvider,
+    )
+
+    api_key = settings.provider.api_key
+    if api_key is None or not api_key.get_secret_value().strip():
+        return UnavailableChatProviderPort()
+    return DashScopeChatProvider(
+        base_url=settings.provider.base_url or PROMPT_ENHANCE_DEFAULT_BASE_URL,
+        api_key=api_key.get_secret_value(),
+        model=CHAT_GENERATION_MODEL,
+        timeout_seconds=CHAT_GENERATION_TIMEOUT_SECONDS,
     )
 
 
@@ -636,6 +658,10 @@ def build_runtime(
     )
     prices = configured.get("price_catalog") or PriceCatalogService(engine, clock)
     ledger = configured.get("usage_ledger") or UsageLedger(engine, clock, calendar, prices)
+    provider_reconciliation_port = configured.get("provider_reconciliation_port") or (
+        LedgerBackedProviderReconciliationPort(engine)
+    )
+    configured.setdefault("provider_reconciliation_port", provider_reconciliation_port)
     usage_metrics = configured.get("usage_resource_metrics") or UsageResourceMetrics()
     configured.setdefault("usage_resource_metrics", usage_metrics)
     local_usage_meter = configured.get("local_usage_meter") or LocalUsageMeterService(
@@ -772,7 +798,7 @@ def build_runtime(
         IndexingChatRetrievalPort(indexing_service)
     )
     configured.setdefault("chat_retrieval_port", chat_retrieval)
-    chat_provider = configured.get("chat_provider_port") or UnavailableChatProviderPort()
+    chat_provider = configured.get("chat_provider_port") or _default_chat_provider(settings)
     configured.setdefault("chat_provider_port", chat_provider)
     prompt_enhance_provider = configured.get("prompt_enhance_provider_port") or (
         _default_prompt_enhance_provider(settings)

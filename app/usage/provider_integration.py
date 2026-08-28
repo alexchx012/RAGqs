@@ -166,6 +166,118 @@ class UsageLedgerLifecycle:
         self._ledger.mark_unknown_if_unfinished(provider_call_id)
 
 
+class UsageSubmissionLifecycle:
+    """``UsageSubmissionPort`` → ``ProviderUsageLifecycle`` 适配器。
+
+    供 embedding / evaluation judge 等既有 submission 消费方复用
+    ``run_provider_call_with_usage``（消除平行记账）。submission 缺少
+    条件终态方法时按无条件版本执行（与这些消费方此前的手写路径语义一致）；
+    prepare 幂等冲突（409）映射为 False，由 wrapper 按 replay 中止。
+    """
+
+    def __init__(
+        self,
+        submission: Any,
+        *,
+        generation_id: str | None = None,
+        replay_generation: int = 0,
+    ) -> None:
+        self._submission = submission
+        self._generation_id = generation_id
+        self._replay_generation = replay_generation
+
+    def prepare(
+        self,
+        *,
+        provider_call_id: str,
+        provider: str,
+        model: str,
+        operation: str,
+        execution_kind: str,
+        execution_id: str,
+        attempt_id: str,
+        resource_id: str | None,
+        deadline_utc: datetime,
+        request_fingerprint: str,
+    ) -> bool:
+        from app.platform.errors import PlatformError
+
+        try:
+            self._submission.prepare_provider_call(
+                provider=provider,
+                model=model,
+                operation=operation,
+                execution_kind=execution_kind,
+                execution_id=execution_id,
+                provider_call_id=provider_call_id,
+                attempt_id=attempt_id,
+                generation_id=self._generation_id,
+                resource_id=resource_id,
+                deadline_utc=deadline_utc,
+                request_fingerprint=request_fingerprint,
+                replay_generation=self._replay_generation,
+            )
+        except PlatformError as exc:
+            if exc.code == "idempotency_key_conflict":
+                return False
+            raise
+        return True
+
+    def mark_dispatching(
+        self, provider_call_id: str, *, started_at_provider: Callable[[], datetime]
+    ) -> bool:
+        return self._submission.mark_dispatching(
+            provider_call_id, started_at_provider=started_at_provider
+        )
+
+    def complete(
+        self,
+        *,
+        provider_call_id: str,
+        measurement: ProviderMeasurement,
+        ownership: OwnershipSnapshot,
+        result: str,
+        provider_request_id: str | None = None,
+        started_at_utc: datetime | None = None,
+    ) -> str:
+        return self._submission.complete_provider_call(
+            provider_call_id=provider_call_id,
+            measurement=measurement,
+            ownership=ownership,
+            result=result,
+            provider_request_id=provider_request_id,
+            started_at_utc=started_at_utc,
+        )
+
+    def mark_not_sent(self, provider_call_id: str) -> None:
+        method = getattr(self._submission, "mark_not_sent", None)
+        if method is not None:
+            method(provider_call_id)
+
+    def mark_not_sent_if_prepared(self, provider_call_id: str) -> None:
+        conditional = getattr(self._submission, "mark_not_sent_if_prepared", None)
+        if conditional is not None:
+            conditional(provider_call_id)
+            return
+        fallback = getattr(self._submission, "mark_not_sent", None)
+        if fallback is not None:
+            fallback(provider_call_id)
+
+    def mark_unknown(self, provider_call_id: str) -> None:
+        method = getattr(self._submission, "mark_unknown", None)
+        if method is not None:
+            method(provider_call_id)
+
+    def mark_unknown_if_unfinished(self, provider_call_id: str) -> None:
+        conditional = getattr(self._submission, "mark_unknown_if_unfinished", None)
+        if conditional is not None:
+            conditional(provider_call_id)
+            return
+        fallback = getattr(self._submission, "mark_unknown", None)
+        if fallback is not None:
+            fallback(provider_call_id)
+
+
 def _utc(value: Any, *, callback_name: str | None = None) -> datetime:
     if not isinstance(value, datetime):
         if callback_name is not None:

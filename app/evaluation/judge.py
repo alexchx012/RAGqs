@@ -220,10 +220,11 @@ class HttpJudgeProvider:
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
-        import httpx
+        from app.platform.model_http import build_model_http_client
 
-        self._client = httpx.Client(
-            base_url=base_url.rstrip("/"),
+        # 连接池由 platform 层统一构造（唯一白名单）；close 语义保留在本类。
+        self._client = build_model_http_client(
+            base_url=base_url,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout_seconds,
         )
@@ -231,7 +232,6 @@ class HttpJudgeProvider:
         self._usage_submission = usage_submission
         self._now = now or (lambda: datetime.now().astimezone())
         self._sleep = sleep or time.sleep
-        self._breaker = CircuitBreakerRegistry()
 
     @property
     def provider(self) -> str:
@@ -330,118 +330,162 @@ class HttpJudgeProvider:
             ) from error
 
     def judge(self, request: JudgeRequest) -> JudgeScores:
-        if not self._breaker.allow(self._now()):
+        """经统一 provider 内核出网：内核拥有短重试/退避/熔断/deadline，逐物理发送记账。"""
+        from app.platform.model_http import new_provider_call_root_id
+        from app.platform.provider import (
+            CircuitOpen,
+            ProviderCallContext,
+            ProviderFailure,
+        )
+        from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
+        from app.usage.provider_integration import (
+            UsageSubmissionLifecycle,
+            run_provider_call_with_usage,
+        )
+
+        from .usage import COST_CENTER_KEY, EXECUTION_KIND, OPERATION
+
+        started = self._now()
+        deadline = request.deadline_utc or (started + timedelta(seconds=60))
+        run_id = request.run_id or "judge_unattributed"
+        attempt_id = request.attempt_id or "judge"
+        fingerprint = request.fingerprint()
+        actor_user_id = request.actor_user_id or "system:evaluation"
+        payload = {
+            "model": self._configuration.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": faithfulness_prompt(
+                        request.question, request.answer, request.context
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": answer_relevancy_prompt(request.question, request.answer),
+                },
+            ],
+            "max_tokens": 256,
+        }
+        root_id = new_provider_call_root_id("judge")
+        context = ProviderCallContext(
+            provider=self._configuration.provider,
+            operation=OPERATION,
+            provider_call_id=root_id,
+            attempt_id=attempt_id,
+            deadline_utc=deadline,
+            resource_id=fingerprint,
+        )
+
+        def send(ctx: ProviderCallContext, request_payload: Any) -> Any:
+            response = self._client.post("/chat/completions", json=request_payload)
+            status_code = getattr(response, "status_code", 0)
+            if status_code >= 400:
+                raise ProviderFailure(
+                    f"http_{status_code}",
+                    status_code=status_code,
+                    retryable=status_code in (429, 502, 503, 504),
+                    sent=True,
+                )
+            return response
+
+        def measurement_extractor(
+            value: Any, ctx: ProviderCallContext, failure: ProviderFailure | None
+        ) -> ProviderMeasurement:
+            del value, ctx, failure
+            return ProviderMeasurement(
+                input_tokens=None,
+                prompt_cache_hit_tokens=None,
+                prompt_cache_miss_tokens=None,
+                output_tokens=None,
+                reasoning_tokens=None,
+                image_count=None,
+                visual_input_tokens=None,
+                embedding_input_tokens=None,
+                vector_count=None,
+                measurement_sources={},
+            )
+
+        def ownership_provider(ctx: ProviderCallContext) -> OwnershipSnapshot:
+            del ctx
+            return OwnershipSnapshot(
+                actor_user_id=actor_user_id,
+                actor_role_snapshot="ops",
+                actor_department_id_snapshot=None,
+                quota_subject_user_id=None,
+                cost_center_key=COST_CENTER_KEY,
+            )
+
+        lifecycle = UsageSubmissionLifecycle(self._usage_submission)
+        try:
+            result = run_provider_call_with_usage(
+                operation=send,
+                context=context,
+                model=self._configuration.model,
+                lifecycle=lifecycle,
+                measurement_extractor=measurement_extractor,
+                ownership_provider=ownership_provider,
+                execution_kind=EXECUTION_KIND,
+                execution_id=run_id,
+                request_fingerprint=fingerprint,
+                request=payload,
+                now=self._now,
+                sleep=self._sleep,
+            )
+        except CircuitOpen as exc:
             raise PlatformError(
                 "judge_rate_limited",
                 "The judge lane circuit is open",
                 {"retryable": False},
                 429,
                 False,
-            )
-        started = self._now()
-        deadline = request.deadline_utc or (started + timedelta(seconds=60))
-        recorder = self._recorder(
-            request,
-            fallback_run_id="judge_unattributed",
-            fallback_attempt_id="judge",
-            deadline_utc=deadline,
+            ) from exc
+        if result.state != "succeeded":
+            raise self._translate_policy_failure(result)
+        body = self._parse_json(result.value)
+        faithfulness = self._score_value(body, "faithfulness")
+        answer_relevancy = self._score_value(body, "answer_relevancy")
+        refusal = body.get("is_refusal")
+        if not isinstance(refusal, bool):
+            raise self._invalid_response("is_refusal must be a boolean")
+        return JudgeScores(
+            faithfulness=faithfulness,
+            answer_relevancy=answer_relevancy,
+            is_refusal=refusal,
+            latency_ms=int((self._now() - started).total_seconds() * 1000),
         )
-        for attempt in range(1, JUDGE_SHORT_RETRY_ATTEMPTS + 1):
-            try:
-                response = recorder.record_call(
-                    resource_id=request.fingerprint(),
-                    request_fingerprint=request.fingerprint(),
-                    send=lambda: self._client.post(
-                        "/chat/completions",
-                        json={
-                            "model": self._configuration.model,
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": faithfulness_prompt(
-                                        request.question, request.answer, request.context
-                                    ),
-                                },
-                                {
-                                    "role": "user",
-                                    "content": answer_relevancy_prompt(
-                                        request.question, request.answer
-                                    ),
-                                },
-                            ],
-                            "max_tokens": 256,
-                        },
-                    ),
-                    result_for=self._usage_result,
-                )
-            except PlatformError as error:
-                if error.code == "evaluation_judge_deadline_exceeded":
-                    self._breaker.abort_probe()
-                    raise
-                self._breaker.record_failure(self._now())
-                raise
-            status_code = getattr(response, "status_code", 0)
-            if status_code == 429:
-                # 429 consumes only the judge lane's bounded budget (A18).
-                probe_failed = self._breaker.record_failure(self._now())
-                if probe_failed:
-                    raise PlatformError(
-                        "judge_rate_limited",
-                        "The judge provider is rate limited",
-                        {"retryable": True},
-                        429,
-                        True,
-                    )
-                if attempt < JUDGE_SHORT_RETRY_ATTEMPTS:
-                    remaining = (deadline - self._now()).total_seconds()
-                    if remaining <= 0:
-                        raise PlatformError(
-                            "evaluation_judge_deadline_exceeded",
-                            "The judge call crossed its deadline",
-                            {"retryable": False},
-                            408,
-                            False,
-                        )
-                    self._sleep(min(bounded_backoff_seconds(attempt), remaining))
-                    continue
-                raise PlatformError(
-                    "judge_rate_limited",
-                    "The judge provider is rate limited",
-                    {"retryable": True},
-                    429,
-                    True,
-                )
-            if status_code >= 400:
-                self._breaker.record_failure(self._now())
-                raise PlatformError(
-                    "evaluation_judge_unavailable",
-                    "The judge provider rejected the call",
-                    {"retryable": True},
-                    503,
-                    True,
-                )
-            try:
-                body = self._parse_json(response)
-                faithfulness = self._score_value(body, "faithfulness")
-                answer_relevancy = self._score_value(body, "answer_relevancy")
-                refusal = body.get("is_refusal")
-                if not isinstance(refusal, bool):
-                    raise self._invalid_response("is_refusal must be a boolean")
-            except PlatformError:
-                self._breaker.record_failure(self._now())
-                raise
-            self._breaker.reset()
-            return JudgeScores(
-                faithfulness=faithfulness,
-                answer_relevancy=answer_relevancy,
-                is_refusal=refusal,
-                latency_ms=int((self._now() - started).total_seconds() * 1000),
+
+    def _translate_policy_failure(self, result: Any) -> PlatformError:
+        error_class = result.error_class or ""
+        if error_class == "deadline_exceeded":
+            return PlatformError(
+                "evaluation_judge_deadline_exceeded",
+                "The judge call crossed its deadline",
+                {"retryable": False},
+                408,
+                False,
             )
-        raise PlatformError(
-            "judge_rate_limited",
-            "The judge lane retry budget is exhausted",
+        if error_class == "http_429":
+            return PlatformError(
+                "judge_rate_limited",
+                "The judge provider is rate limited",
+                {"retryable": True},
+                429,
+                True,
+            )
+        if error_class.startswith("http_"):
+            return PlatformError(
+                "evaluation_judge_unavailable",
+                "The judge provider rejected the call",
+                {"retryable": True},
+                503,
+                True,
+            )
+        return PlatformError(
+            "evaluation_judge_unavailable",
+            "The judge provider call failed",
             {"retryable": True},
-            429,
+            503,
             True,
         )
 

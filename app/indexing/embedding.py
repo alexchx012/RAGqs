@@ -7,8 +7,6 @@ from hashlib import sha256
 from typing import Any, Literal, Protocol
 from urllib.parse import urljoin
 
-import httpx
-
 from app.platform.errors import PlatformError
 from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
 from app.usage.ports import UsageSubmissionPort
@@ -187,7 +185,7 @@ class OpenAICompatibleEmbedding:
         self,
         config: EmbeddingConfig,
         *,
-        transport: httpx.BaseTransport | None = None,
+        transport: Any = None,
         timeout: float = 30.0,
         usage_submission: UsageSubmissionPort | None = None,
         now: Callable[[], datetime] | None = None,
@@ -276,82 +274,62 @@ class OpenAICompatibleEmbedding:
         )
         return f"embedding:{sha256(facts.encode('utf-8')).hexdigest()}"
 
-    def _prepare_usage(
-        self,
-        context: EmbeddingUsageContext | None,
-        payload: tuple[str, ...],
-        batch_index: int,
-    ) -> str | None:
-        if context is None:
-            return None
-        if self._usage_submission is None:
+    def _usage_gate(self, context: EmbeddingUsageContext | None) -> None:
+        if context is not None and self._usage_submission is None:
             raise PlatformError(
                 "embedding_usage_unavailable",
                 "Document embedding usage submission is not configured",
                 {},
                 503,
             )
-        call_id = self._usage_submission.prepare_provider_call(
-            provider=self.provider_name,
-            model=self.config.model,
-            operation=_DOCUMENT_EMBEDDING_OPERATION,
-            execution_kind=context.execution_kind,
-            execution_id=context.execution_id,
-            provider_call_id=None,
-            attempt_id=context.attempt_id,
-            generation_id=context.generation_id,
-            resource_id=context.resource_id_for_batch(batch_index),
-            deadline_utc=context.deadline_utc,
-            request_fingerprint=self._request_fingerprint(context, payload, batch_index),
-            replay_generation=context.replay_generation,
-        )
+
+    def _parse_vectors(self, body: Any, payload: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        """响应体 → 向量序列；保持既有错误码（embedding_failed/dimension_mismatch）。"""
+
+        rows = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(rows, list) or len(rows) != len(payload):
+            raise PlatformError("embedding_failed", "embedding response is incomplete", {}, 503)
+        if any(not isinstance(item, dict) for item in rows):
+            raise PlatformError("embedding_failed", "embedding response is invalid", {}, 503)
         try:
-            dispatched = self._usage_submission.mark_dispatching(
-                call_id,
-                started_at_provider=self._now,
-            )
-        except Exception:
-            try:
-                self._usage_submission.mark_not_sent(call_id)
-            except Exception:
-                pass
-            raise
-        if not dispatched:
+            ordered = sorted(rows, key=lambda item: int(item.get("index", 0)))
+        except (TypeError, ValueError) as exc:
             raise PlatformError(
-                "embedding_provider_dispatch_failed",
-                "The embedding provider call could not be dispatched",
-                {},
+                "embedding_failed", "embedding response is invalid", {}, 503
+            ) from exc
+        vectors: list[tuple[float, ...]] = []
+        for row in ordered:
+            raw = row.get("embedding") if isinstance(row, dict) else None
+            if not isinstance(raw, list) or not raw:
+                raise PlatformError("embedding_failed", "embedding vector is missing", {}, 503)
+            try:
+                vector = tuple(float(value) for value in raw)
+            except (TypeError, ValueError) as exc:
+                raise PlatformError(
+                    "embedding_failed", "embedding vector is invalid", {}, 503
+                ) from exc
+            if len(vector) != self.config.dimension:
+                raise PlatformError(
+                    "embedding_dimension_mismatch",
+                    "embedding dimension does not match the configured profile",
+                    {"expected": self.config.dimension, "actual": len(vector)},
+                    503,
+                )
+            vectors.append(vector)
+        return tuple(vectors)
+
+    def _translate_policy_result(self, result: Any) -> PlatformError:
+        error_class = result.error_class or ""
+        if error_class.startswith("embedding_dimension_mismatch"):
+            suffix = error_class.rsplit("_", 1)[-1]
+            actual: int | None = int(suffix) if suffix.isdigit() else None
+            return PlatformError(
+                "embedding_dimension_mismatch",
+                "embedding dimension does not match the configured profile",
+                {"expected": self.config.dimension, "actual": actual},
                 503,
             )
-        return call_id
-
-    def _complete_known_usage(
-        self,
-        provider_call_id: str | None,
-        *,
-        measurement: ProviderMeasurement,
-        ownership: OwnershipSnapshot | None,
-        result: str,
-        provider_request_id: str | None = None,
-    ) -> None:
-        if provider_call_id is None or self._usage_submission is None or ownership is None:
-            return
-        try:
-            self._usage_submission.complete_provider_call(
-                provider_call_id=provider_call_id,
-                measurement=measurement,
-                ownership=ownership,
-                result=result,
-                provider_request_id=provider_request_id,
-            )
-        except Exception:
-            # The provider result is known but completion did not return. Preserve
-            # a recoverable call instead of leaving an unbounded dispatching row.
-            try:
-                self._usage_submission.mark_unknown(provider_call_id)
-            except Exception:
-                pass
-            raise
+        return PlatformError("embedding_failed", "embedding request failed", {}, 503)
 
     def _embed_batch(
         self,
@@ -360,101 +338,130 @@ class OpenAICompatibleEmbedding:
         usage_context: EmbeddingUsageContext | None,
         batch_index: int,
     ) -> tuple[tuple[float, ...], ...]:
-        provider_call_id = self._prepare_usage(usage_context, payload, batch_index)
-        url = urljoin(self.config.base_url.rstrip("/") + "/", "embeddings")
-        try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
-                response = client.post(
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {self.config.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={"model": self.config.model, "input": list(payload)},
-                )
-        except httpx.HTTPError as exc:
-            if provider_call_id is not None and self._usage_submission is not None:
-                self._usage_submission.mark_unknown(provider_call_id)
-            raise PlatformError(
-                "embedding_failed",
-                "embedding request failed",
-                {},
-                503,
-            ) from exc
-        if response.status_code >= 400:
-            self._complete_known_usage(
-                provider_call_id,
-                measurement=self._unknown_measurement(),
-                ownership=usage_context.ownership if usage_context is not None else None,
-                result="failed",
-                provider_request_id=response.headers.get("x-request-id")
-                or response.headers.get("request-id"),
-            )
-            raise PlatformError("embedding_failed", "embedding request failed", {}, 503)
-        try:
-            body = response.json()
-        except ValueError as exc:
-            self._complete_known_usage(
-                provider_call_id,
-                measurement=self._unknown_measurement(),
-                ownership=usage_context.ownership if usage_context is not None else None,
-                result="failed",
-                provider_request_id=response.headers.get("x-request-id")
-                or response.headers.get("request-id"),
-            )
-            raise PlatformError(
-                "embedding_failed", "embedding response is invalid", {}, 503
-            ) from exc
-        try:
-            rows = body.get("data") if isinstance(body, dict) else None
-            if not isinstance(rows, list) or len(rows) != len(payload):
-                raise PlatformError("embedding_failed", "embedding response is incomplete", {}, 503)
-            if any(not isinstance(item, dict) for item in rows):
-                raise PlatformError("embedding_failed", "embedding response is invalid", {}, 503)
-            try:
-                ordered = sorted(rows, key=lambda item: int(item.get("index", 0)))
-            except (TypeError, ValueError) as exc:
-                raise PlatformError(
-                    "embedding_failed", "embedding response is invalid", {}, 503
-                ) from exc
-            vectors: list[tuple[float, ...]] = []
-            for row in ordered:
-                raw = row.get("embedding") if isinstance(row, dict) else None
-                if not isinstance(raw, list) or not raw:
-                    raise PlatformError("embedding_failed", "embedding vector is missing", {}, 503)
-                try:
-                    vector = tuple(float(value) for value in raw)
-                except (TypeError, ValueError) as exc:
-                    raise PlatformError(
-                        "embedding_failed", "embedding vector is invalid", {}, 503
-                    ) from exc
-                if len(vector) != self.config.dimension:
-                    raise PlatformError(
-                        "embedding_dimension_mismatch",
-                        "embedding dimension does not match the configured profile",
-                        {"expected": self.config.dimension, "actual": len(vector)},
-                        503,
-                    )
-                vectors.append(vector)
-        except PlatformError:
-            self._complete_known_usage(
-                provider_call_id,
-                measurement=self._unknown_measurement(),
-                ownership=usage_context.ownership if usage_context is not None else None,
-                result="failed",
-                provider_request_id=response.headers.get("x-request-id")
-                or response.headers.get("request-id"),
-            )
-            raise
-        self._complete_known_usage(
-            provider_call_id,
-            measurement=self._measurement_from_response(body, vector_count=len(vectors)),
-            ownership=usage_context.ownership if usage_context is not None else None,
-            result="succeeded",
-            provider_request_id=response.headers.get("x-request-id")
-            or response.headers.get("request-id"),
+        """统一出网：物理发送经平台 transport 内核，usage 走唯一包装生命周期。"""
+
+        from app.platform.model_http import (
+            ModelHttpError,
+            ModelHttpTransport,
+            model_http_post,
+            new_provider_call_root_id,
         )
-        return tuple(vectors)
+        from app.platform.provider import (
+            ProviderCallContext,
+            ProviderFailure,
+            ProviderPreSendDeadlineExceeded,
+        )
+        from app.usage.provider_integration import (
+            UsageSubmissionLifecycle,
+            run_provider_call_with_usage,
+        )
+
+        self._usage_gate(usage_context)
+        url = urljoin(self.config.base_url.rstrip("/") + "/", "embeddings")
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+        request_payload: dict[str, Any] = {
+            "model": self.config.model,
+            "input": list(payload),
+        }
+        if usage_context is None:
+            try:
+                egress = model_http_post(
+                    provider=self.provider_name,
+                    operation=_DOCUMENT_EMBEDDING_OPERATION,
+                    url=url,
+                    headers=headers,
+                    payload=request_payload,
+                    timeout_seconds=self._timeout,
+                    transport=self._transport,
+                    asynchronous=True,
+                    now=self._now,
+                )
+                body = egress.body
+            except ModelHttpError as exc:
+                raise PlatformError(
+                    "embedding_failed", "embedding request failed", {}, 503
+                ) from exc
+            return self._parse_vectors(body, payload)
+
+        context = usage_context
+        assert self._usage_submission is not None
+        call_context = ProviderCallContext(
+            provider=self.provider_name,
+            operation=_DOCUMENT_EMBEDDING_OPERATION,
+            provider_call_id=new_provider_call_root_id("embed"),
+            attempt_id=context.attempt_id,
+            deadline_utc=context.deadline_utc,
+            resource_id=context.resource_id_for_batch(batch_index),
+        )
+
+        def send_and_parse(ctx: ProviderCallContext, req: Any) -> Any:
+            """一次物理发送 + 完整响应解析；解析失败按 sent=True 确定失败记账。"""
+
+            transport = ModelHttpTransport(
+                url=url, headers=headers, transport=self._transport, now=self._now
+            )
+            response = transport(ctx, req)
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise ProviderFailure(
+                    "embedding_failed", retryable=False, sent=True, status_code=200
+                ) from exc
+            try:
+                vectors = self._parse_vectors(body, payload)
+            except PlatformError as exc:
+                error_class = (
+                    f"embedding_dimension_mismatch_{exc.details.get('actual')}"
+                    if exc.code == "embedding_dimension_mismatch"
+                    else "embedding_failed"
+                )
+                raise ProviderFailure(
+                    error_class, retryable=False, sent=True, status_code=200
+                ) from exc
+            return body, vectors
+
+        def measurement_extractor(
+            value: Any, ctx: ProviderCallContext, failure: ProviderFailure | None
+        ) -> ProviderMeasurement:
+            if failure is None and isinstance(value, tuple):
+                body, vectors = value
+                return self._measurement_from_response(body, vector_count=len(vectors))
+            return self._unknown_measurement()
+
+        def ownership_provider(ctx: ProviderCallContext) -> OwnershipSnapshot:
+            del ctx
+            return context.ownership
+
+        lifecycle = UsageSubmissionLifecycle(
+            self._usage_submission,
+            generation_id=context.generation_id,
+            replay_generation=context.replay_generation,
+        )
+        try:
+            result = run_provider_call_with_usage(
+                operation=send_and_parse,
+                context=call_context,
+                model=self.config.model,
+                lifecycle=lifecycle,
+                measurement_extractor=measurement_extractor,
+                ownership_provider=ownership_provider,
+                execution_kind=context.execution_kind,
+                execution_id=context.execution_id,
+                request_fingerprint=self._request_fingerprint(context, payload, batch_index),
+                request=request_payload,
+                asynchronous=True,
+                now=self._now,
+            )
+        except ProviderPreSendDeadlineExceeded as exc:
+            raise PlatformError("embedding_failed", "embedding request failed", {}, 503) from exc
+        if result.state != "succeeded":
+            raise self._translate_policy_result(result)
+        body, vectors = result.value
+        del body
+        return vectors
 
 
 def embedding_config_from_mapping(value: Any) -> EmbeddingConfig:
@@ -464,7 +471,7 @@ def embedding_config_from_mapping(value: Any) -> EmbeddingConfig:
         )
     dimension = value.get("dimension")
     try:
-        parsed_dimension = int(dimension)
+        parsed_dimension = int(dimension)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise PlatformError(
             "embedding_config_invalid", "embedding dimension is invalid", {}, 422
