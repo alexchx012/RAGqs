@@ -94,7 +94,7 @@ def postgres_engine():
     command.upgrade(_alembic_config(database_url), "head")
     engine = create_engine(database_url, future=True)
 
-    from sqlalchemy import MetaData
+    from sqlalchemy import MetaData, text
 
     def clear_business_tables() -> None:
         # A snapshot must capture exactly the rows this test seeds: clear every
@@ -102,12 +102,22 @@ def postgres_engine():
         # anyway) so the restored state is deterministic. Teardown must clear
         # too: leftover rows (index_generation_heads 等) leak into the platform
         # integration tests that share this database and start from empty.
+        # 不可变保护是用户触发器（trg_*_no_delete/no_update），清理前统一禁用；
+        # FK 约束触发器属于 system 触发器不受影响，且删除顺序本身按 FK 逆序。
         metadata = MetaData()
         with engine.begin() as connection:
             metadata.reflect(bind=connection)
-            for table in reversed(metadata.sorted_tables):
-                if table.name != "alembic_version":
-                    connection.execute(table.delete())
+            business_tables = [
+                table
+                for table in reversed(metadata.sorted_tables)
+                if table.name != "alembic_version"
+            ]
+            for table in business_tables:
+                connection.execute(text(f'ALTER TABLE "{table.name}" DISABLE TRIGGER USER'))
+            for table in business_tables:
+                connection.execute(table.delete())
+            for table in business_tables:
+                connection.execute(text(f'ALTER TABLE "{table.name}" ENABLE TRIGGER USER'))
 
     clear_business_tables()
     yield engine
