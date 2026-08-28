@@ -602,7 +602,7 @@ class OpenSearchSparseIndexProvider:
             )
         content_hash = result.content_hash
         token = result.fencing_token
-        published = [
+        published_docs = [
             _document(
                 status="published",
                 attempt_id=attempt_id,
@@ -613,7 +613,9 @@ class OpenSearchSparseIndexProvider:
             )
             for chunk in chunks
         ]
-        operations = [("index", document["id"], document) for document in published]
+        operations: list[tuple[str, str, Mapping[str, Any] | None]] = [
+            ("index", str(document["id"]), document) for document in published_docs
+        ]
         operations.extend(("delete", str(document.get("id", "")), None) for document in staged)
         self._client.bulk(self._index, operations)
         return StageResult(
@@ -717,7 +719,7 @@ class OpenSearchSparseIndexProvider:
             filters.append(_terms("generation_id", (generation_id,)))
         normalized_query = query.strip()
         if not normalized_query:
-            text_query = {"match_all": {}}
+            text_query: dict[str, Any] = {"match_all": {}}
         elif len(normalized_query) >= 2 and (
             (normalized_query[0], normalized_query[-1])
             in {('"', '"'), ("'", "'"), ("“", "”"), ("「", "」"), ("『", "』")}

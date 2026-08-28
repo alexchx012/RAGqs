@@ -313,7 +313,7 @@ class PublicGraphSourceService:
             },
             index_elements=["id"],
         )
-        return (
+        row = (
             connection.execute(
                 select(public_graph_source_heads_table)
                 .where(public_graph_source_heads_table.c.id == "public")
@@ -322,6 +322,7 @@ class PublicGraphSourceService:
             .mappings()
             .one()
         )
+        return dict(row)
 
     @staticmethod
     def _head_from_row(row: Mapping[str, Any]) -> PublicGraphSourceHead:
@@ -381,7 +382,7 @@ class PublicGraphSourceService:
             )
         if row is None:
             return PublicGraphSourceHead(0, None, None, 0)
-        return self._head_from_row(row)
+        return self._head_from_row(dict(row))
 
     def validate_current_head(
         self,
@@ -428,6 +429,8 @@ class PublicGraphSourceService:
             raise PlatformError(
                 "validation_error", "source_head_fence is required for release", {}, 422
             )
+        if purpose == "release":
+            assert source_head_fence is not None
         snapshot = self.get_snapshot(source_revision=source_revision, connection=connection)
         if snapshot.source_manifest_hash != source_manifest_hash:
             raise PlatformError(
@@ -465,8 +468,9 @@ class PublicGraphSourceService:
                         {},
                         409,
                     )
-                return self._receipt(existing)
+                return self._receipt(dict(existing))
             if purpose == "release":
+                assert source_head_fence is not None
                 self._validate_current_head_locked(
                     active_connection,
                     source_revision=source_revision,

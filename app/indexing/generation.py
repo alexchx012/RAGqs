@@ -38,8 +38,9 @@ def _generation_manifest(
     supplied: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = dict(supplied or {})
-    components = dict(payload.get("components", {}))
-    defaults = {
+    supplied_components = payload.get("components", {})
+    components = dict(supplied_components) if isinstance(supplied_components, Mapping) else {}
+    defaults: dict[str, dict[str, Any]] = {
         "dense": {
             "state": "ready",
             "component_generation_id": f"{generation_id}:dense",
@@ -68,7 +69,9 @@ def _generation_manifest(
         },
     }
     for component_kind, facts in defaults.items():
-        components[component_kind] = {**facts, **dict(components.get(component_kind, {}))}
+        existing = components.get(component_kind)
+        existing_mapping = existing if isinstance(existing, Mapping) else {}
+        components[component_kind] = {**facts, **dict(existing_mapping)}
     payload.update(
         {
             "generation_id": generation_id,

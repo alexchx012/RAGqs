@@ -254,7 +254,7 @@ class ProviderBillingService:
             if provider is None:
                 return result
             source_ids = {
-                str(row["provider_billing_source_record_id"])
+                str(row[0])
                 for row in connection.execute(
                     select(
                         provider_billing_source_record_table.c.provider_billing_source_record_id
@@ -443,17 +443,17 @@ class ProviderBillingService:
                             "rebuilt_at_utc": now,
                         }
                     )
-            for row in rows:
+            for projection_row in rows:
                 connection.execute(
                     usage_cost_projection_table.insert().values(
                         usage_cost_projection_id=f"ucp_{secrets.token_urlsafe(9)}",
-                        **row,
+                        **projection_row,
                     )
                 )
             status_counts: dict[str, int] = {}
-            for row in rows:
-                status_counts[str(row["cost_status"])] = (
-                    status_counts.get(str(row["cost_status"]), 0) + 1
+            for projection_row in rows:
+                status_counts[str(projection_row["cost_status"])] = (
+                    status_counts.get(str(projection_row["cost_status"]), 0) + 1
                 )
             for status, count in status_counts.items():
                 self.metrics.increment_by("usage_cost_projection_status", count, outcome=status)

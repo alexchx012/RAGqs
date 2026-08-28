@@ -42,9 +42,7 @@ class IdentityDeletionWorker:
             raise ValueError("worker owner must not be empty")
         completed = 0
         deferred = 0
-        for user_id in self._identity_access.list_deletion_workflows_pending_archive(
-            limit=limit
-        ):
+        for user_id in self._identity_access.list_deletion_workflows_pending_archive(limit=limit):
             try:
                 self._worker_runtime.run_task(
                     f"identity-deletion-archive:{user_id}",

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
 from app.platform.errors import PlatformError
@@ -93,7 +93,7 @@ class IndexingService:
         )
         self.retrieval = RetrievalService(
             self.generation,
-            (self.dense_writer, self.sparse_provider),
+            cast(Sequence[SparseIndexProvider], (self.dense_writer, self.sparse_provider)),
             identity_access=identity_access,
             visibility_facts=visibility_facts,
             reranker=reranker,

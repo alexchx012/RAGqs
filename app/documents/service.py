@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.engine import Connection, Engine
@@ -374,10 +374,10 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        job: Mapping[str, Any],
-        publication: Mapping[str, Any],
-        document: Mapping[str, Any],
-        receipt: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        publication: Mapping[Any, Any],
+        document: Mapping[Any, Any],
+        receipt: Mapping[Any, Any],
         published_at: datetime,
     ) -> dict[str, Any] | None:
         if self._quota_service is None:
@@ -469,9 +469,9 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        job: Mapping[str, Any],
-        publication: Mapping[str, Any],
-        receipt: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        publication: Mapping[Any, Any],
+        receipt: Mapping[Any, Any],
         occurred_at: datetime,
     ) -> list[str]:
         port = self._ingestion_notification_port
@@ -492,7 +492,7 @@ class DocumentsService:
         return [str(event_id) for event_id in event_ids]
 
     @staticmethod
-    def _index_request_from_attempt(attempt: Mapping[str, Any]):
+    def _index_request_from_attempt(attempt: Mapping[Any, Any]):
         from .indexing import IndexStagingRequest
 
         value = dict(attempt["staging_request_json"] or {})
@@ -526,7 +526,7 @@ class DocumentsService:
 
     @staticmethod
     def _worker_authorization_fence(
-        connection: Connection, *, job: Mapping[str, Any], document: Mapping[str, Any]
+        connection: Connection, *, job: Mapping[Any, Any], document: Mapping[Any, Any]
     ) -> dict[str, str]:
         if job["quota_exempt_reason"] != "shared_library_submission":
             return {"kind": "direct_ingest", "actor_id": str(job["created_by_user_id"])}
@@ -561,8 +561,8 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        job: Mapping[str, Any],
-        document: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        document: Mapping[Any, Any],
         principal: Any,
     ) -> None:
         self._authorize(principal, str(document["space_id"]), "manage")
@@ -613,7 +613,7 @@ class DocumentsService:
         # body is re-read only when replay actually stages a new processing attempt.
 
     def _can_replay_job(
-        self, connection: Connection, *, job: Mapping[str, Any], principal: Any
+        self, connection: Connection, *, job: Mapping[Any, Any], principal: Any
     ) -> bool:
         document = (
             connection.execute(
@@ -636,7 +636,7 @@ class DocumentsService:
         return True
 
     def _validate_direct_receipt_authorization(
-        self, *, principal: Any | None, job: Mapping[str, Any], document: Mapping[str, Any]
+        self, *, principal: Any | None, job: Mapping[Any, Any], document: Mapping[Any, Any]
     ) -> None:
         if job["quota_exempt_reason"] == "shared_library_submission":
             return
@@ -1120,14 +1120,15 @@ class DocumentsService:
         return normalized, normalized.casefold()
 
     @staticmethod
-    def _locked_document(connection: Connection, document_id: str) -> Mapping[str, Any] | None:
-        return (
+    def _locked_document(connection: Connection, document_id: str) -> Mapping[Any, Any] | None:
+        row = (
             connection.execute(
                 select(documents_table).where(documents_table.c.id == document_id).with_for_update()
             )
             .mappings()
             .one_or_none()
         )
+        return dict(row) if row is not None else None
 
     @staticmethod
     def _hash(content: bytes) -> str:
@@ -1263,7 +1264,7 @@ class DocumentsService:
             .one_or_none()
         )
         if row is not None:
-            return resolve(row)
+            return resolve(dict(row))
         inserted = _insert_do_nothing(
             connection,
             documents_idempotency_table,
@@ -1294,7 +1295,7 @@ class DocumentsService:
                 {},
                 409,
             )
-        return resolve(row)
+        return resolve(dict(row))
 
     def _complete_idempotency(
         self,
@@ -1472,8 +1473,8 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        document: Mapping[str, Any],
-        version: Mapping[str, Any],
+        document: Mapping[Any, Any],
+        version: Mapping[Any, Any],
         now: datetime,
     ) -> None:
         space_id = str(document["space_id"])
@@ -1585,8 +1586,8 @@ class DocumentsService:
         *,
         batch_id: str,
         now: datetime,
-        info: Mapping[str, Any],
-        claim: Mapping[str, Any],
+        info: Mapping[Any, Any],
+        claim: Mapping[Any, Any],
     ) -> dict[str, Any]:
         existing = (
             connection.execute(
@@ -2634,7 +2635,7 @@ class DocumentsService:
                 message: str,
                 status_code: int = 409,
                 retryable: bool = False,
-            ) -> None:
+            ) -> NoReturn:
                 self._discard_indexing_attempt(connection, active_attempt_id)
                 raise PlatformError(code, message, {}, status_code, retryable)
 
@@ -4487,12 +4488,12 @@ class DocumentsService:
     def cleanup_scheduled_submissions(self, *, limit: int = 100) -> list[str]:
         from .submissions import SubmissionService
 
-        return SubmissionService(self).cleanup_scheduled(limit=limit)
+        return list(SubmissionService(self).cleanup_scheduled(limit=limit))
 
     def _allowed_job_actions(
         self,
         connection: Connection,
-        job: Mapping[str, Any],
+        job: Mapping[Any, Any],
         principal: Any,
         *,
         can_manage: bool,
@@ -4511,8 +4512,8 @@ class DocumentsService:
     def _append_index_change(
         self,
         connection: Connection,
-        job: Mapping[str, Any],
-        publication: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        publication: Mapping[Any, Any],
         space_id: str,
         now: datetime,
     ) -> None:
@@ -4703,7 +4704,7 @@ class DocumentsService:
         return publications
 
     @staticmethod
-    def _job_response(job: Mapping[str, Any]) -> dict[str, Any]:
+    def _job_response(job: Mapping[Any, Any]) -> dict[str, Any]:
         return {
             "job_id": job["id"],
             "document_id": job["document_id"],

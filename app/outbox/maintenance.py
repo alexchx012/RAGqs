@@ -145,14 +145,12 @@ class NotificationRetentionMaintenance:
         event_id = str(row["event_id"])
         user_id = str(row["recipient_user_id"])
         seq = int(row["notification_seq"])
-        existing = (
-            connection.execute(
-                select(notification_delivery_receipt_table.c.event_id).where(
-                    notification_delivery_receipt_table.c.event_id == event_id,
-                    notification_delivery_receipt_table.c.recipient_user_id == user_id,
-                )
-            ).scalar_one_or_none()
-        )
+        existing = connection.execute(
+            select(notification_delivery_receipt_table.c.event_id).where(
+                notification_delivery_receipt_table.c.event_id == event_id,
+                notification_delivery_receipt_table.c.recipient_user_id == user_id,
+            )
+        ).scalar_one_or_none()
         # Receipt 唯一写入者就是本套代码；按 PK 存在即跳过（幂等重放）。
         if existing is None:
             connection.execute(

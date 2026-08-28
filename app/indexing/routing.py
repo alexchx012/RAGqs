@@ -41,11 +41,11 @@ class MetadataPrefilter:
     document_types: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        for value, name in (
+        for date_value, name in (
             (self.published_from, "published_from"),
             (self.published_to, "published_to"),
         ):
-            if value is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            if date_value is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value):
                 raise PlatformError("validation_error", f"{name} must be an RFC3339 date", {}, 422)
         if (
             self.published_from is not None
@@ -53,8 +53,11 @@ class MetadataPrefilter:
             and self.published_from > self.published_to
         ):
             raise PlatformError("validation_error", "metadata date range is invalid", {}, 422)
-        for value, name in ((self.ordinal_from, "ordinal_from"), (self.ordinal_to, "ordinal_to")):
-            if value is not None and value < 0:
+        for ordinal_value, name in (
+            (self.ordinal_from, "ordinal_from"),
+            (self.ordinal_to, "ordinal_to"),
+        ):
+            if ordinal_value is not None and ordinal_value < 0:
                 raise PlatformError("validation_error", f"{name} must be non-negative", {}, 422)
         if not all(isinstance(item, str) and item.strip() for item in self.document_types):
             raise PlatformError("validation_error", "document_types entries are invalid", {}, 422)
@@ -286,13 +289,17 @@ class RuleQueryRouter:
             return None
         prefilter = MetadataPrefilter()
         if year:
-            year_value = int(re.search(r"(?:19|20)\d{2}", year.group()).group())
+            year_match = re.search(r"(?:19|20)\d{2}", year.group())
+            assert year_match is not None
+            year_value = int(year_match.group())
             return MetadataPrefilter(
                 published_from=f"{year_value}-01-01",
                 published_to=f"{year_value}-12-31",
             )
         if ordinal:
-            ordinal_value = int(re.search(r"\d+", ordinal.group()).group())
+            ordinal_match = re.search(r"\d+", ordinal.group())
+            assert ordinal_match is not None
+            ordinal_value = int(ordinal_match.group())
             return MetadataPrefilter(ordinal_from=ordinal_value, ordinal_to=ordinal_value)
         return prefilter
 

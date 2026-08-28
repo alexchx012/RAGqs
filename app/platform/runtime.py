@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
@@ -64,6 +64,7 @@ from app.graph import (
     SqlAlchemyPublicGraphStore,
     UsageLedgerSubmissionAdapter,
 )
+from app.graph.ports import GraphComponentCoordinatorPort, PublicGraphSourcePort
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
 from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
 from app.identity.ports import (
@@ -75,6 +76,7 @@ from app.identity.ports import (
 from app.identity.service import IdentityAccessService
 from app.indexing import (
     ContentProcessor,
+    GenerationManager,
     IndexingService,
     NoopReranker,
     RetrievalReleaseService,
@@ -609,7 +611,7 @@ def build_runtime(
         dense_writer=dense_writer,
         sparse_provider=sparse_provider,
         sparse_provider_name=settings.index.sparse_provider,
-        generation_manager=generation_manager,
+        generation_manager=cast(GenerationManager, generation_manager),
         reranker=reranker,
         environment=settings.profile,
         profile_resolver=retrieval_releases.resolve,
@@ -740,11 +742,13 @@ def build_runtime(
     graph_usage_submission = configured.get("graph_usage_submission") or (
         UsageLedgerSubmissionAdapter(ledger)
     )
+    graph_coordinator = indexing_service.graph
+    assert graph_coordinator is not None
     graph_build_service = configured.get("graph_build_service") or GraphBuildService(
         engine,
         repository=graph_build_repository,
-        source=public_graph_source_service,
-        coordinator=indexing_service.graph,
+        source=cast(PublicGraphSourcePort, public_graph_source_service),
+        coordinator=cast(GraphComponentCoordinatorPort, graph_coordinator),
         availability=graph_availability_port,
         extractor=graph_build_extractor,
         outbox=graph_build_outbox_port,

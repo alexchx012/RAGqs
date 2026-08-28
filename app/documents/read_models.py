@@ -107,7 +107,7 @@ class DocumentReadModels:
                 sheets=None,
             )
         )
-        hits = ()
+        hits: Sequence[Any] = ()
         if message_id is not None and self._service._message_citation_preview_port is not None:
             hits = self._service._message_citation_preview_port.get_hits(
                 principal, message_id, str(document["id"]), str(version["id"])
@@ -281,16 +281,16 @@ class DocumentReadModels:
                 .one_or_none()
             )
             if row is None:
-                document = (
+                document_row = (
                     connection.execute(
                         select(documents_table).where(documents_table.c.id == document_id)
                     )
                     .mappings()
                     .one_or_none()
                 )
-                if document is not None:
-                    if document["lifecycle_status"] == DocumentLifecycle.ACTIVE.value:
-                        self._service._authorize(principal, str(document["space_id"]), "read")
+                if document_row is not None:
+                    if document_row["lifecycle_status"] == DocumentLifecycle.ACTIVE.value:
+                        self._service._authorize(principal, str(document_row["space_id"]), "read")
                 raise PlatformError("document_unavailable", "Document is not available", {}, 404)
             self._service._authorize(principal, str(row["space_id"]), "read")
             if row["lifecycle_status"] != DocumentLifecycle.ACTIVE.value:

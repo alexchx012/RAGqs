@@ -6,7 +6,7 @@ import secrets
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, cast
 
 from sqlalchemy import Engine, and_, delete, select, update
 from sqlalchemy.engine import Connection
@@ -23,9 +23,11 @@ from app.platform.database import _current_timestamp, _insert_do_nothing
 from app.platform.errors import PlatformError
 
 from .models import (
+    ComponentState,
     Generation,
     GenerationComponentReaderLease,
     GenerationReferenceLease,
+    GenerationStatus,
     IndexGenerationGcReceipt,
 )
 from .observability import (
@@ -310,12 +312,12 @@ class SqlAlchemyIndexingRepository:
                 raise PlatformError("operation_not_found", "operation was not reserved", {}, 404)
 
     @staticmethod
-    def _row_to_generation(row: Mapping[str, Any]) -> Generation:
+    def _row_to_generation(row: Mapping[Any, Any]) -> Generation:
         manifest = dict(row["manifest_json"] or {})
         component = dict(manifest.get("components", {}).get("public_graph", {}))
         return Generation(
             generation_id=str(row["id"]),
-            status=str(row["status"]),
+            status=cast(GenerationStatus, str(row["status"])),
             base_revision=int(row["base_revision"]),
             applied_revision=int(row["applied_revision"]),
             manifest=manifest,
@@ -330,7 +332,7 @@ class SqlAlchemyIndexingRepository:
                 if row["rollback_applied_revision"] is not None
                 else None
             ),
-            graph_component_state=str(component.get("state", "disabled")),
+            graph_component_state=cast(ComponentState, str(component.get("state", "disabled"))),
         )
 
     def _ensure_initialized(self, connection: Connection, *, current_revision: int = 0) -> None:
@@ -1806,11 +1808,18 @@ class SqlAlchemyIndexingRepository:
                         "idempotency_key_conflict", "GC operation conflicts", {}, 409
                     )
                 payload = existing["response_json"] or {}
+                payload_state = cast(
+                    Literal["accepted", "blocked", "already_purged"],
+                    payload.get("state", "blocked"),
+                )
+                payload_reasons = payload.get("blocking_reasons", ())
+                if not isinstance(payload_reasons, (list, tuple)):
+                    payload_reasons = ()
                 return IndexGenerationGcReceipt(
                     operation_id,
                     candidate_generation_id,
-                    payload.get("state", "blocked"),
-                    tuple(payload.get("blocking_reasons", ())),
+                    payload_state,
+                    tuple(str(item) for item in payload_reasons),
                     bool(payload.get("retryable", False)),
                 )
             generation = self.get_generation(candidate_generation_id, connection=conn)
@@ -1850,12 +1859,15 @@ class SqlAlchemyIndexingRepository:
                     .where(index_generations_table.c.id == candidate_generation_id)
                     .values(manifest_json=manifest)
                 )
+            receipt_reasons = receipt["blocking_reasons"]
+            if not isinstance(receipt_reasons, (list, tuple)):
+                receipt_reasons = ()
             return IndexGenerationGcReceipt(
                 operation_id,
                 candidate_generation_id,
-                state,
-                tuple(receipt["blocking_reasons"]),
-                receipt["retryable"],
+                cast(Literal["accepted", "blocked", "already_purged"], state),
+                tuple(str(item) for item in receipt_reasons),
+                bool(receipt["retryable"]),
             )
 
     def _gc_blocking_reasons(

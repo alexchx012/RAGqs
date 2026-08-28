@@ -122,8 +122,10 @@ class AccountArchiveRecord:
 def _default(value: object) -> object:
     if isinstance(value, (bytes, bytearray, memoryview)):
         return base64.b64encode(bytes(value)).decode("ascii")
-    if isinstance(value, (datetime, Decimal)):
+    if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
     return str(value)
 
 
@@ -131,7 +133,9 @@ def _object_payload(result: object) -> bytes:
     # ObjectStorePort.get() returns (payload, metadata) for some adapters.
     if isinstance(result, tuple):
         return bytes(result[0])
-    return bytes(result)  # type: ignore[arg-type]
+    if isinstance(result, (bytes, bytearray, memoryview)):
+        return bytes(result)
+    raise TypeError("object store payload must be bytes")
 
 
 def _add_entry(
@@ -207,7 +211,10 @@ class AccountArchivePackageBuilder:
                 key = str(row["original_object_key"])
                 if self._object_store.exists(key):
                     blobs.append(
-                        (f"objects/{row['version_id']}", _object_payload(self._object_store.get(key)))
+                        (
+                            f"objects/{row['version_id']}",
+                            _object_payload(self._object_store.get(key)),
+                        )
                     )
 
         manifest_files: list[dict[str, object]] = []
@@ -219,8 +226,10 @@ class AccountArchivePackageBuilder:
             with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as archive:
                 for entry_name, payload in blobs:
                     _add_entry(archive, manifest_files, entry_name, payload)
-                for entity_name, rows in entities.items():
-                    payload = json.dumps(rows, default=_default, ensure_ascii=False).encode("utf-8")
+                for entity_name, entity_rows in entities.items():
+                    payload = json.dumps(entity_rows, default=_default, ensure_ascii=False).encode(
+                        "utf-8"
+                    )
                     _add_entry(archive, manifest_files, f"{entity_name}.json", payload)
                 manifest = {
                     "format_version": ARCHIVE_FORMAT_VERSION,
@@ -247,9 +256,7 @@ class AccountArchivePackageBuilder:
                 pass
             raise
         record = _hash_file(final_path)
-        return AccountArchiveRecord(
-            file_name=target_name, size_bytes=record[0], sha256=record[1]
-        )
+        return AccountArchiveRecord(file_name=target_name, size_bytes=record[0], sha256=record[1])
 
     def verify(
         self,

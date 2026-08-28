@@ -463,6 +463,8 @@ def embedding_config_from_mapping(value: Any) -> EmbeddingConfig:
             "embedding_config_invalid", "embedding configuration is required", {}, 422
         )
     dimension = value.get("dimension")
+    if dimension is None:
+        raise PlatformError("embedding_config_invalid", "embedding dimension is invalid", {}, 422)
     try:
         parsed_dimension = int(dimension)
     except (TypeError, ValueError) as exc:

@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal, cast
 
 from sqlalchemy import Connection, Engine, select, update
 
@@ -221,7 +221,7 @@ def _judge_with_gate(
 class RetrievalReleaseService:
     """Immutable retrieval-profile releases backed by indexing-owned metadata."""
 
-    def __init__(self, engine: Engine, *, now: callable | None = None) -> None:
+    def __init__(self, engine: Engine, *, now: Callable[[], datetime] | None = None) -> None:
         self._engine = engine
         self._now = now or (lambda: datetime.now(UTC))
 
@@ -506,7 +506,7 @@ class RetrievalReleaseService:
             version=str(snapshot["version"]),
             top_k=int(snapshot["top_k"]),
             candidate_limit=int(snapshot["candidate_limit"]),
-            effort=str(snapshot["effort"]),
+            effort=cast(Literal["quick", "think", "deep"], str(snapshot["effort"])),
             reranker_release=str(snapshot["reranker_release"]),
             tokenizer_version=str(snapshot.get("tokenizer_version", "default")),
             score_threshold=snapshot.get("score_threshold"),

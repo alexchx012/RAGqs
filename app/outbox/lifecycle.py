@@ -224,9 +224,13 @@ class SqlAlchemyOutboxLifecycle:
         if isinstance(command, DocumentNotificationRedactionCommand):
             if principal == DOCUMENTS_CALLER:
                 return
-        elif isinstance(
-            command, (AccountNotificationRetirementCommand, EligibleAccountEventCompactionCommand)
-        ) and principal == RETENTION_CALLER:
+        elif (
+            isinstance(
+                command,
+                (AccountNotificationRetirementCommand, EligibleAccountEventCompactionCommand),
+            )
+            and principal == RETENTION_CALLER
+        ):
             return
         raise UnauthorizedLifecycleCaller(principal)
 
@@ -1040,14 +1044,12 @@ class SqlAlchemyOutboxLifecycle:
             materialized_at = row["materialized_at_utc"]
             seq = int(row["notification_seq"])
             fingerprint = canonical_receipt_fingerprint(event_id, user_id, "materialized", seq)
-            existing = (
-                connection.execute(
-                    select(notification_delivery_receipt_table.c.event_id).where(
-                        notification_delivery_receipt_table.c.event_id == event_id,
-                        notification_delivery_receipt_table.c.recipient_user_id == user_id,
-                    )
-                ).scalar_one_or_none()
-            )
+            existing = connection.execute(
+                select(notification_delivery_receipt_table.c.event_id).where(
+                    notification_delivery_receipt_table.c.event_id == event_id,
+                    notification_delivery_receipt_table.c.recipient_user_id == user_id,
+                )
+            ).scalar_one_or_none()
             # Receipt 唯一写入者就是本套代码；已存在即此前 retirement 的幂等
             # 重放，按 PK 存在直接跳过（fingerprint 列保留作审计事实）。
             if existing is not None:
@@ -1098,14 +1100,12 @@ class SqlAlchemyOutboxLifecycle:
                     409,
                 )
             fingerprint = canonical_receipt_fingerprint(event_id, user_id, outcome, None)
-            existing = (
-                connection.execute(
-                    select(notification_delivery_receipt_table.c.event_id).where(
-                        notification_delivery_receipt_table.c.event_id == event_id,
-                        notification_delivery_receipt_table.c.recipient_user_id == user_id,
-                    )
-                ).scalar_one_or_none()
-            )
+            existing = connection.execute(
+                select(notification_delivery_receipt_table.c.event_id).where(
+                    notification_delivery_receipt_table.c.event_id == event_id,
+                    notification_delivery_receipt_table.c.recipient_user_id == user_id,
+                )
+            ).scalar_one_or_none()
             if existing is not None:
                 continue
             connection.execute(

@@ -1050,7 +1050,7 @@ class RetrievalService:
                             latency_ms=stale_duration_ms,
                         )
             finally:
-                if graph_lease is not None:
+                if graph_lease is not None and self._graph_reader is not None:
                     self._graph_reader.release_reader_lease(graph_lease)
         # A reranker fallback has no final score, so a profile threshold is not
         # applicable. Thresholding a fallback would silently turn a degraded
@@ -1186,7 +1186,7 @@ class CitationService:
 
     def __init__(
         self,
-        visibility_facts: VisibilityFactsPort | Callable[[IndexChunk, Any], Any],
+        visibility_facts: VisibilityFactsPort | Callable[[IndexChunk, Any], Any] | None,
         generation_manager: GenerationManager | None = None,
         *,
         identity_access: AllowedRetrievalScopePort | Any | None = None,
@@ -1253,7 +1253,7 @@ class CitationService:
                 "snippet": candidate.snippet,
             }
         finally:
-            if lease is not None and generation_lease is None:
+            if lease is not None and generation_lease is None and self._generation is not None:
                 self._generation.release_reference_lease(lease.lease_id)
 
 

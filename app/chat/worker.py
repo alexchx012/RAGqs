@@ -669,9 +669,7 @@ class ChatGenerationWorker:
         # Deep-tier progress rows: one step index per retrieval round, with the
         # active/done pair sharing that index (frontend contract §3.7).
         step_index = 0
-        skip_retrieval_events = bool(
-            checkpoint and checkpoint.get("phase") == "retrieval_complete"
-        )
+        skip_retrieval_events = bool(checkpoint and checkpoint.get("phase") == "retrieval_complete")
         citations: list[Mapping[str, Any]] = []
         while True:
             if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):

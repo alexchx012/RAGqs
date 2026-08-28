@@ -388,17 +388,17 @@ def cache_hit_rate_facts(
         elapsed = (
             (_utc(completed) - start).total_seconds() if isinstance(completed, datetime) else 0
         )
-        bucket = min(4, max(0, int(elapsed / window_seconds * 5)))
-        buckets[bucket][0] += hit
-        buckets[bucket][1] += miss
+        bucket_index = min(4, max(0, int(elapsed / window_seconds * 5)))
+        buckets[bucket_index][0] += hit
+        buckets[bucket_index][1] += miss
     total = total_hit + total_miss
     if total == 0:
         return {"value": None, "sparkline": []}
-    sparkline = []
-    for bucket in buckets:
-        bucket_total = sum(bucket)
+    sparkline: list[float] = []
+    for bucket_values in buckets:
+        bucket_total = sum(bucket_values)
         if bucket_total > 0:
-            sparkline.append(round(bucket[0] / bucket_total, 4))
+            sparkline.append(round(bucket_values[0] / bucket_total, 4))
     return {"value": round(total_hit / total, 4), "sparkline": sparkline}
 
 
@@ -477,7 +477,7 @@ def provider_usage_breakdown(
                 identity_user_table.c.department_id,
             ).where(identity_user_table.c.id.in_(user_ids))
         ).mappings()
-        users = {str(row["id"]): row for row in user_rows}
+        users = {str(row["id"]): dict(row) for row in user_rows}
         department_ids.update(
             str(row["department_id"])
             for row in users.values()
@@ -585,15 +585,14 @@ def department_question_rows(
 def _space_count_rows(connection: Connection, counts: Mapping[str, int]) -> list[Mapping[str, Any]]:
     if not counts:
         return []
-    names = dict(
-        connection.execute(
-            select(identity_space_table.c.id, identity_space_table.c.name).where(
-                identity_space_table.c.id.in_(counts)
-            )
-        ).all()
-    )
-    labels = {str(space_id): str(name) for space_id, name in names}
-    rows = [
+    name_rows = connection.execute(
+        select(identity_space_table.c.id, identity_space_table.c.name).where(
+            identity_space_table.c.id.in_(counts)
+        )
+    ).all()
+    names: dict[str, str] = {str(row[0]): str(row[1]) for row in name_rows}
+    labels = {str(space_id): str(name) for space_id, name in names.items()}
+    rows: list[Mapping[str, Any]] = [
         {"label": labels.get(space_id, space_id), "count": count}
         for space_id, count in counts.items()
     ]

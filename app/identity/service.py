@@ -14,6 +14,7 @@ from typing import Any, Literal
 from sqlalchemy import Engine, and_, delete, exists, func, literal, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.platform.config import AuthSettings, _resolve_user_deletion_archive_dir
 from app.platform.context import current_context
@@ -1664,8 +1665,9 @@ class IdentityAccessService:
         with self._engine.begin() as connection:
             workflow = (
                 connection.execute(
-                    select(identity_deletion_workflow_table)
-                    .where(identity_deletion_workflow_table.c.user_id == user_id)
+                    select(identity_deletion_workflow_table).where(
+                        identity_deletion_workflow_table.c.user_id == user_id
+                    )
                 )
                 .mappings()
                 .one_or_none()
@@ -1676,9 +1678,7 @@ class IdentityAccessService:
                 )
             if workflow["status"] != "pending" or workflow["archive_completed_at_utc"] is not None:
                 return {"user_id": user_id, "archive_status": "already_archived"}
-            snapshot_dir = str(
-                workflow["archive_dir_snapshot"] or self._effective_archive_dir()
-            )
+            snapshot_dir = str(workflow["archive_dir_snapshot"] or self._effective_archive_dir())
             deletion_id = str(workflow["cleanup_operation_id"])
             builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
             try:
@@ -1750,7 +1750,7 @@ class IdentityAccessService:
         self,
         connection: Connection,
         *,
-        workflow: Mapping[str, object],
+        workflow: Mapping[Any, Any],
         user_id: str,
         now: datetime,
     ) -> None:
@@ -1814,19 +1814,15 @@ class IdentityAccessService:
         backend_kind: str,
         resource_id: str,
     ) -> bool:
-        status = (
-            connection.execute(
-                select(identity_account_cleanup_target_table.c.status)
-                .where(
-                    and_(
-                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
-                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
-                        identity_account_cleanup_target_table.c.resource_id == resource_id,
-                    )
+        status = connection.execute(
+            select(identity_account_cleanup_target_table.c.status).where(
+                and_(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                    identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                    identity_account_cleanup_target_table.c.resource_id == resource_id,
                 )
             )
-            .scalar_one_or_none()
-        )
+        ).scalar_one_or_none()
         return status == "completed"
 
     def _record_cleanup_target(
@@ -1840,19 +1836,15 @@ class IdentityAccessService:
         last_error: str | None,
         now: datetime,
     ) -> None:
-        existing = (
-            connection.execute(
-                select(identity_account_cleanup_target_table.c.deletion_id)
-                .where(
-                    and_(
-                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
-                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
-                        identity_account_cleanup_target_table.c.resource_id == resource_id,
-                    )
+        existing = connection.execute(
+            select(identity_account_cleanup_target_table.c.deletion_id).where(
+                and_(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                    identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                    identity_account_cleanup_target_table.c.resource_id == resource_id,
                 )
             )
-            .scalar_one_or_none()
-        )
+        ).scalar_one_or_none()
         if existing is None:
             connection.execute(
                 identity_account_cleanup_target_table.insert().values(
@@ -1900,15 +1892,14 @@ class IdentityAccessService:
         # the current avatar object must be removed (and recorded as a target)
         # while the row still carries it. Replaced avatars are already handled
         # by the identity object-cleanup queue above.
-        avatar_url = (
-            connection.execute(
-                select(identity_user_table.c.avatar_url).where(
-                    identity_user_table.c.id == user_id
-                )
-            ).scalar_one_or_none()
-        )
+        avatar_url = connection.execute(
+            select(identity_user_table.c.avatar_url).where(identity_user_table.c.id == user_id)
+        ).scalar_one_or_none()
         if self._is_cleanup_target_completed(
-            connection, deletion_id=deletion_id, backend_kind="object_store.avatar", resource_id=user_id
+            connection,
+            deletion_id=deletion_id,
+            backend_kind="object_store.avatar",
+            resource_id=user_id,
         ):
             pass
         else:
@@ -1950,10 +1941,19 @@ class IdentityAccessService:
                     True,
                 )
         targets: tuple[tuple[str, str], ...] = (
-            ("postgres.chat_conversation_groups", "DELETE FROM chat_conversation_group WHERE owner_user_id = :user_id"),
-            ("postgres.chat_conversations", "DELETE FROM chat_conversation WHERE owner_user_id = :user_id"),
+            (
+                "postgres.chat_conversation_groups",
+                "DELETE FROM chat_conversation_group WHERE owner_user_id = :user_id",
+            ),
+            (
+                "postgres.chat_conversations",
+                "DELETE FROM chat_conversation WHERE owner_user_id = :user_id",
+            ),
             ("postgres.chat_messages", "DELETE FROM chat_message WHERE owner_user_id = :user_id"),
-            ("postgres.chat_message_feedback", "DELETE FROM chat_message_feedback WHERE voter_user_id = :user_id"),
+            (
+                "postgres.chat_message_feedback",
+                "DELETE FROM chat_message_feedback WHERE voter_user_id = :user_id",
+            ),
             (
                 "postgres.user_tasks",
                 """
@@ -1961,23 +1961,22 @@ class IdentityAccessService:
                   AND document_id IN (SELECT id FROM documents WHERE lifecycle_status = 'deleted')
                 """,
             ),
-            ("postgres.identity_spaces", "DELETE FROM identity_space WHERE owner_user_id = :user_id"),
+            (
+                "postgres.identity_spaces",
+                "DELETE FROM identity_space WHERE owner_user_id = :user_id",
+            ),
         )
         failed = False
         for backend_kind, sql in targets:
-            completed = (
-                connection.execute(
-                    select(identity_account_cleanup_target_table.c.status)
-                    .where(
-                        and_(
-                            identity_account_cleanup_target_table.c.deletion_id == deletion_id,
-                            identity_account_cleanup_target_table.c.backend_kind == backend_kind,
-                            identity_account_cleanup_target_table.c.resource_id == user_id,
-                        )
+            completed = connection.execute(
+                select(identity_account_cleanup_target_table.c.status).where(
+                    and_(
+                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                        identity_account_cleanup_target_table.c.resource_id == user_id,
                     )
                 )
-                .scalar_one_or_none()
-            )
+            ).scalar_one_or_none()
             if completed == "completed":
                 continue
             try:
@@ -2109,9 +2108,7 @@ class IdentityAccessService:
                     409,
                     True,
                 )
-            self._verify_or_restore_archive(
-                connection, workflow=workflow, user_id=user_id, now=now
-            )
+            self._verify_or_restore_archive(connection, workflow=workflow, user_id=user_id, now=now)
             pending_personal_documents: int
             try:
                 pending_personal_documents = (
@@ -2399,7 +2396,9 @@ class IdentityAccessService:
         if role is not None and role not in _ROLES:
             raise PlatformError("validation_error", "Role is invalid", {}, 422)
         query = q.strip().casefold() if q and q.strip() else None
-        conditions = [identity_user_table.c.lifecycle_status.in_(("active", "pending_delete"))]
+        conditions: list[ColumnElement[bool]] = [
+            identity_user_table.c.lifecycle_status.in_(("active", "pending_delete"))
+        ]
         if actor.role == "ops":
             conditions.append(identity_user_table.c.role.in_(("user", "minister")))
         if department_id is not None:
@@ -3399,7 +3398,7 @@ class IdentityAccessService:
                     429,
                     True,
                 )
-            user_record: Mapping[str, object] | None = None
+            user_record: Mapping[Any, Any] | None = None
             if login_error is None:
                 user_record = (
                     connection.execute(

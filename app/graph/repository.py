@@ -11,7 +11,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -96,11 +96,11 @@ class SqlAlchemyGraphRepository:
     # ------------------------------------------------------------------ run IO
 
     @staticmethod
-    def _run(row: Mapping[str, Any]) -> GraphRunRecord:
+    def _run(row: Mapping[Any, Any]) -> GraphRunRecord:
         return GraphRunRecord(
             graph_build_id=str(row["id"]),
             version=int(row["version"]),
-            state=str(row["state"]),
+            state=cast(Any, str(row["state"])),
             initiator_identity_id=str(row["initiator_identity_id"]),
             source_revision=int(row["source_revision"]),
             source_manifest_id=str(row["source_manifest_id"]),

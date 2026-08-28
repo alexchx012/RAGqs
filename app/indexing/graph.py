@@ -560,15 +560,12 @@ class GraphComponentCoordinator:
                     operation_id=f"{operation_id}:source-hold",
                     connection=transaction,
                 )
-                staging_kwargs = {
-                    "expected_active_generation_id": expected_active_generation_id,
-                    "generation_id": target_generation_id,
-                    "manifest": {"graph_build_id": graph_build_id},
-                }
                 if self._repository is not None:
                     staging = self._repository.create_staging(
                         connection=transaction,
-                        **staging_kwargs,
+                        expected_active_generation_id=expected_active_generation_id,
+                        generation_id=target_generation_id,
+                        manifest={"graph_build_id": graph_build_id},
                     )
                 else:
                     base_snapshot = tuple(
@@ -583,7 +580,12 @@ class GraphComponentCoordinator:
                         }
                         for publication in snapshot.publications
                     )
-                    staging = self._generation.create_staging(base_snapshot, **staging_kwargs)
+                    staging = self._generation.create_staging(
+                        base_snapshot,
+                        expected_active_generation_id=expected_active_generation_id,
+                        generation_id=target_generation_id,
+                        manifest={"graph_build_id": graph_build_id},
+                    )
                 fence = component_input.target_generation_fence
                 self._generation.set_component_state(
                     staging.generation_id,

@@ -128,6 +128,7 @@ class GraphBuildService:
                 request_hash=request_hash,
             )
             if reservation == "replay":
+                assert replay is not None
                 if "error" in (replay or {}):
                     raise _error_from_response(replay)
                 return _view_from_response(replay)
@@ -390,6 +391,7 @@ class GraphBuildService:
                 request_hash=request_hash,
             )
             if reservation == "replay":
+                assert replay is not None
                 if "error" in (replay or {}):
                     raise _error_from_response(replay)
                 return _view_from_response(replay)
@@ -508,14 +510,13 @@ class GraphBuildService:
             component = self._active_component(connection)
             latest = self._repository.latest_run(connection=connection)
         availability, active_generation = self._availability_view(head, component)
+        latest_view = GraphRunView.from_record(latest)
         return {
             "space_id": "public",
             "source_revision": int(head.source_revision),
             "graph_availability": availability,
             "active_generation": active_generation,
-            "latest_run": (
-                GraphRunView.from_record(latest).to_dict() if latest is not None else None
-            ),
+            "latest_run": latest_view.to_dict() if latest_view is not None else None,
         }
 
     def _active_component(self, connection: Any) -> ActiveGraphComponent | None:

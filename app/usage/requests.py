@@ -77,6 +77,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Engine, and_, func, select, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.documents.schema import knowledge_submissions_table
 from app.identity.schema import identity_user_table
@@ -772,7 +773,7 @@ class QuotaRequestService:
                     )
                 ).scalar_one()
         role = str(getattr(actor, "role", ""))
-        space_filter = None
+        space_filter: ColumnElement[bool] | None = None
         if role == "admin":
             space_filter = (
                 knowledge_submissions_table.c.space_id == "public"

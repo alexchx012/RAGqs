@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import and_, delete, select, update
@@ -455,9 +456,7 @@ class SubmissionService:
                 {
                     "submission_id": row["id"],
                     "space_id": row["space_id"],
-                    "space_name": self._space_display_name(
-                        str(row["space_id"]), department_names
-                    ),
+                    "space_name": self._space_display_name(str(row["space_id"]), department_names),
                     "version": row["version"],
                     "status": row["status"],
                     "file_name": row["file_name"],
@@ -482,9 +481,7 @@ class SubmissionService:
         except PlatformError:
             return {}
         return {
-            str(item["id"]): str(item["name"])
-            for item in departments
-            if item.get("id") is not None
+            str(item["id"]): str(item["name"]) for item in departments if item.get("id") is not None
         }
 
     def _submitter_profile(self, submitter_user_id: str) -> tuple[str, dict[str, str] | None]:
@@ -1115,7 +1112,7 @@ class SubmissionService:
             )
             return response
 
-    def cleanup_scheduled(self, *, limit: int = 100) -> list[str]:
+    def cleanup_scheduled(self, *, limit: int = 100) -> Sequence[str]:
         if limit < 1 or limit > 1000:
             raise PlatformError("validation_error", "cleanup limit is invalid", {}, 422)
         with self._service._engine.begin() as connection:

@@ -605,7 +605,8 @@ class OutboxDispatcher:
                         outbox_delivery_table.c.cycle_attempt_number,
                         outbox_delivery_table.c.lease_owner,
                         outbox_delivery_table.c.fence_token,
-                    ).where(
+                    )
+                    .where(
                         and_(
                             outbox_delivery_table.c.status == "running",
                             outbox_delivery_table.c.lease_expires_at_utc <= now,

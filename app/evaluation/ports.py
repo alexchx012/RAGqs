@@ -131,6 +131,7 @@ class IndexingReplayAdapter:
                 narrowing_scope={"space_ids": [space_id]},
                 profile=profile,
             )
+
             def _to_mapping(hit: Any) -> dict[str, Any]:
                 return {
                     "document_id": hit.chunk.document_id,

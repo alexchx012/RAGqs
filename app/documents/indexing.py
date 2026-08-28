@@ -56,10 +56,7 @@ class IndexStagingRequest:
             or not isinstance(self.processing_profile_version, str)
             or not self.processing_profile_version.strip()
             or ((self.usage_ownership is None) != (self.usage_deadline_at_utc is None))
-            or (
-                self.usage_ownership is not None
-                and not isinstance(self.usage_ownership, Mapping)
-            )
+            or (self.usage_ownership is not None and not isinstance(self.usage_ownership, Mapping))
             or (
                 self.usage_deadline_at_utc is not None
                 and not isinstance(self.usage_deadline_at_utc, datetime)
@@ -137,7 +134,9 @@ class IndexStagingRequest:
                 input_manifest_hash=str(value["input_manifest_hash"]),
                 processing_profile_version=str(value["processing_profile_version"]),
                 usage_ownership=(
-                    dict(usage_ownership) if isinstance(usage_ownership, Mapping) else usage_ownership
+                    dict(usage_ownership)
+                    if isinstance(usage_ownership, Mapping)
+                    else usage_ownership
                 ),
                 usage_deadline_at_utc=usage_deadline,
                 usage_replay_generation=int(usage_replay_generation),

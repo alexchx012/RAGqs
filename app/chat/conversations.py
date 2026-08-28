@@ -202,9 +202,7 @@ class ConversationService:
                 and old_group_id is not None
                 and values["group_id"] != old_group_id
             ):
-                self._delete_group_if_empty(
-                    connection, group_id=str(old_group_id), user_id=user_id
-                )
+                self._delete_group_if_empty(connection, group_id=str(old_group_id), user_id=user_id)
             updated = {**existing, **values}
             return self._summary(updated)
 

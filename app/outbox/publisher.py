@@ -1151,13 +1151,15 @@ class SqlAlchemyIngestionOutboxAdapter:
         ocr_low_confidence_fact: Mapping[str, object] | None,
         connection: Connection,
     ) -> tuple[str, ...]:
-        base_payload = {
+        base_payload: dict[str, object] = {
             "job_id": job_id,
             "document_id": document_id,
             "document_version_id": document_version_id,
             "publication_id": publication_id,
         }
-        events: list[tuple[str, dict[str, object]]] = [("ingestion_completed", base_payload)]
+        events: list[
+            tuple[Literal["ingestion_completed", "ocr_low_confidence"], dict[str, object]]
+        ] = [("ingestion_completed", base_payload)]
         if ocr_low_confidence:
             if not isinstance(ocr_low_confidence_fact, Mapping):
                 raise PlatformError(

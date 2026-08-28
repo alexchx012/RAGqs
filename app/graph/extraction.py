@@ -11,7 +11,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from app.platform.errors import PlatformError
 
@@ -101,14 +101,20 @@ class DeterministicPublicGraphExtractor:
     def extract(self, snapshot: Any, session: GraphExtractionSession) -> None:
         publications = tuple(getattr(snapshot, "publications", ()))
         for publication in publications:
-            publication_id = str(publication.get("publication_id", ""))
-            content_manifest_id = str(publication.get("content_manifest_id", ""))
-            fingerprint = _fingerprint(publication)
+            publication_mapping: Mapping[str, str] = (
+                publication if isinstance(publication, Mapping) else {}
+            )
+            publication_id = str(publication_mapping.get("publication_id", ""))
+            content_manifest_id = str(publication_mapping.get("content_manifest_id", ""))
+            fingerprint = _fingerprint(publication_mapping)
             result = self._call_with_retries(
                 session,
                 resource_id=content_manifest_id or None,
                 request_fingerprint=fingerprint,
-                send=lambda pub=publication: _deterministic_graph(pub),
+                send=cast(
+                    Callable[[], Any],
+                    lambda pub=publication_mapping: _deterministic_graph(pub),
+                ),
             )
             session.staging.stage(
                 resource_kind="publication_graph",
