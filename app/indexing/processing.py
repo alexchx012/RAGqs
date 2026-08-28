@@ -109,6 +109,53 @@ class ProcessingOutput:
     receipt: IndexProcessingReceipt
 
 
+# ---------------------------------------------------------------------------
+# 交叉引用反向链接解析（07-4.6.9）
+# ---------------------------------------------------------------------------
+
+_CROSS_REF_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:如|见|参见|参考)\s*图\s*([0-9]+(?:[.:：-][0-9]+)*)",
+        r"(?:如|见|参见|参考)\s*表\s*([0-9]+(?:[.:：-][0-9]+)*)",
+        r"图\s*([0-9]+(?:[.:：-][0-9]+)*)\s*(?:所示|展示|显示)",
+        r"figure\s+([0-9]+(?:[.:：-][0-9]+)*)",
+        r"table\s+([0-9]+(?:[.:：-][0-9]+)*)",
+        r"(?:如|见|参见)\s*([0-9]+(?:\.[0-9]+)+)\s*(?:节|章)",
+        r"section\s+([0-9]+(?:\.[0-9]+)+)",
+    )
+)
+
+
+def parse_reverse_links(text: str, *, limit: int = 32) -> tuple[dict[str, str], ...]:
+    """解析"如图 X/见图 X/figure N/表 X/§X.Y"类交叉引用。
+
+    返回去重后的目标列表：``{"kind": "figure"|"table"|"section", "ref": "3"}``；
+    超出 limit 截断（防解析风暴）。结果写入 chunk ``reverse_links`` 元数据通道，
+    供图/表/章节 chunk 建立反向链接（谁引用了我）。
+    """
+
+    seen: dict[tuple[str, str], dict[str, str]] = {}
+    for pattern in _CROSS_REF_PATTERNS:
+        for match in pattern.finditer(text):
+            ref = match.group(1).rstrip(".。")
+            if not ref:
+                continue
+            source = match.group(0).lower()
+            if "table" in source or "表" in source:
+                kind = "table"
+            elif "section" in source or "节" in source or "章" in source:
+                kind = "section"
+            else:
+                kind = "figure"
+            key = (kind, ref)
+            if key not in seen:
+                seen[key] = {"kind": kind, "ref": ref}
+            if len(seen) >= limit:
+                return tuple(seen.values())
+    return tuple(seen.values())
+
+
 def _machine_low_confidence_fact(confidence: float, page: int | None) -> dict[str, Any]:
     """Outbox-closed OCR fact shape: only confidence, page and region."""
 
@@ -178,6 +225,10 @@ def _sections(text: str) -> list[tuple[str, str]]:
             path = path[: max(0, level - 1)] + [title]
             saw_heading = True
         elif line.strip():
+            # B9-locator：段落边界哨兵——空行在原始文本中分隔段落，section
+            # 化时以显式空行保留（下游按空行切块/编段落号）；连续空行折叠。
+            if body and body[-1] != "":
+                body.append("")
             body.append(line.rstrip())
     flush()
     return sections
@@ -665,6 +716,23 @@ class ContentProcessor:
             summary = dict(summary)
             page_count = int(parsed.get("page_count", page_count or 0))
             summary["page_count"] = page_count
+            # B4 内嵌图片计量：MinerU figure 块计数进入 summary；bailian 折算
+            # 扣页（文档载体 pages+images），internvl 只记用量不扣（消费端
+            # _metered_pages 按 embedded_image_provider 区分）。降级路径
+            # （mineru_probe_failed）不带 image_count → 不虚计。
+            embedded_images = parsed.get("image_count")
+            if (
+                isinstance(embedded_images, int)
+                and not isinstance(embedded_images, bool)
+                and embedded_images > 0
+            ):
+                summary["image_count"] = embedded_images
+                provider = getattr(self._image_describer, "provider", None)
+                summary["metering"] = {
+                    "class": "document",
+                    "embedded_image_count": embedded_images,
+                    "embedded_image_provider": str(provider) if provider else "none",
+                }
             parsed_text_layer = parsed.get("has_text_layer")
             has_text_layer = (
                 bool(parsed_text_layer) if parsed_text_layer is not None else bool(has_text_layer)
@@ -766,6 +834,36 @@ class ContentProcessor:
                 }
             parsed_chunks = parsed.get("chunks", ())
             locations = tuple(parsed_chunks) if isinstance(parsed_chunks, Sequence) else ()
+            # B9 消费端精化：页重建文本（mineru page_texts）供 snippet 页内定位。
+            raw_page_texts = parsed.get("page_texts")
+            page_texts = (
+                {str(key): str(value) for key, value in raw_page_texts.items()}
+                if isinstance(raw_page_texts, Mapping)
+                else {}
+            )
+
+            def _pdf_span(index: int, chunk: IndexChunk) -> str | None:
+                """页内字符偏移：优先 snippet 在页重建文本中的真实定位
+                （同页多处重复可消歧）；未命中回退 mineru 的页文本全幅 span。"""
+
+                location = (
+                    locations[index]
+                    if index < len(locations) and isinstance(locations[index], Mapping)
+                    else None
+                )
+                if location is None or not has_text_layer:
+                    return None
+                fallback = location.get("span")
+                page_number = str(int(location.get("page", 1)))
+                page_text = page_texts.get(page_number, "")
+                snippet = chunk.snippet or ""
+                if page_text and snippet:
+                    probe = snippet[:80]
+                    found = page_text.find(probe)
+                    if found >= 0:
+                        return f"{found}:{found + len(snippet)}"
+                return str(fallback) if fallback is not None else None
+
             if kind in {"application/pdf", "pdf"}:
                 if structure_class == "basic":
                     pass
@@ -777,9 +875,8 @@ class ContentProcessor:
                                 {
                                     "page": int(locations[index].get("page", 1)),
                                     **(
-                                        {"span": str(locations[index]["span"])}
-                                        if has_text_layer
-                                        and locations[index].get("span") is not None
+                                        {"span": span_value}
+                                        if (span_value := _pdf_span(index, chunk)) is not None
                                         else {}
                                     ),
                                 }
@@ -1304,12 +1401,33 @@ class ContentProcessor:
         chunks: list[IndexChunk] = []
         for section_index, (path, section) in enumerate(sections, start=1):
             block_index = 0
-            for body in _split_blocks_preserving_tables(
-                section, maximum=self._text_chunk_max_chars
-            ):
+            # 段落锚点（B9-locator）：同遍产出——先按空行切出原始段落，再对
+            # 超长段落做尺寸切块；同一段落切出的续块共享同一 paragraph。
+            # 单 chunk section 不加锚（既有 locator 形状不变）。
+            section_paragraphs = [p for p in re.split(r"\n\s*\n", section) if p.strip()]
+            section_bodies: list[str] = []
+            paragraph_of_body: list[int] = []
+            for paragraph_number, paragraph in enumerate(section_paragraphs, start=1):
+                pieces = _split_blocks_preserving_tables(
+                    paragraph, maximum=self._text_chunk_max_chars
+                )
+                section_bodies.extend(pieces)
+                paragraph_of_body.extend([paragraph_number] * len(pieces))
+            for body, paragraph_number in zip(section_bodies, paragraph_of_body, strict=True):
                 block_index += 1
                 index = len(chunks) + 1
                 compressed = self._compressor.compress(body, context={"section_path": path})
+                locator: dict[str, Any] = {"section_path": path} if path else {}
+                if len(section_bodies) > 1:
+                    locator["paragraph"] = paragraph_number
+                metadata: dict[str, Any] = {
+                    "section_path": path,
+                    "cr_parent_group": f"{section_index}:{block_index}",
+                    "cr_unit": "chunk",
+                }
+                reverse_links = parse_reverse_links(body)
+                if reverse_links:
+                    metadata["reverse_links"] = [dict(link) for link in reverse_links]
                 chunks.append(
                     IndexChunk(
                         chunk_id=f"chunk_{index}",
@@ -1321,15 +1439,11 @@ class ContentProcessor:
                         text=body,
                         embedding_text=compressed,
                         sparse_text=(f"{path}\n{body}" if path else body),
-                        locator={"section_path": path} if path else {},
+                        locator=locator,
                         snippet=body[:500],
                         media_kind=media_kind,
                         manifest_hash=manifest_hash,
-                        metadata={
-                            "section_path": path,
-                            "cr_parent_group": f"{section_index}:{block_index}",
-                            "cr_unit": "chunk",
-                        },
+                        metadata=metadata,
                     )
                 )
         return (
@@ -1880,7 +1994,10 @@ class ContentProcessor:
                         space_id=request.space_id,
                         text=body,
                         embedding_text=self._compressor.compress(body, context={"symbol": name}),
-                        sparse_text=body,
+                        # 共享符号名进 BM25 字段（08-5-14）：长符号被切分后，
+                        # 续块不再包含 def/类声明行；符号名前置保证符号名查询
+                        # 在任意切片上都可命中。文本路径 sparse 字段不变。
+                        sparse_text=f"{name}\n{body}",
                         locator={"section_path": name},
                         snippet=body[:500],
                         media_kind="code",
@@ -2019,4 +2136,10 @@ class ContentProcessor:
         )
 
 
-__all__ = ["ContentProcessor", "IdentityCompression", "OCRSamplePlan", "ProcessingOutput"]
+__all__ = [
+    "ContentProcessor",
+    "IdentityCompression",
+    "OCRSamplePlan",
+    "ProcessingOutput",
+    "parse_reverse_links",
+]
