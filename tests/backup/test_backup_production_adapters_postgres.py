@@ -93,18 +93,25 @@ def postgres_engine():
         pytest.skip("PostgreSQL integration environment is not configured")
     command.upgrade(_alembic_config(database_url), "head")
     engine = create_engine(database_url, future=True)
-    # A snapshot must capture exactly the rows this test seeds: clear every
-    # business table (orchestration bookkeeping is excluded from snapshots
-    # anyway) so the restored state is deterministic.
+
     from sqlalchemy import MetaData
 
-    metadata = MetaData()
-    with engine.begin() as connection:
-        metadata.reflect(bind=connection)
-        for table in reversed(metadata.sorted_tables):
-            if table.name != "alembic_version":
-                connection.execute(table.delete())
+    def clear_business_tables() -> None:
+        # A snapshot must capture exactly the rows this test seeds: clear every
+        # business table (orchestration bookkeeping is excluded from snapshots
+        # anyway) so the restored state is deterministic. Teardown must clear
+        # too: leftover rows (index_generation_heads 等) leak into the platform
+        # integration tests that share this database and start from empty.
+        metadata = MetaData()
+        with engine.begin() as connection:
+            metadata.reflect(bind=connection)
+            for table in reversed(metadata.sorted_tables):
+                if table.name != "alembic_version":
+                    connection.execute(table.delete())
+
+    clear_business_tables()
     yield engine
+    clear_business_tables()
     engine.dispose()
 
 
