@@ -1423,9 +1423,7 @@ def test_deployment_admin_provisioning_honors_the_declared_roster() -> None:
 
     # 403 在建号前抛出：预声明席位未被误建，rogue 引导未触碰数据库。
     with engine.connect() as connection:
-        usernames = set(
-            connection.execute(select(identity_user_table.c.username)).scalars()
-        )
+        usernames = set(connection.execute(select(identity_user_table.c.username)).scalars())
     assert usernames == {"admin"}
 
 
