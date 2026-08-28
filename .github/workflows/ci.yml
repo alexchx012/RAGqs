@@ -21,9 +21,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          # docs/项目设计/ 按仓库约定仅保存在本地（.git/info/exclude），不进 Git，
+          # 因此这里只校验仓库内 tracked 的设计/运维产物。
           required_files=(
-            "docs/项目设计/后端设计.md"
-            "docs/项目设计/前端接口需求.md"
             "docs/deployment.md"
             "docs/operations.md"
             "alembic.ini"
@@ -44,27 +44,9 @@ jobs:
             }
           }
 
-          backend="docs/项目设计/后端设计.md"
-          frontend="docs/项目设计/前端接口需求.md"
           deployment="docs/deployment.md"
           operations="docs/operations.md"
 
-          require_text "$backend" "非流式兼容 JSON 的序列化决策"
-          require_text "$backend" "POST /chat"
-          require_text "$backend" "answer_mode"
-          require_text "$frontend" "POST /chat"
-          require_text "$frontend" "answer_mode"
-
-          require_text "$backend" "POST /messages/{id}/ab-vote"
-          require_text "$backend" "ab_pair"
-          require_text "$backend" "ab_vote"
-          require_text "$frontend" "POST /messages/{id}/ab-vote"
-
-          require_text "$backend" "calibration_window"
-          require_text "$backend" "GET /calibration/window"
-          require_text "$backend" "POST /calibration/window"
-          require_text "$frontend" "GET /calibration/window"
-          require_text "$frontend" "POST /calibration/window"
           require_text "$operations" "POST /calibration/window"
 
           require_text "$deployment" "alembic upgrade head"
