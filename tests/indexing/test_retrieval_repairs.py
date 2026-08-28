@@ -75,6 +75,7 @@ def _production_settings():
             "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
             "RAG_AUTH_ADMIN_ROSTER": "admin",
+            "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
             "USER_DELETION_ARCHIVE_DIR": str(
                 pathlib.Path(tempfile.gettempdir()) / "rag-test-archive"
             ),

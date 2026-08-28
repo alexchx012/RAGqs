@@ -74,12 +74,35 @@ class WorkerSettings(_StrictModel):
 
 class BackupSettings(_StrictModel):
     """Resident backup maintenance worker tuning (schedule poll, write-gate
-    drain protocol and retention sweep batch size)."""
+    drain protocol and retention sweep batch size) plus the backup target in
+    object storage."""
 
     schedule_interval_seconds: int = Field(default=60, ge=5, le=3600)
     gate_settle_seconds: float = Field(default=2.0, ge=0.0, le=300.0)
     gate_drain_timeout_seconds: float = Field(default=30.0, ge=1.0, le=900.0)
     retention_batch_limit: int = Field(default=50, ge=1, le=1000)
+    # 备份目标：对象存储 bucket 内的备份命名空间（必填段）与可选子前缀。
+    # 备份/恢复产物统一落在该键前缀下，不与业务对象混放；生产未配置命名空间
+    # 时启动拒绝（fail-closed，见 validate_startup_settings）。
+    target_namespace: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_-]*$"
+    )
+    target_prefix: str | None = Field(
+        default=None, min_length=1, max_length=256, pattern=r"^[a-z0-9][a-z0-9_/-]*$"
+    )
+
+    @property
+    def target_key_prefix(self) -> str | None:
+        """Effective object key prefix of the backup target, or None when no
+        backup target is configured (dev/test keep the Noop defaults)."""
+
+        if self.target_namespace is None:
+            return None
+        namespace = self.target_namespace.strip("/")
+        prefix = (self.target_prefix or "").strip("/")
+        if prefix:
+            return f"{namespace}/{prefix}"
+        return namespace
 
 
 class LoggingSettings(_StrictModel):
@@ -288,6 +311,8 @@ _ENV_KEYS = {
     "RAG_BACKUP_GATE_SETTLE_SECONDS",
     "RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS",
     "RAG_BACKUP_RETENTION_BATCH_LIMIT",
+    "RAG_BACKUP_TARGET_NAMESPACE",
+    "RAG_BACKUP_TARGET_PREFIX",
     "RAG_LOG_LEVEL",
     "RAG_INDEX_NAMESPACE",
     "RAG_INDEX_SPARSE_PROVIDER",
@@ -500,6 +525,8 @@ def load_platform_settings(
                 "gate_settle_seconds": _float(env, "RAG_BACKUP_GATE_SETTLE_SECONDS"),
                 "gate_drain_timeout_seconds": _float(env, "RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS"),
                 "retention_batch_limit": _int(env, "RAG_BACKUP_RETENTION_BATCH_LIMIT"),
+                "target_namespace": _optional(env, "RAG_BACKUP_TARGET_NAMESPACE"),
+                "target_prefix": _optional(env, "RAG_BACKUP_TARGET_PREFIX"),
             }.items()
             if value is not None
         },
@@ -749,6 +776,10 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production auth allowed origins are required")
         if not settings.auth.admin_roster:
             raise ValueError("production auth admin roster is required")
+        if not settings.backup.target_namespace:
+            raise ValueError(
+                "production requires a backup target namespace (RAG_BACKUP_TARGET_NAMESPACE)"
+            )
         _precheck_user_deletion_archive_dir(settings)
     if settings.index.contextual_retrieval_provider != "disabled":
         if not settings.index.contextual_retrieval_base_url:
