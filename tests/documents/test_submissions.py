@@ -172,7 +172,7 @@ def test_reject_revalidates_the_target_space_before_transitioning(service, princ
     )
 
     class _ReadOnlyIdentity:
-        def authorize_space(self, *, principal, space_id, action):
+        def authorize_space(self, *, principal, space_id, action, connection=None):
             del principal, space_id
             if action == "manage":
                 raise PlatformError(

@@ -20,11 +20,12 @@ def settings():
             "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
             "RAG_PROVIDER_NAME": "fake",
             "RAG_AUTH_SECRET_KEY": "test-secret-that-is-long-enough",
-            "RAG_AUTH_ADMIN_ROSTER": "admin",
+            "RAG_AUTH_ADMIN_ROSTER": "user_seeded",
             "RAG_AUTH_BOOTSTRAP_USERNAME": "admin",
             "RAG_AUTH_BOOTSTRAP_PASSWORD": "Password1",
             "RAG_AUTH_BOOTSTRAP_REAL_NAME": "Initial Admin",
             "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME": "Admin",
+            "RAG_AUTH_BOOTSTRAP_USER_ID": "user_seeded",
         }
     )
 
@@ -41,6 +42,7 @@ def test_bootstrap_command_seeds_an_empty_database_before_api_startup() -> None:
     app = create_platform_app(configured, runtime=runtime)
 
     assert admin["username"] == "admin"
+    assert admin["id"] == "user_seeded"
     with TestClient(app) as client:
         assert client.get("/v1/health").status_code == 200
     runtime.close()

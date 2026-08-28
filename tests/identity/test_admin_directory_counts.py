@@ -28,7 +28,7 @@ def _engine():
 
 
 class _AllAccess:
-    def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+    def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
         return "manage"
 
 
@@ -119,10 +119,10 @@ def test_admin_roster_removal_uses_configured_retention() -> None:
     secret = "test-secret-that-is-long-enough"
     first = IdentityAccessService(
         engine,
-        AuthSettings(secret_key=secret, admin_roster=("retained", "removed")),
+        AuthSettings(secret_key=secret),
         revocation_port=NoopGenerationRevocationPort(),
     )
-    first.provision_user(
+    retained = first.provision_user(
         username="retained",
         password="Password1",
         real_name="Retained",
@@ -142,7 +142,7 @@ def test_admin_roster_removal_uses_configured_retention() -> None:
         engine,
         AuthSettings(
             secret_key=secret,
-            admin_roster=("retained",),
+            admin_roster=(str(retained["id"]),),
             user_deletion_retention_days=5,
         ),
         revocation_port=NoopGenerationRevocationPort(),

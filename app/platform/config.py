@@ -231,6 +231,8 @@ class AuthSettings(_StrictModel):
     bootstrap_password: SecretStr | None = None
     bootstrap_real_name: str | None = None
     bootstrap_display_name: str | None = None
+    # Roster 条目是不可变 user_id：bootstrap 必须按清单预声明的 id 建号。
+    bootstrap_user_id: str | None = None
 
     @model_validator(mode="after")
     def validate_bootstrap_settings(self) -> AuthSettings:
@@ -391,6 +393,7 @@ _ENV_KEYS = {
     "RAG_AUTH_BOOTSTRAP_PASSWORD",
     "RAG_AUTH_BOOTSTRAP_REAL_NAME",
     "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME",
+    "RAG_AUTH_BOOTSTRAP_USER_ID",
     "RAG_DEBUG",
 }
 _LEGACY_OR_FORBIDDEN_KEYS = {
@@ -684,6 +687,7 @@ def load_platform_settings(
                 "bootstrap_password": _optional(env, "RAG_AUTH_BOOTSTRAP_PASSWORD"),
                 "bootstrap_real_name": _optional(env, "RAG_AUTH_BOOTSTRAP_REAL_NAME"),
                 "bootstrap_display_name": _optional(env, "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME"),
+                "bootstrap_user_id": _optional(env, "RAG_AUTH_BOOTSTRAP_USER_ID"),
             }.items()
             if value not in (None, ())
         },
@@ -805,9 +809,15 @@ def _resolve_user_deletion_archive_dir(auth: AuthSettings, profile: str) -> str:
         if profile == "production":
             raise ValueError("production requires USER_DELETION_ARCHIVE_DIR to be configured")
         return os.path.abspath(os.path.join("data", "user-deletion-archives"))
-    path = os.path.abspath(os.path.expanduser(configured.strip()))
-    if not os.path.isabs(path):
-        raise ValueError("USER_DELETION_ARCHIVE_DIR must be an absolute path")
+    # isabs must run on the raw configured string: expanduser would turn "~/x"
+    # into an absolute path and silently mask a deployment-relative location.
+    raw = configured.strip()
+    if not os.path.isabs(raw):
+        raise ValueError(
+            "USER_DELETION_ARCHIVE_DIR must be an absolute path "
+            "(~ expansion and relative paths are not accepted)"
+        )
+    path = os.path.abspath(os.path.expanduser(raw))
     lowered = {part.lower() for part in path.replace("\\", "/").split("/")}
     if lowered & _FORBIDDEN_ARCHIVE_DIR_PARTS:
         raise ValueError(

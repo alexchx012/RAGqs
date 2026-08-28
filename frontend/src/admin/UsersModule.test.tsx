@@ -372,7 +372,7 @@ describe('编辑用户对话框', () => {
     expect(select).toHaveValue('d_finance');
     await userEvent.click(within(dialog).getByRole('button', { name: copyUsers.save }));
     await waitFor(() => {
-      expect(api.patchUser).toHaveBeenCalledWith('u_user', { expected_version: 1 });
+      expect(api.patchUser).toHaveBeenCalledWith('u_user', { expected_version: 1 }, expect.any(String));
     });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const again = vi.mocked(api.listDepartments).mock.calls.length;
@@ -388,10 +388,14 @@ describe('编辑用户对话框', () => {
     await userEvent.selectOptions(select, copyUsers.noDepartmentOption);
     await userEvent.click(within(dialog).getByRole('button', { name: copyUsers.save }));
     await waitFor(() => {
-      expect(api.patchUser).toHaveBeenCalledWith('u_user', {
-        expected_version: 1,
-        department_id: null,
-      });
+      expect(api.patchUser).toHaveBeenCalledWith(
+        'u_user',
+        {
+          expected_version: 1,
+          department_id: null,
+        },
+        expect.any(String),
+      );
     });
   });
 
@@ -405,10 +409,14 @@ describe('编辑用户对话框', () => {
     );
     await userEvent.click(within(dialog).getByRole('button', { name: copyUsers.save }));
     await waitFor(() => {
-      expect(api.patchUser).toHaveBeenCalledWith('u_user', {
-        expected_version: 1,
-        role: 'minister',
-      });
+      expect(api.patchUser).toHaveBeenCalledWith(
+        'u_user',
+        {
+          expected_version: 1,
+          role: 'minister',
+        },
+        expect.any(String),
+      );
     });
   });
 
@@ -428,10 +436,14 @@ describe('编辑用户对话框', () => {
     await userEvent.click(within(dialog).getByRole('radio', { name: copyProfile.roleOps }));
     await userEvent.click(within(dialog).getByRole('button', { name: copyUsers.save }));
     await waitFor(() => {
-      expect(api.patchUser).toHaveBeenCalledWith('u_chen', {
-        expected_version: 2,
-        role: 'ops',
-      });
+      expect(api.patchUser).toHaveBeenCalledWith(
+        'u_chen',
+        {
+          expected_version: 2,
+          role: 'ops',
+        },
+        expect.any(String),
+      );
     });
   });
 
@@ -446,10 +458,14 @@ describe('编辑用户对话框', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: copyUsers.save }));
     await within(dialog).findByText(copyUsers.ministerDepartmentRequired);
     expect(within(dialog).getByRole('combobox')).toHaveAttribute('aria-invalid', 'true');
-    expect(api.patchUser).toHaveBeenCalledWith('u_zhao', {
-      expected_version: 1,
-      role: 'minister',
-    });
+    expect(api.patchUser).toHaveBeenCalledWith(
+      'u_zhao',
+      {
+        expected_version: 1,
+        role: 'minister',
+      },
+      expect.any(String),
+    );
   });
 
   it('新选部门在编辑期间被停用：409 提示目录已更新并恢复原部门选择', async () => {
@@ -498,10 +514,14 @@ describe('编辑用户对话框', () => {
     await userEvent.click(within(dialog).getByRole('radio', { name: copyProfile.roleOps }));
     await userEvent.click(within(dialog).getByRole('button', { name: copyUsers.save }));
     await waitFor(() => {
-      expect(api.patchUser).toHaveBeenLastCalledWith('u_user', {
-        expected_version: 2,
-        role: 'ops',
-      });
+      expect(api.patchUser).toHaveBeenLastCalledWith(
+        'u_user',
+        {
+          expected_version: 2,
+          role: 'ops',
+        },
+        expect.any(String),
+      );
     });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
@@ -595,13 +615,16 @@ describe('新增用户对话框', () => {
     await userEvent.type(within(dialog).getByLabelText(copyUsers.passwordLabel), 'passw0rd1');
     await userEvent.click(within(dialog).getByRole('button', { name: copyControls.confirm }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(api.createUser).toHaveBeenCalledWith({
-      username: 'newbie',
-      real_name: '小新',
-      department_id: null,
-      role: 'user',
-      initial_password: 'passw0rd1',
-    });
+    expect(api.createUser).toHaveBeenCalledWith(
+      {
+        username: 'newbie',
+        real_name: '小新',
+        department_id: null,
+        role: 'user',
+        initial_password: 'passw0rd1',
+      },
+      expect.any(String),
+    );
     await screen.findByText('小新');
     expect(rowOf('小新').className).toContain('ui-row-insert');
   });
@@ -678,7 +701,7 @@ describe('永久禁用二次确认', () => {
       within(dialog).getByRole('button', { name: copyUsers.disableConfirm }),
     );
     await waitFor(() => {
-      expect(api.deleteUser).toHaveBeenCalledWith('u_user', 1);
+      expect(api.deleteUser).toHaveBeenCalledWith('u_user', 1, expect.any(String));
     });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const row = rowOf('张三');
@@ -701,7 +724,7 @@ describe('永久禁用二次确认', () => {
       within(dialog).getByRole('button', { name: copyUsers.disableConfirm }),
     );
     await waitFor(() => {
-      expect(api.deleteUser).toHaveBeenLastCalledWith('u_user', 2);
+      expect(api.deleteUser).toHaveBeenLastCalledWith('u_user', 2, expect.any(String));
     });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });

@@ -10,7 +10,7 @@ from .service import IdentityAccessService
 _logger = logging.getLogger(__name__)
 
 
-def _bootstrap_values(settings: PlatformSettings) -> tuple[str, str, str, str]:
+def _bootstrap_values(settings: PlatformSettings) -> tuple[str, str, str, str, str | None]:
     auth = settings.auth
     if (
         auth.bootstrap_username is None
@@ -24,6 +24,9 @@ def _bootstrap_values(settings: PlatformSettings) -> tuple[str, str, str, str]:
         auth.bootstrap_password.get_secret_value(),
         auth.bootstrap_real_name,
         auth.bootstrap_display_name,
+        # The roster seats are immutable user_ids (§9.2): the initial admin must
+        # be created under the id the deployment pre-declared in the roster.
+        auth.bootstrap_user_id,
     )
 
 
@@ -38,12 +41,13 @@ def run_initial_admin_bootstrap(
         identity_access = active_runtime.resolve("identity_access")
         if not isinstance(identity_access, IdentityAccessService):
             raise RuntimeError("identity access service is not configured")
-        username, password, real_name, display_name = _bootstrap_values(settings)
+        username, password, real_name, display_name, user_id = _bootstrap_values(settings)
         return identity_access.bootstrap_initial_admin(
             username=username,
             password=password,
             real_name=real_name,
             display_name=display_name,
+            user_id=user_id,
         )
     finally:
         if owns_runtime:

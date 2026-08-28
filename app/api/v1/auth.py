@@ -207,6 +207,15 @@ async def replace_avatar(
     )
 
 
+@router.get("/users/me/avatar")
+def get_avatar(
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    service: Annotated[IdentityAccessService, Depends(identity_access_service)],
+) -> Response:
+    content, media_type = service.avatar_content(user_id=principal.user_id)
+    return Response(content=content, media_type=media_type)
+
+
 @router.get("/users/me/preferences")
 def preferences(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],

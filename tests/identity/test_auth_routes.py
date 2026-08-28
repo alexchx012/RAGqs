@@ -175,7 +175,8 @@ def test_avatar_route_replaces_the_current_users_avatar() -> None:
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
     usage_metadata.create_all(engine)
-    service = IdentityAccessService(engine, configured.auth, object_store=MemoryObjectStore())
+    object_store = MemoryObjectStore()
+    service = IdentityAccessService(engine, configured.auth, object_store=object_store)
     service.provision_user(
         username="alice",
         password="Password1",
@@ -197,23 +198,58 @@ def test_avatar_route_replaces_the_current_users_avatar() -> None:
             headers={"Authorization": f"Bearer {token}"},
             files={"file": ("avatar.png", b"fake-png", "image/png")},
         )
+        # 对象存储继续保存内部 object key，API 响应恒为可加载的相对路径（A12）。
+        stored_keys = list(object_store._objects)
+        content = client.get(
+            "/v1/users/me/avatar",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
     assert response.status_code == 200
-    assert response.json()["avatar_url"].startswith("object://avatars/")
+    assert response.json()["avatar_url"] == "/v1/users/me/avatar"
+    assert all(key.startswith("avatars/") for key in stored_keys)
+    assert content.status_code == 200
+    assert content.headers["content-type"] == "image/png"
+    assert content.content == b"fake-png"
+
+
+def test_avatar_route_returns_404_without_an_avatar() -> None:
+    configured = settings()
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    service = IdentityAccessService(engine, configured.auth, object_store=MemoryObjectStore())
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    token = service.login(username="alice", password="Password1").access_token
+    runtime = build_runtime(
+        configured,
+        adapters={"database_engine": engine, "identity_access": service},
+    )
+    app = create_platform_app(configured, runtime=runtime)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/users/me/avatar",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "avatar_not_found"
 
 
 def test_application_startup_reconciles_the_declared_admin_roster() -> None:
-    configured = load_platform_settings(
-        {
-            "RAG_PLATFORM_PROFILE": "development",
-            "RAG_DATABASE_URL": "sqlite+pysqlite:///:memory:",
-            "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
-            "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
-            "RAG_PROVIDER_NAME": "fake",
-            "RAG_AUTH_SECRET_KEY": "test-secret-that-is-long-enough",
-            "RAG_AUTH_ADMIN_ROSTER": "retained",
-        }
-    )
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -226,11 +262,10 @@ def test_application_startup_reconciles_the_declared_admin_roster() -> None:
         engine,
         AuthSettings(
             secret_key="test-secret-that-is-long-enough",
-            admin_roster=("retained", "removed"),
         ),
         revocation_port=NoopGenerationRevocationPort(),
     )
-    initial.provision_user(
+    retained = initial.provision_user(
         username="retained",
         password="Password1",
         real_name="Retained",
@@ -247,6 +282,17 @@ def test_application_startup_reconciles_the_declared_admin_roster() -> None:
         department_id=None,
     )
     removed_token = initial.login(username="removed", password="Password1").access_token
+    configured = load_platform_settings(
+        {
+            "RAG_PLATFORM_PROFILE": "development",
+            "RAG_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+            "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+            "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+            "RAG_PROVIDER_NAME": "fake",
+            "RAG_AUTH_SECRET_KEY": "test-secret-that-is-long-enough",
+            "RAG_AUTH_ADMIN_ROSTER": str(retained["id"]),
+        }
+    )
     service = IdentityAccessService(
         engine,
         configured.auth,

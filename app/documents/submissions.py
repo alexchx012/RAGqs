@@ -292,7 +292,6 @@ class SubmissionService:
         idempotency_item_index: int | None = None,
     ) -> dict[str, Any]:
         key = self._service._required_key(idempotency_key)
-        self._service._authorize(principal, space_id, "contribute")
         info = self._service._file_fingerprint(file)
         actor_id = str(principal.user_id)
         endpoint = "documents.submission_create"
@@ -300,6 +299,9 @@ class SubmissionService:
             endpoint = f"{endpoint}:{idempotency_item_index}"
         fingerprint = self._service._idempotency_fingerprint({"space_id": space_id, "file": info})
         with self._service._engine.begin() as connection:
+            # Same-transaction ACL (设计 §9.1.1): authorize inside this write
+            # transaction so the department row lock closes the deactivation race.
+            self._service._authorize(principal, space_id, "contribute", connection=connection)
             replay = self._service._idempotency_replay(
                 connection,
                 actor_id=actor_id,
@@ -361,6 +363,14 @@ class SubmissionService:
                 "document_version_id": None,
                 "job_id": None,
             }
+            self._service._audit(
+                connection,
+                actor_id=actor_id,
+                resource_type="documents.submission_create",
+                resource_id=submission_id,
+                result="succeeded",
+                occurred_at=now,
+            )
             self._service._complete_idempotency(
                 connection,
                 actor_id=actor_id,
@@ -554,6 +564,13 @@ class SubmissionService:
             raise PlatformError(
                 "submission_content_unavailable", "Submission content is unavailable", {}, 410
             ) from exc
+        # §9.3 审计事实：待审原文件读取（成功投递后落库，best-effort 不阻断响应）。
+        self._service._audit_best_effort(
+            actor_id=str(principal.user_id),
+            resource_type="documents.submission_content",
+            resource_id=submission_id,
+            result="succeeded",
+        )
         return content, metadata, str(row["file_name"])
 
     def approve(

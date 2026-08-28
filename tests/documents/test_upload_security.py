@@ -21,7 +21,7 @@ from app.platform.storage import MemoryObjectStore
 
 
 class _Identity:
-    def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+    def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
         assert action in {"manage", "contribute", "read"}
         return "manage"
 
