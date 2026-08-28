@@ -467,27 +467,39 @@ def test_receipt_requires_current_lease_and_generation(service, principal) -> No
     assert error.value.code == "fence_conflict"
 
     lease = service.claim_job(worker_id="worker_1", job_id=item["job_id"])
-    with pytest.raises(PlatformError) as error:
-        service.accept_processing_receipt(
-            principal=principal,
-            job_id=item["job_id"],
-            receipt={
-                "job_id": item["job_id"],
-                "attempt_id": lease.attempt_id,
-                "fencing_token": lease.fencing_token,
-                "publication_id": lease.publication_id,
-                "generation_id": "stale-generation",
-                "document_id": item["document_id"],
-                "document_version_id": item["document_version_id"],
-                "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
-                "stage_resources": [],
-                "processing_config_version": "v1",
-                "authorization_fence": dict(lease.authorization_fence),
-                **_receipt_request_echoes(service, lease.attempt_id),
-                **_receipt_contract_fields(),
-            },
+    # 07-4.9.21 代际冲突自动重暂存：stale generation receipt 不再向调用方抛
+    # 409 拒绝——冲突 attempt 按可重试失败记账（retry_wait + generation_conflict），
+    # 下一 attempt 在 claim 时自动以新活动代际重走 stage→publish（预算沿用）。
+    response = service.accept_processing_receipt(
+        principal=principal,
+        job_id=item["job_id"],
+        receipt={
+            "job_id": item["job_id"],
+            "attempt_id": lease.attempt_id,
+            "fencing_token": lease.fencing_token,
+            "publication_id": lease.publication_id,
+            "generation_id": "stale-generation",
+            "document_id": item["document_id"],
+            "document_version_id": item["document_version_id"],
+            "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
+            "stage_resources": [],
+            "processing_config_version": "v1",
+            "authorization_fence": dict(lease.authorization_fence),
+            **_receipt_request_echoes(service, lease.attempt_id),
+            **_receipt_contract_fields(),
+        },
+    )
+    assert response["state"] == "retry_wait"
+    with service._engine.connect() as connection:
+        job_row = (
+            connection.execute(
+                ingestion_jobs_table.select().where(ingestion_jobs_table.c.id == item["job_id"])
+            )
+            .mappings()
+            .one()
         )
-    assert error.value.code == "generation_conflict"
+    assert job_row["failure_reason"] == "generation_conflict"
+    assert job_row["next_attempt_at_utc"] is not None
 
 
 def test_receipt_requires_complete_contract_before_publication(service, principal) -> None:

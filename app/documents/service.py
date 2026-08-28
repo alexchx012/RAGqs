@@ -157,6 +157,13 @@ def _metered_pages(
     if metering_class == "image":
         provider = metering.get("image_provider") if isinstance(metering, Mapping) else None
         return 0 if provider == "internvl" else images
+    # B4 内嵌图片（PDF figure 块）：internvl 只记用量不扣页；其余 provider 按
+    # 既有文档载体 pages+images 折叠（1 图=1 页）。
+    embedded_provider = (
+        metering.get("embedded_image_provider") if isinstance(metering, Mapping) else None
+    )
+    if embedded_provider == "internvl":
+        return pages
     return pages + images
 
 
@@ -2545,6 +2552,44 @@ class DocumentsService:
                 receipt=receipt,
             )
         except PlatformError as exc:
+            if exc.code == "generation_conflict":
+                # 07-4.9.21 代际冲突自动重暂存：废弃冲突 attempt 后按可重试失败
+                # 记账（预算沿用 4 次上限），下一 attempt 在 claim 时取当前活动
+                # 代际重走 stage→publish；不再向调用方止步于 409 拒绝。
+                attempt_id = (
+                    receipt.attempt_id
+                    if isinstance(receipt, IndexProcessingReceipt)
+                    else receipt.get("attempt_id") if isinstance(receipt, Mapping) else None
+                )
+                fencing_token = None
+                if isinstance(attempt_id, str):
+                    with self._engine.connect() as connection:
+                        fencing_token = connection.execute(
+                            select(ingestion_attempts_table.c.fencing_token).where(
+                                ingestion_attempts_table.c.id == attempt_id
+                            )
+                        ).scalar_one_or_none()
+                if isinstance(attempt_id, str) and fencing_token is not None:
+                    self.fail_job(
+                        job_id=job_id,
+                        reason="generation_conflict",
+                        retryable=True,
+                        attempt_id=attempt_id,
+                        fencing_token=int(fencing_token),
+                    )
+                    with self._engine.connect() as connection:
+                        job_row = (
+                            connection.execute(
+                                select(ingestion_jobs_table).where(
+                                    ingestion_jobs_table.c.id == job_id
+                                )
+                            )
+                            .mappings()
+                            .one_or_none()
+                        )
+                    if job_row is not None:
+                        return self._job_response(job_row)
+                raise
             details = dict(exc.details)
             if exc.code != "duplicate_document" or not details.get("publication_claim_conflict"):
                 raise
