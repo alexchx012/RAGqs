@@ -1,0 +1,5 @@
+# vite 模板与构建产物钉死 LF：Windows autocrlf 会把模板工作副本污染成 CRLF，
+# 构建继承该换行符且 index.html 因混合换行被 git 跳过规范化，导致 CI 上
+# 构建出的 LF 产物与已提交 CRLF blob 不一致，"static/ is up to date" 检查误报。
+frontend/index.html text eol=lf
+static/index.html text eol=lf
