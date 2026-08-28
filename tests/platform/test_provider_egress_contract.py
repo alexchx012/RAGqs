@@ -306,6 +306,7 @@ def test_each_physical_send_gets_distinct_provider_call_id() -> None:
     """A3: 每次物理发送使用新的派生 provider_call_id。"""
 
     seen_ids: list[str] = []
+    clock = _FakeClock(datetime(2026, 8, 28, 12, 0, tzinfo=UTC))
 
     def operation(ctx: ProviderCallContext, request: Any) -> str:
         seen_ids.append(ctx.provider_call_id)
@@ -317,6 +318,7 @@ def test_each_physical_send_gets_distinct_provider_call_id() -> None:
         operation,
         _context(),
         None,
+        now=clock,
         sleep=lambda _seconds: None,
         jitter=lambda delay: 0.0,
     )
