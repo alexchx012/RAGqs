@@ -9,7 +9,7 @@ from retention_helpers import build_engine, fixed_now
 from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 
-from app.chat.schema import chat_message_table, chat_metadata
+from app.chat.schema import chat_message_feedback_table, chat_message_table, chat_metadata
 from app.documents.schema import (
     documents_metadata,
     ingestion_attempts_table,
@@ -17,8 +17,7 @@ from app.documents.schema import (
     knowledge_submissions_table,
 )
 from app.identity.schema import identity_metadata, identity_user_table
-from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
-from app.platform.database import core_metadata, platform_observability_sample_table
+from app.platform.database import core_metadata
 from app.platform.observability import (
     ApiRead,
     LatencyRead,
@@ -207,6 +206,24 @@ def _seed_chat(engine):
                 created_at_utc=fixed_now(),
             )
         )
+
+
+def _seed_feedback(engine):
+    """Three up-votes now against one up-vote in the previous 7d window."""
+    now = fixed_now()
+    votes = [("up", now)] * 3 + [("down", now)]
+    votes += [("up", now - timedelta(days=8))] + [("down", now - timedelta(days=8))] * 3
+    with engine.begin() as connection:
+        for index, (vote, created_at) in enumerate(votes):
+            connection.execute(
+                chat_message_feedback_table.insert().values(
+                    message_id="m_1",
+                    voter_user_id=f"voter_{index}",
+                    vote=vote,
+                    down_reason=None,
+                    created_at_utc=created_at,
+                )
+            )
 
 
 def _reader(engine, port):
@@ -530,7 +547,52 @@ def test_admin_dashboard_has_fixed_four_packs_and_no_operational_facets() -> Non
     assert cards["question_trend"]["value"] == 1
 
 
-def test_operations_has_exactly_four_cards_and_never_calls_port() -> None:
+def test_dashboard_delta_compares_current_window_with_previous_window() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    _seed_basics(engine)
+    _seed_chat(engine)
+    _seed_feedback(engine)
+    response = _reader(engine, FakeObservabilityPort()).dashboard(role="admin", window="7d")
+    overview = next(pack for pack in response["packs"] if pack["key"] == "usage_overview")
+    cards = {card["key"]: card for card in overview["cards"]}
+    assert cards["question_trend"]["delta"] == {"direction": "up", "text_hint": "+1"}
+    quality = next(pack for pack in response["packs"] if pack["key"] == "quality_quota")
+    quality_cards = {card["key"]: card for card in quality["cards"]}
+    assert quality_cards["thumbs_up_ratio"]["value"] == 0.75
+    assert quality_cards["thumbs_up_ratio"]["delta"] == {
+        "direction": "up",
+        "text_hint": "+50.0%",
+    }
+    # Active users reflect current lifecycle state only: no previous window exists.
+    assert cards["active_users"]["delta"] is None
+
+
+def test_dashboard_delta_stays_null_without_a_previous_window_baseline() -> None:
+    engine = build_engine()
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    chat_metadata.create_all(engine)
+    _seed_basics(engine)
+    response = _reader(engine, FakeObservabilityPort()).dashboard(role="ops", window="7d")
+    tasks = next(pack for pack in response["packs"] if pack["key"] == "tasks_health")
+    cards = {card["key"]: card for card in tasks["cards"]}
+    # The only terminal job lands in the current window, so the previous window
+    # holds no failure-rate baseline and none is invented.
+    assert cards["failure_rate"]["value"] == 0.0
+    assert cards["failure_rate"]["delta"] is None
+    # Facts without a time dimension have no previous window to compare against.
+    assert cards["ingestion_backlog"]["delta"] is None
+    assert cards["api_error_rate"]["delta"] is None
+
+
+def test_operations_has_exactly_three_cards_and_never_calls_port() -> None:
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
@@ -543,62 +605,13 @@ def test_operations_has_exactly_four_cards_and_never_calls_port() -> None:
         "cache_hit_rate",
         "ocr_confidence_dist",
         "graph_basic_split",
-        "sparse_exact_match",
     ]
     kinds = {card["key"]: card["kind"] for card in response["cards"]}
     assert kinds == {
         "cache_hit_rate": "stat",
         "ocr_confidence_dist": "distribution",
         "graph_basic_split": "distribution",
-        "sparse_exact_match": "stat",
     }
-    sparse = next(card for card in response["cards"] if card["key"] == "sparse_exact_match")
-    assert sparse["value"] is None
-    assert sparse["sparkline"] == []
-
-
-def test_sparse_exact_match_card_reads_observability_samples() -> None:
-    engine = build_engine()
-    core_metadata.create_all(engine)
-    identity_metadata.create_all(engine)
-    documents_metadata.create_all(engine)
-    usage_metadata.create_all(engine)
-    chat_metadata.create_all(engine)
-    now = fixed_now()
-    start = now - timedelta(days=7)
-    with engine.begin() as connection:
-        for offset, weight in ((0.1, 1.0), (0.5, 3.0)):
-            observed = start + timedelta(days=7 * offset)
-            connection.execute(
-                platform_observability_sample_table.insert().values(
-                    observed_at_utc=observed,
-                    route_template=SPARSE_EXACT_MATCH_ROUTE,
-                    method="POST",
-                    outcome_class="success",
-                    status_family="2xx",
-                    latency_ms=0,
-                    sample_weight=weight,
-                    retention_days=30,
-                    expires_at_utc=observed + timedelta(days=30),
-                )
-            )
-        connection.execute(
-            platform_observability_sample_table.insert().values(
-                observed_at_utc=now - timedelta(hours=1),
-                route_template="/v1/health",
-                method="GET",
-                outcome_class="success",
-                status_family="2xx",
-                latency_ms=1,
-                sample_weight=9.0,
-                retention_days=30,
-                expires_at_utc=now + timedelta(days=30),
-            )
-        )
-    response = _reader(engine, RaisingObservabilityPort()).operations(window="7d")
-    sparse = next(card for card in response["cards"] if card["key"] == "sparse_exact_match")
-    assert sparse["value"] == 4.0
-    assert sparse["sparkline"] == [1.0, 3.0]
 
 
 def test_ops_jobs_stale_count_is_global_across_views() -> None:
