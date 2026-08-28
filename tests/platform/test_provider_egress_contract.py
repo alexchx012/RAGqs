@@ -145,9 +145,7 @@ def test_synchronous_retry_budget_is_three_with_backoff_sequence() -> None:
     """A2: 同步路径 ≤3 次物理发送；退避序列 250ms/1s/4s（capped 30s）。"""
 
     clock = _FakeClock(datetime(2026, 8, 28, 12, 0, tzinfo=UTC))
-    transport = _FakeTransport(
-        [httpx.Response(503, text="unavailable") for _ in range(3)]
-    )
+    transport = _FakeTransport([httpx.Response(503, text="unavailable") for _ in range(3)])
     with pytest.raises(ModelHttpError) as raised:
         model_http_post(
             provider="dashscope",
@@ -219,9 +217,7 @@ def test_circuit_opens_after_five_retryable_failures_and_rejects() -> None:
     clock = _FakeClock(datetime(2026, 8, 28, 12, 0, tzinfo=UTC))
     circuits = CircuitBreakerRegistry()
     # 5 轮 × 3 次物理发送 = 15 次失败后熔断 open。
-    transport = _FakeTransport(
-        [httpx.Response(503, text="down") for _ in range(20)]
-    )
+    transport = _FakeTransport([httpx.Response(503, text="down") for _ in range(20)])
     for _round in range(5):
         with pytest.raises(ModelHttpError):
             model_http_post(
@@ -529,9 +525,7 @@ def test_ledger_backed_reconciliation_confirms_terminal_states() -> None:
         ownership=ownership,
         result="succeeded",
     )
-    decision = port.confirm(
-        provider_call_id=completed_id, fingerprint="fp", connection=None
-    )
+    decision = port.confirm(provider_call_id=completed_id, fingerprint="fp", connection=None)
     assert isinstance(decision, ConfirmedUsage)
     assert decision.result == "succeeded"
     assert decision.measurement.input_tokens == 10
@@ -540,28 +534,20 @@ def test_ledger_backed_reconciliation_confirms_terminal_states() -> None:
     not_sent_id = make_call("pc_not_sent_1")
     ledger.mark_dispatching(not_sent_id, started_at_provider=now)
     ledger.mark_not_sent(not_sent_id)
-    decision = port.confirm(
-        provider_call_id=not_sent_id, fingerprint="fp", connection=None
-    )
+    decision = port.confirm(provider_call_id=not_sent_id, fingerprint="fp", connection=None)
     assert isinstance(decision, ConfirmedNotSent)
 
     prepared_id = make_call("pc_prepared_1")
-    decision = port.confirm(
-        provider_call_id=prepared_id, fingerprint="fp", connection=None
-    )
+    decision = port.confirm(provider_call_id=prepared_id, fingerprint="fp", connection=None)
     assert isinstance(decision, ConfirmedNotSent)
 
     unknown_id = make_call("pc_unknown_1")
     ledger.mark_dispatching(unknown_id, started_at_provider=now)
     ledger.mark_unknown(unknown_id)
-    decision = port.confirm(
-        provider_call_id=unknown_id, fingerprint="fp", connection=None
-    )
+    decision = port.confirm(provider_call_id=unknown_id, fingerprint="fp", connection=None)
     assert isinstance(decision, StillUnknown)
 
-    decision = port.confirm(
-        provider_call_id="pc_missing", fingerprint="fp", connection=None
-    )
+    decision = port.confirm(provider_call_id="pc_missing", fingerprint="fp", connection=None)
     assert isinstance(decision, StillUnknown)
 
 
