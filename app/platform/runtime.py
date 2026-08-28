@@ -995,16 +995,56 @@ def build_runtime(
     # Backup/restore orchestration: the gate reader backs the API read-gate
     # middleware; the orchestration service itself is only registered when
     # its schema is available (fresh databases before the migration resolve
-    # it to None and the API simply runs with the gate open). The provider
-    # ports are registered as adapters so the backup maintenance worker shares
-    # the exact instances the orchestration service was built with.
+    # it to None and the API simply runs with the gate open). A configured
+    # backup target wires the production provider adapters (Postgres snapshot,
+    # object snapshot, object manifest) and the restore-side validation/
+    # rebuild/post-gate adapters; without one, dev/test keep the Noop
+    # defaults. The provider ports are registered as adapters so the backup
+    # maintenance worker shares the exact instances the orchestration service
+    # was built with.
     from app.backup.gate import MaintenanceGateReader
     from app.backup.ports import EmptyObjectManifest, NoopObjectSnapshot, NoopPostgresBackup
 
     configured.setdefault("maintenance_gate_reader", MaintenanceGateReader(engine))
-    configured.setdefault("backup_postgres_port", NoopPostgresBackup())
-    configured.setdefault("backup_object_snapshot_port", NoopObjectSnapshot())
-    configured.setdefault("backup_object_manifest_port", EmptyObjectManifest())
+    backup_target_prefix = settings.backup.target_key_prefix
+    if backup_target_prefix is not None:
+        from app.backup.adapters import (
+            ProductionDerivedRebuild,
+            ProductionFactValidation,
+            ProductionObjectManifest,
+            ProductionObjectSnapshot,
+            ProductionPostGateValidation,
+            ProductionPostgresBackup,
+        )
+
+        configured.setdefault(
+            "backup_postgres_port",
+            ProductionPostgresBackup(engine, object_store, backup_target_prefix),
+        )
+        configured.setdefault(
+            "backup_object_snapshot_port",
+            ProductionObjectSnapshot(engine, object_store, backup_target_prefix),
+        )
+        configured.setdefault(
+            "backup_object_manifest_port",
+            ProductionObjectManifest(engine, object_store),
+        )
+        fact_validation = ProductionFactValidation(engine, object_store)
+        derived_rebuild = ProductionDerivedRebuild(
+            engine,
+            dense_writer=dense_writer,
+            sparse_provider=sparse_provider,
+            prefix_cache=prefix_cache,
+            now=clock.now_utc,
+        )
+        post_gate_validation = ProductionPostGateValidation(engine, object_store)
+    else:
+        configured.setdefault("backup_postgres_port", NoopPostgresBackup())
+        configured.setdefault("backup_object_snapshot_port", NoopObjectSnapshot())
+        configured.setdefault("backup_object_manifest_port", EmptyObjectManifest())
+        fact_validation = None
+        derived_rebuild = None
+        post_gate_validation = None
     if "backup_restore_service" not in configured:
         from app.backup.service import BackupRestoreService
 
@@ -1016,6 +1056,9 @@ def build_runtime(
                 postgres_backup=configured["backup_postgres_port"],
                 object_snapshot=configured["backup_object_snapshot_port"],
                 object_manifest=configured["backup_object_manifest_port"],
+                fact_validation=fact_validation,
+                derived_rebuild=derived_rebuild,
+                post_gate_validation=post_gate_validation,
             )
     # Backup operations layer: the write gate reader backs the write-gate
     # middleware and the in-process tracker lets the backup worker drain

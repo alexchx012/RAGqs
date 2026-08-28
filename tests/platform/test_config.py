@@ -40,6 +40,7 @@ def production_environment(**overrides: str) -> dict[str, str]:
         "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
         "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
         "RAG_AUTH_ADMIN_ROSTER": "admin",
+        "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
     }
     values.update(overrides)
     return values
@@ -359,6 +360,7 @@ def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected(tmp_path) ->
             "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",
+            "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
             "RAG_BUSINESS_TIMEZONE": "UTC",
             "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
         }

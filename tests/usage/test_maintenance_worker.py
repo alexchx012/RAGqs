@@ -558,6 +558,7 @@ def test_run_usage_maintenance_once_production_requires_key(tmp_path) -> None:
             "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",
+            "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
             "RAG_BUSINESS_TIMEZONE": "UTC",
             "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
         }
@@ -576,6 +577,7 @@ def test_run_usage_maintenance_once_production_requires_key(tmp_path) -> None:
             "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",
+            "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
             "RAG_BUSINESS_TIMEZONE": "UTC",
             "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
             "RAG_MAINTENANCE_KEY": "prod-maintenance-key",

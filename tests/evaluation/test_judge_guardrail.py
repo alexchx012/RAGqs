@@ -72,6 +72,7 @@ def _production_environment(**overrides: str) -> dict[str, str]:
         "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
         "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
         "RAG_AUTH_ADMIN_ROSTER": "admin",
+        "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
         "USER_DELETION_ARCHIVE_DIR": "C:/var/ragqs/user-archive",
     }
     values.update(overrides)
