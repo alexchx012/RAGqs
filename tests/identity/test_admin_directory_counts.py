@@ -32,7 +32,9 @@ class _AllAccess:
         return "manage"
 
 
-def _admin_and_user(engine, *, retention_days: int = 30) -> tuple[IdentityAccessService, AuthPrincipal, AuthPrincipal, str]:
+def _admin_and_user(
+    engine, *, retention_days: int = 30
+) -> tuple[IdentityAccessService, AuthPrincipal, AuthPrincipal, str]:
     service = IdentityAccessService(
         engine,
         AuthSettings(

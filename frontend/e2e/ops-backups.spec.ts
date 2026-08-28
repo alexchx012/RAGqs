@@ -30,7 +30,11 @@ async function login(page: Page, username: string): Promise<void> {
  * 拷贝，断言/交互须等包装消失、只剩稳态单拷贝后进行。
  */
 async function waitDrillSettled(drawer: Locator): Promise<void> {
-  await expect(drawer.locator('.relative.h-full')).toHaveCount(0);
+  await expect(
+    drawer.locator(
+      '.drill-exit, .drill-hidden, .drill-content-rise, .drill-content-return, .drill-switch, .drill-flip-clone',
+    ),
+  ).toHaveCount(0);
 }
 
 test('ops runs the backup and restore operations loop: poll converges, repair retry lifts the maintenance gate, manual backup accepted, restore confirm shows impact, policy readouts visible', async ({

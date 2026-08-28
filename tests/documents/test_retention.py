@@ -242,7 +242,9 @@ def test_deletion_waits_for_and_retries_failed_derived_cleanup_target(service, p
     with service._engine.connect() as connection:
         targets = {
             (row["backend_kind"], row["resource_id"]): row["state"]
-            for row in connection.execute(select(document_deletion_cleanup_targets_table)).mappings()
+            for row in connection.execute(
+                select(document_deletion_cleanup_targets_table)
+            ).mappings()
         }
     assert targets[("index", "index-1")] == "failed"
     assert targets[("parsing", "parse-1")] == "pending"

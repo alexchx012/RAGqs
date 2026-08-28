@@ -162,8 +162,12 @@ def test_empty_group_is_deleted_after_last_conversation_moved_out() -> None:
 
     c1 = client.post("/v1/conversations", json={}, headers=headers).json()["id"]
     c2 = client.post("/v1/conversations", json={}, headers=headers).json()["id"]
-    group_a = client.post("/v1/conversation-groups", json={"name": "a"}, headers=headers).json()["id"]
-    group_b = client.post("/v1/conversation-groups", json={"name": "b"}, headers=headers).json()["id"]
+    group_a = client.post("/v1/conversation-groups", json={"name": "a"}, headers=headers).json()[
+        "id"
+    ]
+    group_b = client.post("/v1/conversation-groups", json={"name": "b"}, headers=headers).json()[
+        "id"
+    ]
 
     def group_ids() -> set[str]:
         listing = client.get("/v1/conversations", headers=headers).json()

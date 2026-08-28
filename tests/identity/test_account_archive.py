@@ -215,9 +215,7 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
     with engine.connect() as connection:
         avatar_key = (
             connection.execute(
-                select(identity_user_table.c.avatar_url).where(
-                    identity_user_table.c.id == user_id
-                )
+                select(identity_user_table.c.avatar_url).where(identity_user_table.c.id == user_id)
             ).scalar_one()
         ).removeprefix("object://")
     finalized = service.finalize_pending_deletion(user_id=user_id)
@@ -226,15 +224,23 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
     assert not object_store.exists(avatar_key)
 
     with engine.connect() as connection:
-        user = connection.execute(
-            identity_user_table.select().where(identity_user_table.c.id == user_id)
-        ).mappings().one()
-        assert user["lifecycle_status"] == "deleted"
-        targets = connection.execute(
-            identity_account_cleanup_target_table.select().where(
-                identity_account_cleanup_target_table.c.deletion_id == deletion_id
+        user = (
+            connection.execute(
+                identity_user_table.select().where(identity_user_table.c.id == user_id)
             )
-        ).mappings().all()
+            .mappings()
+            .one()
+        )
+        assert user["lifecycle_status"] == "deleted"
+        targets = (
+            connection.execute(
+                identity_account_cleanup_target_table.select().where(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id
+                )
+            )
+            .mappings()
+            .all()
+        )
         backend_kinds = {row["backend_kind"] for row in targets}
         assert "postgres.chat_conversations" in backend_kinds
         assert "postgres.identity_spaces" in backend_kinds
@@ -371,9 +377,11 @@ def test_personal_document_subworkflow_delegation(tmp_path) -> None:
         )
     assert pending == 1  # document entered pending_delete, not yet a tombstone
     with engine.connect() as connection:
-        doc = connection.execute(
-            documents_table.select().where(documents_table.c.id == "doc-active")
-        ).mappings().one()
+        doc = (
+            connection.execute(documents_table.select().where(documents_table.c.id == "doc-active"))
+            .mappings()
+            .one()
+        )
     assert doc["lifecycle_status"] == "pending_delete"
     # idempotent reuse: second delegation does not fail or duplicate
     with engine.begin() as connection:

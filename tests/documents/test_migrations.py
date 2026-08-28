@@ -134,11 +134,17 @@ def test_documents_write_migration_hashes_legacy_keys_and_is_rerunnable() -> Non
             migration.upgrade()
             migration.upgrade()
 
-        idempotency_columns = {column["name"] for column in inspect(connection).get_columns("documents_idempotency")}
-        claim_columns = {column["name"] for column in inspect(connection).get_columns("upload_dedup_claims")}
+        idempotency_columns = {
+            column["name"] for column in inspect(connection).get_columns("documents_idempotency")
+        }
+        claim_columns = {
+            column["name"] for column in inspect(connection).get_columns("upload_dedup_claims")
+        }
         idem_rows = connection.execute(text("SELECT * FROM documents_idempotency")).mappings().all()
         claim_row = connection.execute(text("SELECT * FROM upload_dedup_claims")).mappings().one()
-        primary_key = inspect(connection).get_pk_constraint("documents_idempotency")["constrained_columns"]
+        primary_key = inspect(connection).get_pk_constraint("documents_idempotency")[
+            "constrained_columns"
+        ]
 
     assert "idempotency_key" not in idempotency_columns
     assert "idempotency_key_hash" in idempotency_columns

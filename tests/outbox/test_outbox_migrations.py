@@ -238,4 +238,3 @@ def _assert_full_event_identity_guarded(engine) -> None:
             ),
             {"eid": event_id},
         )
-

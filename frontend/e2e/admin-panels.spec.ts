@@ -46,7 +46,11 @@ async function openAdminDrawer(page: Page): Promise<void> {
  * 只剩稳态单拷贝后进行，否则可能命中严格模式重复匹配或点到淡出中的 from 侧。
  */
 async function waitDrillSettled(drawer: Locator): Promise<void> {
-  await expect(drawer.locator('.relative.h-full')).toHaveCount(0);
+  await expect(
+    drawer.locator(
+      '.drill-exit, .drill-hidden, .drill-content-rise, .drill-content-return, .drill-switch, .drill-flip-clone',
+    ),
+  ).toHaveCount(0);
 }
 
 test('ops approves a quota request with adjusted pages: row fades out, notice shows, and the badge decrements', async ({

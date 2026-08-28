@@ -24,9 +24,7 @@ _EXTENDED = (
     "status IN ('queued','running','retry_wait','expired','provider_reconciling',"
     "'completed','failed','cancelled')"
 )
-_ORIGINAL = (
-    "status IN ('queued','running','retry_wait','expired','completed','failed','cancelled')"
-)
+_ORIGINAL = "status IN ('queued','running','retry_wait','expired','completed','failed','cancelled')"
 
 
 def _constraint_text(bind) -> str:

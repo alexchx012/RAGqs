@@ -43,15 +43,29 @@ def test_claim_reclaims_expired_running_attempt(service, principal) -> None:
     assert error.value.code == "job_unavailable"
 
     with service._engine.connect() as connection:
-        attempt = connection.execute(
-            select(ingestion_attempts_table).where(ingestion_attempts_table.c.id == first.attempt_id)
-        ).mappings().one()
-        job = connection.execute(
-            select(ingestion_jobs_table).where(ingestion_jobs_table.c.id == job_id)
-        ).mappings().one()
-        publication = connection.execute(
-            select(publications_table).where(publications_table.c.id == first.publication_id)
-        ).mappings().one()
+        attempt = (
+            connection.execute(
+                select(ingestion_attempts_table).where(
+                    ingestion_attempts_table.c.id == first.attempt_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        job = (
+            connection.execute(
+                select(ingestion_jobs_table).where(ingestion_jobs_table.c.id == job_id)
+            )
+            .mappings()
+            .one()
+        )
+        publication = (
+            connection.execute(
+                select(publications_table).where(publications_table.c.id == first.publication_id)
+            )
+            .mappings()
+            .one()
+        )
     assert attempt["state"] == "expired"
     assert job["state"] == "retry_wait"
     assert publication["status"] == "discarded"

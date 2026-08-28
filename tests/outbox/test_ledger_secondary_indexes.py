@@ -21,35 +21,23 @@ def test_head_upgrade_secondary_indexes_are_used_by_query_plans_on_postgres() ->
             connection.execute(text("SET enable_seqscan = off"))
             subject_period_plan = str(
                 connection.execute(
-                    text(
-                        """EXPLAIN (FORMAT JSON) SELECT * FROM quota_debit
-                           WHERE quota_subject_user_id = 'u' AND quota_period = '2026-08'"""
-                    )
+                    text("""EXPLAIN (FORMAT JSON) SELECT * FROM quota_debit
+                           WHERE quota_subject_user_id = 'u' AND quota_period = '2026-08'""")
                 ).scalar()
             )
             kind_reference_plan = str(
-                connection.execute(
-                    text(
-                        """EXPLAIN (FORMAT JSON) SELECT * FROM quota_debit
-                           WHERE entry_kind = 'reversal' AND referenced_debit_id = 'd'"""
-                    )
-                ).scalar()
+                connection.execute(text("""EXPLAIN (FORMAT JSON) SELECT * FROM quota_debit
+                           WHERE entry_kind = 'reversal' AND referenced_debit_id = 'd'""")).scalar()
             )
             reconcile_plan = str(
-                connection.execute(
-                    text(
-                        """EXPLAIN (FORMAT JSON) SELECT * FROM provider_call
+                connection.execute(text("""EXPLAIN (FORMAT JSON) SELECT * FROM provider_call
                            WHERE status = 'dispatching'
-                           AND dispatching_at_utc <= '2026-01-01'"""
-                    )
-                ).scalar()
+                           AND dispatching_at_utc <= '2026-01-01'""")).scalar()
             )
             attempt_event_plan = str(
                 connection.execute(
-                    text(
-                        """EXPLAIN (FORMAT JSON) SELECT * FROM outbox_delivery_attempt
-                           WHERE event_id = 'e'"""
-                    )
+                    text("""EXPLAIN (FORMAT JSON) SELECT * FROM outbox_delivery_attempt
+                           WHERE event_id = 'e'""")
                 ).scalar()
             )
         assert "ix_quota_debit_subject_period" in subject_period_plan
@@ -65,10 +53,8 @@ def test_head_upgrade_secondary_indexes_are_used_by_query_plans_on_postgres() ->
             connection.execute(text("SET enable_seqscan = off"))
             subject_period_plan_after = str(
                 connection.execute(
-                    text(
-                        """EXPLAIN (FORMAT JSON) SELECT * FROM quota_debit
-                           WHERE quota_subject_user_id = 'u' AND quota_period = '2026-08'"""
-                    )
+                    text("""EXPLAIN (FORMAT JSON) SELECT * FROM quota_debit
+                           WHERE quota_subject_user_id = 'u' AND quota_period = '2026-08'""")
                 ).scalar()
             )
         assert "ix_quota_debit_subject_period" not in subject_period_plan_after

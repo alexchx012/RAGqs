@@ -186,13 +186,11 @@ def test_cancel_bumps_fencing_token_and_rejects_old_worker_receipt(service, prin
 
     # 取消在同一事务内递增 fencing token：持有旧 token 的 worker 无法发布。
     with service._engine.connect() as connection:
-        stored_token = (
-            connection.execute(
-                ingestion_attempts_table.select()
-                .with_only_columns(ingestion_attempts_table.c.fencing_token)
-                .where(ingestion_attempts_table.c.id == lease.attempt_id)
-            ).scalar_one()
-        )
+        stored_token = connection.execute(
+            ingestion_attempts_table.select()
+            .with_only_columns(ingestion_attempts_table.c.fencing_token)
+            .where(ingestion_attempts_table.c.id == lease.attempt_id)
+        ).scalar_one()
     assert stored_token > old_token
 
     with pytest.raises(PlatformError) as error:
@@ -204,9 +202,11 @@ def test_cancel_bumps_fencing_token_and_rejects_old_worker_receipt(service, prin
                 "attempt_id": lease.attempt_id,
                 "fencing_token": old_token,
                 "publication_id": lease.publication_id,
-                "generation_id": lease.authorization_fence.get("generation_id")
-                if isinstance(lease.authorization_fence, dict)
-                else lease.authorization_fence.generation_id,
+                "generation_id": (
+                    lease.authorization_fence.get("generation_id")
+                    if isinstance(lease.authorization_fence, dict)
+                    else lease.authorization_fence.generation_id
+                ),
                 "document_id": item["document_id"],
                 "document_version_id": item["document_version_id"],
                 "input_content_hash": hashlib.sha256(b"hello").hexdigest(),

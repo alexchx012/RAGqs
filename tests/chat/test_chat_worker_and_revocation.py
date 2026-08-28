@@ -259,9 +259,11 @@ def test_expired_execution_recovery_inherits_latest_checkpoint() -> None:
     env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
     token, _ = provision_and_login(env["identity"], "alice")
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     result = _ask(env, principal, conversation_id, key="checkpoint-recovery-1")
     checkpoint = {
         "phase": "retrieval_complete",
@@ -305,9 +307,11 @@ def test_worker_resumes_after_retrieval_checkpoint_without_duplicate_stage_event
     env = build_test_env(retrieval=retrieval, outcomes={"hello": RetrievalOutcome(hits=())})
     token, _ = provision_and_login(env["identity"], "alice")
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     result = _ask(env, principal, conversation_id, key="checkpoint-recovery-2")
     checkpoint = {
         "phase": "retrieval_complete",
@@ -351,9 +355,11 @@ def test_provider_reconciling_fails_only_after_generation_deadline() -> None:
     env = build_test_env()
     token, _ = provision_and_login(env["identity"], "alice")
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     result = _ask(env, principal, conversation_id, key="reconciling-deadline-1")
     with env["engine"].begin() as connection:
         connection.execute(
@@ -371,14 +377,24 @@ def test_provider_reconciling_fails_only_after_generation_deadline() -> None:
     worker.run_maintenance()
 
     with env["engine"].connect() as connection:
-        generation = connection.execute(
-            select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
-        ).mappings().one()
-        execution = connection.execute(
-            select(chat_generation_execution_table).where(
-                chat_generation_execution_table.c.generation_id == result.generation_id
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
+        execution = (
+            connection.execute(
+                select(chat_generation_execution_table).where(
+                    chat_generation_execution_table.c.generation_id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
     assert generation["status"] == "failed"
     assert generation["last_error_code"] == "provider_result_unknown"
     assert execution["status"] == "failed"

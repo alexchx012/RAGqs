@@ -287,8 +287,6 @@ def test_pending_delete_emits_account_revocation_without_an_active_session() -> 
     assert command.identity_transition_version == 2
 
 
-
-
 def _prepare_account_deletion(service: IdentityAccessService, *, user_id: str) -> None:
     """§9.2.1: create remaining-domain tables, the Noop personal-document
     port, and the physical archive package before finalizing a deletion."""

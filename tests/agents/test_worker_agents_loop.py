@@ -118,9 +118,11 @@ class AlwaysRewriteEvaluator:
 def _start_generation(env: dict, username: str, *, content: str, effort: str):
     token, _ = provision_and_login(env["identity"], username)
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     return _ask(env, principal, conversation_id, content=content, effort=effort)
 
 
@@ -146,9 +148,7 @@ def test_think_rewrite_loop_re_retrieves_within_same_generation() -> None:
     assert env["provider"].calls[-1].content == "hello refined"
     assert _generation_status(env, result.generation_id) == "completed"
     events = _events(env, result.generation_id)
-    assert any(
-        e["event_type"] == "stage" and e["data"]["phase"] == "rewriting" for e in events
-    )
+    assert any(e["event_type"] == "stage" and e["data"]["phase"] == "rewriting" for e in events)
     answer_events = [e for e in events if e["event_type"] == "answer"]
     assert len(answer_events) == 1
 
@@ -172,9 +172,7 @@ def test_quick_skips_self_evaluation_loop() -> None:
     assert len(env["provider"].calls) == 1
     assert _generation_status(env, result.generation_id) == "completed"
     events = _events(env, result.generation_id)
-    assert not any(
-        e["event_type"] == "stage" and e["data"]["phase"] == "rewriting" for e in events
-    )
+    assert not any(e["event_type"] == "stage" and e["data"]["phase"] == "rewriting" for e in events)
 
 
 def test_heuristic_default_rejects_ungrounded_candidate_without_rewrite() -> None:

@@ -57,9 +57,7 @@ def _postgres_test_url() -> URL:
     if parsed.get_backend_name() != "postgresql":
         pytest.skip("RAGQS_TEST_POSTGRES_URL must use a postgresql backend (NOT RUN/BLOCKED)")
     if parsed.database is None or "test" not in parsed.database.lower():
-        pytest.skip(
-            "RAGQS_TEST_POSTGRES_URL database name must contain 'test' (NOT RUN/BLOCKED)"
-        )
+        pytest.skip("RAGQS_TEST_POSTGRES_URL database name must contain 'test' (NOT RUN/BLOCKED)")
     return parsed
 
 
@@ -125,9 +123,13 @@ def test_concurrent_initial_upload_deduplicates_the_losing_claim(pg_documents_se
     duplicate = next(item for item in items if item["deduplicated"] is True)
     assert duplicate["document_id"] == created["document_id"]
     with pg_documents_service._engine.connect() as connection:
-        assert connection.execute(select(func.count()).select_from(documents_table)).scalar_one() == 1
         assert (
-            connection.execute(select(func.count()).select_from(upload_dedup_claims_table)).scalar_one()
+            connection.execute(select(func.count()).select_from(documents_table)).scalar_one() == 1
+        )
+        assert (
+            connection.execute(
+                select(func.count()).select_from(upload_dedup_claims_table)
+            ).scalar_one()
             == 1
         )
 
@@ -174,9 +176,7 @@ def test_concurrent_submission_approvals_return_a_duplicate_document_conflict(
             return error
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(
-            approve, first_submission["submission_id"], "concurrent-approval-1"
-        )
+        first = executor.submit(approve, first_submission["submission_id"], "concurrent-approval-1")
         second = executor.submit(
             approve, second_submission["submission_id"], "concurrent-approval-2"
         )
@@ -189,8 +189,12 @@ def test_concurrent_submission_approvals_return_a_duplicate_document_conflict(
     assert conflicts[0].code == "duplicate_document"
     assert conflicts[0].status_code == 409
     with pg_documents_service._engine.connect() as connection:
-        assert connection.execute(select(func.count()).select_from(documents_table)).scalar_one() == 1
         assert (
-            connection.execute(select(func.count()).select_from(upload_dedup_claims_table)).scalar_one()
+            connection.execute(select(func.count()).select_from(documents_table)).scalar_one() == 1
+        )
+        assert (
+            connection.execute(
+                select(func.count()).select_from(upload_dedup_claims_table)
+            ).scalar_one()
             == 1
         )

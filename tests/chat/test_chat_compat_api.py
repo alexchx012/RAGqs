@@ -140,13 +140,23 @@ def test_provider_result_unknown_emits_parseable_error_event() -> None:
     assert provider.calls == 1
 
     with env["engine"].connect() as connection:
-        generation = connection.execute(
-            select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
-        ).mappings().one()
-        execution = connection.execute(
-            select(chat_generation_execution_table).where(
-                chat_generation_execution_table.c.generation_id == result.generation_id
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
+        execution = (
+            connection.execute(
+                select(chat_generation_execution_table).where(
+                    chat_generation_execution_table.c.generation_id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
     assert generation["status"] == "running"
     assert execution["status"] == "provider_reconciling"
