@@ -14,7 +14,7 @@ import re
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -290,6 +290,72 @@ def _load_json(path: Path) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
+def _walk_blocks(value: Any) -> Iterator[Mapping[str, Any]]:
+    """Yield block-like mappings (carry a ``type`` key) from a page tree."""
+
+    if isinstance(value, Mapping):
+        if "type" in value:
+            yield value
+        else:
+            for child in value.values():
+                yield from _walk_blocks(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_blocks(child)
+
+
+def _block_texts(block: Mapping[str, Any]) -> list[str]:
+    """Line-span text content of one block, joined per line."""
+
+    texts: list[str] = []
+    lines = block.get("lines")
+    if isinstance(lines, list):
+        for line in lines:
+            if isinstance(line, Mapping):
+                spans = line.get("spans")
+                if isinstance(spans, list):
+                    parts = [
+                        str(span.get("content") or span.get("text") or "").strip()
+                        for span in spans
+                        if isinstance(span, Mapping)
+                    ]
+                    line_text = " ".join(part for part in parts if part)
+                    if line_text:
+                        texts.append(line_text)
+    return texts
+
+
+def _page_facts(middle: Mapping[str, Any]) -> tuple[dict[int, str], dict[int, int]]:
+    """Per-page reconstructed text and figure-block counts from middle.json.
+
+    tolerant walk：``pdf_info`` 页树下的块按 ``type`` 判定；``image/figure``
+    块计数（B4 内嵌图片事实），其余块的行 span 文本拼接为页文本（B9 真字符
+    偏移的页内坐标系）。MinerU 版本布局差异由递归遍历吸收。
+    """
+
+    texts: dict[int, str] = {}
+    figures: dict[int, int] = {}
+    pages = middle.get("pdf_info")
+    if not isinstance(pages, list):
+        return texts, figures
+    for page_index, page in enumerate(pages, start=1):
+        if not isinstance(page, Mapping):
+            continue
+        parts: list[str] = []
+        figure_count = 0
+        for block in _walk_blocks(page):
+            block_type = str(block.get("type", "")).strip().casefold()
+            if block_type in {"image", "figure", "img", "image_body"}:
+                figure_count += 1
+                continue
+            parts.extend(_block_texts(block))
+        if parts:
+            texts[page_index] = "\n".join(parts)
+        if figure_count:
+            figures[page_index] = figure_count
+    return texts, figures
+
+
 class MinerURun:
     """Parsed facts from one MinerU output directory."""
 
@@ -431,9 +497,19 @@ class MinerUAdapter:
     ) -> dict[str, Any]:
         page_scores = run.ocr_confidence_by_page
         scores = sorted(page_scores.values())
+        page_texts, page_figures = _page_facts(run.middle)
+        # B9 真字符偏移：span 为页内字符范围（页文本重建坐标系）；页文本缺失
+        # （扫描页/无文本层）不合成假偏移——span=None 由消费端省略。
         chunks = [
-            {"page": page, "span": f"{index}:{index + 1}"}
-            for index, page in enumerate(sorted(page_scores) or [1], start=1)
+            {
+                "page": page,
+                "span": (
+                    f"0:{len(page_texts[page])}"
+                    if page in page_texts and page_texts[page].strip()
+                    else None
+                ),
+            }
+            for page in sorted(page_scores) or [1]
         ]
         return {
             "text": run.markdown,
@@ -447,6 +523,10 @@ class MinerUAdapter:
             "model_version": str(
                 run.middle.get("model") or run.middle.get("model_version") or "pipeline"
             ),
+            # B4 内嵌图片事实：figure 块计数（MinerU 为判定权威）。
+            "image_count": sum(page_figures.values()),
+            # B9 消费端精化：页重建文本供 snippet 定位（同页重复消歧）。
+            "page_texts": {str(page): text for page, text in page_texts.items()},
         }
 
     def __call__(self, content: bytes) -> dict[str, Any]:
