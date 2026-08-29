@@ -699,6 +699,8 @@ def build_runtime(
     configured.setdefault("submission_outbox_port", submission_outbox_port)
     configured.setdefault("ingestion_outbox_port", ingestion_outbox_port)
     configured.setdefault("quota_request_service", quota_request_service)
+    if isinstance(identity_access, IdentityAccessService):
+        identity_access._quota_request_service = quota_request_service
     indexing_usage_submission = configured.get("indexing_usage_submission") or (
         UsageLedgerSubmissionAdapter(ledger)
     )
@@ -1109,6 +1111,9 @@ def build_runtime(
         "compaction_worker",
         CompactionWorker(worker_runtime, lifecycle=outbox_lifecycle),
     )
+    from app.documents.worker import IngestionWorker
+
+    configured.setdefault("ingestion_worker", IngestionWorker(worker_runtime))
     # Retention & operations orchestration assembly. Destructive effects stay
     # inside the owner domains; retention only drives owner entries and owns
     # its reconciliation/findings/receipts and the server-driven read models.

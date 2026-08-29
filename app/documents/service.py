@@ -643,8 +643,37 @@ class DocumentsService:
         return True
 
     def _validate_direct_receipt_authorization(
-        self, *, principal: Any | None, job: Mapping[Any, Any], document: Mapping[Any, Any]
+        self,
+        *,
+        principal: Any | None,
+        job: Mapping[Any, Any],
+        document: Mapping[Any, Any],
+        connection: Connection | None = None,
+        internal_worker: bool = False,
     ) -> None:
+        if internal_worker:
+            if job["quota_exempt_reason"] == "shared_library_submission":
+                return
+            if self._identity_access is not None:
+                worker_authorize = getattr(
+                    self._identity_access, "authorize_space_for_worker", None
+                )
+                if callable(worker_authorize):
+                    try:
+                        worker_authorize(
+                            user_id=str(job["created_by_user_id"]),
+                            space_id=str(document["space_id"]),
+                            action="manage",
+                            connection=connection,
+                        )
+                    except PlatformError as exc:
+                        raise PlatformError(
+                            "authorization_changed",
+                            "The direct-ingest authorization is no longer current",
+                            {},
+                            409,
+                        ) from exc
+            return
         if job["quota_exempt_reason"] == "shared_library_submission":
             return
         if principal is None or str(getattr(principal, "user_id", "")) != str(
@@ -2621,12 +2650,14 @@ class DocumentsService:
         principal: Any | None = None,
         job_id: str,
         receipt: IndexProcessingReceipt | Mapping[str, Any],
+        internal_worker: bool = False,
     ) -> dict[str, Any]:
         try:
             return self._accept_processing_receipt_transaction(
                 principal=principal,
                 job_id=job_id,
                 receipt=receipt,
+                internal_worker=internal_worker,
             )
         except PlatformError as exc:
             # §9.3 审计事实：执行中授权失效（部门停用/调动导致），越过回滚落库。
@@ -2709,6 +2740,7 @@ class DocumentsService:
         principal: Any | None = None,
         job_id: str,
         receipt: IndexProcessingReceipt | Mapping[str, Any],
+        internal_worker: bool = False,
     ) -> dict[str, Any]:
         with self._engine.begin() as connection:
             job_document_id = connection.execute(
@@ -2824,6 +2856,8 @@ class DocumentsService:
                     principal=principal,
                     job=job,
                     document=document,
+                    connection=connection,
+                    internal_worker=internal_worker,
                 )
             except PlatformError as exc:
                 reject_receipt(exc.code, exc.message)
@@ -2960,6 +2994,8 @@ class DocumentsService:
                     principal=principal,
                     job=final_job,
                     document=final_document,
+                    connection=connection,
+                    internal_worker=internal_worker,
                 )
             except PlatformError as exc:
                 reject_receipt(exc.code, exc.message, exc.status_code, exc.retryable)
@@ -4537,6 +4573,21 @@ class DocumentsService:
         return DocumentsJobCoordinator(self, lease_ttl=lease_ttl).claim(
             worker_id=worker_id,
             job_id=job_id,
+        )
+
+    def renew_job_lease(
+        self,
+        lease: Any,
+        *,
+        worker_id: str | None = None,
+        lease_ttl: timedelta = timedelta(minutes=5),
+    ) -> Any | None:
+        from .jobs import DocumentsJobCoordinator
+
+        return DocumentsJobCoordinator(self, lease_ttl=lease_ttl).renew(
+            lease,
+            worker_id=worker_id,
+            lease_ttl=lease_ttl,
         )
 
     def create_submission(
