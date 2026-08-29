@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import AuthSettings, load_platform_settings
 from app.platform.database import core_metadata
@@ -37,6 +38,7 @@ def test_auth_routes_issue_refresh_and_reject_a_logged_out_access_token() -> Non
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
@@ -128,6 +130,7 @@ def test_current_session_deletion_is_idempotent() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
@@ -174,6 +177,7 @@ def test_avatar_route_replaces_the_current_users_avatar() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     object_store = MemoryObjectStore()
     service = IdentityAccessService(engine, configured.auth, object_store=object_store)
@@ -222,6 +226,7 @@ def test_avatar_route_returns_404_without_an_avatar() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(engine, configured.auth, object_store=MemoryObjectStore())
     service.provision_user(
@@ -257,6 +262,7 @@ def test_application_startup_reconciles_the_declared_admin_roster() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     initial = IdentityAccessService(
         engine,
@@ -334,6 +340,7 @@ def _login_client(env: dict[str, str]) -> TestClient:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,

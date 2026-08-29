@@ -6,6 +6,7 @@ import sys
 from fastapi.testclient import TestClient
 
 from app.identity.schema import identity_metadata
+from app.outbox.schema import outbox_metadata
 from app.platform.database import core_metadata
 from app.usage.schema import usage_metadata
 
@@ -34,6 +35,7 @@ def test_uvicorn_entrypoint_exposes_only_versioned_routes(monkeypatch) -> None:
     engine = main.app.state.platform_runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
 
     with TestClient(main.app) as client:

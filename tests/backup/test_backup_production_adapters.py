@@ -36,6 +36,7 @@ from app.documents.schema import (
 )
 from app.identity.schema import identity_metadata, identity_user_table
 from app.indexing.schema import index_chunks_table, index_generation_heads_table, indexing_metadata
+from app.outbox.schema import outbox_metadata
 from app.platform.config import BackupSettings, load_platform_settings
 from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
@@ -793,6 +794,7 @@ def test_runtime_assembly_passes_restore_adapters_to_orchestration_service(engin
     # wired through when a backup target is configured.
     documents_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     indexing_metadata.create_all(engine)
     backup_metadata.create_all(engine)
     runtime = build_runtime(
@@ -812,6 +814,7 @@ def test_runtime_assembly_passes_restore_adapters_to_orchestration_service(engin
 def test_runtime_assembly_keeps_noop_restore_adapters_without_target(engine) -> None:
     documents_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     indexing_metadata.create_all(engine)
     backup_metadata.create_all(engine)
     runtime = build_runtime(

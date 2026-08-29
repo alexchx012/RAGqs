@@ -12,7 +12,7 @@ from _helpers import (
     make_publisher,
     provision_user,
 )
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.notifications import NotificationMaterializer
@@ -305,11 +305,14 @@ def test_compaction_only_after_every_delivery_is_delivered_and_retention_elapsed
         assert event["payload_json"] is None
         assert event["trace_id"] is None
         assert event["schema_version"] is None
+        assert event["compact_after_at_utc"] is None
         assert event["compacted_at_utc"] is not None
         assert event["payload_fingerprint"] is not None
         summary = event["compacted_delivery_summary_json"]
         assert len(summary) == 1
         assert summary[0]["consumer_name"] == "in_app_notification"
+        assert summary[0]["status"] == "delivered"
+        assert summary[0]["version"] == 2
         assert summary[0]["delivered_at"] is not None
         assert connection.execute(select(outbox_recipient_table)).all() == []
         assert connection.execute(select(outbox_delivery_attempt_table)).all() == []
@@ -396,3 +399,37 @@ def test_replay_then_delivered_then_compaction_uses_new_retention_start() -> Non
     assert dispatcher.compact_due_events() == 0
     clock.advance(seconds=2 * 24 * 3600)
     assert dispatcher.compact_due_events() == 1
+
+
+def test_compact_due_events_is_bounded_per_round_and_converges() -> None:
+    """#14：单轮 compact 至多领取固定批量（100），积压在多轮内收敛；
+    单事务时长有界。"""
+    engine = build_engine()
+    clock = _MutableClock(fixed_now())
+    publisher = make_publisher(engine, now=clock.now)
+    adapter = SqlAlchemyPublicGraphSourceOutboxAdapter(publisher)
+    for revision in range(1, 151):
+        with engine.begin() as connection:
+            adapter.publish_public_graph_source_change(
+                source_revision=revision,
+                source_manifest_id=f"manifest_{revision}",
+                source_manifest_hash=f"hash_{revision}",
+                document_id=f"doc_{revision}",
+                change_type="publish",
+                occurred_at=clock.now(),
+                connection=connection,
+            )
+    dispatcher = make_dispatcher(engine, now=clock.now, retention_days=30)
+    clock.advance(seconds=31 * 24 * 3600)
+
+    assert dispatcher.compact_due_events() == 100
+    assert dispatcher.compact_due_events() == 50
+    assert dispatcher.compact_due_events() == 0
+
+    with engine.connect() as connection:
+        compacted = connection.execute(
+            select(func.count())
+            .select_from(outbox_event_table)
+            .where(outbox_event_table.c.storage_state == "compacted")
+        ).scalar_one()
+    assert compacted == 150

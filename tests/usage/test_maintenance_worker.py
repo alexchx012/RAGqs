@@ -33,6 +33,7 @@ from sqlalchemy.pool import StaticPool
 from alembic import command
 from alembic.config import Config
 from app.identity.schema import identity_metadata, identity_user_table
+from app.outbox.schema import outbox_metadata
 from app.platform.config import load_platform_settings
 from app.platform.database import (
     SqlAlchemyDatabaseClock,
@@ -91,6 +92,7 @@ def make_env(now: datetime = NOW):
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     times = [now]
     clock = MutableClock(times)
@@ -497,6 +499,7 @@ def test_cli_main_runs_and_does_not_leak_key(tmp_path, monkeypatch, capsys) -> N
     engine = create_engine(url)
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     clock = MutableClock([NOW])
     calendar = BusinessCalendarService(engine, SqlAlchemyDatabaseClock(engine), "Asia/Shanghai")

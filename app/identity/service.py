@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.documents.schema import documents_table
+from app.outbox.schema import notification_inbox_table
 from app.platform.config import AuthSettings, _resolve_user_deletion_archive_dir
 from app.platform.context import current_context
 from app.platform.database import _insert_do_nothing, platform_audit_table
@@ -556,6 +557,18 @@ class IdentityAccessService:
             if department["status"] != "active":
                 raise PlatformError("department_inactive", "Department is inactive", {}, 409)
         connection.execute(identity_user_table.insert().values(**record))
+        # 通知 inbox 与账号同事务建立（设计 §13.5）：next_seq=1、read_through=0，
+        # 存量用户由 0040 迁移回填；退休账号的 inbox 删除后不重建。
+        connection.execute(
+            notification_inbox_table.insert().values(
+                recipient_user_id=record["id"],
+                next_notification_seq=1,
+                read_through_seq=0,
+                read_all_at_utc=None,
+                version=1,
+                retired=False,
+            )
+        )
         connection.execute(
             identity_space_table.insert().values(
                 id=f"personal:{record['id']}",

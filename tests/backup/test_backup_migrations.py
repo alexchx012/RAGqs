@@ -13,6 +13,9 @@ from alembic.config import Config
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata
 from app.indexing.schema import indexing_metadata
+from app.identity.schema import identity_metadata
+from app.outbox.schema import outbox_metadata
+from app.platform.database import core_metadata
 
 
 def _config(database_url: str) -> Config:
@@ -207,6 +210,11 @@ def _create_legacy_occurrences_table(database_url: str) -> None:
     documents_metadata.create_all(engine)
     indexing_metadata.create_all(engine)
     chat_metadata.create_all(engine)
+    # 真实 0033 数据库早已含 core/identity/outbox 域表；0040 的索引与回填
+    # 依赖 outbox_event/outbox_metric/notification_inbox/identity_user。
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     with engine.begin() as connection:
         _insert_occurrence(connection, "o0", "2026-08-20 02:00:00", "executed")
     engine.dispose()

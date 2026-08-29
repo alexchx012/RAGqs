@@ -17,7 +17,7 @@ from sqlalchemy import select
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
-from app.outbox.schema import outbox_metric_table
+from app.outbox.schema import outbox_event_table, outbox_metric_table
 from app.platform.database import platform_audit_table
 
 
@@ -218,3 +218,47 @@ def test_oldest_pending_metric_is_recorded_when_claiming() -> None:
 
     names = metric_names(engine)
     assert "outbox.deliveries.oldest_pending_seconds" in names
+
+
+def test_zero_recipient_role_event_keeps_delivery_and_records_metric() -> None:
+    """C5-1/#44：无 active ops 时发布角色快照事件——事件照常提交（业务状态不
+    回滚）、pending delivery 存在、dispatcher 以零接收者完成并产生指标。"""
+    engine = build_engine()
+    build_identity_service(engine)  # 无任何 ops 用户
+    publisher = make_publisher(engine, now=lambda: fixed_now())
+    from app.outbox.ports import OutboxPublishCommand
+
+    command = OutboxPublishCommand(
+        event_id="evt_zero_ops",
+        event_type="calibration_window_suggested",
+        caller_principal="calibration",
+        schema_version=1,
+        aggregate_type="calibration_window_suggestion",
+        aggregate_id="cws_zero",
+        transition_version=1,
+        occurred_at=fixed_now(),
+        payload={"calibration_window_suggestion_id": "cws_zero"},
+        trace_id="trace_zero",
+        recipients=(),
+    )
+    with engine.begin() as connection:
+        publisher.publish(command, connection=connection)
+
+    dispatcher = make_dispatcher(engine)
+    claim = dispatcher.claim_one(owner="worker-1")
+    assert claim is not None
+    assert claim.event_id == "evt_zero_ops"
+    assert dispatcher.run_consumer_and_finalize(claim, owner="worker-1").status == "delivered"
+
+    assert "outbox.deliveries.zero_recipients" in metric_names(engine)
+    with engine.connect() as connection:
+        event = (
+            connection.execute(
+                select(outbox_event_table.c.storage_state).where(
+                    outbox_event_table.c.event_id == "evt_zero_ops"
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert event == "full"

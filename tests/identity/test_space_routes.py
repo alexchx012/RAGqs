@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.documents.schema import documents_metadata, documents_table
 from app.identity.schema import identity_metadata
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
@@ -38,6 +39,7 @@ def test_spaces_route_returns_only_current_acl_permissions() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(engine, configured.auth)
@@ -84,6 +86,7 @@ def test_spaces_route_reports_real_per_space_document_counts() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(engine, configured.auth)

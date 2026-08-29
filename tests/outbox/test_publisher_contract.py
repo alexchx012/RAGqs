@@ -507,7 +507,123 @@ def test_calibration_with_no_active_ops_keeps_the_event() -> None:
     with engine.connect() as connection:
         events = connection.execute(select(outbox_event_table)).all()
         recipients = connection.execute(select(outbox_recipient_table)).all()
-        deliveries = connection.execute(select(outbox_delivery_table)).all()
+        deliveries = connection.execute(select(outbox_delivery_table)).mappings().all()
     assert len(events) == 1
     assert len(recipients) == 0
-    assert len(deliveries) == 0
+    # 零接收者角色事件仍保留 pending delivery（C5-1）：dispatcher 完成该消费
+    # 者并产生零接收者指标，业务事务不回滚。
+    assert len(deliveries) == 1
+    assert deliveries[0]["status"] == "pending"
+
+
+def test_submission_payload_schemas_follow_the_contract() -> None:
+    """§13 payload 契约：approved 携带 document_id/job_id，rejected reason 可选，
+    invalidated 必带 reason，闭集外字段一律拒绝。"""
+    from app.outbox.ports import RecipientSelection
+
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+    publisher = make_publisher(
+        engine,
+        now=lambda: fixed_now(),
+        graph_activated_receipt_port=_AcceptingGraphReceipt(),
+    )
+
+    def submission_command(event_id, event_type, submission_id, payload):
+        return make_command(
+            event_id=event_id,
+            caller_principal="submissions",
+            event_type=event_type,
+            aggregate_type="knowledge_submission",
+            aggregate_id=submission_id,
+            payload=payload,
+            recipients=(RecipientSelection(recipient_user_id=alice),),
+        )
+
+    with engine.begin() as connection:
+        publisher.publish(
+            submission_command(
+                "evt_sub_approved",
+                "submission_approved",
+                "sub_1",
+                {"submission_id": "sub_1", "document_id": "doc_1", "job_id": "job_1"},
+            ),
+            connection=connection,
+        )
+
+    # approved 闭集外字段被拒绝（document_version_id 不在 schema 中）。
+    with pytest.raises(PlatformError) as extra:
+        with engine.begin() as connection:
+            publisher.publish(
+                submission_command(
+                    "evt_sub_extra",
+                    "submission_approved",
+                    "sub_1",
+                    {
+                        "submission_id": "sub_1",
+                        "document_id": "doc_1",
+                        "job_id": "job_1",
+                        "document_version_id": "docv_1",
+                    },
+                ),
+                connection=connection,
+            )
+    assert extra.value.code == "invalid_event_payload"
+
+    # approved 缺少 document_id/job_id 被拒绝。
+    with pytest.raises(PlatformError) as missing:
+        with engine.begin() as connection:
+            publisher.publish(
+                submission_command(
+                    "evt_sub_missing",
+                    "submission_approved",
+                    "sub_2",
+                    {"submission_id": "sub_2"},
+                ),
+                connection=connection,
+            )
+    assert missing.value.code == "invalid_event_payload"
+
+    # rejected reason 可选；invalidated 必带 reason。
+    with engine.begin() as connection:
+        publisher.publish(
+            submission_command(
+                "evt_sub_rejected_plain",
+                "submission_rejected",
+                "sub_3",
+                {"submission_id": "sub_3"},
+            ),
+            connection=connection,
+        )
+        publisher.publish(
+            submission_command(
+                "evt_sub_rejected_reason",
+                "submission_rejected",
+                "sub_4",
+                {"submission_id": "sub_4", "reason": "reviewer_reason"},
+            ),
+            connection=connection,
+        )
+    with pytest.raises(PlatformError) as invalidated_missing:
+        with engine.begin() as connection:
+            publisher.publish(
+                submission_command(
+                    "evt_sub_invalidated_missing",
+                    "submission_invalidated",
+                    "sub_5",
+                    {"submission_id": "sub_5"},
+                ),
+                connection=connection,
+            )
+    assert invalidated_missing.value.code == "invalid_event_payload"
+    with engine.begin() as connection:
+        publisher.publish(
+            submission_command(
+                "evt_sub_invalidated_reason",
+                "submission_invalidated",
+                "sub_6",
+                {"submission_id": "sub_6", "reason": "identity_authorization_changed"},
+            ),
+            connection=connection,
+        )

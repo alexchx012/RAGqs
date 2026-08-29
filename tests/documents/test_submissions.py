@@ -8,7 +8,7 @@ from app.documents.schema import (
     knowledge_submissions_table,
     submission_execution_grants_table,
 )
-from app.documents.submissions import DocumentsSubmissionInvalidationPort
+from app.documents.submissions import DocumentsSubmissionInvalidationPort, SubmissionService
 from app.identity.ports import PendingSubmissionInvalidationCommand
 from app.platform.errors import PlatformError
 from app.platform.storage import StorageKeyError
@@ -29,16 +29,21 @@ class RecordingSubmissionOutbox:
         recipient_user_id: str,
         occurred_at: object,
         connection: object,
+        document_id: str | None = None,
+        job_id: str | None = None,
+        reason: str | None = None,
     ) -> str:
         del occurred_at, connection
-        self.events.append(
-            {
-                "event_type": event_type,
-                "submission_id": submission_id,
-                "transition_version": transition_version,
-                "recipient_user_id": recipient_user_id,
-            }
-        )
+        event: dict[str, object] = {
+            "event_type": event_type,
+            "submission_id": submission_id,
+            "transition_version": transition_version,
+            "recipient_user_id": recipient_user_id,
+            "document_id": document_id,
+            "job_id": job_id,
+            "reason": reason,
+        }
+        self.events.append(event)
         return f"event-{submission_id}"
 
 
@@ -326,6 +331,9 @@ def test_identity_invalidation_is_sorted_notified_and_scheduled_for_cleanup(
             "submission_id": invalidated["submission_id"],
             "transition_version": 2,
             "recipient_user_id": principal.user_id,
+            "document_id": None,
+            "job_id": None,
+            "reason": "identity_authorization_changed",
         }
     ]
 
@@ -396,3 +404,52 @@ def test_submission_execution_grant_becomes_the_worker_authorization_fence(
             idempotency_key="replay-missing-grant",
         )
     assert error.value.code == "submission_grant_invalid"
+
+
+def test_approved_submission_event_carries_document_and_job_ids(service, principal) -> None:
+    """B8/#60-62：submission_approved 通知 payload 携带 document_id/job_id，
+    经替身记录验证；rejected/invalidated 的 reason 同步传递。"""
+
+    class _PublicIdentity:
+        def authorize_space(self, *, principal, space_id: str, action: str, connection=None):
+            del principal, space_id, action, connection
+            return "manage"
+
+        def user_response(self, user_id: str) -> dict[str, object]:
+            return {"lifecycle_status": "active", "role": "user", "department_id": None}
+
+    outbox = RecordingSubmissionOutbox()
+    service._submission_notification_port = outbox
+    service._identity_access = _PublicIdentity()
+    submission = service.create_submission(
+        principal=principal,
+        space_id="public",
+        file=_upload(),
+        idempotency_key="b8-approved",
+    )
+    # 公共库审核仅 ops/admin（§8.4）；投稿人仍是原 principal。
+    reviewer = principal.__class__(
+        user_id="ops_1",
+        auth_session_id="ops-session",
+        username="ops",
+        role="ops",
+        department_id=None,
+    )
+    approved = SubmissionService(service).approve(
+        principal=reviewer,
+        submission_id=submission["submission_id"],
+        expected_version=submission["version"],
+        idempotency_key="b8-approved-approve",
+    )
+
+    assert outbox.events == [
+        {
+            "event_type": "submission_approved",
+            "submission_id": submission["submission_id"],
+            "transition_version": approved["version"],
+            "recipient_user_id": principal.user_id,
+            "document_id": approved["document_id"],
+            "job_id": approved["job_id"],
+            "reason": None,
+        }
+    ]

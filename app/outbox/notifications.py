@@ -14,6 +14,7 @@ from sqlalchemy.engine import Connection, Engine
 
 from app.identity.schema import identity_user_table
 
+from .maintenance import MAX_ONLINE_NOTIFICATIONS, retire_notification_by_id
 from .ports import DeliveryMaterialization
 from .schema import (
     notification_context_ack_table,
@@ -277,6 +278,10 @@ class NotificationMaterializer:
                 redacted=redacted,
             )
         )
+        # 50 条上限在物化事务内生效：此时本事务已持有 inbox 行更新（PG 路径还
+        # 持有 per-user advisory lock），按 seq 倒序排名超过上限的未到期通知
+        # 原子退休，未读计数因此永远受上限约束；后台 retire 任务保留为存量兜底。
+        self._trim_over_cap(connection, recipient_user_id=recipient_user_id, now=now)
         return DeliveryMaterialization(
             event_id=str(event["event_id"]),
             recipient_user_id=recipient_user_id,
@@ -287,6 +292,30 @@ class NotificationMaterializer:
             notification_seq=notification_seq,
             read_at=acked_at,
         )
+
+    @staticmethod
+    def _trim_over_cap(
+        connection: Connection,
+        *,
+        recipient_user_id: str,
+        now: datetime,
+    ) -> None:
+        """Retire every unexpired notification ranked above the online cap."""
+        over = (
+            connection.execute(
+                select(notification_table.c.id)
+                .where(
+                    notification_table.c.recipient_user_id == recipient_user_id,
+                    notification_table.c.retire_after_at_utc > now,
+                )
+                .order_by(notification_table.c.notification_seq.desc())
+                .offset(MAX_ONLINE_NOTIFICATIONS)
+            )
+            .scalars()
+            .all()
+        )
+        for notification_id in over:
+            retire_notification_by_id(connection, str(notification_id), now)
 
     @staticmethod
     def _suppress(

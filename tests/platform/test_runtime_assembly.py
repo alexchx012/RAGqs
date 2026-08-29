@@ -8,6 +8,7 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, select, update
 
 from app.chat.ports import ChatGenerationRevocationPort
 from app.identity.schema import identity_metadata, identity_revocation_command_table
+from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import PlatformConfigurationError, load_platform_settings
 from app.platform.context import TaskContext
@@ -47,6 +48,7 @@ def test_platform_app_registers_only_v1_health_and_request_header() -> None:
     engine = app.state.platform_runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     paths = set(app.openapi()["paths"])
 
@@ -69,6 +71,7 @@ def test_platform_app_records_only_bounded_http_telemetry() -> None:
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     app = create_platform_app(configured, runtime=runtime)
 
@@ -93,6 +96,7 @@ def test_platform_app_keeps_registered_metric_routes_and_groups_unknown_paths() 
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     app = create_platform_app(configured, runtime=runtime)
 
@@ -197,6 +201,7 @@ def test_default_runtime_persists_generation_revocation_commands() -> None:
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     user = service.provision_user(
         username="alice",

@@ -20,6 +20,7 @@ from app.identity.schema import (
     identity_user_table,
 )
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
 from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
@@ -33,6 +34,7 @@ def make_service(*, settings: AuthSettings | None = None) -> IdentityAccessServi
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     return IdentityAccessService(
         engine,
@@ -300,6 +302,7 @@ def test_session_revocation_claim_prevents_duplicate_delivery_during_reentry() -
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
