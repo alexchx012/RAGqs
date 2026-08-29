@@ -52,6 +52,24 @@ def test_head_upgrade_creates_identity_owned_tables(tmp_path: Path) -> None:
     assert INDEXING_TABLE_NAMES <= tables
 
 
+def test_chat_sse_request_id_migration_upgrades_from_historical_release_merge(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'chat-sse-from-0039.sqlite3'}"
+    config = alembic_config(database_url)
+
+    command.upgrade(config, "0039_chat_release_merge")
+    command.upgrade(config, "0040_chat_sse_contracts")
+
+    engine = create_engine(database_url)
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("chat_generation")}
+    finally:
+        engine.dispose()
+
+    assert "request_id" in columns
+
+
 def test_directory_search_migration_backfills_existing_users(tmp_path: Path) -> None:
     database_url = f"sqlite:///{tmp_path / 'directory-search.sqlite3'}"
     config = alembic_config(database_url)

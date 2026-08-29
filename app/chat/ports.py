@@ -116,6 +116,13 @@ class ChatRetrievalPort(Protocol):
         principal: Any,
     ) -> tuple[Mapping[str, Any], ...]: ...
 
+    def revalidate_citations(
+        self,
+        citations: tuple[Mapping[str, Any], ...],
+        *,
+        principal: Any,
+    ) -> tuple[Mapping[str, Any], ...]: ...
+
 
 class ChatProviderPort(Protocol):
     """Chat model transport contract."""
@@ -370,6 +377,10 @@ class IndexingChatRetrievalPort:
         )
         self._active_request = request
         candidates = result.candidates
+        if not candidates:
+            self._release_request(request)
+            self._active_request = None
+            self._active_hits = None
         self._active_hits = {(hit.chunk.document_id, hit.chunk.chunk_id): hit for hit in candidates}
         hits = tuple(
             RetrievalHitOutcome(
@@ -399,8 +410,6 @@ class IndexingChatRetrievalPort:
     ) -> tuple[Mapping[str, Any], ...]:
         request = self._active_request
         lookup = self._active_hits
-        self._active_request = None
-        self._active_hits = None
         if request is None or lookup is None:
             raise PlatformError(
                 "retrieval_request_required",
@@ -408,30 +417,77 @@ class IndexingChatRetrievalPort:
                 {},
                 409,
             )
+        citations: list[Mapping[str, Any]] = []
+        for item in hits:
+            hit = lookup.get((str(item["document_id"]), str(item["chunk_id"])))
+            if hit is None:
+                continue
+            citation = request.resolve_citation(hit, principal=principal)
+            if citation.get("state") != "available":
+                continue
+            citations.append(
+                {
+                    "document_id": citation["document_id"],
+                    "document_version_id": citation["document_version_id"],
+                    "publication_id": citation["publication_id"],
+                    "chunk_id": citation["chunk_id"],
+                    "space_id": citation.get("space_id", hit.chunk.space_id),
+                    "library": hit.source or "unknown",
+                    "locator": dict(citation["locator"]),
+                    "snippet": citation["snippet"],
+                }
+            )
+        # Retain the originating lease until publication revalidation.
+        return tuple(citations)
+
+    def revalidate_citations(
+        self,
+        citations: tuple[Mapping[str, Any], ...],
+        *,
+        principal: Any,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Re-check publication/lifecycle/ACL state immediately before publish.
+
+        The originating indexing request owns the authoritative visibility
+        check and remains alive through this final call.
+        """
+
+        if not citations:
+            if self._active_request is not None:
+                self._release_request(self._active_request)
+                self._active_request = None
+                self._active_hits = None
+            return ()
+        request = self._active_request
+        lookup = self._active_hits
+        if request is None or lookup is None:
+            return ()
         try:
-            citations: list[Mapping[str, Any]] = []
-            for item in hits:
-                hit = lookup.get((str(item["document_id"]), str(item["chunk_id"])))
+            resolved: list[Mapping[str, Any]] = []
+            for citation in citations:
+                hit = lookup.get((str(citation["document_id"]), str(citation["chunk_id"])))
                 if hit is None:
                     continue
-                citation = request.resolve_citation(hit, principal=principal)
-                if citation.get("state") != "available":
+                result = request.resolve_citation(hit, principal=principal)
+                if result.get("state") != "available":
                     continue
-                citations.append(
+                resolved.append(
                     {
-                        "document_id": citation["document_id"],
-                        "document_version_id": citation["document_version_id"],
-                        "publication_id": citation["publication_id"],
-                        "chunk_id": citation["chunk_id"],
-                        "space_id": citation.get("space_id", hit.chunk.space_id),
-                        "library": hit.source or "unknown",
-                        "locator": dict(citation["locator"]),
-                        "snippet": citation["snippet"],
+                        "document_id": result["document_id"],
+                        "document_version_id": result["document_version_id"],
+                        "publication_id": result["publication_id"],
+                        "chunk_id": result["chunk_id"],
+                        "space_id": result.get("space_id", citation.get("space_id")),
+                        "library": citation.get("library", "unknown"),
+                        "locator": dict(result["locator"]),
+                        "snippet": result["snippet"],
                     }
                 )
-            return tuple(citations)
+            return tuple(resolved)
         finally:
             self._release_request(request)
+            self._active_request = None
+            self._active_hits = None
 
     @staticmethod
     def _release_request(request: Any) -> None:
@@ -532,6 +588,20 @@ class RecordingChatRetrievalPort:
                 },
             )
             for hit in hits
+        )
+
+    def revalidate_citations(
+        self,
+        citations: tuple[Mapping[str, Any], ...],
+        *,
+        principal: Any,
+    ) -> tuple[Mapping[str, Any], ...]:
+        del principal
+        return tuple(
+            self.citations.get(
+                (str(citation["document_id"]), str(citation["chunk_id"])), citation
+            )
+            for citation in citations
         )
 
 

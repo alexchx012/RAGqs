@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.engine import Connection, Engine
 
+from app.platform.context import current_context
 from app.platform.errors import PlatformError
 
 from .budget import RAG_BUDGET_POLICY_VERSION
@@ -40,6 +41,7 @@ DEFAULT_RETRIEVAL_PROFILE_ID = "default"
 DEFAULT_RETRIEVAL_PROFILE_VERSION = "1"
 GENERATION_ABSOLUTE_DEADLINE_SECONDS = 1800
 DEFAULT_MAX_RUNNING_GENERATIONS_PER_USER = 8
+DEFAULT_ASK_RATE_LIMIT_PER_MINUTE = 20
 IDEMPOTENCY_KINDS = ("ask", "retry", "feedback", "ab_vote")
 
 
@@ -99,6 +101,7 @@ class GenerationService:
         ab_source_filter: AbSourceFilterPort | None = None,
         sampler: Any = None,
         max_running_per_user: int = DEFAULT_MAX_RUNNING_GENERATIONS_PER_USER,
+        ask_rate_limit_per_minute: int = DEFAULT_ASK_RATE_LIMIT_PER_MINUTE,
         absolute_deadline_seconds: int = GENERATION_ABSOLUTE_DEADLINE_SECONDS,
     ) -> None:
         self._engine = engine
@@ -109,6 +112,7 @@ class GenerationService:
         self._ab_source_filter = ab_source_filter
         self._sampler = sampler or _default_sampler
         self._max_running_per_user = max_running_per_user
+        self._ask_rate_limit_per_minute = ask_rate_limit_per_minute
         self._absolute_deadline_seconds = absolute_deadline_seconds
 
     def _now(self, connection: Connection) -> datetime:
@@ -152,9 +156,11 @@ class GenerationService:
             )
             if replay is not None:
                 return self._creation_result(connection, generation_id=replay)
-            self._enforce_concurrency(connection, user_id=user_id)
             now = self._now(connection)
+            self._enforce_rate_limit(connection, user_id=user_id, now=now)
+            self._enforce_concurrency(connection, user_id=user_id)
             scope_json = request.scope.to_json() if request.scope is not None else {}
+            context = current_context()
             result = self._create_generation(
                 connection,
                 user_id=user_id,
@@ -164,6 +170,7 @@ class GenerationService:
                 effort_level=request.effort_level,
                 scope_json=scope_json,
                 now=now,
+                request_id=context.request_id if context is not None else "req_system",
             )
             self._record_idempotency(
                 connection,
@@ -218,6 +225,46 @@ class GenerationService:
                 429,
             )
 
+    def _enforce_rate_limit(
+        self, connection: Connection, *, user_id: str, now: datetime
+    ) -> None:
+        cutoff = now - timedelta(minutes=1)
+        rows = connection.execute(
+            select(chat_generation_table.c.id)
+            .where(
+                chat_generation_table.c.owner_user_id == user_id,
+                chat_generation_table.c.created_at_utc >= cutoff,
+            )
+            .limit(self._ask_rate_limit_per_minute + 1)
+        ).fetchall()
+        if len(rows) >= self._ask_rate_limit_per_minute:
+            oldest = connection.execute(
+                select(chat_generation_table.c.created_at_utc)
+                .where(
+                    chat_generation_table.c.owner_user_id == user_id,
+                    chat_generation_table.c.created_at_utc >= cutoff,
+                )
+                .order_by(chat_generation_table.c.created_at_utc)
+                .limit(1)
+            ).scalar_one_or_none()
+            retry_after = 60
+            if isinstance(oldest, datetime):
+                retry_after = max(
+                    1,
+                    min(60, int((_utc(oldest) + timedelta(minutes=1) - _utc(now)).total_seconds())),
+                )
+            raise PlatformError(
+                "rate_limit_exceeded",
+                "Too many chat requests in the current window",
+                {
+                    "limit": self._ask_rate_limit_per_minute,
+                    "window_seconds": 60,
+                    "retry_after_seconds": retry_after,
+                },
+                429,
+                True,
+            )
+
     def _create_generation(
         self,
         connection: Connection,
@@ -229,6 +276,7 @@ class GenerationService:
         effort_level: str,
         scope_json: Mapping[str, Any],
         now: datetime,
+        request_id: str | None = None,
         parent: Mapping[str, Any] | None = None,
     ) -> GenerationCreationResult:
         generation_id = _new_id("gen")
@@ -359,6 +407,7 @@ class GenerationService:
             "rag_budget_policy_version": RAG_BUDGET_POLICY_VERSION,
             "absolute_deadline_at_utc": now + timedelta(seconds=self._absolute_deadline_seconds),
             "auth_session_id": str(principal.auth_session_id),
+            "request_id": request_id or str(parent.get("request_id") if parent else "req_system"),
             "control_version": 1,
             "request_content": user_message_content,
             "request_scope_json": dict(user_scope),
@@ -668,6 +717,7 @@ class GenerationService:
                 effort_level=str(failed["requested_effort_level"]),
                 scope_json=dict(failed["request_scope_json"]),
                 now=now,
+                request_id=(current_context().request_id if current_context() is not None else "req_system"),
                 parent=failed,
             )
             self._record_idempotency(

@@ -32,6 +32,20 @@ def request_error_payload(error: PlatformError, request_id: str | None = None) -
     }
 
 
+def compatibility_error_payload(
+    error: PlatformError, request_id: str | None = None
+) -> dict[str, Any]:
+    """Return the legacy ``/chat`` error envelope without changing SSE errors."""
+
+    payload = request_error_payload(error, request_id)
+    return {
+        "code": error.status_code,
+        "message": error.message,
+        "data": payload,
+        "errorMessage": error.message,
+    }
+
+
 def batch_item_error(error: PlatformError) -> dict[str, Any]:
     return {
         "error": {
@@ -117,25 +131,41 @@ def _http_error(exc: StarletteHTTPException) -> PlatformError:
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(PlatformError)
     async def handle_platform_error(request: Request, exc: PlatformError) -> JSONResponse:
-        del request
-        return JSONResponse(request_error_payload(exc), status_code=exc.status_code)
+        payload = (
+            compatibility_error_payload(exc)
+            if request.url.path == "/v1/chat"
+            else request_error_payload(exc)
+        )
+        return JSONResponse(payload, status_code=exc.status_code)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        del request
         error = _validation_error(exc)
-        return JSONResponse(request_error_payload(error), status_code=error.status_code)
+        payload = (
+            compatibility_error_payload(error)
+            if request.url.path == "/v1/chat"
+            else request_error_payload(error)
+        )
+        return JSONResponse(payload, status_code=error.status_code)
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        del request
         error = _http_error(exc)
-        return JSONResponse(request_error_payload(error), status_code=error.status_code)
+        payload = (
+            compatibility_error_payload(error)
+            if request.url.path == "/v1/chat"
+            else request_error_payload(error)
+        )
+        return JSONResponse(payload, status_code=error.status_code)
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        del request
         error = map_exception(exc)
-        return JSONResponse(request_error_payload(error), status_code=error.status_code)
+        payload = (
+            compatibility_error_payload(error)
+            if request.url.path == "/v1/chat"
+            else request_error_payload(error)
+        )
+        return JSONResponse(payload, status_code=error.status_code)

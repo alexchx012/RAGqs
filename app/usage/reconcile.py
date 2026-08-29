@@ -44,6 +44,9 @@ class ConfirmedUsage:
     result: str
     started_at_utc: datetime
     provider_request_id: str | None = None
+    # Chat reconciliation returns the original answer body so the worker can
+    # resume publication without issuing the provider call again.
+    content: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

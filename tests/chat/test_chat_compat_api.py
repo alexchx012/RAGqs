@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import select
 
 from app.chat.models import ChatProviderResponse
 from app.chat.ports import ChatProviderRequest
-from app.chat.schema import chat_generation_execution_table, chat_generation_table
+from app.chat.schema import (
+    chat_generation_event_table,
+    chat_generation_execution_table,
+    chat_generation_table,
+)
 
 from .conftest import build_test_env, provision_and_login
 
@@ -85,6 +91,50 @@ def test_post_chat_with_existing_conversation_and_idempotent_replay() -> None:
     assert replay.json()["data"]["generation_id"] == first.json()["data"]["generation_id"]
 
 
+def test_post_chat_validation_errors_use_compatibility_envelope() -> None:
+    env = build_test_env()
+    headers = _auth(env, "alice")
+
+    response = env["client"].post(
+        "/v1/chat",
+        json={"content": "", "effort_level": "quick"},
+        headers={**headers, "Idempotency-Key": "compat-error-1"},
+    )
+
+    assert response.status_code == 422
+    envelope = response.json()
+    assert envelope["code"] == 422
+    assert envelope["message"]
+    assert envelope["errorMessage"] == envelope["message"]
+    assert envelope["data"]["error"]["code"] == "validation_error"
+    assert set(envelope) == {"code", "message", "data", "errorMessage"}
+
+
+def test_post_chat_applies_per_user_sliding_rate_limit() -> None:
+    env = build_test_env()
+    service = env["runtime"].resolve("chat_generation_service")
+    service._ask_rate_limit_per_minute = 1
+    headers = _auth(env, "alice")
+
+    first = env["client"].post(
+        "/v1/chat",
+        json={"content": "first", "effort_level": "quick"},
+        headers={**headers, "Idempotency-Key": "rate-1"},
+    )
+    second = env["client"].post(
+        "/v1/chat",
+        json={"content": "second", "effort_level": "quick"},
+        headers={**headers, "Idempotency-Key": "rate-2"},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 429
+    envelope = second.json()
+    assert envelope["data"]["error"]["code"] == "rate_limit_exceeded"
+    assert envelope["data"]["error"]["details"]["retry_after_seconds"] >= 1
+    assert envelope["errorMessage"] == envelope["message"]
+
+
 def test_ask_body_accepts_optional_overrides_without_changing_execution_defaults() -> None:
     env = build_test_env()
     headers = {**_auth(env, "alice"), "Accept": "text/event-stream"}
@@ -159,4 +209,24 @@ def test_provider_result_unknown_emits_parseable_error_event() -> None:
             .one()
         )
     assert generation["status"] == "running"
+    assert str(generation["request_id"]).startswith("req_")
     assert execution["status"] == "provider_reconciling"
+
+    with env["engine"].begin() as connection:
+        connection.execute(
+            chat_generation_table.update()
+            .where(chat_generation_table.c.id == result.generation_id)
+            .values(absolute_deadline_at_utc=env["clock"].now - timedelta(seconds=1))
+        )
+    env["runtime"].resolve("chat_generation_worker").run_maintenance()
+
+    with env["engine"].connect() as connection:
+        error_event = connection.execute(
+            select(chat_generation_event_table)
+            .where(
+                chat_generation_event_table.c.generation_id == result.generation_id,
+                chat_generation_event_table.c.event_type == "error",
+            )
+        ).mappings().one()
+    assert error_event["data_json"]["code"] == "provider_result_unknown"
+    assert error_event["data_json"]["request_id"] == generation["request_id"]

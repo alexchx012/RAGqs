@@ -178,6 +178,8 @@ class ChatSettings(_StrictModel):
     effort_rag_call_limit_quick: int = Field(default=1, ge=1)
     effort_rag_call_limit_think: int = Field(default=8, ge=1)
     effort_rag_call_limit_deep: int = Field(default=10, ge=1)
+    ask_rate_limit_per_minute: int = Field(default=20, ge=1)
+    generation_disconnect_grace_seconds: int = Field(default=60, ge=0, le=3600)
     # 「优化输入」端点：模型名以 Literal 锁死（平台唯一支持的增强模型），密钥与
     # 地址复用全局 ProviderSettings；超时与输入上限为可部署配置。
     enhance_model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
@@ -362,6 +364,10 @@ _ENV_KEYS = {
     "RAG_EFFORT_RAG_CALL_LIMIT_QUICK",
     "RAG_EFFORT_RAG_CALL_LIMIT_THINK",
     "RAG_EFFORT_RAG_CALL_LIMIT_DEEP",
+    "RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE",
+    "CHAT_ASK_RATE_LIMIT_PER_MINUTE",
+    "RAG_GENERATION_DISCONNECT_GRACE_SECONDS",
+    "GENERATION_DISCONNECT_GRACE_SECONDS",
     "RAG_CHAT_ENHANCE_MODEL",
     "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS",
     "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS",
@@ -407,6 +413,11 @@ _ENV_KEYS = {
     "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME",
     "RAG_AUTH_BOOTSTRAP_USER_ID",
     "RAG_DEBUG",
+}
+
+_UNPREFIXED_SUPPORTED_KEYS = {
+    "CHAT_ASK_RATE_LIMIT_PER_MINUTE",
+    "GENERATION_DISCONNECT_GRACE_SECONDS",
 }
 _LEGACY_OR_FORBIDDEN_KEYS = {
     "DATABASE_URL",
@@ -496,7 +507,11 @@ def load_platform_settings(
     relevant = {
         key: value
         for key, value in env.items()
-        if key.startswith("RAG_") or key in _LEGACY_OR_FORBIDDEN_KEYS
+        if (
+            key.startswith("RAG_")
+            or key in _LEGACY_OR_FORBIDDEN_KEYS
+            or key in _UNPREFIXED_SUPPORTED_KEYS
+        )
     }
     unknown = sorted(key for key in relevant if key not in _ENV_KEYS)
     if unknown:
@@ -646,6 +661,17 @@ def load_platform_settings(
                 "effort_rag_call_limit_quick": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_QUICK"),
                 "effort_rag_call_limit_think": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_THINK"),
                 "effort_rag_call_limit_deep": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_DEEP"),
+                "ask_rate_limit_per_minute": (
+                    _int(env, "RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE")
+                    if _optional(env, "RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE") is not None
+                    else _int(env, "CHAT_ASK_RATE_LIMIT_PER_MINUTE")
+                ),
+                "generation_disconnect_grace_seconds": _int(
+                    env,
+                    "RAG_GENERATION_DISCONNECT_GRACE_SECONDS"
+                    if _optional(env, "RAG_GENERATION_DISCONNECT_GRACE_SECONDS") is not None
+                    else "GENERATION_DISCONNECT_GRACE_SECONDS",
+                ),
                 "enhance_model": _optional(env, "RAG_CHAT_ENHANCE_MODEL"),
                 "enhance_timeout_seconds": _int(env, "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS"),
                 "enhance_max_prompt_chars": _int(env, "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS"),

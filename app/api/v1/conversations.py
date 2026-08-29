@@ -43,6 +43,7 @@ class ApiEnvelope(BaseModel):
     code: int
     message: str
     data: dict[str, Any]
+    errorMessage: str | None = None
 
 
 class ChatBody(AskBody):

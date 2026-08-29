@@ -25,7 +25,11 @@ from . import runtime as platform_runtime_module
 from .config import PlatformSettings, load_platform_settings
 from .context import new_request_context
 from .errors import PlatformError, map_exception
-from .http_contract import register_exception_handlers, request_error_payload
+from .http_contract import (
+    compatibility_error_payload,
+    register_exception_handlers,
+    request_error_payload,
+)
 from .observability import ObservabilityMetricsError, ObservabilitySample, sample_success
 from .runtime import PlatformRuntime, build_runtime
 
@@ -185,7 +189,11 @@ def create_platform_app(
                     "Unhandled request exception", extra={"request_id": context.request_id}
                 )
                 response = JSONResponse(
-                    request_error_payload(error, context.request_id),
+                    (
+                        compatibility_error_payload(error, context.request_id)
+                        if request.url.path == "/v1/chat"
+                        else request_error_payload(error, context.request_id)
+                    ),
                     status_code=error.status_code,
                 )
             finally:
