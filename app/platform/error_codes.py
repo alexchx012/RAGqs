@@ -1,0 +1,115 @@
+"""Central registry of public platform error codes.
+
+The registry is intentionally data-only.  Call sites still construct
+``PlatformError`` with their local status and details, while contract tests can
+prove that every literal code has a documented home.
+"""
+
+from __future__ import annotations
+
+REGISTERED_ERROR_CODES = frozenset(
+    """
+    ab_pair_expired ab_pair_not_found ab_vote_already_submitted ab_vote_forbidden
+    account_already_deleted account_archive_failed account_archive_pending
+    account_archive_restore_required account_archive_verification_failed
+    account_cleanup_target_failed account_not_deletable account_retirement_unconfirmed
+    admin_bootstrap_conflict admin_roster_invalid already_processed approval_forbidden
+    archive_proof_mismatch archive_proof_unavailable archive_verifier_unavailable
+    authentication_required authorization_changed authorization_scope_invalid
+    authorization_scope_unavailable avatar_cleanup_conflict avatar_cleanup_unavailable
+    avatar_cleanup_unverified avatar_storage_unavailable backup_component_invalid
+    backup_in_progress backup_not_found backup_not_restorable billing_allocation_conflict
+    billing_allocation_mismatch billing_currency_mismatch billing_source_conflict
+    billing_source_id_missing billing_source_metadata_rejected billing_source_not_found
+    budget_exhausted budget_invariant budget_meter_not_found budget_policy_invalid
+    budget_reservation_conflict budget_reservation_not_found budget_reservation_terminal
+    calendar_ledger_invariant calendar_timezone_conflict calibration_window_already_open
+    calibration_window_closing calibration_window_forbidden calibration_window_not_eligible
+    calibration_window_not_open cannot_modify_self cleanup_target_invalid cleanup_target_required
+    compaction_command_conflict compaction_command_invalid compaction_command_not_found
+    compaction_prerequisite_missing concurrency_limit_exceeded consumer_ack_invalid
+    consumer_not_trusted conversation_group_not_found conversation_not_found cost_unavailable
+    csrf_failed deletion_cleanup_blocked deletion_cleanup_unverified deletion_conflict
+    deletion_documents_pending deletion_not_found deletion_not_pending deletion_not_ready
+    deletion_workflow_invalid deletion_workflow_not_found department_action_forbidden
+    department_deactivation_unverified department_has_active_work department_has_members
+    department_inactive department_name_exists department_not_found document_content_unavailable
+    document_deleted document_lifecycle_unavailable document_not_found document_not_published
+    document_operation_in_progress document_pending_delete document_redaction_incomplete
+    document_unavailable document_version_changed document_version_conflict
+    document_version_not_found document_version_not_restorable document_version_purged
+    document_version_unavailable duplicate_document embedding_config_conflict
+    embedding_config_invalid embedding_dimension_mismatch embedding_failed embedding_input_invalid
+    embedding_provider_dispatch_failed embedding_usage_context_invalid
+    embedding_usage_context_required embedding_usage_unavailable estimated_cost_exceeds_limit
+    evaluation_generation_unavailable evaluation_judge_deadline_exceeded
+    evaluation_judge_transport_error evaluation_judge_unavailable evaluation_leaderboard_forbidden
+    evaluation_lease_lost evaluation_not_eligible evaluation_pair_expiry_unavailable
+    evaluation_policy_invalid evaluation_retrieval_unavailable evaluation_run_forbidden
+    evaluation_space_unavailable event_id_conflict feedback_already_submitted feedback_not_available
+    fence_conflict forbidden forbidden_target gc_blocked gc_operation_not_found
+    generation_already_terminal generation_conflict generation_deadline_exceeded
+    generation_not_found generation_not_retryable generation_not_writable
+    generation_revocation_conflict generation_revocation_unavailable
+    generation_revocation_unverified generation_source_conflict generation_source_missing
+    generation_state_conflict graph_build_estimate_unavailable graph_build_in_progress
+    graph_build_lease_lost graph_build_not_cancellable graph_build_not_found
+    graph_build_stage_unavailable graph_build_unavailable graph_cleanup_failed
+    graph_component_cleanup_required graph_component_not_found graph_provider_call_failed
+    graph_provider_dispatch_failed graph_provider_schema_invalid graph_receipt_not_activated
+    graph_receipt_verification_unavailable graph_release_not_activated graph_source_changed
+    graph_source_empty graph_stage_grant_expired graph_stage_grant_invalid graph_stale
+    graph_unavailable idempotency_in_progress idempotency_key_conflict image_provider_schema_error
+    image_provider_timeout image_provider_unavailable inbox_version_conflict index_release_blocked
+    index_stage_failed index_stage_not_found indexing_publish_failed indexing_usage_context_invalid
+    invalid_aggregate_type invalid_credentials invalid_event_payload invalid_password_rule
+    invalid_processing_receipt invalid_quota_outbox_event invalid_recipient_kind
+    invalid_recipients invalid_refresh invalid_startup_configuration_alert
+    invalid_submission_outbox_event job_not_cancellable job_not_failable job_not_found
+    job_not_replayable job_unavailable judge_rate_limited lease_expired lease_not_found
+    ledger_invariant_conflict local_usage_meter_not_found local_usage_meter_terminal
+    login_throttle_unavailable maintenance_mode meilisearch_index_missing meilisearch_unauthorized
+    meilisearch_unavailable meilisearch_version_unavailable meilisearch_volume_missing
+    meilisearch_volume_unwritable message_not_found metering_invariant metrics_forbidden
+    milvus_collection_missing milvus_dimension_mismatch milvus_metric_mismatch milvus_unavailable
+    mineru_parse_failed minister_department_required not_found notification_event_not_acknowledgeable
+    object_cleanup_not_found opensearch_analyzer_failed opensearch_auth_failed
+    opensearch_ik_missing opensearch_index_missing opensearch_jvm_heap_below_baseline
+    opensearch_tls_failed opensearch_unavailable operation_not_found operation_reservation_lost
+    ops_jobs_forbidden outbox_delivery_not_replayable outbox_fingerprint_conflict
+    pending_request_exists personal_document_deletion_unavailable price_close_conflict
+    price_interval_conflict price_not_found price_scope_conflict processing_failed
+    processing_receipt_conflict processor_unavailable producer_not_authorized
+    prompt_enhance_rate_limited prompt_enhance_timeout prompt_enhance_unavailable
+    provider_call_not_found provider_call_state_conflict provider_dispatch_failed
+    provider_not_supported provider_reconciliation_contract_error
+    provider_reconciliation_unavailable provider_result_unknown provider_unavailable
+    public_graph_source_manifest_invalid public_graph_source_revision_not_found
+    public_graph_source_unavailable public_source_manifest_invalid public_source_outbox_unavailable
+    quota_debit_not_found quota_event_outbox_unavailable quota_exceeded quota_request_not_approvable
+    rate_limit_exceeded read_lease_unavailable reader_unavailable recipient_account_inactive
+    recipient_role_mismatch refresh_reuse_detected release_gate_failed repair_target_not_found
+    reranker_unavailable restore_in_progress restore_not_found restore_rebuild_unavailable
+    restore_target_not_found retirement_conflict retirement_event_missing retirement_not_pending
+    retirement_unverified retrieval_degradation retrieval_failed retrieval_profile_superseded
+    retrieval_release_gate_conflict retrieval_release_unavailable retrieval_request_required
+    retry_scope_changed revision_conflict revision_gap rollback_not_eligible session_revoked
+    shadow_evaluation_in_progress shadow_evaluation_not_found sheet_not_found
+    source_scope_changed space_action_forbidden space_not_found sparse_analyzer_unavailable
+    sparse_config_invalid startup_error streaming_response_required structured_parse_failed
+    submission_already_reviewed submission_content_forbidden submission_content_unavailable
+    submission_forbidden submission_grant_invalid submission_not_deletable submission_not_found
+    submission_not_pending submission_scope_changed submission_version_conflict
+    submitter_pending_delete table_parse_failed too_many_attempts tree_provider_invalid
+    unsupported_event_type unsupported_media_type unsupported_schema_version upload_batch_not_found
+    upload_content_type_mismatch upload_too_large usage_event_not_found user_pending_delete
+    username_exists validation_error vector_config_invalid version_conflict visibility_unavailable
+    wrong_old_password bad_request conflict http_error rate_limited internal_error
+    """.split()
+)
+
+# Short alias for callers that want the contract name used in API documentation.
+ERROR_CODES = REGISTERED_ERROR_CODES
+ERROR_CODE_REGISTRY = REGISTERED_ERROR_CODES
+
+__all__ = ["ERROR_CODE_REGISTRY", "ERROR_CODES", "REGISTERED_ERROR_CODES"]

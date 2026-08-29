@@ -152,11 +152,11 @@ def _ab_projection(
         return None
     status = str(pair["status"])
     if status == "pending":
-        published = sorted(
-            int(candidate)
-            for candidate, row in (candidates or {}).items()
+        published = [
+            _candidate_projection(int(candidate), row)
+            for candidate, row in sorted((candidates or {}).items())
             if str(row["status"]) == "published"
-        )
+        ]
         return {
             "pair_id": str(pair["pair_id"]),
             "status": "pending",
@@ -165,12 +165,17 @@ def _ab_projection(
             "candidates": published,
         }
     if status == "open":
+        visible = [
+            _candidate_projection(int(candidate), row)
+            for candidate, row in sorted((candidates or {}).items())
+            if str(row["status"]) == "published"
+        ]
         return {
             "pair_id": str(pair["pair_id"]),
             "status": "open",
             "voted": False,
             "choice": None,
-            "candidates": [0, 1],
+            "candidates": visible,
         }
     if status == "voted":
         return {
@@ -181,6 +186,15 @@ def _ab_projection(
             "candidates": None,
         }
     return None
+
+
+def _candidate_projection(candidate: int, row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate": candidate,
+        "content": str(row["content"] or ""),
+        "citations": list(row.get("citations_json") or []),
+        "answer_mode": str(row["answer_mode"] or "direct"),
+    }
 
 
 __all__ = ["conversation_detail"]

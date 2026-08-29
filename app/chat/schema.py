@@ -138,6 +138,7 @@ chat_generation_table = Table(
     Column("rag_budget_policy_version", String(64), nullable=False),
     Column("absolute_deadline_at_utc", DateTime(timezone=True), nullable=False),
     Column("auth_session_id", String(96), nullable=False),
+    Column("request_id", String(128), nullable=True),
     Column("control_version", Integer, nullable=False),
     Column("request_content", Text, nullable=False),
     Column("request_scope_json", JSON, nullable=False),

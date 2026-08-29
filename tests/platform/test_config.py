@@ -111,6 +111,30 @@ def test_default_observability_retention_is_ninety_days() -> None:
     assert settings.observability.api_metric_retention_days == 90
 
 
+def test_chat_sse_limits_have_contract_defaults_and_manifest_aliases() -> None:
+    defaults = load_platform_settings(development_environment())
+    assert defaults.chat.ask_rate_limit_per_minute == 20
+    assert defaults.chat.generation_disconnect_grace_seconds == 60
+
+    prefixed = load_platform_settings(
+        development_environment(
+            RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE="3",
+            RAG_GENERATION_DISCONNECT_GRACE_SECONDS="7",
+        )
+    )
+    assert prefixed.chat.ask_rate_limit_per_minute == 3
+    assert prefixed.chat.generation_disconnect_grace_seconds == 7
+
+    aliases = load_platform_settings(
+        development_environment(
+            CHAT_ASK_RATE_LIMIT_PER_MINUTE="4",
+            GENERATION_DISCONNECT_GRACE_SECONDS="8",
+        )
+    )
+    assert aliases.chat.ask_rate_limit_per_minute == 4
+    assert aliases.chat.generation_disconnect_grace_seconds == 8
+
+
 def test_configuration_includes_shared_logging_and_index_namespace() -> None:
     settings = load_platform_settings(
         development_environment(

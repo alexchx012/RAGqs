@@ -526,7 +526,11 @@ def test_ab_pair_open_vote_and_expiry() -> None:
     detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
     assistant = detail["messages"][1]
     assert assistant["ab"]["status"] == "open"
-    assert assistant["ab"]["candidates"] == [0, 1]
+    assert [candidate["candidate"] for candidate in assistant["ab"]["candidates"]] == [0, 1]
+    assert all(
+        {"candidate", "content", "citations", "answer_mode"}.issubset(candidate)
+        for candidate in assistant["ab"]["candidates"]
+    )
     pair_id = assistant["ab"]["pair_id"]
 
     vote = env["client"].post(

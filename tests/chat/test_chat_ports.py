@@ -60,7 +60,7 @@ class _FakeIndexing:
         return self.request
 
 
-def test_resolves_citations_through_live_request_and_releases_lease() -> None:
+def test_resolves_citations_through_live_request_until_final_revalidation() -> None:
     indexing = _FakeIndexing()
     port = IndexingChatRetrievalPort(indexing)
     outcome = port.search(
@@ -80,6 +80,10 @@ def test_resolves_citations_through_live_request_and_releases_lease() -> None:
     assert [citation["document_id"] for citation in citations] == ["doc_1"]
     assert citations[0]["chunk_id"] == "chunk_1"
     assert "state" not in citations[0]
+    assert indexing.request.released is False
+
+    revalidated = port.revalidate_citations(citations, principal=None)
+    assert revalidated == citations
     assert indexing.request.released is True
 
 

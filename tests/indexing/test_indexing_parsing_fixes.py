@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
 from sqlalchemy import CheckConstraint
 
 from alembic import command
@@ -300,17 +299,17 @@ def test_sparse_exact_match_sampling_never_breaks_retrieval() -> None:
     assert samples == []
 
 
-# --- A4: provider_reconciling 占位清理 ---
+# --- Chat provider reconciliation lifecycle ---
 
 
-def test_execution_status_constraint_drops_reconciliation_placeholder() -> None:
+def test_execution_status_constraint_keeps_reconciliation_state() -> None:
     constraints = {
         constraint.name: str(constraint.sqltext)
         for constraint in chat_generation_execution_table.constraints
         if isinstance(constraint, CheckConstraint)
     }
     text = constraints["ck_chat_generation_execution_status"]
-    assert "provider_reconciling" not in text
+    assert "provider_reconciling" in text
     assert "'expired'" in text
 
 
@@ -323,21 +322,20 @@ def test_generation_schema_has_no_reconciliation_state_columns() -> None:
     }
 
 
-def test_worker_recovery_row_has_no_reconciliation_state() -> None:
+def test_worker_recovery_row_uses_reconciliation_state() -> None:
     import inspect
 
     from app.chat import worker
 
     source = inspect.getsource(worker)
     assert "provider_reconciliation_state" not in source
-    assert "provider_reconciling" not in source
+    assert "provider_reconciling" in source
 
 
-def test_migrations_head_rejects_reconciliation_placeholder_status(
+def test_migrations_head_accepts_reconciliation_status(
     tmp_path: Path,
 ) -> None:
     from sqlalchemy import create_engine, inspect, text
-    from sqlalchemy.exc import IntegrityError
 
     database_url = f"sqlite:///{tmp_path / 'chat-reconcile.sqlite3'}"
     config = Config("alembic.ini")
@@ -350,18 +348,24 @@ def test_migrations_head_rejects_reconciliation_placeholder_status(
         }
         assert "provider_reconciliation_state" not in columns
         with engine.begin() as connection:
-            with pytest.raises(IntegrityError):
-                connection.execute(
-                    text(
-                        "INSERT INTO chat_generation_execution ("
-                        "execution_id, generation_id, execution_attempt_number, status, "
-                        "lease_owner, lease_expires_at_utc, heartbeat_at_utc, fencing_token, "
-                        "checkpoint_version, checkpoint_json, next_attempt_at_utc, "
-                        "last_error_classification, created_at_utc, updated_at_utc) "
-                        "VALUES ('exec_1', 'gen_1', 1, 'provider_reconciling', NULL, NULL, "
-                        "NULL, 1, 0, NULL, NULL, NULL, '2026-08-22T00:00:00+00:00', "
-                        "'2026-08-22T00:00:00+00:00')"
-                    )
+            connection.execute(
+                text(
+                    "INSERT INTO chat_generation_execution ("
+                    "execution_id, generation_id, execution_attempt_number, status, "
+                    "lease_owner, lease_expires_at_utc, heartbeat_at_utc, fencing_token, "
+                    "checkpoint_version, checkpoint_json, next_attempt_at_utc, "
+                    "last_error_classification, created_at_utc, updated_at_utc) "
+                    "VALUES ('exec_1', 'gen_1', 1, 'provider_reconciling', NULL, NULL, "
+                    "NULL, 1, 0, NULL, NULL, NULL, '2026-08-22T00:00:00+00:00', "
+                    "'2026-08-22T00:00:00+00:00')"
                 )
+            )
+            status = connection.execute(
+                text(
+                    "SELECT status FROM chat_generation_execution "
+                    "WHERE execution_id = 'exec_1'"
+                )
+            ).scalar_one()
+            assert status == "provider_reconciling"
     finally:
         engine.dispose()

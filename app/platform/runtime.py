@@ -126,6 +126,10 @@ from app.usage.metering import LocalUsageMeterService
 from app.usage.observability import UsageResourceMetrics
 from app.usage.price import PriceCatalogService
 from app.usage.quota import QuotaService
+from app.usage.reconcile import (
+    NoopProviderReconciliationPort,
+    UnavailableProviderReconciliationPort,
+)
 from app.usage.requests import QuotaRequestService
 
 from .config import PlatformSettings, validate_startup_settings
@@ -788,6 +792,12 @@ def build_runtime(
         UsageLedgerSubmissionAdapter(ledger)
     )
     configured.setdefault("chat_usage_submission", chat_usage)
+    provider_reconciliation = configured.get("provider_reconciliation_port") or (
+        UnavailableProviderReconciliationPort()
+        if settings.profile == "production"
+        else NoopProviderReconciliationPort()
+    )
+    configured.setdefault("provider_reconciliation_port", provider_reconciliation)
     generation_budget_meter = configured.get("generation_budget_meter")
     if settings.profile == "production":
         if not isinstance(generation_budget_meter, BudgetMeterService):
@@ -810,6 +820,7 @@ def build_runtime(
             calibration=chat_calibration,
             budget_meter=generation_budget_meter,
             ab_source_filter=chat_ab_source_filter,
+            ask_rate_limit_per_minute=settings.chat.ask_rate_limit_per_minute,
         )
     )
     configured.setdefault("chat_generation_service", chat_generation_service)
@@ -818,6 +829,7 @@ def build_runtime(
             engine,
             clock=clock,
             authorization=chat_authorization,
+            disconnect_grace_seconds=settings.chat.generation_disconnect_grace_seconds,
         )
     )
     configured.setdefault("chat_stream_service", chat_stream_service)
@@ -831,6 +843,8 @@ def build_runtime(
         budget_meter=generation_budget_meter,
         self_evaluator=configured.get("agents_self_evaluator"),
         effort_rag_limits=settings.chat.effort_rag_call_limits,
+        disconnect_grace_seconds=settings.chat.generation_disconnect_grace_seconds,
+        provider_reconciliation=provider_reconciliation,
     )
     configured.setdefault("chat_generation_worker", chat_worker)
     evaluation_repository = configured.get("evaluation_repository") or (

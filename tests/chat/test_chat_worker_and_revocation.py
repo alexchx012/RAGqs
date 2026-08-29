@@ -22,6 +22,9 @@ from app.chat.schema import (
 )
 from app.identity.revocation import GenerationRevocationCommand
 from app.identity.schema import identity_revocation_command_table
+from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
+from app.usage.reconcile import ConfirmedNotSent, ConfirmedUsage
+from app.usage.schema import provider_call_table
 
 from .conftest import (
     NOW,
@@ -384,6 +387,234 @@ def test_provider_reconciling_fails_only_after_generation_deadline() -> None:
     assert execution["status"] == "failed"
 
 
+def _confirmed_measurement() -> ProviderMeasurement:
+    return ProviderMeasurement(
+        input_tokens=1,
+        prompt_cache_hit_tokens=None,
+        prompt_cache_miss_tokens=None,
+        output_tokens=1,
+        reasoning_tokens=None,
+        image_count=None,
+        visual_input_tokens=None,
+        embedding_input_tokens=None,
+        vector_count=None,
+        measurement_sources={},
+    )
+
+
+def _confirmed_ownership(user_id: str) -> OwnershipSnapshot:
+    return OwnershipSnapshot(
+        actor_user_id=user_id,
+        actor_role_snapshot="user",
+        actor_department_id_snapshot=None,
+        quota_subject_user_id=user_id,
+        cost_center_key=f"user:{user_id}",
+    )
+
+
+def _set_provider_reconciling(
+    env: dict,
+    *,
+    generation_id: str,
+    content: str = "",
+) -> None:
+    with env["engine"].begin() as connection:
+        execution_id = str(
+            connection.execute(
+                select(chat_generation_execution_table.c.execution_id).where(
+                    chat_generation_execution_table.c.generation_id == generation_id
+                )
+            ).scalar_one()
+        )
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(chat_generation_execution_table.c.execution_id == execution_id)
+            .values(
+                status="provider_reconciling",
+                checkpoint_json={
+                    "phase": "provider_pending",
+                    "pending_candidate": {
+                        "candidate": 0,
+                        "content": content,
+                        "citations": [],
+                        "answer_mode": "no_context",
+                    },
+                },
+            )
+        )
+        connection.execute(
+            provider_call_table.insert().values(
+                provider_call_id=f"pc_{generation_id[-8:]}",
+                provider="chat",
+                model="chat-model",
+                operation="chat_generation",
+                execution_kind="chat_generation",
+                execution_id=execution_id,
+                attempt_id=None,
+                generation_id=generation_id,
+                resource_id=None,
+                replay_generation=0,
+                request_fingerprint=f"chat:{generation_id}:{execution_id}",
+                deadline_utc=NOW + timedelta(minutes=1),
+                status="unknown",
+                prepared_at_utc=NOW,
+                dispatching_at_utc=NOW,
+                started_at_utc=NOW,
+                completed_at_utc=None,
+                not_sent_at_utc=None,
+                unknown_at_utc=NOW,
+                last_reconcile_attempt_at_utc=None,
+                created_at_utc=NOW,
+            )
+        )
+
+
+def test_provider_reconciliation_unavailability_cannot_block_deadline_expiry() -> None:
+    from app.usage.reconcile import UnavailableProviderReconciliationPort
+
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    principal = env["identity"].authenticate_access_token(token)
+    conversation_id = env["client"].post(
+        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+    result = _ask(env, principal, conversation_id, key="reconcile-unavailable-deadline")
+    _set_provider_reconciling(env, generation_id=result.generation_id)
+    with env["engine"].begin() as connection:
+        connection.execute(
+            update(chat_generation_table)
+            .where(chat_generation_table.c.id == result.generation_id)
+            .values(absolute_deadline_at_utc=NOW - timedelta(seconds=1))
+        )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker._provider_reconciliation = UnavailableProviderReconciliationPort()
+    worker.run_maintenance()
+
+    with env["engine"].connect() as connection:
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
+            )
+            .mappings()
+            .one()
+        )
+        execution = (
+            connection.execute(
+                select(chat_generation_execution_table).where(
+                    chat_generation_execution_table.c.generation_id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert generation["status"] == "failed"
+    assert generation["last_error_code"] == "provider_result_unknown"
+    assert execution["status"] == "failed"
+
+
+def test_confirmed_provider_result_reuses_content_without_resending() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    principal = env["identity"].authenticate_access_token(token)
+    conversation_id = env["client"].post(
+        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+    result = _ask(env, principal, conversation_id, key="reconcile-completed")
+    _set_provider_reconciling(env, generation_id=result.generation_id)
+
+    class _Port:
+        def confirm(self, *, provider_call_id, fingerprint, connection):  # type: ignore[no-untyped-def]
+            del provider_call_id, fingerprint
+            assert connection is None
+            return ConfirmedUsage(
+                measurement=_confirmed_measurement(),
+                ownership=_confirmed_ownership(str(principal.user_id)),
+                result="succeeded",
+                started_at_utc=NOW,
+                content="recovered answer",
+            )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker._provider_reconciliation = _Port()
+    assert worker.run_maintenance()["provider_calls_reconciled"] == 1
+    worker.run_once()
+
+    with env["engine"].connect() as connection:
+        message = connection.execute(
+            select(chat_message_table.c.content, chat_message_table.c.status).where(
+                chat_message_table.c.id == result.message_id
+            )
+        ).mappings().one()
+    assert message == {"content": "recovered answer", "status": "completed"}
+    assert env["provider"].calls == []
+
+
+def test_confirmed_usage_without_chat_content_stays_reconciling() -> None:
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    principal = env["identity"].authenticate_access_token(token)
+    conversation_id = env["client"].post(
+        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+    result = _ask(env, principal, conversation_id, key="reconcile-missing-content")
+    _set_provider_reconciling(env, generation_id=result.generation_id)
+
+    class _Port:
+        def confirm(self, *, provider_call_id, fingerprint, connection):  # type: ignore[no-untyped-def]
+            del provider_call_id, fingerprint
+            assert connection is None
+            return ConfirmedUsage(
+                measurement=_confirmed_measurement(),
+                ownership=_confirmed_ownership(str(principal.user_id)),
+                result="succeeded",
+                started_at_utc=NOW,
+            )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker._provider_reconciliation = _Port()
+    assert worker.run_maintenance()["provider_calls_reconciled"] == 0
+
+    with env["engine"].connect() as connection:
+        status = connection.execute(
+            select(chat_generation_execution_table.c.status).where(
+                chat_generation_execution_table.c.generation_id == result.generation_id
+            )
+        ).scalar_one()
+    assert status == "provider_reconciling"
+
+
+def test_confirmed_not_sent_retries_the_same_generation_stage() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    principal = env["identity"].authenticate_access_token(token)
+    conversation_id = env["client"].post(
+        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+    result = _ask(env, principal, conversation_id, key="reconcile-not-sent")
+    _set_provider_reconciling(env, generation_id=result.generation_id)
+
+    class _Port:
+        def confirm(self, *, provider_call_id, fingerprint, connection):  # type: ignore[no-untyped-def]
+            del provider_call_id, fingerprint
+            assert connection is None
+            return ConfirmedNotSent()
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker._provider_reconciliation = _Port()
+    assert worker.run_maintenance()["provider_calls_reconciled"] == 1
+    worker.run_once()
+
+    assert len(env["provider"].calls) == 1
+    with env["engine"].connect() as connection:
+        status = connection.execute(
+            select(chat_generation_table.c.status).where(
+                chat_generation_table.c.id == result.generation_id
+            )
+        ).scalar_one()
+    assert status == "completed"
+
+
 def test_recovery_skips_execution_lost_to_another_maintenance_worker() -> None:
     env = build_test_env()
     worker = env["runtime"].resolve("chat_generation_worker")
@@ -462,6 +693,41 @@ def test_disconnect_grace_reaps_unleased_generation() -> None:
     frames = _events(env, headers, result.generation_id)
     assert frames[-1][0] == "stopped"
     assert json.loads(frames[-1][2])["stop_reason"] == "client_disconnected"
+
+
+def test_disconnect_reaper_preserves_an_existing_manual_stop_request() -> None:
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id, key="manual-stop-after-disconnect")
+    with env["engine"].begin() as connection:
+        connection.execute(
+            update(chat_generation_table)
+            .where(chat_generation_table.c.id == result.generation_id)
+            .values(
+                status="stop_requested",
+                stop_reason="manual_request",
+                disconnect_deadline_at_utc=NOW - timedelta(seconds=1),
+            )
+        )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker.run_maintenance()
+    with env["engine"].connect() as connection:
+        pending = connection.execute(
+            select(
+                chat_generation_table.c.status,
+                chat_generation_table.c.stop_reason,
+            ).where(chat_generation_table.c.id == result.generation_id)
+        ).mappings().one()
+    assert pending == {"status": "stop_requested", "stop_reason": "manual_request"}
+
+    worker.run_once()
+    frames = _events(env, headers, result.generation_id)
+    assert frames[-1][0] == "stopped"
+    assert json.loads(frames[-1][2])["stop_reason"] == "manual_request"
 
 
 def test_rouge_l_near_duplicate_collapses_ab_pair() -> None:
@@ -935,6 +1201,144 @@ def test_stale_publish_cannot_outlive_a_fence_then_lease_recovery(monkeypatch) -
     assert generation_after["status"] == "running"
     assert [execution["status"] for execution in executions] == ["expired", "queued"]
     assert all(event["event_type"] not in {"answer", "done"} for event in events)
+
+
+def test_publish_rechecks_source_scope_after_acquiring_the_fence(monkeypatch) -> None:
+    from app.platform.errors import PlatformError
+
+    class _FenceAwareRetrieval(RecordingChatRetrievalPort):
+        source_changed = False
+
+        def revalidate_citations(self, citations, *, principal):  # type: ignore[no-untyped-def]
+            del principal
+            return () if self.source_changed else tuple(citations)
+
+    retrieval = _FenceAwareRetrieval()
+    env = build_test_env(retrieval=retrieval)
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    _ask(env, principal, conversation_id)
+    worker = env["runtime"].resolve("chat_generation_worker")
+    claimed = worker._claim_execution()
+    assert claimed is not None
+    execution_id, generation_id = claimed
+    generation = worker._read_generation(generation_id)
+    fencing_token = worker._execution_fence(generation_id, execution_id)
+    original_fence_current = worker._fence_current
+
+    def change_source_after_fence(
+        connection,
+        *,
+        generation_id: str,
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+    ) -> bool:
+        current = original_fence_current(
+            connection,
+            generation_id=generation_id,
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+        )
+        if current:
+            retrieval.source_changed = True
+        return current
+
+    monkeypatch.setattr(worker, "_fence_current", change_source_after_fence)
+    try:
+        worker._publish(
+            generation=generation,
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=int(generation["control_version"]),
+            candidates=[
+                {
+                    "candidate": 0,
+                    "content": "answer from stale source scope",
+                    "citations": [
+                        {
+                            "document_id": "doc_1",
+                            "document_version_id": "ver_1",
+                            "publication_id": "pub_1",
+                            "chunk_id": "chunk_1",
+                        }
+                    ],
+                    "answer_mode": "grounded",
+                }
+            ],
+        )
+    except PlatformError as error:
+        assert error.code == "source_scope_changed"
+    else:
+        raise AssertionError("publication must reject a source scope changed after its fence")
+
+    with env["engine"].connect() as connection:
+        generation_after = connection.execute(select(chat_generation_table)).mappings().one()
+        events = connection.execute(select(chat_generation_event_table)).mappings().all()
+    assert generation_after["status"] == "running"
+    assert all(event["event_type"] not in {"answer", "done"} for event in events)
+
+
+def test_source_scope_change_discards_the_candidate_and_regenerates() -> None:
+    class _RetryingRevalidationRetrieval(RecordingChatRetrievalPort):
+        revalidation_calls = 0
+
+        def revalidate_citations(self, citations, *, principal):  # type: ignore[no-untyped-def]
+            self.revalidation_calls += 1
+            if self.revalidation_calls == 1:
+                return ()
+            return super().revalidate_citations(citations, principal=principal)
+
+    retrieval = _RetryingRevalidationRetrieval()
+    retrieval.outcomes["hello"] = RetrievalOutcome(
+        hits=(
+            RetrievalHitOutcome(
+                document_id="doc_1",
+                document_version_id="ver_1",
+                publication_id="pub_1",
+                chunk_id="chunk_1",
+                space_id="space_1",
+                locator={"page": 1},
+                snippet="current source",
+            ),
+        )
+    )
+    env = build_test_env(retrieval=retrieval)
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id)
+    worker = env["runtime"].resolve("chat_generation_worker")
+
+    worker.run_once()
+    worker.run_once()
+
+    with env["engine"].connect() as connection:
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
+            )
+            .mappings()
+            .one()
+        )
+        events = (
+            connection.execute(
+                select(chat_generation_event_table.c.event_type).where(
+                    chat_generation_event_table.c.generation_id == result.generation_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert retrieval.revalidation_calls == 2
+    assert len(env["provider"].calls) == 2
+    assert generation["status"] == "completed"
+    assert events.count("answer") == 1
+    assert events.count("done") == 1
 
 
 def test_fence_locks_execution_before_generation(monkeypatch) -> None:

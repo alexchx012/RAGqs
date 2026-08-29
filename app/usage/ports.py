@@ -63,6 +63,17 @@ class UsageSubmissionPort(Protocol):
         provider_request_id: str | None = None,
         started_at_utc: object | None = None,
     ) -> str: ...
+    def complete_provider_call_in_transaction(
+        self,
+        connection: Connection,
+        *,
+        provider_call_id: str,
+        measurement: object,
+        ownership: object,
+        result: str,
+        provider_request_id: str | None = None,
+        started_at_utc: object | None = None,
+    ) -> str: ...
     def mark_not_sent(self, provider_call_id: str) -> None: ...
     def mark_unknown(self, provider_call_id: str) -> None: ...
     def submit_local_usage(
