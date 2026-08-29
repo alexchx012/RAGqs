@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.identity.bootstrap import run_initial_admin_bootstrap
 from app.identity.schema import identity_metadata
+from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
@@ -36,6 +37,7 @@ def test_bootstrap_command_seeds_an_empty_database_before_api_startup() -> None:
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
 
     admin = run_initial_admin_bootstrap(configured, runtime=runtime)

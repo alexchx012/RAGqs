@@ -1,5 +1,5 @@
 /*
- * 提醒类型映射测试（契约 §13）：九类已知类型的图标 / 着色 / 跳转目标，
+ * 提醒类型映射测试（契约 §13）：十类已知类型的图标 / 着色 / 跳转目标，
  * graph_build_completed 按 payload.status 着色，未知类型通用兜底不崩溃，
  * NOTIFICATION_INTENT_CLASS 五键齐全。
  */
@@ -14,6 +14,7 @@ import {
   MailWarning,
   MailX,
   Network,
+  Siren,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
@@ -39,6 +40,7 @@ const KNOWN_CASES: ReadonlyArray<{
   { type: 'submission_invalidated', icon: MailWarning, intent: 'warning', target: '/settings/knowledge/submissions' },
   { type: 'calibration_window_suggested', icon: FlaskConical, intent: 'ink', target: '/admin/evaluation' },
   { type: 'graph_build_completed', icon: Network, intent: 'success', target: '/admin/spaces/public' },
+  { type: 'evaluation_judge_configuration_missing', icon: Siren, intent: 'danger', target: '/admin/evaluation' },
 ];
 
 describe('提醒类型映射', () => {

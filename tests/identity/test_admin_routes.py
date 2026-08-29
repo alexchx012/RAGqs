@@ -12,6 +12,7 @@ from app.identity.ports import NoopDepartmentWorkCheckPort
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
@@ -41,6 +42,7 @@ def test_admin_routes_manage_non_admin_users_and_expose_read_only_matrix() -> No
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
@@ -157,6 +159,7 @@ def test_admin_directory_counts_read_active_documents_from_the_documents_owner()
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     service = IdentityAccessService(

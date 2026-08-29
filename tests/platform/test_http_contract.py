@@ -7,6 +7,7 @@ from fastapi import Query
 from fastapi.testclient import TestClient
 
 from app.identity.schema import identity_metadata
+from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
@@ -70,6 +71,7 @@ def test_fastapi_validation_http_and_internal_errors_use_contract() -> None:
     engine = app.state.platform_runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
 
     @app.get("/v1/test-error")
@@ -104,6 +106,7 @@ def test_unexpected_error_keeps_request_id_and_logs_it_while_context_is_active(c
     engine = app.state.platform_runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
 
     @app.get("/v1/correlated-internal")

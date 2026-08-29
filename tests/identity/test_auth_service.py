@@ -24,6 +24,7 @@ from app.identity.schema import (
     identity_user_table,
 )
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
 from app.platform.database import core_metadata, platform_audit_table
 from app.platform.errors import PlatformError
@@ -41,6 +42,7 @@ def make_service() -> IdentityAccessService:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     return IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -101,6 +103,7 @@ def test_refresh_rotates_once_and_replays_the_same_successor_within_grace() -> N
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -170,6 +173,7 @@ def test_refresh_treats_a_legacy_predecessor_payload_as_a_cache_miss() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -233,6 +237,7 @@ def test_tampered_predecessor_replay_payload_is_invalid_without_revocation() -> 
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -286,6 +291,7 @@ def test_unconfigured_development_services_do_not_share_auth_secrets() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     first = IdentityAccessService(
         engine,
         AuthSettings(),
@@ -320,6 +326,7 @@ def test_unconfigured_development_restart_rejects_identity_idempotency_replay() 
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     first = IdentityAccessService(
         engine,
         AuthSettings(),
@@ -491,6 +498,7 @@ def test_managed_users_database_query_applies_pagination() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -691,6 +699,7 @@ def test_departments_database_query_aggregates_member_counts() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -746,6 +755,7 @@ def test_prune_completed_history_keeps_recent_and_incomplete_records() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -883,6 +893,7 @@ def test_session_revocation_calls_chat_port_once_and_invalidates_access_token() 
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     port = RecordingRevocationPort()
     service = IdentityAccessService(
         engine,
@@ -935,6 +946,7 @@ def test_all_session_revocation_emits_one_account_scoped_generation_command() ->
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     port = RecordingRevocationPort()
     service = IdentityAccessService(
         engine,
@@ -971,6 +983,7 @@ def test_session_revocation_fails_closed_without_a_generation_port() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -1009,6 +1022,7 @@ def test_session_revocation_rejects_an_unverifiable_generation_receipt() -> None
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -1044,6 +1058,7 @@ def test_refresh_reuse_of_a_non_predecessor_revokes_the_session_family() -> None
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -1092,6 +1107,7 @@ def test_later_refresh_rotation_clears_expired_predecessor_replay_payload() -> N
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -1238,6 +1254,7 @@ def test_avatar_replacement_uses_the_shared_object_store() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     object_store = MemoryObjectStore()
     service = IdentityAccessService(
         engine,
@@ -1276,6 +1293,7 @@ def test_avatar_replacement_compensates_when_deletion_wins_the_write_race(monkey
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     object_store = RecordingObjectStore()
     service = IdentityAccessService(
         engine,
@@ -1347,6 +1365,7 @@ def test_avatar_compensation_defers_a_failed_delete_for_retry(monkeypatch) -> No
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     object_store = FailFirstDeleteObjectStore()
     service = IdentityAccessService(
         engine,
@@ -1393,6 +1412,7 @@ def test_deployment_admin_provisioning_honors_the_declared_roster() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(
@@ -1435,6 +1455,7 @@ def test_bootstrap_initial_admin_creates_an_audited_rostered_admin_once() -> Non
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(
@@ -1475,6 +1496,7 @@ def test_bootstrap_initial_admin_refuses_a_nonempty_identity_database() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(
@@ -1511,6 +1533,7 @@ def test_bootstrap_initial_admin_requires_a_declared_roster_seat() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -1535,6 +1558,7 @@ def test_roster_reconciliation_freezes_removed_admins_and_revokes_sessions() -> 
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     secret = "test-secret-that-is-long-enough"
     first_deployment = IdentityAccessService(
         engine,
@@ -1584,6 +1608,7 @@ def test_roster_reconciliation_rejects_an_empty_active_admin_seat() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(
@@ -1607,6 +1632,7 @@ def test_idempotency_request_hash_is_bound_to_the_service_secret() -> None:
         )
         core_metadata.create_all(engine)
         identity_metadata.create_all(engine)
+        outbox_metadata.create_all(engine)
         service = IdentityAccessService(engine, AuthSettings(secret_key=secret))
         service.provision_user(
             username="admin",
@@ -1694,6 +1720,7 @@ def test_configured_refresh_origin_allowlist_rejects_missing_and_foreign_origins
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(

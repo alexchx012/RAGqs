@@ -16,6 +16,7 @@ import {
   MailWarning,
   MailX,
   Network,
+  Siren,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
@@ -83,6 +84,11 @@ const KNOWN_MAPPINGS: Record<string, NotificationMapping> = {
     icon: Network,
     intent: 'success', // 实际着色按 payload.status 在 resolveNotificationMapping 再判定
     target: '/admin/spaces/public',
+  },
+  evaluation_judge_configuration_missing: {
+    icon: Siren,
+    intent: 'danger',
+    target: '/admin/evaluation',
   },
 };
 

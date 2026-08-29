@@ -10,6 +10,7 @@ from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsSer
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import AuthPrincipal, IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings, load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.storage import MemoryObjectStore
@@ -23,6 +24,7 @@ def _engine():
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     return engine
 

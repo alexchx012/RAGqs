@@ -29,6 +29,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.identity.schema import identity_metadata, identity_user_table
 from app.identity.service import AuthPrincipal
+from app.outbox.schema import outbox_metadata
 from app.platform.database import SqlAlchemyDatabaseClock, core_metadata
 from app.platform.errors import PlatformError
 from app.usage.calendar import BusinessCalendarService
@@ -63,6 +64,7 @@ def env():
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     times = [NOW]
     clock = MutableClock(times)

@@ -17,6 +17,7 @@ from app.documents.schema import (
     knowledge_submissions_table,
 )
 from app.identity.schema import identity_metadata, identity_user_table
+from app.outbox.schema import outbox_metadata
 from app.platform.database import core_metadata
 from app.platform.observability import (
     ApiRead,
@@ -296,6 +297,7 @@ def test_ingestion_quality_aggregates_json_in_the_database() -> None:
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     _seed_basics(engine)
@@ -423,6 +425,7 @@ def test_ops_dashboard_has_fixed_four_packs_and_port_values() -> None:
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)
@@ -453,6 +456,7 @@ def test_ingestion_backlog_is_a_current_snapshot_across_dashboard_windows() -> N
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)
@@ -502,6 +506,7 @@ def test_empty_and_unavailable_port_keep_cards_null_without_fabrication() -> Non
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)
@@ -525,6 +530,7 @@ def test_admin_dashboard_has_fixed_four_packs_and_no_operational_facets() -> Non
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)
@@ -551,6 +557,7 @@ def test_dashboard_delta_compares_current_window_with_previous_window() -> None:
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)
@@ -576,6 +583,7 @@ def test_dashboard_delta_stays_null_without_a_previous_window_baseline() -> None
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)
@@ -596,6 +604,7 @@ def test_operations_has_exactly_three_cards_and_never_calls_port() -> None:
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)
@@ -707,6 +716,7 @@ def test_admin_dashboard_uses_provider_facts_and_expands_real_user_rank() -> Non
     engine = build_engine()
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     chat_metadata.create_all(engine)

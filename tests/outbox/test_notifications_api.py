@@ -10,9 +10,16 @@ from _helpers import (
     provision_user,
 )
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.notifications import NotificationMaterializer
+from app.outbox.schema import (
+    notification_delivery_receipt_table,
+    notification_inbox_table,
+    notification_table,
+)
+from app.outbox.service import NotificationService
 from app.platform.app_factory import create_platform_app
 from app.platform.runtime import build_runtime
 
@@ -47,16 +54,21 @@ def deliver(engine, *, user_ids, event_id="evt_1", event_type="ingestion_complet
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
 
-    payload = (
-        {
+    if event_type in {"ingestion_completed", "ocr_low_confidence"}:
+        payload = {
             "job_id": f"job_{event_id}",
             "document_id": f"doc_{event_id}",
             "document_version_id": f"docv_{event_id}",
             "publication_id": f"pub_{event_id}",
         }
-        if event_type in {"ingestion_completed", "ocr_low_confidence"}
-        else {"submission_id": f"sub_{event_id}"}
-    )
+    elif event_type == "submission_approved":
+        payload = {
+            "submission_id": f"sub_{event_id}",
+            "document_id": f"doc_{event_id}",
+            "job_id": f"job_{event_id}",
+        }
+    else:
+        payload = {"submission_id": f"sub_{event_id}", "reason": "machine_reason"}
     command = OutboxPublishCommand(
         event_id=event_id,
         event_type=event_type,
@@ -235,3 +247,86 @@ def test_notifications_require_authentication() -> None:
         response = client.get("/v1/notifications")
 
     assert response.status_code == 401
+
+
+def _inbox_row(connection, user_id):
+    return (
+        connection.execute(
+            select(notification_inbox_table).where(
+                notification_inbox_table.c.recipient_user_id == user_id
+            )
+        )
+        .mappings()
+        .one()
+    )
+
+
+def test_provisioned_account_owns_an_inbox_row() -> None:
+    """C5-5/#80：账号创建事务提交后 inbox 行存在（next_seq=1、read_through=0）。"""
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+
+    with engine.connect() as connection:
+        inbox = _inbox_row(connection, alice)
+    assert inbox["next_notification_seq"] == 1
+    assert inbox["read_through_seq"] == 0
+    assert inbox["version"] == 1
+
+
+def test_materialization_enforces_the_50_cap_inside_the_transaction() -> None:
+    """C5-2/#99：物化第 51 条后，排名 >50 的通知在物化事务内被退休并写收据，
+    未读计数受 50 约束；多接收者各自独立处理。"""
+    engine = build_engine()
+    identity = build_identity_service(engine)
+    alice = provision_user(identity, username="alice")
+    bob = provision_user(identity, username="bob")
+    for index in range(1, 52):
+        deliver(engine, user_ids=(alice, bob), event_id=f"evt_{index}")
+    service = NotificationService(engine, now=lambda: fixed_now())
+
+    assert service.unread_count(alice) == 50
+    with engine.connect() as connection:
+        online = dict(
+            connection.execute(
+                select(
+                    notification_table.c.recipient_user_id,
+                    func.count(),
+                )
+                .where(notification_table.c.recipient_user_id.in_([alice, bob]))
+                .group_by(notification_table.c.recipient_user_id)
+            ).all()
+        )
+        retired_seqs = connection.execute(
+            select(
+                notification_delivery_receipt_table.c.recipient_user_id,
+                notification_delivery_receipt_table.c.original_notification_seq,
+            ).where(
+                notification_delivery_receipt_table.c.outcome == "materialized",
+                notification_delivery_receipt_table.c.recipient_user_id.in_([alice, bob]),
+            )
+        ).all()
+    assert online == {alice: 50, bob: 50}
+    assert sorted(retired_seqs) == sorted([(alice, 1), (bob, 1)])
+
+
+def test_read_all_watermark_uses_next_seq_basis_and_repeat_is_a_zero_write() -> None:
+    """C5-3/#88：水位取 next_notification_seq - 1；无新通知的重复 read-all
+    逐字段零写入且仍 204。"""
+    app, token, engine, alice, _ = make_app()
+    deliver(engine, user_ids=(alice,), event_id="evt_1")
+    deliver(engine, user_ids=(alice,), event_id="evt_2")
+
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestClient(app) as client:
+        assert client.post("/v1/notifications/read-all", headers=headers).status_code == 204
+        with engine.connect() as connection:
+            after_first = _inbox_row(connection, alice)
+        assert client.post("/v1/notifications/read-all", headers=headers).status_code == 204
+        with engine.connect() as connection:
+            after_second = _inbox_row(connection, alice)
+
+    assert after_first["read_through_seq"] == 2
+    assert after_second["read_through_seq"] == after_first["read_through_seq"]
+    assert after_second["read_all_at_utc"] == after_first["read_all_at_utc"]
+    assert after_second["version"] == after_first["version"]

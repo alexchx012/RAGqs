@@ -31,6 +31,7 @@ from app.documents.schema import documents_metadata
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import AuthPrincipal, IdentityAccessService
+from app.outbox.schema import outbox_metadata as domain_outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import (
@@ -150,6 +151,7 @@ def make_client(*, outbox_port=None):
     identity_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     documents_metadata.create_all(engine)
+    domain_outbox_metadata.create_all(engine)
     if outbox_port is not None:
         _api_outbox_metadata.create_all(engine)
     clock = FixedClock(NOW)
@@ -714,6 +716,7 @@ def test_injected_outbox_failure_rolls_back_each_approval_and_same_key_retries(
     identity_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     documents_metadata.create_all(engine)
+    domain_outbox_metadata.create_all(engine)
     _api_outbox_metadata.create_all(engine)
     clock = FixedClock(NOW)
     identity_service = IdentityAccessService(engine, settings.auth)

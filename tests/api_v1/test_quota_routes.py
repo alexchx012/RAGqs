@@ -24,6 +24,7 @@ from sqlalchemy.pool import StaticPool
 from app.identity.schema import identity_metadata
 from app.identity.service import AuthPrincipal, IdentityAccessService
 from app.outbox.publisher import SqlAlchemyQuotaOutboxEnqueueAdapter
+from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
@@ -85,6 +86,7 @@ def make_client():
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     clock = FixedClock(NOW)
     calendar = BusinessCalendarService(engine, clock, settings.business_timezone)
@@ -129,6 +131,7 @@ def make_default_client():
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     clock = FixedClock(NOW)
     identity = IdentityAccessService(engine, settings.auth)

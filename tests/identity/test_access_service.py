@@ -33,6 +33,7 @@ def make_service(**kwargs: object) -> IdentityAccessService:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     kwargs.setdefault("revocation_port", NoopGenerationRevocationPort())
     kwargs.setdefault("department_work_check", NoopDepartmentWorkCheckPort())
     kwargs.setdefault("deletion_cleanup_port", NoopAccountDeletionCleanupPort())
@@ -359,6 +360,7 @@ def test_deletion_finalization_fails_closed_without_cleanup_confirmation() -> No
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -505,6 +507,7 @@ def test_failed_revocation_rolls_back_the_managed_user_transition() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -727,6 +730,7 @@ def test_department_deactivation_requires_an_explicit_work_check_adapter() -> No
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),

@@ -84,6 +84,7 @@ from sqlalchemy.pool import StaticPool
 from app.documents.schema import documents_metadata, knowledge_submissions_table
 from app.identity.schema import identity_metadata, identity_user_table
 from app.identity.service import AuthPrincipal
+from app.outbox.schema import outbox_metadata
 from app.platform.database import (
     SqlAlchemyDatabaseClock,
     core_metadata,
@@ -209,6 +210,7 @@ def make_service(now: datetime = NOW, clock: MutableClock | SequenceClock | None
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     _outbox_meta.create_all(engine)

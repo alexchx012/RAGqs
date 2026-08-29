@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.identity.schema import identity_metadata
+from app.outbox.schema import outbox_metadata
 from app.platform import app_factory as app_factory_module
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
@@ -40,6 +41,7 @@ def _platform_client(
     engine = runtime.resolve("database_engine")
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
     app = create_platform_app(configured, runtime=runtime)
     try:

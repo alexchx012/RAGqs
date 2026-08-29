@@ -66,6 +66,9 @@ class SubmissionService:
         transition_version: int,
         recipient_user_id: str,
         occurred_at,
+        document_id: str | None = None,
+        job_id: str | None = None,
+        reason: str | None = None,
     ) -> None:
         port = self._service._submission_notification_port
         if port is None:
@@ -77,6 +80,9 @@ class SubmissionService:
             recipient_user_id=str(recipient_user_id),
             occurred_at=occurred_at,
             connection=connection,
+            document_id=None if document_id is None else str(document_id),
+            job_id=None if job_id is None else str(job_id),
+            reason=None if reason is None else str(reason),
         )
 
     @staticmethod
@@ -216,6 +222,7 @@ class SubmissionService:
                 transition_version=next_version,
                 recipient_user_id=command.user_id,
                 occurred_at=now,
+                reason=command.reason,
             )
             invalidated += 1
         return invalidated
@@ -279,6 +286,7 @@ class SubmissionService:
             transition_version=next_version,
             recipient_user_id=recipient_user_id,
             occurred_at=now,
+            reason=reason,
         )
         return response
 
@@ -729,6 +737,7 @@ class SubmissionService:
                     transition_version=expected_version + 1,
                     recipient_user_id=str(submission["submitter_user_id"]),
                     occurred_at=now,
+                    reason=reason,
                 )
             else:
                 if existing_claim is not None:
@@ -949,6 +958,8 @@ class SubmissionService:
                     transition_version=expected_version + 1,
                     recipient_user_id=str(submission["submitter_user_id"]),
                     occurred_at=now,
+                    document_id=document_id,
+                    job_id=job_id,
                 )
             if deferred_conflict is None:
                 self._service._audit(
