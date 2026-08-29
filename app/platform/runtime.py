@@ -126,6 +126,7 @@ from app.usage.metering import LocalUsageMeterService
 from app.usage.observability import UsageResourceMetrics
 from app.usage.price import PriceCatalogService
 from app.usage.quota import QuotaService
+from app.usage.reconcile import UnavailableProviderReconciliationPort
 from app.usage.requests import QuotaRequestService
 
 from .config import PlatformSettings, validate_startup_settings
@@ -661,6 +662,10 @@ def build_runtime(
         quota_service,
         outbox_port,
     )
+    configured.setdefault(
+        "provider_reconciliation_port",
+        configured.get("provider_reconciliation_port") or UnavailableProviderReconciliationPort(),
+    )
     configured.setdefault("business_calendar", calendar)
     configured.setdefault("price_catalog", prices)
     configured.setdefault("usage_ledger", ledger)
@@ -671,6 +676,8 @@ def build_runtime(
     configured.setdefault("submission_outbox_port", submission_outbox_port)
     configured.setdefault("ingestion_outbox_port", ingestion_outbox_port)
     configured.setdefault("quota_request_service", quota_request_service)
+    if isinstance(identity_access, IdentityAccessService):
+        identity_access._quota_request_service = quota_request_service
     indexing_usage_submission = configured.get("indexing_usage_submission") or (
         UsageLedgerSubmissionAdapter(ledger)
     )
@@ -1036,6 +1043,9 @@ def build_runtime(
         "compaction_worker",
         CompactionWorker(worker_runtime, lifecycle=outbox_lifecycle),
     )
+    from app.documents.worker import IngestionWorker
+
+    configured.setdefault("ingestion_worker", IngestionWorker(worker_runtime))
     # Retention & operations orchestration assembly. Destructive effects stay
     # inside the owner domains; retention only drives owner entries and owns
     # its reconciliation/findings/receipts and the server-driven read models.

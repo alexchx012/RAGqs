@@ -965,12 +965,14 @@ class QuotaRequestService:
         affected = 0
         pending_ids = (
             connection.execute(
-                select(quota_request_table.c.quota_request_id).where(
+                select(quota_request_table.c.quota_request_id)
+                .where(
                     and_(
                         quota_request_table.c.applicant_user_id == user_id,
                         quota_request_table.c.status == "pending",
                     )
                 )
+                .with_for_update()
             )
             .scalars()
             .all()

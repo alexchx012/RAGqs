@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from pydantic import SecretStr
@@ -45,6 +46,7 @@ from app.platform.runtime import build_runtime
 from app.platform.worker import create_worker_runtime
 from app.usage import maintenance as maintenance_module
 from app.usage.calendar import BusinessCalendarService
+from app.usage.ledger import LocalMeasurement, OwnershipSnapshot
 from app.usage.maintenance import (
     UsageMaintenanceWorker,
     run_usage_maintenance_once,
@@ -52,10 +54,14 @@ from app.usage.maintenance import (
 from app.usage.ports import NoopOutboxEnqueuePort
 from app.usage.price import PriceCatalogService
 from app.usage.quota import QuotaService
+from app.usage.reconcile import ConfirmedNotSent
 from app.usage.requests import QuotaRequestService
 from app.usage.schema import (
     business_calendar_version_table,
+    local_usage_meter_table,
+    provider_call_table,
     quota_request_table,
+    usage_event_table,
     usage_metadata,
 )
 
@@ -177,6 +183,108 @@ def assert_row(engine, request_id: str) -> dict:
             .mappings()
             .one()
         )
+
+
+def test_worker_reconciles_unknown_calls_and_recovers_expired_meters() -> None:
+    class NotSentPort:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def confirm(self, *, provider_call_id: str, fingerprint: str, connection) -> object:
+            del fingerprint
+            self.calls.append((provider_call_id, connection))
+            return ConfirmedNotSent()
+
+    engine, _requests, runtime, times = make_env()
+    ledger = runtime.resolve("usage_ledger")
+    meter = runtime.resolve("local_usage_meter")
+    calendar = runtime.resolve("business_calendar")
+    prices = runtime.resolve("price_catalog")
+    with engine.begin() as connection:
+        calendar.lock_or_verify(connection)
+        prices.register(
+            connection,
+            provider="test",
+            model="test-model",
+            operation="test-operation",
+            currency_code="USD",
+            lines=[{"meter": "input_tokens", "unit": "token", "rate": Decimal("0.000001")}],
+            effective_from_utc=NOW,
+        )
+    provider_call_id = ledger.prepare_provider_call(
+        provider="test",
+        model="test-model",
+        operation="test-operation",
+        execution_kind="ingestion",
+        execution_id="reconcile-attempt",
+        attempt_id="reconcile-attempt",
+        deadline_utc=NOW + timedelta(hours=1),
+        request_fingerprint="reconcile-fingerprint",
+    )
+    ledger.mark_dispatching(provider_call_id, started_at_provider=NOW)
+    ledger.mark_unknown(provider_call_id)
+    ownership = OwnershipSnapshot(
+        actor_user_id="u1",
+        actor_role_snapshot="user",
+        actor_department_id_snapshot=None,
+        quota_subject_user_id="u1",
+        cost_center_key="user:u1",
+    )
+    meter.start(
+        execution_kind="ingestion",
+        execution_id="expired-attempt",
+        stage="parse",
+        resource_kind="cpu",
+        ownership=ownership,
+        lease_expires_at_utc=NOW + timedelta(seconds=1),
+    )
+    meter.checkpoint(
+        execution_kind="ingestion",
+        execution_id="expired-attempt",
+        stage="parse",
+        resource_kind="cpu",
+        sequence=1,
+        measurement=LocalMeasurement(
+            item_count=1,
+            page_count=None,
+            input_bytes=None,
+            gpu_milliseconds=None,
+            cpu_milliseconds=None,
+            peak_vram_bytes=None,
+            measurement_sources={"item_count": "client_measured"},
+        ),
+    )
+    port = NotSentPort()
+    runtime.adapters["provider_reconciliation_port"] = port
+    times[0] = NOW + timedelta(seconds=2)
+
+    stats = UsageMaintenanceWorker(
+        create_worker_runtime(runtime.settings, runtime=runtime)
+    ).run_once(owner="maintenance-test")
+
+    assert stats.reconciled == 1
+    assert stats.recovered == 1
+    assert port.calls == [(provider_call_id, None)]
+    with engine.connect() as connection:
+        provider_call = (
+            connection.execute(
+                select(provider_call_table).where(
+                    provider_call_table.c.provider_call_id == provider_call_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        meter_row = connection.execute(select(local_usage_meter_table)).mappings().one()
+        usage_rows = connection.execute(select(usage_event_table)).mappings().all()
+    assert provider_call["status"] == "not_sent"
+    assert meter_row["status"] == "abandoned"
+    assert len(usage_rows) == 1
+    repeat = UsageMaintenanceWorker(
+        create_worker_runtime(runtime.settings, runtime=runtime)
+    ).run_once(owner="maintenance-test")
+    assert repeat.reconciled == 0
+    assert repeat.recovered == 0
 
 
 def test_worker_prioritizes_closed_period_and_sets_cancellation_audit_fields() -> None:

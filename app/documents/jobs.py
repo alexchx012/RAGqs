@@ -303,6 +303,81 @@ class DocumentsJobCoordinator:
                 authorization_fence=authorization_fence,
             )
 
+    def renew(
+        self,
+        lease: JobLease,
+        *,
+        worker_id: str | None = None,
+        lease_ttl: timedelta | None = None,
+    ) -> JobLease | None:
+        """Extend a running attempt only while its owner and fencing token match."""
+
+        owner = lease.lease_owner if worker_id is None else worker_id
+        if not isinstance(owner, str) or not owner.strip():
+            raise PlatformError("validation_error", "worker_id is required", {}, 422)
+        ttl = self._lease_ttl if lease_ttl is None else lease_ttl
+        if ttl.total_seconds() <= 0:
+            raise ValueError("lease_ttl must be positive")
+        with self._service._engine.begin() as connection:
+            now = self._service._current_time()
+            attempt = (
+                connection.execute(
+                    select(ingestion_attempts_table)
+                    .where(
+                        and_(
+                            ingestion_attempts_table.c.id == lease.attempt_id,
+                            ingestion_attempts_table.c.job_id == lease.job_id,
+                            ingestion_attempts_table.c.state == "running",
+                            ingestion_attempts_table.c.lease_owner == owner,
+                            ingestion_attempts_table.c.fencing_token == lease.fencing_token,
+                            ingestion_attempts_table.c.lease_expires_at_utc > now,
+                            ingestion_jobs_table.c.id == lease.job_id,
+                            ingestion_jobs_table.c.state == IngestionJobState.RUNNING.value,
+                            ingestion_jobs_table.c.active_attempt_id == lease.attempt_id,
+                        )
+                    )
+                    .select_from(
+                        ingestion_attempts_table.join(
+                            ingestion_jobs_table,
+                            ingestion_jobs_table.c.id == ingestion_attempts_table.c.job_id,
+                        )
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if attempt is None:
+                return None
+            expires = now + ttl
+            updated = connection.execute(
+                update(ingestion_attempts_table)
+                .where(
+                    and_(
+                        ingestion_attempts_table.c.id == lease.attempt_id,
+                        ingestion_attempts_table.c.job_id == lease.job_id,
+                        ingestion_attempts_table.c.state == "running",
+                        ingestion_attempts_table.c.lease_owner == owner,
+                        ingestion_attempts_table.c.fencing_token == lease.fencing_token,
+                        ingestion_attempts_table.c.lease_expires_at_utc > now,
+                    )
+                )
+                .values(lease_expires_at_utc=expires, updated_at_utc=now)
+            ).rowcount
+            if updated != 1:
+                return None
+            return JobLease(
+                job_id=lease.job_id,
+                attempt_id=lease.attempt_id,
+                attempt_number=lease.attempt_number,
+                fencing_token=lease.fencing_token,
+                lease_owner=owner,
+                lease_expires_at=expires,
+                publication_id=lease.publication_id,
+                expected_generation_id=lease.expected_generation_id,
+                authorization_fence=lease.authorization_fence,
+            )
+
     def _reclaim_expired_attempts(self, connection, now: datetime) -> None:
         running_job_ids = (
             connection.execute(

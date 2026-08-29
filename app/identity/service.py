@@ -231,6 +231,7 @@ class IdentityAccessService:
         submission_invalidation_port: PendingSubmissionInvalidationPort | None = None,
         archive_issuer: Any = None,
         personal_document_deletion: PersonalDocumentDeletionPort | None = None,
+        quota_request_service: Any | None = None,
     ) -> None:
         self._engine = engine
         self._settings = settings
@@ -256,6 +257,7 @@ class IdentityAccessService:
         self._personal_document_deletion = (
             personal_document_deletion or UnavailablePersonalDocumentDeletionPort()
         )
+        self._quota_request_service = quota_request_service
         self._profile: str = "development"
 
     def _current_time(self) -> datetime:
@@ -1528,6 +1530,13 @@ class IdentityAccessService:
                 lifecycle_status="pending_delete",
                 reason="account_pending_delete",
             )
+            if self._quota_request_service is not None:
+                self._quota_request_service.cancel_for_account(
+                    connection,
+                    user_id=user_id,
+                    reason="account_pending_delete",
+                    now=now,
+                )
             updated = connection.execute(
                 update(identity_user_table)
                 .where(
@@ -2874,6 +2883,80 @@ class IdentityAccessService:
         if permission_rank[str(permission)] < permission_rank[action]:
             raise PlatformError("space_action_forbidden", "Space action is not allowed", {}, 403)
         return permission  # type: ignore[return-value]
+
+    def authorize_space_for_worker(
+        self,
+        *,
+        user_id: str,
+        space_id: str,
+        action: Literal["read", "contribute", "manage"],
+        connection: Connection | None = None,
+    ) -> Literal["read", "contribute", "manage"]:
+        """Authorize a persisted worker operation without requiring a user session."""
+
+        if action not in {"read", "contribute", "manage"}:
+            raise PlatformError("validation_error", "Space action is invalid", {}, 422)
+        transaction = nullcontext(connection) if connection is not None else self._engine.begin()
+        with transaction as active_connection:
+            assert active_connection is not None
+            user = (
+                active_connection.execute(
+                    select(identity_user_table).where(identity_user_table.c.id == str(user_id))
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if user is None or user["lifecycle_status"] != "active":
+                raise PlatformError(
+                    "authorization_changed",
+                    "The direct-ingest authorization is no longer current",
+                    {},
+                    409,
+                )
+            self._ensure_public_space(active_connection, self._current_time())
+            row = (
+                active_connection.execute(
+                    select(identity_space_table, identity_department_table.c.status)
+                    .outerjoin(
+                        identity_department_table,
+                        identity_space_table.c.department_id == identity_department_table.c.id,
+                    )
+                    .where(identity_space_table.c.id == str(space_id))
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise PlatformError("space_not_found", "Space was not found", {}, 404)
+            role = str(user["role"])
+            department_id = user["department_id"]
+            kind = row[identity_space_table.c.kind]
+            department_status = row[identity_department_table.c.status]
+            permission: str | None = None
+            if kind == "personal":
+                if row[identity_space_table.c.owner_user_id] == str(user_id):
+                    permission = "manage"
+                elif role in {"ops", "admin"}:
+                    permission = "read"
+            elif kind == "public":
+                permission = "manage" if role in {"ops", "admin"} else "contribute"
+            elif kind == "department":
+                own_department = row[identity_space_table.c.department_id] == department_id
+                if department_status == "active":
+                    if role in {"ops", "admin"}:
+                        permission = "manage"
+                    elif own_department:
+                        permission = "manage" if role == "minister" else "contribute"
+                elif role in {"ops", "admin"}:
+                    permission = "read"
+            if permission is None:
+                raise PlatformError("space_not_found", "Space was not found", {}, 404)
+            permission_rank = {"read": 0, "contribute": 1, "manage": 2}
+            if permission_rank[permission] < permission_rank[action]:
+                raise PlatformError(
+                    "space_action_forbidden", "Space action is not allowed", {}, 403
+                )
+            return permission  # type: ignore[return-value]
 
     def user_response(self, user_id: str) -> dict[str, object]:
         with self._engine.connect() as connection:

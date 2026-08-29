@@ -485,6 +485,28 @@ def test_backup_settings_reject_out_of_range_values() -> None:
         load_platform_settings(development_environment(RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS="1"))
 
 
+def test_ingestion_worker_schedule_settings_keep_heartbeat_inside_lease() -> None:
+    settings = load_platform_settings(
+        development_environment(
+            RAG_INGESTION_LEASE_SECONDS="120",
+            RAG_INGESTION_HEARTBEAT_SECONDS="30",
+            RAG_INGESTION_POLL_INTERVAL_SECONDS="15",
+        )
+    )
+
+    assert settings.worker.ingestion_lease_seconds == 120
+    assert settings.worker.ingestion_heartbeat_seconds == 30
+    assert settings.worker.ingestion_poll_interval_seconds == 15
+
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(
+            development_environment(
+                RAG_INGESTION_LEASE_SECONDS="20",
+                RAG_INGESTION_HEARTBEAT_SECONDS="20",
+            )
+        )
+
+
 def test_effort_rag_call_limits_default_and_env_overrides() -> None:
     settings = load_platform_settings(development_environment())
     assert settings.chat.effort_rag_call_limits == {"quick": 1, "think": 8, "deep": 10}

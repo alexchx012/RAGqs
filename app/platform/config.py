@@ -70,6 +70,15 @@ class ProviderSettings(_StrictModel):
 class WorkerSettings(_StrictModel):
     concurrency: int = Field(default=1, ge=1, le=128)
     lease_seconds: int = Field(default=60, ge=5, le=3600)
+    ingestion_lease_seconds: int = Field(default=300, ge=5, le=3600)
+    ingestion_heartbeat_seconds: int = Field(default=20, ge=1, le=300)
+    ingestion_poll_interval_seconds: int = Field(default=5, ge=1, le=3600)
+
+    @model_validator(mode="after")
+    def validate_ingestion_heartbeat(self) -> WorkerSettings:
+        if self.ingestion_heartbeat_seconds >= self.ingestion_lease_seconds:
+            raise ValueError("ingestion heartbeat must be shorter than the ingestion lease")
+        return self
 
 
 class BackupSettings(_StrictModel):
@@ -284,6 +293,9 @@ _ENV_KEYS = {
     "RAG_PROVIDER_BASE_URL",
     "RAG_WORKER_CONCURRENCY",
     "RAG_WORKER_LEASE_SECONDS",
+    "RAG_INGESTION_LEASE_SECONDS",
+    "RAG_INGESTION_HEARTBEAT_SECONDS",
+    "RAG_INGESTION_POLL_INTERVAL_SECONDS",
     "RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS",
     "RAG_BACKUP_GATE_SETTLE_SECONDS",
     "RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS",
@@ -490,6 +502,9 @@ def load_platform_settings(
             for key, value in {
                 "concurrency": _int(env, "RAG_WORKER_CONCURRENCY"),
                 "lease_seconds": _int(env, "RAG_WORKER_LEASE_SECONDS"),
+                "ingestion_lease_seconds": _int(env, "RAG_INGESTION_LEASE_SECONDS"),
+                "ingestion_heartbeat_seconds": _int(env, "RAG_INGESTION_HEARTBEAT_SECONDS"),
+                "ingestion_poll_interval_seconds": _int(env, "RAG_INGESTION_POLL_INTERVAL_SECONDS"),
             }.items()
             if value is not None
         },
