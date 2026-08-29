@@ -80,10 +80,13 @@ No business scheduler runs inside the API process. External CronJobs/workflows c
 | Generation lease | Default 90-second execution lease, renewed every 30 seconds. Subscription leases are also 90 seconds with a 30-second SSE heartbeat and 60-second disconnect grace. |
 | Outbox delivery | 60-second delivery lease, renewed every 20 seconds. Delivery attempts and fencing tokens are persisted. |
 | Ingestion attempt | One job has at most four automatic attempts: initial plus three retries after 1 minute, 5 minutes, and 30 minutes with jitter. |
+| Ingestion worker | The resident `ragqs-ingestion-worker` claims pending/due jobs, renews the five-minute attempt lease every 20 seconds while processing, stages indexing output, and commits publication through the fenced documents transaction. `RAG_INGESTION_*` settings control lease, heartbeat, and poll intervals. |
 | Outbox retry | Up to eight automatic attempts with waits of 5 seconds, 30 seconds, 2 minutes, 10 minutes, 30 minutes, 2 hours, and 6 hours with jitter; the eighth failure is `dead_letter`. |
 | Shadow evaluation | An external schedule calls `POST /admin/evaluations/shadow-runs` with an idempotency key. The HTTP handler only creates a queued run. |
 | Graph maintenance | `ops` explicitly creates a graph run. There is no automatic trigger or automatic replay. |
 | Chat maintenance | An external schedule invokes `ragqs-chat-maintenance` with `RAG_MAINTENANCE_KEY`; it reaps generation leases and executes queued chat generations. |
+| Usage maintenance | An external schedule invokes `ragqs-usage-maintenance` with `RAG_MAINTENANCE_KEY`; each tick reconciles unknown provider calls, recovers expired local usage meters, and processes quota cancellation candidates. |
+| Documents maintenance | An external schedule invokes `ragqs-documents-maintenance` with `RAG_MAINTENANCE_KEY`; it deletes private objects for withdrawn or invalidated submissions and records the cleanup timestamp. The operation is idempotent. |
 | Backup maintenance | The resident `ragqs-backup-maintenance` worker claims due schedule windows, executes backups under the write gate, drives restores, and applies retention expiry from persisted state. Cadence, gate settle/drain timings and sweep batch size come from the `RAG_BACKUP_*` settings. |
 | Retention and GC | Maintenance work is persisted and idempotent. Its cadence is a profile value; it must be frequent enough to honor lifecycle deadlines and must never remove an active reference. |
 | Backup | Use the deployment backup profile, record `backup_id`, validate the object manifest, and alert on any incomplete component. |
