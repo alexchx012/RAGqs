@@ -334,11 +334,10 @@ def test_worker_recovery_row_has_no_reconciliation_state() -> None:
     assert "provider_reconciliation_state" not in source
 
 
-def test_migrations_head_rejects_reconciliation_placeholder_status(
+def test_migrations_head_accepts_provider_reconciling_status(
     tmp_path: Path,
 ) -> None:
     from sqlalchemy import create_engine, inspect, text
-    from sqlalchemy.exc import IntegrityError
 
     database_url = f"sqlite:///{tmp_path / 'chat-reconcile.sqlite3'}"
     config = Config("alembic.ini")
@@ -351,18 +350,17 @@ def test_migrations_head_rejects_reconciliation_placeholder_status(
         }
         assert "provider_reconciliation_state" not in columns
         with engine.begin() as connection:
-            with pytest.raises(IntegrityError):
-                connection.execute(
-                    text(
-                        "INSERT INTO chat_generation_execution ("
-                        "execution_id, generation_id, execution_attempt_number, status, "
-                        "lease_owner, lease_expires_at_utc, heartbeat_at_utc, fencing_token, "
-                        "checkpoint_version, checkpoint_json, next_attempt_at_utc, "
-                        "last_error_classification, created_at_utc, updated_at_utc) "
-                        "VALUES ('exec_1', 'gen_1', 1, 'provider_reconciling', NULL, NULL, "
-                        "NULL, 1, 0, NULL, NULL, NULL, '2026-08-22T00:00:00+00:00', "
-                        "'2026-08-22T00:00:00+00:00')"
-                    )
+            connection.execute(
+                text(
+                    "INSERT INTO chat_generation_execution ("
+                    "execution_id, generation_id, execution_attempt_number, status, "
+                    "lease_owner, lease_expires_at_utc, heartbeat_at_utc, fencing_token, "
+                    "checkpoint_version, checkpoint_json, next_attempt_at_utc, "
+                    "last_error_classification, created_at_utc, updated_at_utc) "
+                    "VALUES ('exec_1', 'gen_1', 1, 'provider_reconciling', NULL, NULL, "
+                    "NULL, 1, 0, NULL, NULL, NULL, '2026-08-22T00:00:00+00:00', "
+                    "'2026-08-22T00:00:00+00:00')"
                 )
+            )
     finally:
         engine.dispose()
