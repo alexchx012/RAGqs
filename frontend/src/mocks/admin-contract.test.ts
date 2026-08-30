@@ -117,7 +117,7 @@ describe("admin contract：dashboard（§9.1）", () => {
     expect(quotaCard && "value" in quotaCard ? quotaCard.value : null).toBe(3);
     expect(
       submissionCard && "value" in submissionCard ? submissionCard.value : null,
-    ).toBe(4);
+    ).toBe(5);
     const latency = cards.find((card) => card.key === "api_latency");
     expect(
       latency && "value" in latency ? latency.value : undefined,
@@ -212,7 +212,7 @@ describe("admin contract：approvals summary（§8.1）", () => {
     const body = (await (
       await jsonRequest(ops, "/v1/approvals/summary")
     ).json()) as ApprovalSummary;
-    expect(body).toEqual({ quota_pending: 3, submission_pending: 4 });
+    expect(body).toEqual({ quota_pending: 3, submission_pending: 5 });
   });
 
   it("admin / 部长 / 普通用户：quota_pending 恒 0，投稿计数按角色范围", async () => {
@@ -223,7 +223,7 @@ describe("admin contract：approvals summary（§8.1）", () => {
       ).json()) as ApprovalSummary,
     ).toEqual({
       quota_pending: 0,
-      submission_pending: 7,
+      submission_pending: 8,
     });
     const minister = bearerOf("minister-li");
     expect(
@@ -472,7 +472,7 @@ describe("admin contract：投稿审核（§8.4–8.5）", () => {
   it("ops 只见公共库；admin 见公共库 + 全部部门库", async () => {
     const ops = bearerOf("ops-wang");
     const opsList = await listSubmissions(ops);
-    expect(opsList.items.length).toBe(4);
+    expect(opsList.items.length).toBe(5);
     expect(Object.keys(opsList.items[0] ?? {}).sort()).toEqual([
       "created_at",
       "media_kind",
@@ -487,7 +487,7 @@ describe("admin contract：投稿审核（§8.4–8.5）", () => {
     expect(opsList.items.every((item) => item.target_space_id === "public")).toBe(true);
 
     const admin = bearerOf("admin");
-    expect((await listSubmissions(admin)).items.length).toBe(7);
+    expect((await listSubmissions(admin)).items.length).toBe(8);
   });
 
   it("批准 202；重复审批 409 submission_already_reviewed", async () => {
@@ -565,6 +565,23 @@ describe("admin contract：投稿审核（§8.4–8.5）", () => {
       409,
       "submitter_pending_delete",
     );
+
+    const purged = items.find((item) => item.name === "已注销账号材料.pdf");
+    await expectError(
+      await postWithKey(
+        ops,
+        `/v1/approvals/submissions/${purged?.submission_id}/approve`,
+        { expected_version: 1 },
+        "idem_s_5b",
+      ),
+      409,
+      "submitter_deleted",
+    );
+    expect(
+      (await listSubmissions(ops)).items.some(
+        (item) => item.submission_id === purged?.submission_id,
+      ),
+    ).toBe(false);
 
     const normal = (await listSubmissions(ops)).items.find(
       (item) => item.name === "行业研报汇总.pdf",

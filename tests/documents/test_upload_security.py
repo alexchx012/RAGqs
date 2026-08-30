@@ -83,7 +83,7 @@ def test_magic_number_mismatch_is_rejected_per_item(service, principal) -> None:
     )
     item = result["items"][0]
     assert item["accepted"] is False
-    assert item["error"]["code"] == "upload_media_mismatch"
+    assert item["error"]["code"] == "upload_content_type_mismatch"
 
 
 def test_archive_content_is_rejected_per_item(service, principal) -> None:
@@ -140,7 +140,7 @@ def test_zip_container_office_type_requires_zip_magic() -> None:
             media_kind="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             content=b"plain word text",
         )
-    assert exc_info.value.code == "upload_media_mismatch"
+    assert exc_info.value.code == "upload_content_type_mismatch"
 
 
 def test_admin_viewing_foreign_personal_library_is_audited(service, principal) -> None:

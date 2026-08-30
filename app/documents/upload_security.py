@@ -62,7 +62,7 @@ _ARCHIVE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
 )
 
 _MEDIA_TYPE_ERROR = "upload_media_type_not_allowed"
-_MISMATCH_ERROR = "upload_media_mismatch"
+_MISMATCH_ERROR = "upload_content_type_mismatch"
 _ARCHIVE_ERROR = "upload_archive_not_allowed"
 _ENCODING_ERROR = "upload_content_invalid"
 _MALWARE_ERROR = "malware_detected"

@@ -342,7 +342,7 @@ For a rejected action, record the server error code and preserve the original st
 | Graph build | `GET /ops/graph-builds/current`, `POST /ops/graph-builds`, protected cancel | `ops` only |
 | Shadow evaluation | `POST /admin/evaluations/shadow-runs`, `GET .../{run_id}` | Run creation `ops`; read `ops`/`admin` |
 | Calibration | `GET/POST /calibration/window` | Read per contract; mutations `ops` only |
-| A/B vote | `POST /messages/{id}/ab-vote` | Current authorized voter; non-owner or cross-space votes return `403 ab_vote_forbidden`; idempotent |
+| A/B vote | `POST /messages/{id}/ab-vote` | Current authorized voter; non-owner or cross-space votes return `403 forbidden`; idempotent |
 | Metrics | `GET /metrics/dashboard`, `GET /metrics/operations` | Role-filtered read projection |
 
 These interfaces are not permission shortcuts. The server recomputes current ACL, lifecycle, version, lease, and idempotency conditions for every operation.

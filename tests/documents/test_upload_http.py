@@ -502,7 +502,7 @@ def test_delete_submission_uses_query_parameter_without_body() -> None:
             headers={"Authorization": token, "Idempotency-Key": "submission-delete"},
         )
         assert pending.status_code == 409
-        assert pending.json()["error"]["code"] == "submission_not_deletable"
+        assert pending.json()["error"]["code"] == "submission_state_conflict"
     finally:
         client.close()
 

@@ -908,7 +908,7 @@ class GenerationService:
             raise PlatformError("message_not_found", "Message was not found", {}, 404)
         if str(row["owner_user_id"]) != str(principal.user_id):
             raise PlatformError(
-                "ab_vote_forbidden", "This message cannot be voted on by this user", {}, 403
+                "forbidden", "This message cannot be voted on by this user", {}, 403
             )
         if str(row["role"]) != "assistant":
             raise PlatformError(
@@ -962,7 +962,7 @@ class GenerationService:
                     str(space_id) for space_id in allowed_spaces
                 }:
                     raise PlatformError(
-                        "ab_vote_forbidden",
+                        "forbidden",
                         "This A/B pair belongs to an inaccessible space",
                         {},
                         403,

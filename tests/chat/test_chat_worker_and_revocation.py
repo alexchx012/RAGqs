@@ -258,6 +258,42 @@ def test_expired_execution_lease_recovers_and_respects_physical_cap() -> None:
     assert frames[-1][0] == "done"
 
 
+def test_recovery_quota_exhausted_before_deadline_fails_with_dedicated_code() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id)
+
+    with env["engine"].begin() as connection:
+        connection.execute(
+            update(chat_generation_execution_table)
+            .where(chat_generation_execution_table.c.generation_id == result.generation_id)
+            .values(status="running", lease_expires_at_utc=NOW - timedelta(seconds=1))
+        )
+    worker = env["runtime"].resolve("chat_generation_worker")
+    # The absolute deadline has not passed yet: only the recovery quota is gone.
+    worker._max_physical_executions = 1
+    assert worker.run_maintenance()["executions_recovered"] == 0
+
+    with env["engine"].connect() as connection:
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert generation["status"] == "failed"
+    assert generation["last_error_code"] == "execution_recovery_exhausted"
+    frames = _events(env, headers, result.generation_id)
+    assert frames[-1][0] == "error"
+    assert json.loads(frames[-1][2])["code"] == "execution_recovery_exhausted"
+
+
 def test_expired_execution_recovery_inherits_latest_checkpoint() -> None:
     env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
     token, _ = provision_and_login(env["identity"], "alice")

@@ -71,7 +71,7 @@ def test_replace_version_rejects_unsupported_media_with_415(service, principal) 
     assert error.value.details["file"] == "movie.mkv"
 
 
-def test_replace_version_rejects_content_type_mismatch_with_422(service, principal) -> None:
+def test_replace_version_rejects_media_mismatch_with_422(service, principal) -> None:
     original = _superseded_version(service, principal)
     with pytest.raises(PlatformError) as error:
         service.replace_version(
@@ -81,7 +81,7 @@ def test_replace_version_rejects_content_type_mismatch_with_422(service, princip
             file=_upload(name="report.pdf", content=b"x"),
             idempotency_key="contract-misc-mismatch-1",
         )
-    assert error.value.code == "upload_content_type_mismatch"
+    assert error.value.code == "upload_media_mismatch"
     assert error.value.status_code == 422
 
 

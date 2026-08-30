@@ -177,8 +177,17 @@ def test_role_gating_and_create_contract() -> None:
         headers={"Authorization": admin_token, "Idempotency-Key": "g1"},
     )
     assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "graph_build_forbidden"
     denied_get = client.get("/v1/ops/graph-builds/current", headers={"Authorization": admin_token})
     assert denied_get.status_code == 403
+    assert denied_get.json()["error"]["code"] == "graph_build_forbidden"
+    denied_cancel = client.post(
+        "/v1/ops/graph-builds/gb_missing/cancel",
+        json={"expected_version": 1},
+        headers={"Authorization": admin_token, "Idempotency-Key": "g-denied-cancel"},
+    )
+    assert denied_cancel.status_code == 403
+    assert denied_cancel.json()["error"]["code"] == "graph_build_forbidden"
     created = client.post(
         "/v1/ops/graph-builds",
         json={"expected_source_revision": 1},
