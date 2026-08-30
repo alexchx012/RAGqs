@@ -5,9 +5,8 @@ import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import create_engine, select
-
 import pytest
+from sqlalchemy import create_engine, select
 
 import app.evaluation as evaluation_module
 from app.documents.preview import ProcessingReceiptPreviewRenderer
