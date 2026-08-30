@@ -9,6 +9,7 @@ from datetime import timedelta
 from sqlalchemy import select, update
 
 from app.chat.schema import (
+    chat_ab_candidate_table,
     chat_ab_pair_table,
     chat_ab_vote_table,
     chat_conversation_table,
@@ -446,6 +447,61 @@ def test_effective_vote_records_golden_seed_row() -> None:
     assert list(seed["preferred_citations_json"]) == citations
     assert seed["rejected_candidate"] == 1
     assert str(seed["policy_version"]) == "cal-v1"
+
+
+def test_golden_seed_records_persisted_candidate_config_pair() -> None:
+    """A14: the seed row carries the persisted blind candidate→config mapping."""
+    env = build_test_env()
+    port = EvaluationCalibrationWindowPort(env["engine"])
+    with env["engine"].begin() as connection:
+        connection.execute(
+            chat_ab_pair_table.insert().values(
+                pair_id="pair_1",
+                generation_id="generation_1",
+                message_id="message_1",
+                window_id="window_1",
+                owner_user_id="owner_1",
+                space_id="space_1",
+                status="voted",
+                voted=True,
+                choice="1",
+                voted_at_utc=NOW,
+                version=1,
+                created_at_utc=NOW,
+                updated_at_utc=NOW,
+            )
+        )
+        for candidate, config_version in ((0, "cfg_a"), (1, "cfg_b")):
+            connection.execute(
+                chat_ab_candidate_table.insert().values(
+                    pair_id="pair_1",
+                    candidate=candidate,
+                    candidate_config_version=config_version,
+                    status="published",
+                    content=f"answer {candidate}",
+                    citations_json=[],
+                    answer_mode="grounded",
+                    created_at_utc=NOW,
+                )
+            )
+        port.record_golden_seed(
+            connection,
+            pair_id="pair_1",
+            space_id="space_1",
+            question_text="Which source supports the answer?",
+            preferred_candidate=1,
+            preferred_content="answer 1",
+            preferred_citations=(),
+            rejected_candidate=0,
+            policy_version="cal-v1",
+            now=NOW,
+        )
+    with env["engine"].connect() as connection:
+        seed = connection.execute(select(evaluation_ab_golden_seed_table)).mappings().one()
+    assert seed["preferred_candidate"] == 1
+    assert seed["preferred_candidate_config_version"] == "cfg_b"
+    assert seed["rejected_candidate"] == 0
+    assert seed["rejected_candidate_config_version"] == "cfg_a"
 
 
 def test_golden_seed_pool_feeds_deployment_side_publish() -> None:
