@@ -243,6 +243,8 @@ def build_test_env(
     generation_service: Any | None = None,
     sampler: Any | None = None,
     ab_source_filter: Any | None = None,
+    candidate_config_versions: tuple[str, ...] | None = None,
+    ab_randomizer: Any | None = None,
     outcomes: dict[str, RetrievalOutcome] | None = None,
     prompt_enhance_provider: Any | None = None,
 ):
@@ -272,6 +274,8 @@ def build_test_env(
             authorization=build_runtime_authorization(identity),
             calibration=calibration,
             ab_source_filter=ab_source_filter,
+            candidate_config_versions=candidate_config_versions,
+            ab_randomizer=ab_randomizer,
             sampler=sampler or (lambda: 0.0),
         )
     usage = RecordingUsageSubmission()

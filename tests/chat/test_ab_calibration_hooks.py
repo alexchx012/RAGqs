@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.chat.models import RetrievalHitOutcome, RetrievalOutcome
 from app.chat.schema import (
+    chat_ab_candidate_table,
     chat_ab_pair_table,
     chat_generation_event_table,
     chat_message_table,
@@ -137,15 +138,16 @@ def test_same_source_skip_creates_no_pair_and_answers_normally() -> None:
     assert message.notices_json is None
     assert "answer for hello" in message.content
     # The filter ran once at sampling time with both candidate configs' profiles.
+    # The pair's config order is randomized per ask (A3), so compare as a set.
     source_filter: FakeAbSourceFilter = env["ab_source_filter"]
-    assert source_filter.calls == [
-        {
-            "query": "hello",
-            "user_id": source_filter.calls[0]["user_id"],
-            "candidate_profiles": (("default", "1"), ("default", "1")),
-            "effort": "quick",
-        }
-    ]
+    assert len(source_filter.calls) == 1
+    call = source_filter.calls[0]
+    assert call["query"] == "hello"
+    assert call["effort"] == "quick"
+    assert set(call["candidate_profiles"]) == {
+        ("default", "default"),
+        ("default", "candidate_b"),
+    }
     # Window quota is untouched: no pair exists to vote on.
     assert env["calibration"].collected == []
     assert _assistant_message(env, token, conversation_id)["ab"] is None
@@ -171,6 +173,97 @@ def test_differing_sources_keep_existing_ab_flow() -> None:
     assert str(pair["status"]) == "open"
     assert "ab_start" in event_types
     assert _assistant_message(env, token, conversation_id)["ab"]["status"] == "open"
+
+
+def test_ab_pair_persists_randomized_config_mapping_and_retrieves_each_profile() -> None:
+    env = build_test_env(
+        calibration=FakeCalibration(window=open_window()),
+        outcomes={"hello": RetrievalOutcome(hits=(_hit("profile-specific"),))},
+        ab_source_filter=FakeAbSourceFilter(identical=False),
+        candidate_config_versions=("cfg_a", "cfg_b", "cfg_unused"),
+        # Reverse the deployment order so the persisted mapping is observable.
+        ab_randomizer=lambda: 0.9,
+    )
+    token, _ = provision_and_login(env["identity"], "alice")
+    conversation_id = _ask_and_complete(env, token, content="hello")
+
+    with env["engine"].connect() as connection:
+        pair_id = str(connection.execute(select(chat_ab_pair_table.c.pair_id)).scalar_one())
+        mapping = (
+            connection.execute(
+                select(
+                    chat_ab_candidate_table.c.candidate,
+                    chat_ab_candidate_table.c.candidate_config_version,
+                ).where(chat_ab_candidate_table.c.pair_id == pair_id)
+            )
+            .mappings()
+            .all()
+        )
+    assert [(int(row["candidate"]), row["candidate_config_version"]) for row in mapping] == [
+        (0, "cfg_b"),
+        (1, "cfg_a"),
+    ]
+
+    retrieval = env["retrieval"]
+    assert [call["profile_version"] for call in retrieval.searches] == ["cfg_b", "cfg_a"]
+    assert [call.candidate for call in env["provider"].calls] == [0, 1]
+    assert "cfg_a" not in str(_assistant_message(env, token, conversation_id))
+    assert "cfg_b" not in str(_assistant_message(env, token, conversation_id))
+
+
+def test_ab_mapping_survives_worker_retry_without_reassignment() -> None:
+    env = build_test_env(
+        calibration=FakeCalibration(window=open_window()),
+        outcomes={"hello": RetrievalOutcome(hits=(_hit(),))},
+        candidate_config_versions=("cfg_a", "cfg_b"),
+        ab_randomizer=lambda: 0.1,
+    )
+    env["provider"].fail_next = True
+    token, _ = provision_and_login(env["identity"], "alice")
+    conversation_id = (
+        env["client"]
+        .post(
+            "/v1/conversations",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        .json()["id"]
+    )
+    from app.chat.models import AskRequest
+
+    principal = env["identity"].authenticate_access_token(token)
+    env["runtime"].resolve("chat_generation_service").ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=AskRequest(content="hello", effort_level="quick", scope=None),
+        idempotency_key="retry-mapping",
+    )
+    with env["engine"].connect() as connection:
+        before = (
+            connection.execute(
+                select(
+                    chat_ab_candidate_table.c.candidate,
+                    chat_ab_candidate_table.c.candidate_config_version,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    env["runtime"].resolve("chat_generation_worker").run_once()
+    with env["engine"].connect() as connection:
+        after = (
+            connection.execute(
+                select(
+                    chat_ab_candidate_table.c.candidate,
+                    chat_ab_candidate_table.c.candidate_config_version,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [(row["candidate"], row["candidate_config_version"]) for row in after] == [
+        (row["candidate"], row["candidate_config_version"]) for row in before
+    ]
 
 
 def test_no_filter_keeps_sampling_behavior() -> None:

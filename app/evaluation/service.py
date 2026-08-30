@@ -434,6 +434,154 @@ class EvaluationService:
 
     # -------------------------------------------------------------- suggestion
 
+    def compute_standard_leaderboard_suggestions(
+        self,
+        *,
+        space_id: str | None = None,
+        comparator_key: str | None = None,
+    ) -> int:
+        """Materialize opening suggestions from scoped standard leaderboard facts.
+
+        The public leaderboard is backed by ``evaluation_active_default``.  Its
+        source run contains the per-candidate facts needed for a comparison,
+        but those facts are only comparable when both the space and comparator
+        key match.  This method intentionally processes each active-default
+        row independently, so a global leaderboard can never manufacture a
+        cross-space suggestion.
+        """
+
+        with self._engine.begin() as connection:
+            return self._compute_standard_leaderboard_suggestions(
+                connection,
+                space_id=space_id,
+                comparator_key=comparator_key,
+            )
+
+    def _compute_standard_leaderboard_suggestions(
+        self,
+        connection: Connection,
+        *,
+        space_id: str | None = None,
+        comparator_key: str | None = None,
+    ) -> int:
+        policy = self._repository.latest_policy(connection)
+        if policy is None:
+            policy = default_policy_snapshot(now=self._now_utc(connection))
+        validate_policy(policy)
+        statement = select(evaluation_active_default_table)
+        if space_id is not None:
+            statement = statement.where(evaluation_active_default_table.c.space_id == space_id)
+        if comparator_key is not None:
+            statement = statement.where(
+                evaluation_active_default_table.c.comparator_key == comparator_key
+            )
+        rows = connection.execute(statement).mappings().all()
+        created = 0
+        seen_scopes: set[tuple[str, str]] = set()
+        for row in rows:
+            row_space_id = str(row["space_id"])
+            row_comparator = row["comparator_key"]
+            if row_comparator is None:
+                continue
+            row_comparator_key = str(row_comparator)
+            scope = (row_space_id, row_comparator_key)
+            if scope in seen_scopes:
+                continue
+            seen_scopes.add(scope)
+            source_run_id = row["source_run_id"]
+            if source_run_id is None:
+                continue
+            run = self._repository.get_run(connection, run_id=str(source_run_id))
+            if (
+                run is None
+                or run.state != "succeeded"
+                or run.space_id != row_space_id
+                or (run.comparator_key or "") != row_comparator_key
+            ):
+                continue
+            run_policy = (
+                self._repository.get_policy(connection, policy_version=run.policy_version) or policy
+            )
+            validate_policy(run_policy)
+            results = self._repository.list_results(connection, run_id=run.run_id)
+            distinct_samples = len({str(result["sample_item_id"]) for result in results})
+            if distinct_samples < run_policy.min_real_queries:
+                continue
+            by_config: dict[str, list[Mapping[str, Any]]] = {}
+            for result in results:
+                by_config.setdefault(str(result["candidate_config_version"]), []).append(result)
+            scored: list[tuple[str, float, bool]] = []
+            for config, config_results in by_config.items():
+                metrics = self._aggregate_result_metrics(config_results)
+                scored.append(
+                    (
+                        config,
+                        weighted_score(metrics),
+                        threshold_eligibility(metrics, run_policy),
+                    )
+                )
+            if len(scored) < 2:
+                continue
+            scored.sort(key=lambda item: (-item[1], item[0]))
+            first, second = scored[0], scored[1]
+            if (
+                not first[2]
+                or not second[2]
+                or abs(first[1] - second[1]) > run_policy.calibration_open_score_gap
+            ):
+                continue
+            actionable = self._repository.latest_actionable_suggestion(
+                connection,
+                space_id=row_space_id,
+                comparator_key=row_comparator_key,
+            )
+            if actionable is not None:
+                # A standard leaderboard and a shadow callback can point at
+                # the same immutable source run.  Do not publish a duplicate.
+                if actionable.rank_summary.get("source_run_id") == run.run_id:
+                    continue
+                self._repository.supersede_actionable_suggestions(
+                    connection,
+                    space_id=row_space_id,
+                    comparator_key=row_comparator_key,
+                    now=self._now_utc(connection),
+                )
+            now = self._now_utc(connection)
+            suggestion_id = _new_id("suggestion")
+            self._repository.create_suggestion(
+                connection,
+                suggestion_id=suggestion_id,
+                space_id=row_space_id,
+                policy_version=run.policy_version,
+                comparator_key=row_comparator_key,
+                rank_summary={
+                    "source": "standard_leaderboard",
+                    "source_run_id": run.run_id,
+                    "sample_count": distinct_samples,
+                    "rankings": [
+                        {"name": name, "score": score, "eligible": eligible}
+                        for name, score, eligible in scored
+                    ],
+                },
+                now=now,
+            )
+            version = self._repository.transition_suggestion(
+                connection,
+                suggestion_id=suggestion_id,
+                from_status="not_actionable",
+                to_status="actionable",
+                now=now,
+            )
+            if version > 1 and self._calibration_outbox is not None:
+                self._calibration_outbox.publish_suggested(
+                    suggestion_id=suggestion_id,
+                    transition_version=version,
+                    occurred_at=now,
+                    connection=connection,
+                )
+            created += 1
+        return created
+
     def compute_suggestion(self, run_id: str) -> None:
         with self._engine.begin() as connection:
             run = self._repository.get_run(connection, run_id=run_id)
@@ -662,6 +810,10 @@ class EvaluationService:
             validate_policy(policy)
             suggestion_space_id = None
             if window_kind in {"cold_start", "sentinel"}:
+                # A standard leaderboard can become actionable without a new
+                # shadow callback. Materialize it before checking eligibility;
+                # the helper keeps every (space, comparator) scope separate.
+                self._compute_standard_leaderboard_suggestions(connection)
                 suggestion_space_id = self._actionable_space_id(connection)
                 if suggestion_space_id is None:
                     raise PlatformError(

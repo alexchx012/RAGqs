@@ -4,7 +4,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from time import perf_counter
 
 from fastapi import FastAPI, Request
@@ -17,7 +16,7 @@ from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 
 from . import runtime as platform_runtime_module
-from .config import PlatformSettings, load_platform_settings
+from .config import PlatformSettings, load_platform_settings, validate_startup_settings
 from .context import new_request_context
 from .errors import PlatformError, map_exception
 from .http_contract import register_exception_handlers, request_error_payload
@@ -33,6 +32,8 @@ def create_platform_app(
     runtime: PlatformRuntime | None = None,
 ) -> FastAPI:
     settings = settings or load_platform_settings()
+    if settings.profile == "production":
+        validate_startup_settings(settings)
     # RAG_LOG_LEVEL：无 handler 时安装默认 handler，并始终把根 logger 调到配置级别
     # （uvicorn 已配置 handler 时 basicConfig 不生效，setLevel 仍然生效）。
     logging.basicConfig(level=settings.logging.level)
@@ -51,19 +52,6 @@ def create_platform_app(
             # H3：数据库探活之后锁定/校验业务日历（时区冲突 → 503 拒启，不悄悄重写）。
             # 与 usage maintenance 通过模块 lookup 调用同一 helper，便于行为级验证。
             platform_runtime_module.ensure_business_calendar_locked(runtime)
-            if settings.profile == "production":
-                missing_variable_names = (
-                    platform_runtime_module.missing_evaluation_judge_configuration(settings)
-                )
-                if missing_variable_names:
-                    startup_alert_port = runtime.resolve("startup_configuration_alert_port")
-                    if startup_alert_port is not None:
-                        with engine.begin() as connection:
-                            startup_alert_port.publish_missing_evaluation_judge_configuration(
-                                missing_variable_names=missing_variable_names,
-                                occurred_at=datetime.now(UTC),
-                                connection=connection,
-                            )
             if settings.auth.admin_roster:
                 identity_access = runtime.resolve("identity_access")
                 if isinstance(identity_access, IdentityAccessService):

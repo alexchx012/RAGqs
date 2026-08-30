@@ -34,6 +34,8 @@ def production_environment(**overrides: str) -> dict[str, str]:
         "RAG_OBJECT_STORAGE_BUCKET": "rag-prod",
         "RAG_PROVIDER_NAME": "openai-compatible",
         "RAG_PROVIDER_API_KEY": "provider-secret",
+        "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
+        "RAG_EVALUATION_JUDGE_API_KEY": "judge-secret",
         "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS": "90",
         "RAG_BUSINESS_TIMEZONE": "UTC",
         "RAG_DEBUG": "false",
@@ -90,6 +92,22 @@ def test_judge_and_image_vlm_credential_reference_labels_may_match() -> None:
     )
 
     validate_startup_settings(settings)
+
+
+def test_production_rejects_shared_judge_and_image_vlm_credential_references(tmp_path) -> None:
+    with pytest.raises(
+        PlatformConfigurationError,
+        match="production judge and image VLM credential references must differ",
+    ):
+        load_platform_settings(
+            production_environment(
+                RAG_EVALUATION_JUDGE_BASE_URL="https://judge.example.test/v1",
+                RAG_EVALUATION_JUDGE_API_KEY="judge-secret",
+                RAG_EVALUATION_JUDGE_CREDENTIAL_REF="shared-provider-label",
+                RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF="shared-provider-label",
+                USER_DELETION_ARCHIVE_DIR=str(tmp_path / "user-deletion-archive"),
+            )
+        )
 
 
 @pytest.mark.parametrize("retention", ["30", "367"])
@@ -356,6 +374,8 @@ def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected(tmp_path) ->
             "RAG_OBJECT_STORAGE_BUCKET": "rag",
             "RAG_PROVIDER_NAME": "dashscope",
             "RAG_PROVIDER_API_KEY": "secret",
+            "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
+            "RAG_EVALUATION_JUDGE_API_KEY": "judge-secret",
             "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",

@@ -277,6 +277,12 @@ def policy_view(policy: EvaluationPolicySnapshot) -> dict[str, Any]:
         "calibration_open_score_gap": policy.calibration_open_score_gap,
         "cold_start_sample_rate": policy.cold_start_sample_rate,
         "sentinel_sample_rate": policy.sentinel_sample_rate,
+        "faithfulness_min": policy.faithfulness_min,
+        "refusal_rate_min": policy.refusal_rate_min,
+        "hit_at_k_final_min": policy.hit_at_k_final_min,
+        "mrr_min": policy.mrr_min,
+        "p95_latency_max_ms": policy.p95_latency_max_ms,
+        "cost_per_query_max": policy.cost_per_query_max,
     }
 
 

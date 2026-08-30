@@ -313,6 +313,7 @@ class HttpJudgeProvider:
                         "model": self._configuration.model,
                         "messages": [{"role": "user", "content": "ping"}],
                         "max_tokens": 1,
+                        "enable_thinking": False,
                     },
                 ),
                 result_for=self._usage_result,

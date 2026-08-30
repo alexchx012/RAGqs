@@ -265,6 +265,30 @@ def test_worker_computes_real_retrieval_metrics_from_golden() -> None:
     assert judge.requests[0].expected_sources == ("s1", "s2")
 
 
+def test_worker_passes_retrieval_hits_as_answer_replay_context() -> None:
+    env = build_test_env()
+    _insert_run(env, sample_items=(_sample(),))
+    answer_replay = FakeAnswerReplayPort()
+    repo = env["runtime"].resolve("evaluation_repository")
+    worker = ShadowEvaluationWorker(
+        env["engine"],
+        repo,
+        AttributionJudge(),
+        HitRetrieval(),
+        answer_replay=answer_replay,
+        now=lambda: NOW,
+    )
+
+    worker.run_once()
+
+    assert len(answer_replay.calls) == 1
+    call = answer_replay.calls[0]
+    assert call["context_items"] == (
+        {"document_id": "s1", "snippet": "x"},
+        {"document_id": "s2", "snippet": "y"},
+    )
+
+
 def test_worker_does_not_fabricate_refusal_quality_without_a_golden_label() -> None:
     from app.evaluation.models import JudgeScores
 

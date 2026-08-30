@@ -645,6 +645,14 @@ class ChatGenerationWorker:
         checkpoint = self._load_checkpoint(execution_id=execution_id)
         profile_id = str(generation["retrieval_profile_id"])
         profile_version = str(generation["retrieval_profile_version"])
+        candidate_config_versions = self._candidate_config_versions_for_generation(
+            generation_id=str(generation["id"])
+        )
+        if candidate_config_versions is not None:
+            # Candidate 0 is the persisted side used by the initial retrieval;
+            # the second side is fetched independently during candidate
+            # production. The mapping is read-only after pair creation.
+            profile_version = candidate_config_versions[0]
         effort = str(generation["effective_effort_level"])
         budget = GenerationBudget.from_checkpoint(
             effort,
@@ -669,9 +677,7 @@ class ChatGenerationWorker:
         # Deep-tier progress rows: one step index per retrieval round, with the
         # active/done pair sharing that index (frontend contract §3.7).
         step_index = 0
-        skip_retrieval_events = bool(
-            checkpoint and checkpoint.get("phase") == "retrieval_complete"
-        )
+        skip_retrieval_events = bool(checkpoint and checkpoint.get("phase") == "retrieval_complete")
         citations: list[Mapping[str, Any]] = []
         while True:
             if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
@@ -880,6 +886,8 @@ class ChatGenerationWorker:
                 control_version=control_version,
                 hits=hits,
                 citations=citations,
+                candidate_config_versions=candidate_config_versions,
+                retrieval_budget=rag_budget_meter,
                 query=effective_query,
             )
             evaluation = evaluator.evaluate(
@@ -1192,29 +1200,57 @@ class ChatGenerationWorker:
         control_version: int,
         hits: tuple[RetrievalHitOutcome, ...],
         citations: list[Mapping[str, Any]],
+        candidate_config_versions: tuple[str, str] | None = None,
+        retrieval_budget: Any | None = None,
         query: str | None = None,
     ) -> list[dict[str, Any]]:
-        context = tuple(
-            {
-                "document_id": hit.document_id,
-                "document_version_id": hit.document_version_id,
-                "publication_id": hit.publication_id,
-                "chunk_id": hit.chunk_id,
-                "space_id": hit.space_id,
-                "library": hit.library,
-                "locator": dict(hit.locator),
-                "snippet": hit.snippet,
-                "claim_contract": {
-                    "annotate": ["library", "space_id"],
-                    "conflicts": "state_each_claim_separately_with_own_citation",
-                },
-            }
-            for hit in hits
-        )
         pair = self._pair_for_generation(generation_id=str(generation["id"]))
         candidate_numbers = (0, 1) if pair is not None else (0,)
         results: list[dict[str, Any]] = []
         for candidate in candidate_numbers:
+            candidate_hits = hits
+            candidate_citations = citations
+            if candidate == 1 and candidate_config_versions is not None:
+                outcome = self._retrieval.search(
+                    str(query if query is not None else ""),
+                    principal=_principal_from_generation(generation),
+                    narrowing_scope=generation["request_scope_json"],
+                    profile_id="default",
+                    profile_version=candidate_config_versions[1],
+                    effort=str(generation["effective_effort_level"]),
+                    budget=retrieval_budget,
+                )
+                candidate_hits = outcome.hits
+                candidate_citations = self._resolve_citations(candidate_hits, generation)
+                for item in outcome.degradations:
+                    code = str(item.get("code") or "")
+                    kind = code if code in NOTICE_KINDS else "retrieval_degraded"
+                    self._emit_notice(
+                        generation_id=str(generation["id"]),
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        kind=kind,
+                        detail=dict(item),
+                        generation=generation,
+                    )
+            context = tuple(
+                {
+                    "document_id": hit.document_id,
+                    "document_version_id": hit.document_version_id,
+                    "publication_id": hit.publication_id,
+                    "chunk_id": hit.chunk_id,
+                    "space_id": hit.space_id,
+                    "library": hit.library,
+                    "locator": dict(hit.locator),
+                    "snippet": hit.snippet,
+                    "claim_contract": {
+                        "annotate": ["library", "space_id"],
+                        "conflicts": "state_each_claim_separately_with_own_citation",
+                    },
+                }
+                for hit in candidate_hits
+            )
             self._emit_stage(
                 generation_id=str(generation["id"]),
                 execution_id=execution_id,
@@ -1246,12 +1282,12 @@ class ChatGenerationWorker:
                 fencing_token=fencing_token,
                 control_version=control_version,
             )
-            answer_mode = _answer_mode(hits, citations)
+            answer_mode = _answer_mode(candidate_hits, candidate_citations)
             results.append(
                 {
                     "candidate": candidate,
                     "content": response.content,
-                    "citations": citations,
+                    "citations": candidate_citations,
                     "answer_mode": answer_mode,
                 }
             )
@@ -2075,6 +2111,42 @@ class ChatGenerationWorker:
                     chat_ab_pair_table.c.generation_id == generation_id
                 )
             ).scalar_one_or_none()
+
+    def _candidate_config_versions_for_generation(
+        self, *, generation_id: str
+    ) -> tuple[str, str] | None:
+        """Read the immutable blind-side mapping created with the pair."""
+
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(
+                        chat_ab_candidate_table.c.candidate,
+                        chat_ab_candidate_table.c.candidate_config_version,
+                    )
+                    .join(
+                        chat_ab_pair_table,
+                        chat_ab_pair_table.c.pair_id == chat_ab_candidate_table.c.pair_id,
+                    )
+                    .join(
+                        chat_generation_table,
+                        chat_generation_table.c.id == chat_ab_pair_table.c.generation_id,
+                    )
+                    .where(chat_generation_table.c.id == generation_id)
+                    .order_by(chat_ab_candidate_table.c.candidate)
+                )
+                .mappings()
+                .all()
+            )
+        if len(rows) != 2:
+            return None
+        versions = [row["candidate_config_version"] for row in rows]
+        if any(value is None or not str(value).strip() for value in versions):
+            return None
+        first, second = (str(value) for value in versions)
+        if first == second:
+            return None
+        return first, second
 
     @staticmethod
     def _pair_row(connection: Connection, *, generation_id: str) -> Mapping[str, Any] | None:

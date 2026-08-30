@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import Connection, Engine
 
 from app.chat.models import CalibrationWindowSnapshot
-from app.chat.schema import chat_ab_pair_table, chat_ab_vote_table
+from app.chat.schema import chat_ab_candidate_table, chat_ab_pair_table, chat_ab_vote_table
 from app.identity.schema import identity_user_table
 from app.platform.errors import PlatformError
 
@@ -237,6 +237,24 @@ class EvaluationCalibrationWindowPort:
         """
         if not sqlalchemy_inspect(connection).has_table("evaluation_ab_golden_seed"):
             return
+        config_rows = (
+            connection.execute(
+                select(
+                    chat_ab_candidate_table.c.candidate,
+                    chat_ab_candidate_table.c.candidate_config_version,
+                ).where(chat_ab_candidate_table.c.pair_id == pair_id)
+            )
+            .mappings()
+            .all()
+        )
+        config_by_candidate = {
+            int(row["candidate"]): (
+                str(row["candidate_config_version"])
+                if row["candidate_config_version"] is not None
+                else None
+            )
+            for row in config_rows
+        }
         connection.execute(
             evaluation_ab_golden_seed_table.insert().values(
                 seed_id=f"seed_{secrets.token_urlsafe(15)}",
@@ -244,9 +262,13 @@ class EvaluationCalibrationWindowPort:
                 space_id=space_id,
                 question_text=question_text,
                 preferred_candidate=int(preferred_candidate),
+                preferred_candidate_config_version=config_by_candidate.get(
+                    int(preferred_candidate)
+                ),
                 preferred_content=preferred_content,
                 preferred_citations_json=list(preferred_citations),
                 rejected_candidate=int(rejected_candidate),
+                rejected_candidate_config_version=config_by_candidate.get(int(rejected_candidate)),
                 policy_version=policy_version,
                 created_at_utc=now,
             )

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import random
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -97,6 +98,8 @@ class GenerationService:
         calibration: CalibrationWindowPort,
         budget_meter: Any | None = None,
         ab_source_filter: AbSourceFilterPort | None = None,
+        candidate_config_versions: Sequence[str] | Callable[[str], Sequence[str]] | None = None,
+        ab_randomizer: Callable[[], float] | None = None,
         sampler: Any = None,
         max_running_per_user: int = DEFAULT_MAX_RUNNING_GENERATIONS_PER_USER,
         absolute_deadline_seconds: int = GENERATION_ABSOLUTE_DEADLINE_SECONDS,
@@ -107,6 +110,8 @@ class GenerationService:
         self._calibration = calibration
         self._budget_meter = budget_meter
         self._ab_source_filter = ab_source_filter
+        self._candidate_config_versions = candidate_config_versions
+        self._ab_randomizer = ab_randomizer or random.random
         self._sampler = sampler or _default_sampler
         self._max_running_per_user = max_running_per_user
         self._absolute_deadline_seconds = absolute_deadline_seconds
@@ -241,6 +246,18 @@ class GenerationService:
             and not self._calibration.user_ab_opt_out(connection, user_id=user_id)
             and self._sampler() < window.sample_rate
         )
+        pair_space_id = ""
+        if isinstance(scope_json, Mapping):
+            scope_space_ids = scope_json.get("space_ids")
+            if isinstance(scope_space_ids, (list, tuple)) and scope_space_ids:
+                pair_space_id = str(scope_space_ids[0])
+        pair_configs: tuple[str, str] | None = None
+        if create_ab:
+            pair_configs = self._ab_candidate_config_pair(pair_space_id)
+            if pair_configs is None:
+                # A pair without two distinct deployment profiles cannot yield
+                # a meaningful preference.
+                create_ab = False
         if create_ab and parent is not None:
             # A retry of the same user question must not claim a second
             # calibration sample for the root generation chain.
@@ -257,7 +274,7 @@ class GenerationService:
             ).scalar_one_or_none()
             if existing_pair is not None:
                 create_ab = False
-        if create_ab and self._ab_source_filter is not None:
+        if create_ab and self._ab_source_filter is not None and pair_configs is not None:
             # Same-source skip (A10): decide before the pair-creation
             # transaction commits. Identical retrieval hits under both
             # candidate configs make the comparison pointless, so the question
@@ -269,8 +286,8 @@ class GenerationService:
                 principal=principal,
                 narrowing_scope=scope_json,
                 candidate_profiles=(
-                    (DEFAULT_RETRIEVAL_PROFILE_ID, DEFAULT_RETRIEVAL_PROFILE_VERSION),
-                    (DEFAULT_RETRIEVAL_PROFILE_ID, DEFAULT_RETRIEVAL_PROFILE_VERSION),
+                    (DEFAULT_RETRIEVAL_PROFILE_ID, pair_configs[0]),
+                    (DEFAULT_RETRIEVAL_PROFILE_ID, pair_configs[1]),
                 ),
                 effort=effort_level,
             ):
@@ -411,20 +428,13 @@ class GenerationService:
             now=now,
         )
         if create_ab and window is not None:
-            scope_space_ids = (
-                user_scope.get("space_ids") if isinstance(user_scope, Mapping) else None
-            )
-            pair_space_id = (
-                str(scope_space_ids[0])
-                if isinstance(scope_space_ids, list) and scope_space_ids
-                else ""
-            )
             self._create_ab_pair(
                 connection,
                 generation_id=generation_id,
                 message_id=message_id,
                 user_id=user_id,
                 space_id=pair_space_id,
+                candidate_config_versions=pair_configs,
                 window=window,
                 now=now,
             )
@@ -444,6 +454,29 @@ class GenerationService:
             replay=False,
         )
 
+    def _ab_candidate_config_pair(self, space_id: str) -> tuple[str, str] | None:
+        source = self._candidate_config_versions
+        if source is None:
+            # Services constructed directly (including lightweight test
+            # runtimes) retain a deterministic two-profile fallback. Production
+            # runtime wiring supplies the deployment list explicitly.
+            raw: Sequence[str] = ("default", "candidate_b")
+        elif callable(source):
+            raw = source(space_id)
+        else:
+            raw = source
+        versions: list[str] = []
+        for value in raw:
+            version = str(value).strip()
+            if version and version not in versions:
+                versions.append(version)
+        if len(versions) < 2:
+            return None
+        first, second = versions[:2]
+        if self._ab_randomizer() < 0.5:
+            return first, second
+        return second, first
+
     @staticmethod
     def _create_ab_pair(
         connection: Connection,
@@ -452,6 +485,7 @@ class GenerationService:
         message_id: str,
         user_id: str,
         space_id: str,
+        candidate_config_versions: tuple[str, str] | None,
         window: CalibrationWindowSnapshot,
         now: datetime,
     ) -> None:
@@ -488,6 +522,11 @@ class GenerationService:
                 chat_ab_candidate_table.insert().values(
                     pair_id=pair_id,
                     candidate=candidate,
+                    candidate_config_version=(
+                        candidate_config_versions[candidate]
+                        if candidate_config_versions is not None
+                        else None
+                    ),
                     status="planned",
                     content="",
                     citations_json=[],

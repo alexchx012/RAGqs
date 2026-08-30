@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -23,6 +25,7 @@ from app.evaluation.judge import (
     faithfulness_prompt,
 )
 from app.evaluation.usage import EvaluationUsageRecorder
+from app.indexing.image_vlm import BailianImageDescriber
 from app.platform.errors import PlatformError
 
 from .conftest import FakeJudgeProvider, RecordingUsageSubmission
@@ -35,6 +38,10 @@ class _Response:
 
     def json(self) -> Any:
         return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class _Client:
@@ -113,6 +120,27 @@ def test_preflight_verify_run_raises_platform_error() -> None:
     assert raised.value.code == "evaluation_judge_unavailable"
 
 
+def test_http_judge_preflight_explicitly_disables_thinking() -> None:
+    provider, client = _http_judge(
+        submission=RecordingUsageSubmission(),
+        responses=[_Response(status_code=200, payload={})],
+    )
+
+    provider.preflight_probe()
+
+    assert client.requests == [
+        {
+            "path": "/chat/completions",
+            "json": {
+                "model": JUDGE_MODEL,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+                "enable_thinking": False,
+            },
+        }
+    ]
+
+
 def test_circuit_breaker_is_lane_private_and_bounded() -> None:
     breaker = CircuitBreakerRegistry(threshold=3)
     assert breaker.failures == 0
@@ -127,6 +155,52 @@ def test_circuit_breaker_is_lane_private_and_bounded() -> None:
     assert breaker.is_open() is False
     # A freshly created instance is independent from any other lane.
     assert CircuitBreakerRegistry().failures == 0
+
+
+def test_saturated_judge_batch_does_not_starve_image_ingestion_lane() -> None:
+    """Acceptance: concurrent judge saturation leaves image validation usable."""
+
+    now = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+    judge_lane = CircuitBreakerRegistry(threshold=2)
+    image_lane = CircuitBreakerRegistry(threshold=2)
+    barrier = Barrier(8)
+    image_payload = {
+        "choices": [{"message": {"content": "image validation result"}}],
+    }
+
+    def image_transport(url, payload, headers, options):
+        del url, payload, headers, options
+        return image_payload
+
+    describer = BailianImageDescriber(
+        base_url="https://image.invalid",
+        api_key="image-key",
+        transport=image_transport,
+    )
+
+    def judge_batch() -> bool:
+        barrier.wait()
+        judge_lane.record_failure(now)
+        return judge_lane.is_open()
+
+    def image_batch() -> str:
+        barrier.wait()
+        # The image lane owns a separate breaker state and remains allowed even
+        # while the judge lane is open.
+        assert image_lane.allow(now) is True
+        return describer(b"image-bytes", {"caption": "validation"}).text
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(judge_batch) for _ in range(4)]
+        futures.extend(executor.submit(image_batch) for _ in range(4))
+        results = [future.result() for future in futures]
+
+    assert judge_lane.is_open() is True
+    # At least the threshold-crossing calls completed; later calls observe
+    # the saturated judge lane and may report ``False``.
+    assert results[:4].count(True) >= 2
+    assert results[4:] == ["image validation result"] * 4
+    assert image_lane.is_open() is False
 
 
 def test_circuit_breaker_allows_one_probe_after_the_cooldown() -> None:
