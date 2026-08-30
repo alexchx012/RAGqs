@@ -197,6 +197,8 @@ class ChatSettings(_StrictModel):
 
 class DocumentsSettings(_StrictModel):
     upload_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
+    upload_max_files_per_request: int = Field(default=20, ge=1)
+    upload_max_request_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     cleanup_max_attempts: int = Field(default=3, ge=1)
     version_retention_days: int = Field(default=30, ge=1)
 
@@ -386,6 +388,8 @@ _ENV_KEYS = {
     "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PREFIX_TOKEN_LIMIT",
     "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER",
     "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
+    "RAG_UPLOAD_MAX_FILES_PER_REQUEST",
+    "RAG_UPLOAD_MAX_REQUEST_BYTES",
     "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS",
     "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
     "RAG_EVALUATION_JUDGE_BASE_URL",
@@ -650,6 +654,8 @@ def load_platform_settings(
             key: value
             for key, value in {
                 "upload_max_bytes": _int(env, "RAG_DOCUMENTS_UPLOAD_MAX_BYTES"),
+                "upload_max_files_per_request": _int(env, "RAG_UPLOAD_MAX_FILES_PER_REQUEST"),
+                "upload_max_request_bytes": _int(env, "RAG_UPLOAD_MAX_REQUEST_BYTES"),
                 "cleanup_max_attempts": _int(env, "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS"),
                 "version_retention_days": _int(env, "DOCUMENT_VERSION_RETENTION_DAYS"),
             }.items()

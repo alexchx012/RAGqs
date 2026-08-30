@@ -254,6 +254,52 @@ def test_avatar_route_returns_404_without_an_avatar() -> None:
     assert response.json()["error"]["code"] == "avatar_not_found"
 
 
+def test_avatar_route_rejects_oversized_files_with_413_without_reading_too_much() -> None:
+    configured = settings()
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    service = IdentityAccessService(engine, configured.auth, object_store=MemoryObjectStore())
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    token = service.login(username="alice", password="Password1").access_token
+    runtime = build_runtime(
+        configured,
+        adapters={"database_engine": engine, "identity_access": service},
+    )
+    app = create_platform_app(configured, runtime=runtime)
+
+    with TestClient(app) as client:
+        ok = client.post(
+            "/v1/users/me/avatar",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("avatar.png", b"fake-png", "image/png")},
+        )
+        oversized = client.post(
+            "/v1/users/me/avatar",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("avatar.png", b"x" * (5 * 1024 * 1024 + 1), "image/png")},
+        )
+
+    assert ok.status_code == 200
+    assert oversized.status_code == 413
+    error = oversized.json()["error"]
+    assert error["code"] == "upload_too_large"
+    assert error["details"]["max_bytes"] == 5 * 1024 * 1024
+
+
 def test_application_startup_reconciles_the_declared_admin_roster() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",

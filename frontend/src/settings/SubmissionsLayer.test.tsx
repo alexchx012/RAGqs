@@ -116,7 +116,7 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
       [{ name: '待撤回稿件.md', size: 5, type: 'text/markdown' }],
       'idem-layer-1',
     );
-    expect(upload.items[0]?.status).toBe('pending');
+    expect(upload.items[0]?.accepted).toBe(true);
     const user = userEvent.setup();
 
     await renderLayer(api);

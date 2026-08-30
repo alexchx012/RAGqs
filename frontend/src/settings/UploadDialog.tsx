@@ -198,8 +198,9 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
     onOpenChange(false);
   };
 
-  const acceptedCount = result?.items.length ?? 0;
-  const failedCount = 0;
+  const resultItems = result?.items ?? [];
+  const acceptedCount = resultItems.filter((item) => item.accepted).length;
+  const failedCount = resultItems.length - acceptedCount;
 
   if (!presence.mounted) {
     return null;
@@ -440,27 +441,38 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
 }
 
 function UploadItemRow({ item }: { item: UploadItem }) {
-  if ('filename' in item) {
-    if (item.deduplicated === true) {
-      return (
-        <li className="text-caption text-slate-gray">
-          {`${item.filename} · ${copy.settings.knowledge.upload.deduplicated}`}
-        </li>
-      );
-    }
+  // 拒绝项：逐文件错误对象（name/accepted/error 契约），前端按 code 映射文案。
+  if (!item.accepted) {
     return (
-      <li className="text-caption text-success">
-        {`${item.filename} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : item.status}`}
+      <li className="text-caption text-danger">
+        {`${item.name} · ${copy.settings.knowledge.upload.itemError(item.error.code)}`}
+      </li>
+    );
+  }
+  if ('submission_id' in item) {
+    return (
+      <li className="text-caption text-slate-gray">
+        {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : item.status}`}
+      </li>
+    );
+  }
+  if (item.deduplicated) {
+    return (
+      <li className="text-caption text-slate-gray">
+        {`${item.name} · ${copy.settings.knowledge.upload.deduplicated}`}
       </li>
     );
   }
   return (
-    <li className="text-caption text-slate-gray">
-      {`${item.submission_id} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : item.status}`}
+    <li className="text-caption text-success">
+      {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : item.status}`}
     </li>
   );
 }
 
 function uploadItemKey(item: UploadItem): string {
-  return 'filename' in item ? item.filename : item.submission_id;
+  if (!item.accepted) {
+    return `rejected:${item.name}`;
+  }
+  return 'submission_id' in item ? item.submission_id : item.document_id;
 }

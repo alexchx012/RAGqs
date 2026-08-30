@@ -173,7 +173,9 @@ describe('knowledge contract mock：上传三分支', () => {
     const body = (await response.json()) as {
       upload_batch_id: string;
       items: {
-        filename: string;
+        accepted: boolean;
+        name: string;
+        space_id: string;
         document_id: string;
         document_version_id: string | null;
         job_id: string | null;
@@ -185,32 +187,36 @@ describe('knowledge contract mock：上传三分支', () => {
     expect(body.upload_batch_id).toBeTruthy();
     expect(body.items).toHaveLength(2);
     expect(body.items[0]).toMatchObject({
-      filename: '季度  总结.pdf',
+      name: '季度  总结.pdf',
       deduplicated: false,
       status: 'pending',
     });
     expect(sortedKeys(body.items[0]!)).toEqual([
+      'accepted',
       'deduplicated',
       'document_id',
       'document_version_id',
-      'filename',
       'job_id',
+      'name',
       'publication_id',
+      'space_id',
       'status',
     ]);
     expect(body.items[0].job_id).toBeTruthy();
     expect(body.items[1]).toMatchObject({
-      filename: ' 季度 总结.PDF ',
+      name: ' 季度 总结.PDF ',
       deduplicated: true,
       status: 'deduplicated',
     });
     expect(sortedKeys(body.items[1]!)).toEqual([
+      'accepted',
       'deduplicated',
       'document_id',
       'document_version_id',
-      'filename',
       'job_id',
+      'name',
       'publication_id',
+      'space_id',
       'status',
     ]);
     expect(body.items[1].job_id).toBeNull();
@@ -224,7 +230,7 @@ describe('knowledge contract mock：上传三分支', () => {
     expect(batch.summary).toMatchObject({ rejected: 0, deduplicated: 1, total_files: 2 });
   });
 
-  it('上传校验失败为整请求错误，不伪造逐文件 accepted/error 结果', async () => {
+  it('per-file 契约：混合批次逐文件隔离失败项，不整批 4xx', async () => {
     const token = bearerOf('zhangsan');
     mockKnowledge.setNextUploadFailure('virus', 'malware_detected');
     const response = await uploadRequest(
@@ -236,15 +242,44 @@ describe('knowledge contract mock：上传三分支', () => {
       ],
       'idem-upload-2',
     );
-    expect(response.status).toBe(422);
-    expect((await response.json()) as { error: { code: string } }).toMatchObject({
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as {
+      upload_batch_id: string;
+      items: (
+        | {
+            accepted: true;
+            name: string;
+            document_id: string;
+            job_id: string | null;
+          }
+        | {
+            accepted: false;
+            name: string;
+            document_id: null;
+            submission_id: null;
+            error: { code: string };
+          }
+      )[];
+    };
+    expect(body.items).toHaveLength(2);
+    expect(body.items[0]).toMatchObject({
+      accepted: true,
+      name: 'would-be-created.pdf',
+    });
+    expect(body.items[0].document_id).toBeTruthy();
+    expect(body.items[1]).toMatchObject({
+      accepted: false,
+      name: 'virus.pdf',
+      document_id: null,
+      submission_id: null,
       error: { code: 'malware_detected' },
     });
-    expect(
-      (await (await listJobs(token)).json()).items.some(
-        (job: { name: string }) => job.name === 'would-be-created.pdf',
-      ),
-    ).toBe(false);
+    // 合法文件照常创建任务；拒绝项不产生任何任务。
+    const jobs = (await (await listJobs(token)).json()) as { items: { name: string }[] };
+    expect(jobs.items.some((job: { name: string }) => job.name === 'would-be-created.pdf')).toBe(
+      true,
+    );
+    expect(jobs.items.some((job: { name: string }) => job.name === 'virus.pdf')).toBe(false);
   });
 
   it('quota_exceeded 整批拒绝：不预扣不冻结，配额未变化', async () => {
@@ -290,9 +325,11 @@ describe('knowledge contract mock：上传三分支', () => {
     expect(body).not.toHaveProperty('upload_batch_id');
     expect(body.items[0]).toMatchObject({ status: 'pending', space_id: 'public', quota_exempt: true });
     expect(sortedKeys(body.items[0]!)).toEqual([
+      'accepted',
       'document_id',
       'document_version_id',
       'job_id',
+      'name',
       'quota_exempt',
       'space_id',
       'status',
@@ -1042,13 +1079,13 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
     const first = mockKnowledge.uploadDocuments(zhangsanToken, 'personal:u_user', [
       { name: '隔离文档.pdf', size: 4, type: 'application/pdf', contentHash: 'hash-aaa' },
     ], 'idem-shared-key');
-    expect(first.items[0]?.status).toBe('pending');
+    expect(first.items[0]?.accepted).toBe(true);
 
     // ops 用同 key 上传到自己的个人库：独立记录，不冲突
     const second = mockKnowledge.uploadDocuments(opsToken, 'personal:u_ops', [
       { name: '隔离文档2.pdf', size: 5, type: 'application/pdf', contentHash: 'hash-bbb' },
     ], 'idem-shared-key');
-    expect(second.items[0]?.status).toBe('pending');
+    expect(second.items[0]?.accepted).toBe(true);
     expect(second.items[0] && 'job_id' in second.items[0] ? (second.items[0].job_id ?? '') : '').not.toBe(
       first.items[0] && 'job_id' in first.items[0] ? (first.items[0].job_id ?? '') : '',
     );

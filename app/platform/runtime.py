@@ -725,6 +725,8 @@ def build_runtime(
             ingestion_notification_port=ingestion_outbox_port,
             public_graph_source_service=public_graph_source_service,
             max_upload_bytes=settings.documents.upload_max_bytes,
+            max_files_per_request=settings.documents.upload_max_files_per_request,
+            max_request_bytes=settings.documents.upload_max_request_bytes,
             cleanup_max_attempts=settings.documents.cleanup_max_attempts,
             version_retention_days=settings.documents.version_retention_days,
             preview_renderer=preview_renderer,

@@ -198,15 +198,16 @@ def test_initial_upload_stays_staged_until_processing_receipt(service, principal
 def test_initial_upload_rejects_an_oversized_file_before_persisting(service, principal) -> None:
     limited = _service_with_upload_limit(service, max_upload_bytes=4)
 
-    with pytest.raises(PlatformError) as error:
-        limited.create_initial_upload(
-            principal=principal,
-            space_id="space_1",
-            files=[_upload(content=b"12345")],
-            idempotency_key="oversized-initial-upload",
-        )
+    result = limited.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload(content=b"12345")],
+        idempotency_key="oversized-initial-upload",
+    )
 
-    assert error.value.code == "upload_too_large"
+    item = result["items"][0]
+    assert item["accepted"] is False
+    assert item["error"]["code"] == "upload_too_large"
     with limited._engine.connect() as connection:
         assert (
             connection.execute(select(func.count()).select_from(documents_table)).scalar_one() == 0

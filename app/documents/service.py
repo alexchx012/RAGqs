@@ -27,7 +27,7 @@ from app.outbox.ports import DocumentNotificationRedactionCommand
 from app.platform.context import current_context
 from app.platform.database import _insert_do_nothing, platform_audit_table
 from app.platform.errors import PlatformError
-from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH
+from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH, batch_item_error
 from app.platform.storage import MemoryObjectStore, ObjectMetadata, ObjectStorePort, StorageKeyError
 
 from .domain import (
@@ -82,6 +82,19 @@ class DocumentUpload:
 
 
 @dataclass(frozen=True, slots=True)
+class RejectedUpload:
+    """A batch file already rejected at the HTTP layer (e.g. oversized read).
+
+    Per-file contract: the rejection travels with the batch instead of failing
+    the whole request; the service turns it into a rejected response item
+    without persisting any submission, job or private object.
+    """
+
+    filename: str
+    error: PlatformError
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentVersionReference:
     """A renewable read lease on one document version.
 
@@ -96,6 +109,36 @@ class DocumentVersionReference:
     document_id: str
     document_version_id: str
     expires_at: datetime
+
+
+# Per-file isolation covers upload-safety validation only. Anything else
+# (authorization, quota, storage outage) keeps failing the whole request.
+_UPLOAD_SAFETY_ERROR_CODES = frozenset(
+    {
+        "upload_too_large",
+        "upload_media_type_not_allowed",
+        "upload_content_type_mismatch",
+        "upload_media_mismatch",
+        "upload_archive_not_allowed",
+        "upload_content_invalid",
+        "malware_detected",
+        "validation_error",
+    }
+)
+
+
+def _batch_rejected_item(filename: str, error: PlatformError) -> dict[str, Any]:
+    return {
+        "accepted": False,
+        "name": filename,
+        "document_id": None,
+        "document_version_id": None,
+        "job_id": None,
+        "publication_id": None,
+        "submission_id": None,
+        "space_id": None,
+        "error": batch_item_error(error)["error"],
+    }
 
 
 # Supported upload media kinds, mirroring the frontend upload contract
@@ -310,11 +353,17 @@ class DocumentsService:
         version_retention_days: int = 30,
         read_lease_ttl: timedelta = timedelta(minutes=5),
         max_upload_bytes: int = 25 * 1024 * 1024,
+        max_files_per_request: int = 20,
+        max_request_bytes: int = 100 * 1024 * 1024,
         cleanup_max_attempts: int = 3,
         malware_scanner: Any | None = None,
     ) -> None:
         if max_upload_bytes < 1:
             raise ValueError("max_upload_bytes must be positive")
+        if max_files_per_request < 1:
+            raise ValueError("max_files_per_request must be positive")
+        if max_request_bytes < 1:
+            raise ValueError("max_request_bytes must be positive")
         if cleanup_max_attempts < 1:
             raise ValueError("cleanup_max_attempts must be positive")
         self._engine = engine
@@ -332,6 +381,8 @@ class DocumentsService:
         self._version_retention_days = version_retention_days
         self._read_lease_ttl = read_lease_ttl
         self._max_upload_bytes = max_upload_bytes
+        self._max_files_per_request = max_files_per_request
+        self._max_request_bytes = max_request_bytes
         self._cleanup_max_attempts = cleanup_max_attempts
         self._malware_scanner = malware_scanner
 
@@ -1370,6 +1421,14 @@ class DocumentsService:
     def max_upload_bytes(self) -> int:
         return self._max_upload_bytes
 
+    @property
+    def max_files_per_request(self) -> int:
+        return self._max_files_per_request
+
+    @property
+    def max_request_bytes(self) -> int:
+        return self._max_request_bytes
+
     def _authorize_upload(self, principal: Any, space_id: str) -> str:
         try:
             return self._authorize(principal, space_id, "manage")
@@ -1383,7 +1442,7 @@ class DocumentsService:
         *,
         principal: Any,
         space_id: str,
-        files: Sequence[DocumentUpload],
+        files: Sequence[DocumentUpload | RejectedUpload],
         idempotency_key: str | None,
     ) -> dict[str, Any]:
         key = self._required_key(idempotency_key)
@@ -1392,20 +1451,28 @@ class DocumentsService:
         if self._authorize_upload(principal, space_id) == "contribute":
             items: list[dict[str, Any]] = []
             for index, file in enumerate(files):
+                if isinstance(file, RejectedUpload):
+                    items.append(_batch_rejected_item(file.filename, file.error))
+                    continue
                 submission_key = f"{key}:{index}"
                 item_index: int | None = None
                 if len(submission_key) > IDEMPOTENCY_KEY_MAX_LENGTH:
                     submission_key = key
                     item_index = index
-                items.append(
-                    self.create_submission(
-                        principal=principal,
-                        space_id=space_id,
-                        file=file,
-                        idempotency_key=submission_key,
-                        idempotency_item_index=item_index,
+                try:
+                    items.append(
+                        self.create_submission(
+                            principal=principal,
+                            space_id=space_id,
+                            file=file,
+                            idempotency_key=submission_key,
+                            idempotency_item_index=item_index,
+                        )
                     )
-                )
+                except PlatformError as error:
+                    if error.code not in _UPLOAD_SAFETY_ERROR_CODES:
+                        raise
+                    items.append(_batch_rejected_item(file.filename, error))
             return {"items": items}
         return self.create_initial_upload(
             principal=principal, space_id=space_id, files=files, idempotency_key=key
@@ -1810,11 +1877,13 @@ class DocumentsService:
             )
         )
         return {
+            "accepted": True,
+            "name": info["filename"],
+            "space_id": str(claim["space_id"]),
             "document_id": claim["document_id"],
             "document_version_id": version_id,
             "job_id": None,
             "publication_id": None,
-            "filename": info["filename"],
             "deduplicated": True,
             "status": "deduplicated",
         }
@@ -1824,16 +1893,33 @@ class DocumentsService:
         *,
         principal: Any,
         space_id: str,
-        files: Sequence[DocumentUpload],
+        files: Sequence[DocumentUpload | RejectedUpload],
         idempotency_key: str | None,
     ) -> dict[str, Any]:
         key = self._required_key(idempotency_key)
         if not files:
             raise PlatformError("validation_error", "At least one file is required", {}, 422)
-        normalized_files = [self._file_fingerprint(file) for file in files]
+        # Per-file isolation: only files that pass upload-safety validation are
+        # fingerprinted, so rejected files never enter the request fingerprint
+        # and take no part in idempotent replay.
+        file_states: list[RejectedUpload | tuple[DocumentUpload, dict[str, Any]]] = []
+        fingerprints: list[dict[str, Any]] = []
+        for file in files:
+            if isinstance(file, RejectedUpload):
+                file_states.append(file)
+                continue
+            try:
+                info = self._file_fingerprint(file)
+            except PlatformError as error:
+                if error.code not in _UPLOAD_SAFETY_ERROR_CODES:
+                    raise
+                file_states.append(RejectedUpload(filename=file.filename, error=error))
+                continue
+            fingerprints.append(info)
+            file_states.append((file, info))
         fingerprint = canonical_request_fingerprint(
             sorted(
-                normalized_files,
+                fingerprints,
                 key=lambda item: (
                     item["normalized_filename"],
                     item["content_hash_sha256"],
@@ -1872,7 +1958,27 @@ class DocumentsService:
                 )
             )
             items: list[dict[str, Any]] = []
-            for file, info in zip(files, normalized_files, strict=True):
+            for state in file_states:
+                if isinstance(state, RejectedUpload):
+                    connection.execute(
+                        upload_batch_items_table.insert().values(
+                            id=_new_id("batch_item"),
+                            upload_batch_id=batch_id,
+                            document_id=None,
+                            submission_id=None,
+                            file_name=state.filename,
+                            content_hash_sha256="",
+                            result_state="rejected",
+                            deduplicated=False,
+                            job_id=None,
+                            rejection_reason=state.error.code,
+                            created_at_utc=now,
+                            updated_at_utc=now,
+                        )
+                    )
+                    items.append(_batch_rejected_item(state.filename, state.error))
+                    continue
+                file, info = state
                 claim = (
                     connection.execute(
                         select(upload_dedup_claims_table).where(
@@ -2066,11 +2172,13 @@ class DocumentsService:
                 )
                 items.append(
                     {
+                        "accepted": True,
+                        "name": info["filename"],
+                        "space_id": space_id,
                         "document_id": document_id,
                         "document_version_id": version_id,
                         "job_id": job_id,
                         "publication_id": publication_id,
-                        "filename": info["filename"],
                         "deduplicated": False,
                         "status": "pending",
                     }
