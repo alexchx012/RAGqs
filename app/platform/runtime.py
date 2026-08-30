@@ -101,6 +101,7 @@ from app.indexing.image_vlm import (
 from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
 from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.prefix_cache import PrefixCacheManager
+from app.indexing.profiles import SqlAlchemyLibraryProfileResolver
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -497,6 +498,10 @@ def build_runtime(
         engine, now=clock.now_utc
     )
     configured.setdefault("retrieval_release_service", retrieval_releases)
+    library_profile_resolver = configured.get("library_profile_resolver") or (
+        SqlAlchemyLibraryProfileResolver(engine)
+    )
+    configured.setdefault("library_profile_resolver", library_profile_resolver)
     generation_repository.set_retrieval_release_gate(retrieval_releases.is_released_for_generation)
     reranker = configured.get("indexing_reranker")
     if reranker is None:
@@ -641,6 +646,7 @@ def build_runtime(
         reranker=reranker,
         environment=settings.profile,
         profile_resolver=retrieval_releases.resolve,
+        library_profile_resolver=library_profile_resolver,
         identity_access=identity_access,
         visibility_facts=visibility_facts,
         source_service=public_graph_source_service,

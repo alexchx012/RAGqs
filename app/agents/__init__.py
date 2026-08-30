@@ -11,6 +11,7 @@ capability and is consumed through the port declared here.
 
 from .selfeval import (
     AcceptingSelfEvaluationPort,
+    DeepRetrievalStrategyPlan,
     HeuristicSelfEvaluationPort,
     SelfEvaluationPort,
     SelfEvaluationResult,
@@ -18,6 +19,7 @@ from .selfeval import (
 
 __all__ = [
     "AcceptingSelfEvaluationPort",
+    "DeepRetrievalStrategyPlan",
     "HeuristicSelfEvaluationPort",
     "SelfEvaluationPort",
     "SelfEvaluationResult",

@@ -9,6 +9,29 @@ from app.platform.errors import PlatformError
 
 GenerationStatus = Literal["staging", "active", "retired", "failed", "purging", "purged"]
 ComponentState = Literal["staged", "ready", "disabled", "stale", "failed"]
+DeepRetrievalStrategy = Literal[
+    "rewrite",
+    "split_subquestions",
+    "hyde",
+    "tree",
+    "sub_chunk",
+    "parent_document",
+    "document_summary",
+]
+DEEP_RETRIEVAL_STRATEGIES: tuple[DeepRetrievalStrategy, ...] = (
+    "rewrite",
+    "split_subquestions",
+    "hyde",
+    "tree",
+    "sub_chunk",
+    "parent_document",
+    "document_summary",
+)
+DEEP_RETRIEVAL_GRANULARITIES = {
+    "sub_chunk",
+    "parent_document",
+    "document_summary",
+}
 
 
 def _required(value: str, name: str) -> str:
@@ -214,29 +237,42 @@ class NarrowingScope:
 class RetrievalProfile:
     profile_id: str = "default"
     version: str = "1"
-    top_k: int = 10
+    library_profile_id: str = "cold-start"
+    top_k: int = 20
     candidate_limit: int = 50
+    dense_weight: float = 0.7
+    sparse_weight: float = 0.3
     effort: Literal["quick", "think", "deep"] = "quick"
     reranker_release: str = "default"
     tokenizer_version: str = "default"
     score_threshold: float | None = None
-    retrieval_context_items_per_space: int = 5
+    retrieval_context_items_per_space: int = 6
     retrieval_context_tokens_per_space: int = 8000
     retrieval_context_tokens_cap: int = 24000
     expected_library_count: int = 1
     route_tree: bool = False
     route_graph: bool = False
+    strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
     release_id: str | None = None
     config_snapshot: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _required(self.profile_id, "profile_id")
         _required(self.version, "version")
+        _required(self.library_profile_id, "library_profile_id")
         _required(self.tokenizer_version, "tokenizer_version")
         if self.top_k < 1 or self.candidate_limit < self.top_k:
             raise PlatformError("validation_error", "retrieval profile limits are invalid", {}, 422)
         if self.effort not in {"quick", "think", "deep"}:
             raise PlatformError("validation_error", "retrieval effort is invalid", {}, 422)
+        if (
+            not 0.0 < self.dense_weight < 1.0
+            or not 0.0 < self.sparse_weight < 1.0
+            or abs((self.dense_weight + self.sparse_weight) - 1.0) > 0.000001
+        ):
+            raise PlatformError(
+                "validation_error", "retrieval candidate weights are invalid", {}, 422
+            )
         if (
             self.retrieval_context_items_per_space < 1
             or self.retrieval_context_tokens_per_space < 1
@@ -256,10 +292,31 @@ class RetrievalProfile:
             )
         if self.release_id is not None:
             _required(self.release_id, "release_id")
+        if any(
+            operation not in DEEP_RETRIEVAL_STRATEGIES for operation in self.strategy_operations
+        ):
+            raise PlatformError("validation_error", "retrieval strategy is invalid", {}, 422)
+        if len(set(self.strategy_operations)) != len(self.strategy_operations):
+            raise PlatformError("validation_error", "retrieval strategies must be unique", {}, 422)
+        if (
+            sum(operation in DEEP_RETRIEVAL_GRANULARITIES for operation in self.strategy_operations)
+            > 1
+        ):
+            raise PlatformError("validation_error", "retrieval granularity is ambiguous", {}, 422)
         if not isinstance(self.config_snapshot, Mapping):
             raise PlatformError(
                 "validation_error", "retrieval profile snapshot is invalid", {}, 422
             )
+
+    def with_effort_transform(self) -> RetrievalProfile:
+        multiplier = {"quick": 1, "think": 2, "deep": 3}[self.effort]
+        if multiplier == 1:
+            return self
+        return replace(
+            self,
+            top_k=self.top_k * multiplier,
+            candidate_limit=self.candidate_limit * multiplier,
+        )
 
 
 @dataclass(frozen=True, slots=True)

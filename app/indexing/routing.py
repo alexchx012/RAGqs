@@ -3,9 +3,15 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from app.platform.errors import PlatformError
+
+from .models import (
+    DEEP_RETRIEVAL_GRANULARITIES,
+    DEEP_RETRIEVAL_STRATEGIES,
+    DeepRetrievalStrategy,
+)
 
 RouteKind = Literal["no_rewrite", "rewrite", "split_subquestions", "hyde"]
 ReturnGranularity = Literal["sub_chunk", "parent_document", "document_summary"]
@@ -152,6 +158,10 @@ class RouteOutput:
     return_granularity: ReturnGranularity = "parent_document"
     metadata_prefilter: MetadataPrefilter | None = None
     query_history_ref: str | None = None
+    dense_weight: float | None = None
+    sparse_weight: float | None = None
+    strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
+    strategy_queries: tuple[tuple[DeepRetrievalStrategy, str], ...] = ()
     schema_version: str = "1"
 
     def __post_init__(self) -> None:
@@ -161,6 +171,22 @@ class RouteOutput:
             raise PlatformError("validation_error", "return granularity is invalid", {}, 422)
         if not isinstance(self.original_query, str) or not self.original_query.strip():
             raise PlatformError("validation_error", "original query is required", {}, 422)
+        if (self.dense_weight is None) != (self.sparse_weight is None):
+            raise PlatformError(
+                "validation_error", "route candidate weights are incomplete", {}, 422
+            )
+        dense_weight = self.dense_weight
+        sparse_weight = self.sparse_weight
+        if (
+            dense_weight is not None
+            and sparse_weight is not None
+            and (
+                not 0.0 < dense_weight < 1.0
+                or not 0.0 < sparse_weight < 1.0
+                or abs((dense_weight + sparse_weight) - 1.0) > 0.000001
+            )
+        ):
+            raise PlatformError("validation_error", "route candidate weights are invalid", {}, 422)
         if self.kind == "rewrite" and (
             not self.rewritten_query or not self.rewritten_query.strip()
         ):
@@ -181,18 +207,50 @@ class RouteOutput:
             raise PlatformError("validation_error", "hyde text is required", {}, 422)
         if self.kind != "hyde" and self.hyde_text is not None:
             raise PlatformError("validation_error", "only hyde may carry hypothesis text", {}, 422)
+        if any(
+            operation not in DEEP_RETRIEVAL_STRATEGIES for operation in self.strategy_operations
+        ):
+            raise PlatformError("validation_error", "route strategy is invalid", {}, 422)
+        if len(set(self.strategy_operations)) != len(self.strategy_operations):
+            raise PlatformError("validation_error", "route strategies must be unique", {}, 422)
+        if (
+            sum(operation in DEEP_RETRIEVAL_GRANULARITIES for operation in self.strategy_operations)
+            > 1
+        ):
+            raise PlatformError("validation_error", "route granularity is ambiguous", {}, 422)
+        if any(
+            operation not in self.strategy_operations or not query.strip()
+            for operation, query in self.strategy_queries
+        ):
+            raise PlatformError("validation_error", "route strategy query is invalid", {}, 422)
 
     def search_queries(self) -> tuple[str, ...]:
         """Queries that keep the default hybrid retrieval running additively."""
 
-        if self.kind == "rewrite":
-            return (self.rewritten_query or self.original_query,)
-        if self.kind == "split_subquestions":
+        return tuple(query for _operation, query in self.search_query_plan())
+
+    def search_query_plan(self) -> tuple[tuple[str, str], ...]:
+        """Return stable query branches while retaining each planned strategy name."""
+
+        if self.strategy_operations:
+            candidates = (("default_hybrid", self.original_query), *self.strategy_queries)
+        elif self.kind == "rewrite":
+            candidates = (("rewrite", self.rewritten_query or self.original_query),)
+        elif self.kind == "split_subquestions":
             assert self.subquestions is not None
-            return tuple(item.query for item in self.subquestions)
-        if self.kind == "hyde":
-            return (self.hyde_text or self.original_query,)
-        return (self.original_query,)
+            candidates = tuple(("split_subquestions", item.query) for item in self.subquestions)
+        elif self.kind == "hyde":
+            candidates = (("hyde", self.hyde_text or self.original_query),)
+        else:
+            candidates = (("default_hybrid", self.original_query),)
+        planned: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for operation, query in candidates:
+            normalized = query.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                planned.append((operation, query))
+        return tuple(planned)
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -211,6 +269,12 @@ class RouteOutput:
                 None if self.metadata_prefilter is None else self.metadata_prefilter.to_mapping()
             ),
             "query_history_ref": self.query_history_ref,
+            "candidate_weights": (
+                None
+                if self.dense_weight is None
+                else {"dense": self.dense_weight, "sparse": self.sparse_weight}
+            ),
+            "strategy_operations": list(self.strategy_operations),
         }
 
 
@@ -223,6 +287,7 @@ class RuleQueryRouter:
         *,
         history_ref: str | None = None,
         recent_queries: Sequence[str] = (),
+        strategy_operations: tuple[DeepRetrievalStrategy, ...] = (),
     ) -> RouteOutput:
         if not isinstance(query, str) or not query.strip():
             raise PlatformError("validation_error", "query is required", {}, 422)
@@ -230,6 +295,18 @@ class RuleQueryRouter:
         prefilter = self._metadata_prefilter(query)
         granularity = self._granularity(query)
         history = history_ref or (self._pronoun_history_ref(query, recent_queries))
+        dense_weight, sparse_weight = self._candidate_weights(query)
+        if strategy_operations:
+            return self._deep_strategy_route(
+                query,
+                normalized=normalized,
+                return_granularity=granularity,
+                metadata_prefilter=prefilter,
+                query_history_ref=history,
+                dense_weight=dense_weight,
+                sparse_weight=sparse_weight,
+                strategy_operations=strategy_operations,
+            )
         split_parts = self._split_parts(normalized)
         if len(split_parts) >= 2:
             subquestions = tuple(
@@ -243,6 +320,8 @@ class RuleQueryRouter:
                 return_granularity=granularity,
                 metadata_prefilter=prefilter,
                 query_history_ref=history,
+                dense_weight=dense_weight,
+                sparse_weight=sparse_weight,
             )
         # HyDE is a deterministic retrieval-only hypothesis. It is deliberately
         # derived from the user's text and never enters the answer evidence path.
@@ -254,6 +333,8 @@ class RuleQueryRouter:
                 return_granularity=granularity,
                 metadata_prefilter=prefilter,
                 query_history_ref=history,
+                dense_weight=dense_weight,
+                sparse_weight=sparse_weight,
             )
         rewritten = _POLITE_PREFIX_RE.sub("", normalized).strip()
         if rewritten and rewritten != query:
@@ -264,6 +345,8 @@ class RuleQueryRouter:
                 return_granularity=granularity,
                 metadata_prefilter=prefilter,
                 query_history_ref=history,
+                dense_weight=dense_weight,
+                sparse_weight=sparse_weight,
             )
         return RouteOutput(
             kind="no_rewrite",
@@ -271,7 +354,58 @@ class RuleQueryRouter:
             return_granularity=granularity,
             metadata_prefilter=prefilter,
             query_history_ref=history,
+            dense_weight=dense_weight,
+            sparse_weight=sparse_weight,
         )
+
+    def _deep_strategy_route(
+        self,
+        query: str,
+        *,
+        normalized: str,
+        return_granularity: ReturnGranularity,
+        metadata_prefilter: MetadataPrefilter | None,
+        query_history_ref: str | None,
+        dense_weight: float | None,
+        sparse_weight: float | None,
+        strategy_operations: tuple[DeepRetrievalStrategy, ...],
+    ) -> RouteOutput:
+        operations = tuple(strategy_operations)
+        selected_granularity: ReturnGranularity = next(
+            (
+                cast(ReturnGranularity, operation)
+                for operation in operations
+                if operation in DEEP_RETRIEVAL_GRANULARITIES
+            ),
+            return_granularity,
+        )
+        strategy_queries: list[tuple[DeepRetrievalStrategy, str]] = []
+        rewritten = _POLITE_PREFIX_RE.sub("", normalized).strip()
+        if "rewrite" in operations and rewritten and rewritten != query:
+            strategy_queries.append(("rewrite", rewritten))
+        if "split_subquestions" in operations:
+            strategy_queries.extend(
+                ("split_subquestions", part) for part in self._split_parts(normalized)
+            )
+        if "hyde" in operations:
+            strategy_queries.append(("hyde", f"检索假设：{normalized}"))
+        return RouteOutput(
+            kind="no_rewrite",
+            original_query=query,
+            return_granularity=selected_granularity,
+            metadata_prefilter=metadata_prefilter,
+            query_history_ref=query_history_ref,
+            dense_weight=dense_weight,
+            sparse_weight=sparse_weight,
+            strategy_operations=operations,
+            strategy_queries=tuple(strategy_queries),
+        )
+
+    @staticmethod
+    def _candidate_weights(query: str) -> tuple[float | None, float | None]:
+        if _QUOTE_RE.search(query) or _PROPER_NOUN_RE.search(query) or _NUMBER_RE.search(query):
+            return 0.5, 0.5
+        return None, None
 
     @staticmethod
     def _granularity(query: str) -> ReturnGranularity:

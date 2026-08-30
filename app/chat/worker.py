@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -15,9 +15,11 @@ from sqlalchemy.engine import Connection, Engine
 
 from app.agents.selfeval import (
     AcceptingSelfEvaluationPort,
+    DeepRetrievalStrategyPlan,
     HeuristicSelfEvaluationPort,
     SelfEvaluationPort,
 )
+from app.indexing.models import DEEP_RETRIEVAL_STRATEGIES, DeepRetrievalStrategy
 from app.platform.errors import PlatformError
 from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
 from app.usage.ports import UsageSubmissionPort
@@ -85,6 +87,25 @@ def _source_identity(item: Mapping[str, Any]) -> tuple[str, str, str, str]:
         str(item.get("publication_id", "")),
         str(item.get("chunk_id", "")),
     )
+
+
+def _public_route_summary(route_output: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep SSE route telemetry to stable choices, never model text or tool inputs."""
+
+    route = route_output if isinstance(route_output, Mapping) else {}
+    kind = str(route.get("kind") or "no_rewrite")
+    if kind not in {"no_rewrite", "rewrite", "split_subquestions", "hyde"}:
+        kind = "no_rewrite"
+    raw_strategies = route.get("strategy_operations", ())
+    strategies = (
+        [str(operation) for operation in raw_strategies if operation in DEEP_RETRIEVAL_STRATEGIES]
+        if isinstance(raw_strategies, (list, tuple))
+        else []
+    )
+    granularity = str(route.get("return_granularity") or "parent_document")
+    if granularity not in {"sub_chunk", "parent_document", "document_summary"}:
+        granularity = "parent_document"
+    return {"kind": kind, "strategies": strategies, "return_granularity": granularity}
 
 
 @dataclass(slots=True)
@@ -828,20 +849,28 @@ class ChatGenerationWorker:
         effort: str,
         snapshot: Mapping[str, Any] | None,
         deadline: datetime,
-    ) -> BudgetMeter | None:
-        """Adapt the usage metering pricer into the logical RAG operation meter."""
+    ) -> BudgetMeter:
+        """Build one logical-operation meter whether or not usage persistence is configured."""
 
+        pricer: Callable[[str, int], float | None]
         if self._budget_meter is None:
-            return None
-        usage = self._budget_meter
+            price_version = "local-logical"
 
-        def pricer(operation: str, tokens: int) -> float | None:
-            try:
-                return float(usage.estimate_cost(operation, tokens))
-            except Exception:
-                return None
+            def local_pricer(_operation: str, _tokens: int) -> float:
+                return 0.0
 
-        price_version = str((snapshot or {}).get("price_version_id") or "usage-metering")
+            pricer = local_pricer
+        else:
+            usage = self._budget_meter
+
+            def usage_pricer(operation: str, tokens: int) -> float | None:
+                try:
+                    return float(usage.estimate_cost(operation, tokens))
+                except Exception:
+                    return None
+
+            pricer = usage_pricer
+            price_version = str((snapshot or {}).get("price_version_id") or "usage-metering")
         ceiling = (snapshot or {}).get("max_estimated_cost_amount")
         try:
             max_cost = float(ceiling) if ceiling is not None else 1000.0
@@ -887,19 +916,27 @@ class ChatGenerationWorker:
             checkpoint.get("budget", checkpoint) if checkpoint else None,
         )
         budget_meter_snapshot = None
-        rag_budget_meter = None
         if self._budget_meter is not None:
             budget_meter_snapshot = self._budget_meter.ensure_meter(
                 generation_id=str(generation["id"]),
                 effort_level=effort,
                 deadline_at_utc=generation["absolute_deadline_at_utc"],
             )
-            rag_budget_meter = self._build_rag_budget_meter(
-                effort,
-                budget_meter_snapshot,
-                _utc(generation["absolute_deadline_at_utc"]),
-            )
+        rag_budget_meter = self._build_rag_budget_meter(
+            effort,
+            budget_meter_snapshot,
+            _utc(generation["absolute_deadline_at_utc"]),
+        )
         hits: tuple[RetrievalHitOutcome, ...] = ()
+        strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
+        if effort == "deep":
+            strategy_operations = self._plan_deep_retrieval(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                budget=rag_budget_meter,
+            )
 
         round_index = int(checkpoint.get("round_index", 0)) if checkpoint else 0
         # Deep-tier progress rows: one step index per retrieval round, with the
@@ -944,6 +981,13 @@ class ChatGenerationWorker:
                     budget_meter_snapshot = self._budget_meter.meter(generation_id=generation_id)
                 upgraded = budget.upgrade_effort()
                 assert upgraded is not None
+                assert rag_budget_meter.upgrade_policy(
+                    self._build_rag_budget_meter(
+                        upgraded,
+                        budget_meter_snapshot,
+                        _utc(generation["absolute_deadline_at_utc"]),
+                    ).policy
+                )
                 if not self._persist_effort_upgrade(
                     generation_id=generation_id,
                     execution_id=execution_id,
@@ -1011,6 +1055,7 @@ class ChatGenerationWorker:
                 profile_version=profile_version,
                 effort=budget.effort_level,
                 budget=rag_budget_meter,
+                strategy_operations=strategy_operations if round_index == 0 else (),
             )
             if self._budget_meter is not None:
                 self._budget_meter.settle(
@@ -1028,7 +1073,7 @@ class ChatGenerationWorker:
                     control_version=control_version,
                     phase="retrieval_routed",
                     generation=generation,
-                    detail={"route": dict(outcome.route_output or {"kind": "no_rewrite"})},
+                    detail={"route": _public_route_summary(outcome.route_output)},
                 )
             hits, missing_identities = select_budget_candidates(
                 hits,
@@ -1115,6 +1160,7 @@ class ChatGenerationWorker:
                 hits=hits,
                 citations=citations,
                 query=effective_query,
+                logical_budget=rag_budget_meter,
             )
             try:
                 evaluation = evaluator.evaluate(
@@ -1152,8 +1198,17 @@ class ChatGenerationWorker:
                 ):
                     self._complete_deferred_provider_calls_public(candidates)
                     break
+                if self._budget_meter is not None:
+                    budget_meter_snapshot = self._budget_meter.meter(generation_id=generation_id)
                 upgraded = budget.upgrade_effort()
                 assert upgraded is not None
+                assert rag_budget_meter.upgrade_policy(
+                    self._build_rag_budget_meter(
+                        upgraded,
+                        budget_meter_snapshot,
+                        _utc(generation["absolute_deadline_at_utc"]),
+                    ).policy
+                )
                 if not self._persist_effort_upgrade(
                     generation_id=generation_id,
                     execution_id=execution_id,
@@ -1446,6 +1501,54 @@ class ChatGenerationWorker:
             )
         )
 
+    def _plan_deep_retrieval(
+        self,
+        *,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        budget: BudgetMeter,
+    ) -> tuple[DeepRetrievalStrategy, ...]:
+        """Use the main chat model transport for one validated deep strategy plan."""
+
+        request = ChatProviderRequest(
+            generation_id=str(generation["id"]),
+            owner_user_id=str(generation["owner_user_id"]),
+            content=str(generation["request_content"]),
+            effort_level="deep",
+            candidate=None,
+            context_items=(),
+            source_conflict_contract=source_conflict_contract(),
+            purpose="deep_retrieval_plan",
+        )
+        try:
+            response = self._provider_call(
+                request,
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                logical_budget=budget,
+            )
+            return DeepRetrievalStrategyPlan.from_model_content(response.content).operations
+        except ValueError:
+            reason = "strategy_plan_invalid"
+        except PlatformError as error:
+            if error.code == "provider_result_unknown":
+                raise
+            reason = "strategy_plan_unavailable"
+        self._emit_notice(
+            generation_id=str(generation["id"]),
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+            kind="retrieval_degraded",
+            detail={"reason": reason},
+            generation=generation,
+        )
+        return ()
+
     def _produce_candidates(
         self,
         *,
@@ -1456,6 +1559,7 @@ class ChatGenerationWorker:
         hits: tuple[RetrievalHitOutcome, ...],
         citations: list[Mapping[str, Any]],
         query: str | None = None,
+        logical_budget: BudgetMeter | None = None,
     ) -> list[dict[str, Any]]:
         context = tuple(
             {
@@ -1521,6 +1625,7 @@ class ChatGenerationWorker:
                     control_version=control_version,
                     defer_completion=True,
                     pending_checkpoint=pending_checkpoint,
+                    logical_budget=logical_budget,
                 )
             except Exception:
                 # Earlier candidates are known results even if a later
@@ -1606,13 +1711,14 @@ class ChatGenerationWorker:
         control_version: int,
         defer_completion: bool = False,
         pending_checkpoint: Mapping[str, Any] | None = None,
+        logical_budget: BudgetMeter | None = None,
     ) -> Any:
         budget_reservation_id = None
         estimated_cost = Decimal("0")
         if self._budget_meter is not None:
             candidate_key = request.candidate if request.candidate is not None else 0
             budget_reservation_id = (
-                f"provider:{request.generation_id}:{execution_id}:{candidate_key}"
+                f"provider:{request.generation_id}:{execution_id}:{request.purpose}:{candidate_key}"
             )
             estimated_tokens = self._estimated_provider_tokens(request)
             estimated_cost = self._budget_meter.estimate_cost("chat_generation", estimated_tokens)
@@ -1627,6 +1733,13 @@ class ChatGenerationWorker:
                 estimated_cost=estimated_cost,
                 is_rag=False,
             )
+        logical_reservation = None
+        if logical_budget is not None:
+            logical_reservation = logical_budget.reserve(
+                "chat_generation",
+                estimated_tokens=self._estimated_provider_tokens(request),
+                now=self._now(),
+            )
         call_id = self._usage.prepare_provider_call(
             provider="chat",
             model="chat-model",
@@ -1635,7 +1748,9 @@ class ChatGenerationWorker:
             execution_id=execution_id,
             generation_id=str(generation["id"]),
             deadline_utc=generation["absolute_deadline_at_utc"],
-            request_fingerprint=f"chat:{generation['id']}:{execution_id}",
+            request_fingerprint=(
+                f"chat:{generation['id']}:{execution_id}:{request.purpose}:{request.candidate or 0}"
+            ),
         )
         started_at = self._now()
         if not self._usage.mark_dispatching(call_id, started_at_provider=started_at):
@@ -1680,6 +1795,8 @@ class ChatGenerationWorker:
         try:
             response = self._provider.generate(request)
         except PlatformError as error:
+            if logical_budget is not None and logical_reservation is not None:
+                logical_budget.reconcile(logical_reservation, actual_tokens=0)
             if self._budget_meter is not None:
                 self._budget_meter.mark_unknown(
                     generation_id=str(generation["id"]),
@@ -1723,6 +1840,8 @@ class ChatGenerationWorker:
                     generation_id=str(generation["id"]),
                     reservation_id=budget_reservation_id,
                 )
+            if logical_budget is not None and logical_reservation is not None:
+                logical_budget.reconcile(logical_reservation, actual_tokens=0)
             raise PlatformError(
                 "provider_result_unknown",
                 "The chat provider result is unknown after dispatch",
@@ -1747,6 +1866,8 @@ class ChatGenerationWorker:
             + int(getattr(response, "output_tokens", 0) or 0)
             + int(getattr(response, "reasoning_tokens", 0) or 0)
         )
+        if logical_budget is not None and logical_reservation is not None:
+            logical_budget.reconcile(logical_reservation, actual_tokens=actual_tokens)
         if defer_completion:
             if self._budget_meter is not None:
                 self._budget_meter.settle(

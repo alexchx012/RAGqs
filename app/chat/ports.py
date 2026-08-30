@@ -25,7 +25,7 @@ from app.identity.revocation import (
     GenerationRevocationReceipt,
 )
 from app.identity.schema import identity_revocation_command_table
-from app.indexing.models import RetrievalProfile
+from app.indexing.models import DeepRetrievalStrategy, RetrievalProfile
 from app.platform.errors import PlatformError
 from app.usage.ledger import OwnershipSnapshot
 from app.usage.ports import UsageSubmissionPort
@@ -48,6 +48,13 @@ class ChatProviderRequest:
     candidate: int | None
     context_items: tuple[Mapping[str, Any], ...]
     source_conflict_contract: Mapping[str, Any] | None = None
+    purpose: Literal["answer", "deep_retrieval_plan"] = "answer"
+
+    def __post_init__(self) -> None:
+        if self.purpose not in {"answer", "deep_retrieval_plan"}:
+            raise PlatformError(
+                "validation_error", "chat provider request purpose is invalid", {}, 422
+            )
 
 
 # 跨库事实冲突不由系统裁决（design §7.4④）：prompt 必须明确要求分述各出处。
@@ -107,6 +114,7 @@ class ChatRetrievalPort(Protocol):
         profile_version: str,
         effort: str,
         budget: Any | None = None,
+        strategy_operations: tuple[DeepRetrievalStrategy, ...] = (),
     ) -> RetrievalOutcome: ...
 
     def resolve_citations(
@@ -357,6 +365,7 @@ class IndexingChatRetrievalPort:
         profile_version: str,
         effort: str,
         budget: Any | None = None,
+        strategy_operations: tuple[DeepRetrievalStrategy, ...] = (),
     ) -> RetrievalOutcome:
         from .models import RetrievalHitOutcome
 
@@ -366,6 +375,8 @@ class IndexingChatRetrievalPort:
             profile_id=profile_id,
             version=profile_version,
             effort=cast(Literal["quick", "think", "deep"], effort),
+            strategy_operations=strategy_operations,
+            route_tree="tree" in strategy_operations,
         )
         request = self._indexing.open_retrieval_request()
         result = request.search(
@@ -555,6 +566,7 @@ class RecordingChatRetrievalPort:
         profile_version: str,
         effort: str,
         budget: Any | None = None,
+        strategy_operations: tuple[DeepRetrievalStrategy, ...] = (),
     ) -> RetrievalOutcome:
         self.searches.append(
             {
@@ -564,6 +576,7 @@ class RecordingChatRetrievalPort:
                 "profile_id": profile_id,
                 "profile_version": profile_version,
                 "effort": effort,
+                "strategy_operations": strategy_operations,
             }
         )
         return self.outcomes.get(query, RetrievalOutcome(hits=()))

@@ -8,12 +8,15 @@ limits and candidate selection are covered by tests/chat/test_budget_*.
 
 from __future__ import annotations
 
+import json
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
 
 from app.agents import SelfEvaluationResult
-from app.chat.models import RetrievalHitOutcome, RetrievalOutcome
+from app.chat.models import ChatProviderResponse, RetrievalHitOutcome, RetrievalOutcome
+from app.chat.ports import RecordingChatRetrievalPort
 from app.chat.schema import chat_generation_event_table, chat_generation_table
 from app.chat.worker import ChatGenerationWorker
 from tests.chat.conftest import build_test_env, provision_and_login
@@ -115,6 +118,58 @@ class AlwaysRewriteEvaluator:
         )
 
 
+class StrategyPlanningProvider:
+    """Main chat transport fake whose first deep call emits a strategy plan."""
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    def generate(self, request):  # type: ignore[no-untyped-def]
+        self.calls.append(request)
+        if request.purpose == "deep_retrieval_plan":
+            return ChatProviderResponse(
+                content=json.dumps({"strategies": ["rewrite", "hyde", "tree", "document_summary"]}),
+                input_tokens=3,
+                output_tokens=5,
+            )
+        return ChatProviderResponse(content="grounded answer", input_tokens=10, output_tokens=20)
+
+
+class InvalidStrategyPlanningProvider(StrategyPlanningProvider):
+    def generate(self, request):  # type: ignore[no-untyped-def]
+        self.calls.append(request)
+        if request.purpose == "deep_retrieval_plan":
+            return ChatProviderResponse(content="not JSON", input_tokens=3, output_tokens=5)
+        return ChatProviderResponse(content="grounded answer", input_tokens=10, output_tokens=20)
+
+
+class BudgetAwarePartialRetrieval(RecordingChatRetrievalPort):
+    """Exercises the worker's logical meter on an effort-upgraded round."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rag_limits: list[int] = []
+        self._resolution_count = 0
+
+    def search(self, query, *, budget=None, **kwargs):  # type: ignore[no-untyped-def]
+        if budget is not None:
+            self.rag_limits.append(budget.policy.max_rag_calls)
+            assert budget.deadline is not None
+            now = budget.deadline - timedelta(seconds=1)
+            notice = budget.gate("retrieval", estimated_tokens=len(query), now=now)
+            if notice is not None:
+                return RetrievalOutcome(hits=(), degradations=(notice,))
+            reserved = budget.reserve("retrieval", estimated_tokens=len(query), now=now)
+            budget.reconcile(reserved, actual_tokens=0)
+        return super().search(query, budget=budget, **kwargs)
+
+    def resolve_citations(self, hits, *, principal):  # type: ignore[no-untyped-def]
+        self._resolution_count += 1
+        if self._resolution_count == 1:
+            return super().resolve_citations(hits[:1], principal=principal)
+        return super().resolve_citations(hits, principal=principal)
+
+
 def _start_generation(env: dict, username: str, *, content: str, effort: str):
     token, _ = provision_and_login(env["identity"], username)
     principal = env["identity"].authenticate_access_token(token)
@@ -187,4 +242,85 @@ def test_heuristic_default_rejects_ungrounded_candidate_without_rewrite() -> Non
     worker.run_once()
 
     assert [s["query"] for s in env["retrieval"].searches] == ["hello"]
+    assert _generation_status(env, result.generation_id) == "completed"
+
+
+def test_deep_main_provider_plan_drives_retrieval_and_sse_hides_model_details() -> None:
+    provider = StrategyPlanningProvider()
+    env = build_test_env(
+        provider=provider,
+        outcomes={
+            "hello": RetrievalOutcome(
+                hits=(_hit(),),
+                route_output={
+                    "kind": "no_rewrite",
+                    "strategy_operations": ["rewrite", "hyde", "tree", "document_summary"],
+                    "original_query": "hello",
+                    "hyde_text": "secret model text",
+                    "metadata_prefilter": {"published_from": "2024-01-01"},
+                    "return_granularity": "document_summary",
+                },
+            )
+        },
+    )
+    result = _start_generation(env, "deep-user", content="hello", effort="deep")
+
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    assert [request.purpose for request in provider.calls] == ["deep_retrieval_plan", "answer"]
+    assert env["retrieval"].searches[0]["strategy_operations"] == (
+        "rewrite",
+        "hyde",
+        "tree",
+        "document_summary",
+    )
+    routed = next(
+        event["data"]
+        for event in _events(env, result.generation_id)
+        if event["event_type"] == "stage" and event["data"]["phase"] == "retrieval_routed"
+    )
+    assert routed["route"] == {
+        "kind": "no_rewrite",
+        "strategies": ["rewrite", "hyde", "tree", "document_summary"],
+        "return_granularity": "document_summary",
+    }
+
+
+def test_invalid_deep_plan_falls_back_to_default_hybrid_with_a_stable_notice() -> None:
+    provider = InvalidStrategyPlanningProvider()
+    env = build_test_env(provider=provider, outcomes={"hello": _outcome(_hit())})
+    result = _start_generation(env, "deep-fallback", content="hello", effort="deep")
+
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    assert env["retrieval"].searches[0]["strategy_operations"] == ()
+    notices = [
+        event["data"]
+        for event in _events(env, result.generation_id)
+        if event["event_type"] == "notice"
+    ]
+    assert {"kind": "retrieval_degraded", "detail": {"reason": "strategy_plan_invalid"}} in notices
+
+
+def test_effort_upgrade_also_upgrades_the_logical_retrieval_meter() -> None:
+    retrieval = BudgetAwarePartialRetrieval()
+    retrieval.outcomes["hello"] = _outcome(_hit(), _hit("doc-2", "chunk-2"))
+    env = build_test_env(retrieval=retrieval)
+    result = _start_generation(env, "meter-upgrade", content="hello", effort="quick")
+
+    make_worker(env).run_once()
+
+    assert retrieval.rag_limits == [1, 8]
+    assert _generation_status(env, result.generation_id) == "completed"
+
+
+def test_rewrite_loop_effort_upgrade_also_upgrades_the_logical_retrieval_meter() -> None:
+    retrieval = BudgetAwarePartialRetrieval()
+    retrieval.outcomes["hello"] = _outcome(_hit())
+    env = build_test_env(retrieval=retrieval)
+    result = _start_generation(env, "meter-upgrade-deep", content="hello", effort="think")
+
+    make_worker(env, self_evaluator=AlwaysRewriteEvaluator()).run_once()
+
+    assert retrieval.rag_limits == [8, 8, 8, 8, 10, 10, 10, 10, 10, 10]
     assert _generation_status(env, result.generation_id) == "completed"

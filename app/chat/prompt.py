@@ -38,6 +38,16 @@ def assemble_generation_prompt(request: ChatProviderRequest) -> str:
 
     contract = request.source_conflict_contract or source_conflict_contract()
     instruction = str(contract.get("instruction") or SOURCE_CONFLICT_INSTRUCTION)
+    if request.purpose == "deep_retrieval_plan":
+        return "\n\n".join(
+            (
+                instruction,
+                "为深度研究选择检索策略。仅返回一个 JSON 对象，格式必须是 "
+                '{"strategies":[...]}。可选值仅为 rewrite、split_subquestions、hyde、tree、'
+                "sub_chunk、parent_document、document_summary；不输出理由、参数或其他字段。",
+                request.content,
+            )
+        )
     blocks = [
         instruction,
         *(_context_block(item) for item in request.context_items),
