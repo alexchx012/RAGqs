@@ -169,7 +169,7 @@ def test_active_read_lease_blocks_version_purge_until_expired(service, principal
     replacement = service.replace_version(
         principal=principal,
         document_id=created["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="read-lease-replace-1",
     )

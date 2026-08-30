@@ -146,7 +146,7 @@ def test_review_and_restore_paths_never_read_object_content(service, principal) 
     replacement = service.replace_version(
         principal=principal,
         document_id=original["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="replace-restore-no-read-1",
     )
@@ -156,7 +156,7 @@ def test_review_and_restore_paths_never_read_object_content(service, principal) 
         principal=principal,
         document_id=original["document_id"],
         document_version_id=original["document_version_id"],
-        expected_version=2,
+        expected_version=4,
         idempotency_key="restore-no-read-1",
     )
     assert restored["status"] == "pending"
@@ -189,7 +189,7 @@ def test_cleanup_external_calls_run_without_database_transaction(service, princi
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-cleanup-txn-1",
     )
 
@@ -416,14 +416,14 @@ def test_public_space_with_corrupt_manifest_row_still_publishes_and_deletes() ->
     service.delete_document(
         principal=principal,
         document_id=good["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-public-good-1",
     )
     with pytest.raises(PlatformError) as error:
         service.delete_document(
             principal=principal,
             document_id=bad["document_id"],
-            expected_version=1,
+            expected_version=2,
             idempotency_key="delete-public-bad-1",
         )
     assert error.value.code == "public_source_manifest_invalid"

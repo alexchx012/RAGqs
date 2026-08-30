@@ -27,7 +27,7 @@ def _superseded_version(service, principal) -> dict:
     replacement = service.replace_version(
         principal=principal,
         document_id=original["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="contract-misc-replace-1",
     )
@@ -48,7 +48,7 @@ def test_restore_purged_source_returns_409_with_details(service, principal) -> N
             principal=principal,
             document_id=original["document_id"],
             document_version_id=original["document_version_id"],
-            expected_version=2,
+            expected_version=4,
             idempotency_key="contract-misc-restore-1",
         )
     assert error.value.code == "document_version_purged"
@@ -90,7 +90,7 @@ def test_replace_version_still_accepts_supported_media(service, principal) -> No
     result = service.replace_version(
         principal=principal,
         document_id=original["document_id"],
-        expected_version=2,
+        expected_version=4,
         file=_upload(name="notes.txt", content=b"md notes"),
         idempotency_key="contract-misc-ok-1",
     )

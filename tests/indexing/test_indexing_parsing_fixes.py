@@ -309,6 +309,7 @@ def test_execution_status_constraint_includes_provider_reconciling() -> None:
         if isinstance(constraint, CheckConstraint)
     }
     text = constraints["ck_chat_generation_execution_status"]
+
     assert "'provider_reconciling'" in text
     assert "'expired'" in text
 
@@ -328,6 +329,7 @@ def test_worker_recovery_flow_uses_provider_reconciling_status() -> None:
     from app.chat import worker
 
     source = inspect.getsource(worker)
+    # 占位列已被移除；provider_reconciling 状态本身是现行恢复流的一部分。
     assert "provider_reconciliation_state" not in source
     assert "_expire_provider_reconciling_executions" in source
 

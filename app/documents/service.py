@@ -19,6 +19,10 @@ from app.documents.upload_security import (
     validate_upload_security,
 )
 from app.identity.ports import DepartmentWorkState
+from app.indexing.schema import (
+    index_generation_changes_table,
+    index_generations_table,
+)
 from app.outbox.ports import DocumentNotificationRedactionCommand
 from app.platform.context import current_context
 from app.platform.database import _insert_do_nothing, platform_audit_table
@@ -419,7 +423,7 @@ class DocumentsService:
             )
         from app.usage.ledger import OwnershipSnapshot
 
-        subject = str(job["created_by_user_id"])
+        subject = self._job_execution_actor(job)
         role = str(job["quota_role_snapshot"])
         cost_center_key, space_kind, space_owner_user_id = self._publication_space_ownership(
             space_id=document["space_id"], subject_user_id=subject
@@ -438,7 +442,9 @@ class DocumentsService:
         debit_id = recorder(
             connection,
             publication_status="succeeded",
-            quota_operation_id=processing_list_id,
+            # ingestion 额度操作身份是稳定的 job_id（设计 §2.4.2）；全部
+            # attempt 与 replay_generation 复用该标识。
+            quota_operation_id=str(job["id"]),
             publication_id=str(publication["id"]),
             quota_subject_user_id=subject,
             pages=pages,
@@ -532,11 +538,27 @@ class DocumentsService:
             self._indexing_handoff_port.discard(request, connection=connection)
 
     @staticmethod
+    def _job_execution_actor(job: Mapping[str, Any]) -> str:
+        """Direct-job execution and quota subject.
+
+        The initial execution sequence keeps the original uploader; a manual
+        replay sequence switches both to the ops replay operator while
+        ``created_by_user_id`` stays immutable for auditability.
+        """
+
+        if int(job["replay_generation"]) > 0 and job["replayed_by_user_id"]:
+            return str(job["replayed_by_user_id"])
+        return str(job["created_by_user_id"])
+
+    @staticmethod
     def _worker_authorization_fence(
         connection: Connection, *, job: Mapping[Any, Any], document: Mapping[Any, Any]
     ) -> dict[str, str]:
         if job["quota_exempt_reason"] != "shared_library_submission":
-            return {"kind": "direct_ingest", "actor_id": str(job["created_by_user_id"])}
+            return {
+                "kind": "direct_ingest",
+                "actor_id": DocumentsService._job_execution_actor(job),
+            }
         grant = (
             connection.execute(
                 select(submission_execution_grants_table)
@@ -676,8 +698,8 @@ class DocumentsService:
             return
         if job["quota_exempt_reason"] == "shared_library_submission":
             return
-        if principal is None or str(getattr(principal, "user_id", "")) != str(
-            job["created_by_user_id"]
+        if principal is None or str(getattr(principal, "user_id", "")) != self._job_execution_actor(
+            job
         ):
             raise PlatformError(
                 "authorization_changed",
@@ -838,6 +860,12 @@ class DocumentsService:
                 updated_at_utc=now,
             )
         )
+        # 目标版本进入 purged 的事务释放仍未释放的恢复持有引用（设计 §2.3.2）。
+        connection.execute(
+            delete(document_version_restore_holds_table).where(
+                document_version_restore_holds_table.c.document_version_id == version_id
+            )
+        )
         context = current_context()
         connection.execute(
             platform_audit_table.insert().values(
@@ -910,6 +938,112 @@ class DocumentsService:
         if backend_kind in {"publication", "staging"}:
             return 2
         return 3
+
+    def _stage_deletion_targets(
+        self,
+        connection: Connection,
+        *,
+        deletion_id: str,
+        document_id: str,
+        now: datetime,
+    ) -> int:
+        """在删除接受事务内构建不可变清理目标清单（设计 §2.3.3）。
+
+        覆盖全部版本的原始对象、publication、stage 资产与 manifest、投稿关联
+        与其他文档级业务记录，并枚举全部尚未 ``purged`` 的索引 generation；
+        返回本次派生的目标数，供封存前的对账扫描比对。
+        """
+
+        def add(backend_kind: str, resource_id: str) -> None:
+            _insert_do_nothing(
+                connection,
+                document_deletion_cleanup_targets_table,
+                {
+                    "deletion_id": deletion_id,
+                    "backend_kind": backend_kind,
+                    "resource_id": resource_id,
+                    "state": "pending",
+                    "attempt_count": 0,
+                    "last_error": None,
+                    "created_at_utc": now,
+                    "updated_at_utc": now,
+                },
+                index_elements=["deletion_id", "backend_kind", "resource_id"],
+            )
+
+        derived = 0
+        versions = (
+            connection.execute(
+                select(document_versions_table).where(
+                    document_versions_table.c.document_id == document_id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for version in versions:
+            for resource in self._cleanup_resources_for_version(connection, version=dict(version)):
+                add(str(resource["backend_kind"]), str(resource["resource_id"]))
+                derived += 1
+        for grant_id, submission_id in connection.execute(
+            select(
+                submission_execution_grants_table.c.id,
+                submission_execution_grants_table.c.submission_id,
+            ).where(submission_execution_grants_table.c.document_id == document_id)
+        ).all():
+            add("submission_grant", str(grant_id))
+            add("submission_record", str(submission_id))
+            derived += 2
+        generations: list[str] = []
+        # 未 purged 索引 generation 枚举依赖 indexing 的 generation 登记表；
+        # 精简 schema（部分单元测试库）没有该登记表时退化为 revisions 全集。
+        from sqlalchemy import inspect as sa_inspect
+
+        inspector = sa_inspect(connection)
+        if inspector.has_table("index_generations") and inspector.has_table(
+            "index_generation_changes"
+        ):
+            generations = (
+                connection.execute(
+                    select(index_generations_table.c.id)
+                    .select_from(
+                        index_revisions_table.join(
+                            index_generation_changes_table,
+                            index_generation_changes_table.c.revision
+                            == index_revisions_table.c.revision,
+                        ).join(
+                            index_generations_table,
+                            index_generations_table.c.id
+                            == index_generation_changes_table.c.generation_id,
+                        )
+                    )
+                    .where(
+                        index_revisions_table.c.document_id == document_id,
+                        index_generations_table.c.status != "purged",
+                    )
+                    .distinct()
+                )
+                .scalars()
+                .all()
+            )
+        else:
+            # "delete" 是删除 index_change 的合成代际标记，不是真实索引代际。
+            generations = (
+                connection.execute(
+                    select(index_revisions_table.c.generation_id).where(
+                        index_revisions_table.c.document_id == document_id,
+                        index_revisions_table.c.generation_id != "delete",
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for generation_id in generations:
+            # 世代枚举沿用 index 后端走 handoff 全文档索引清理；resource_id
+            # 前缀保证排在既有 stage 索引资源之后（同一清理段内稳定顺序）。
+            add("index", f"index_generation:{generation_id}")
+            derived += 1
+        return derived
 
     def _cleanup_resources_for_version(
         self, connection: Connection, *, version: Mapping[str, Any]
@@ -2506,16 +2640,9 @@ class DocumentsService:
             version_id = _new_id("version")
             job_id = _new_id("job")
             publication_id = _new_id("publication")
+            # 复制发生在 worker 处理阶段（copy_restore_source），接受事务只
+            # 建记录并声明来自源版本记录的内容事实（设计 §2.3.2）。
             object_key = f"documents/{document_id}/{version_id}/original"
-            try:
-                self._object_store.copy(str(source["original_object_key"]), object_key)
-            except (StorageKeyError, KeyError) as exc:
-                raise PlatformError(
-                    "document_version_purged",
-                    "Document version content was purged",
-                    {"document_id": document_id, "document_version_id": document_version_id},
-                    409,
-                ) from exc
             content_hash = str(source["content_hash_sha256"])
             restored_size = int(source["size_bytes"])
             version_number = (
@@ -2643,6 +2770,181 @@ class DocumentsService:
                 response=response,
             )
             return response
+
+    def copy_restore_source(
+        self,
+        *,
+        job_id: str,
+        attempt_id: str,
+        fencing_token: int,
+    ) -> dict[str, Any]:
+        """Worker-side restore object copy (设计 §2.3.2)。
+
+        在内容处理前将源版本原始对象复制到新对象标识，实测大小与 SHA-256 并
+        与源版本记录比对；校验通过后释放恢复持有引用。复制或校验失败走既有
+        失败事务并保留持有引用，人工重放重新复制；复制期间取消则继续持有。
+
+        由 ``DocumentsJobCoordinator.claim`` 在领取携带恢复持有的 job 时于
+        attempt 事务提交后、返回租约前自动调用；调用方必须把此处的异常视为
+        该 job 已进入失败/重试调度（无有效租约返回）。
+        """
+
+        with self._engine.begin() as connection:
+            job = (
+                connection.execute(
+                    select(ingestion_jobs_table)
+                    .where(ingestion_jobs_table.c.id == job_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if job is None:
+                raise PlatformError("job_not_found", "Ingestion job was not found", {}, 404)
+            if (
+                job["state"] != IngestionJobState.RUNNING.value
+                or str(job["active_attempt_id"] or "") != attempt_id
+            ):
+                raise PlatformError(
+                    "fence_conflict", "The restore job is no longer current", {}, 409
+                )
+            attempt = (
+                connection.execute(
+                    select(ingestion_attempts_table)
+                    .where(ingestion_attempts_table.c.id == attempt_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                attempt is None
+                or attempt["state"] != "running"
+                or int(fencing_token) != int(attempt["fencing_token"])
+            ):
+                raise PlatformError(
+                    "fence_conflict", "The processing attempt is no longer current", {}, 409
+                )
+            hold = (
+                connection.execute(
+                    select(document_version_restore_holds_table)
+                    .where(document_version_restore_holds_table.c.job_id == job_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if hold is None:
+                raise PlatformError(
+                    "restore_hold_missing", "The restore hold is no longer active", {}, 409
+                )
+            source = (
+                connection.execute(
+                    select(document_versions_table).where(
+                        document_versions_table.c.id == hold["document_version_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            new_version = (
+                connection.execute(
+                    select(document_versions_table).where(
+                        document_versions_table.c.id == job["document_version_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            source_key = str(source["original_object_key"] or "") if source is not None else ""
+            target_key = (
+                str(new_version["original_object_key"] or "") if new_version is not None else ""
+            )
+            if not source_key or not target_key:
+                raise PlatformError(
+                    "document_version_purged", "Document version content was purged", {}, 410
+                )
+        try:
+            self._object_store.copy(source_key, target_key)
+            content, _metadata = self._object_store.get(target_key)
+        except (StorageKeyError, KeyError) as exc:
+            self.fail_job(
+                job_id=job_id,
+                reason="restore_copy_source_unavailable",
+                retryable=False,
+                attempt_id=attempt_id,
+                fencing_token=int(fencing_token),
+            )
+            raise PlatformError(
+                "restore_copy_failed",
+                "The restore source object could not be copied",
+                {},
+                422,
+            ) from exc
+        except Exception:
+            self.fail_job(
+                job_id=job_id,
+                reason="restore_copy_failed",
+                retryable=True,
+                attempt_id=attempt_id,
+                fencing_token=int(fencing_token),
+            )
+            raise
+        measured_hash = hashlib.sha256(content).hexdigest()
+        if len(content) != int(source["size_bytes"]) or measured_hash != str(
+            source["content_hash_sha256"]
+        ):
+            self.fail_job(
+                job_id=job_id,
+                reason="restore_copy_mismatch",
+                retryable=False,
+                attempt_id=attempt_id,
+                fencing_token=int(fencing_token),
+            )
+            raise PlatformError(
+                "restore_copy_mismatch",
+                "The restored object does not match the source version record",
+                {},
+                422,
+            )
+        with self._engine.begin() as connection:
+            job = (
+                connection.execute(
+                    select(ingestion_jobs_table)
+                    .where(ingestion_jobs_table.c.id == job_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            attempt = (
+                connection.execute(
+                    select(ingestion_attempts_table)
+                    .where(ingestion_attempts_table.c.id == attempt_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                job is None
+                or job["state"] != IngestionJobState.RUNNING.value
+                or str(job["active_attempt_id"] or "") != attempt_id
+                or attempt is None
+                or int(attempt["fencing_token"]) != int(fencing_token)
+            ):
+                # 复制期间 job 被取消或失去 current 身份：继续持有源版本。
+                return {"state": "hold_kept", "job_state": str(job["state"]) if job else None}
+            connection.execute(
+                delete(document_version_restore_holds_table).where(
+                    document_version_restore_holds_table.c.job_id == job_id
+                )
+            )
+        return {
+            "state": "copied",
+            "size_bytes": len(content),
+            "content_hash_sha256": measured_hash,
+        }
 
     def accept_processing_receipt(
         self,
@@ -2900,6 +3202,17 @@ class DocumentsService:
                     "fence_conflict",
                     "The processing job is no longer the active document operation",
                 )
+            if job["operation"] in {"initial", "replace"}:
+                if document["pending_version_id"] != job["document_version_id"]:
+                    reject_receipt(
+                        "document_version_changed",
+                        "The document pending version no longer matches this job",
+                    )
+            elif document["pending_version_id"] is not None:
+                reject_receipt(
+                    "document_version_changed",
+                    "The document has a pending version during reindex",
+                )
             if job["document_version_id"]:
                 version_row = (
                     connection.execute(
@@ -2987,6 +3300,17 @@ class DocumentsService:
                 reject_receipt(
                     "document_version_changed",
                     "The document active version has changed since this job was created",
+                )
+            if final_job["operation"] in {"initial", "replace"}:
+                if final_document["pending_version_id"] != final_job["document_version_id"]:
+                    reject_receipt(
+                        "document_version_changed",
+                        "The document pending version no longer matches this job",
+                    )
+            elif final_document["pending_version_id"] is not None:
+                reject_receipt(
+                    "document_version_changed",
+                    "The document has a pending version during reindex",
                 )
             try:
                 self._worker_authorization_fence(connection, job=final_job, document=final_document)
@@ -3121,6 +3445,7 @@ class DocumentsService:
                         active_version_id=version["id"],
                         pending_version_id=None,
                         active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
                         name=version["file_name"],
                         normalized_name=self._normalize_filename(str(version["file_name"]))[1],
                         media_kind=version["media_kind"],
@@ -3131,7 +3456,11 @@ class DocumentsService:
                 connection.execute(
                     update(documents_table)
                     .where(documents_table.c.id == job["document_id"])
-                    .values(active_operation_job_id=None, updated_at_utc=now)
+                    .values(
+                        active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
+                        updated_at_utc=now,
+                    )
                 )
             usage = self._record_publication_quota(
                 connection,
@@ -3493,6 +3822,10 @@ class DocumentsService:
                     upload_dedup_claims_table.c.document_id == document_id
                 )
             )
+            # 删除接受事务提交前立即构建不可变清理目标清单（设计 §2.3.3）。
+            self._stage_deletion_targets(
+                connection, deletion_id=deletion_id, document_id=document_id, now=now
+            )
             self._append_delete_index_change(connection, document, now)
             response = {
                 "document_id": document_id,
@@ -3683,16 +4016,48 @@ class DocumentsService:
                 .where(document_deletions_table.c.id == deletion_id)
                 .values(status="cleaning")
             )
-            if str(deletion["status"]) == "pending_delete":
-                # §9.3 审计事实：删除目标清单封存（仅首个 finalize pass 记录一次）。
-                self._audit(
-                    connection,
-                    actor_id="system_purge_worker",
-                    resource_type="documents.deletion",
-                    resource_id=document_id,
-                    result="cleanup_targets_sealed",
-                    occurred_at=now,
+            scan = dict(deletion["physical_cleanup_json"] or {})
+            if not scan.get("sealed_at"):
+                # 清单封存：关联 job 终态、无读取租约、无恢复持有的前置校验已在
+                # 上方完成；此处按稳定命名空间完成一次对账扫描后封存。封存前
+                # 不执行任何破坏性清理（设计 §2.3.3）。
+                derived = self._stage_deletion_targets(
+                    connection, deletion_id=deletion_id, document_id=document_id, now=now
                 )
+                stored = int(
+                    connection.execute(
+                        select(func.count())
+                        .select_from(document_deletion_cleanup_targets_table)
+                        .where(document_deletion_cleanup_targets_table.c.deletion_id == deletion_id)
+                    ).scalar_one()
+                )
+                if stored != derived:
+                    raise PlatformError(
+                        "deletion_cleanup_blocked",
+                        "Deletion cleanup targets are not reconciled",
+                        {},
+                        409,
+                    )
+                connection.execute(
+                    update(document_deletions_table)
+                    .where(document_deletions_table.c.id == deletion_id)
+                    .values(
+                        physical_cleanup_json={
+                            "sealed_at": _timestamp(now),
+                            "target_count": stored,
+                        }
+                    )
+                )
+                if str(deletion["status"]) == "pending_delete":
+                    # §9.3 审计事实：删除目标清单封存（仅首个 finalize pass 记录一次）。
+                    self._audit(
+                        connection,
+                        actor_id="system_purge_worker",
+                        resource_type="documents.deletion",
+                        resource_id=document_id,
+                        result="cleanup_targets_sealed",
+                        occurred_at=now,
+                    )
             all_targets_done = True
             for version in versions:
                 if not self._stage_cleanup_targets(
@@ -3707,6 +4072,25 @@ class DocumentsService:
                     continue
                 self._tombstone_version(connection, str(version["id"]), now)
             if all_targets_done:
+                submission_ids = tuple(
+                    str(row[0])
+                    for row in connection.execute(
+                        select(submission_execution_grants_table.c.submission_id).where(
+                            submission_execution_grants_table.c.document_id == document_id
+                        )
+                    ).all()
+                )
+                connection.execute(
+                    delete(submission_execution_grants_table).where(
+                        submission_execution_grants_table.c.document_id == document_id
+                    )
+                )
+                if submission_ids:
+                    connection.execute(
+                        delete(knowledge_submissions_table).where(
+                            knowledge_submissions_table.c.id.in_(submission_ids)
+                        )
+                    )
                 connection.execute(
                     update(documents_table)
                     .where(documents_table.c.id == document_id)
@@ -4045,7 +4429,9 @@ class DocumentsService:
                 .values(
                     state=IngestionJobState.CANCELLED.value,
                     stage=None,
+                    active_attempt_id=None,
                     cancelled_by_user_id=str(principal.user_id),
+                    cancelled_at_utc=now,
                     updated_at_utc=now,
                 )
             )
@@ -4100,6 +4486,7 @@ class DocumentsService:
                     .values(
                         pending_version_id=None,
                         active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
                         updated_at_utc=now,
                     )
                 )
@@ -4116,7 +4503,11 @@ class DocumentsService:
                 connection.execute(
                     update(documents_table)
                     .where(documents_table.c.id == job["document_id"])
-                    .values(active_operation_job_id=None, updated_at_utc=now)
+                    .values(
+                        active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
+                        updated_at_utc=now,
+                    )
                 )
             if job["upload_batch_id"]:
                 connection.execute(
@@ -4279,6 +4670,7 @@ class DocumentsService:
                         .values(
                             pending_version_id=None,
                             active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
                             updated_at_utc=now,
                         )
                     )
@@ -4295,7 +4687,11 @@ class DocumentsService:
                     connection.execute(
                         update(documents_table)
                         .where(documents_table.c.id == job["document_id"])
-                        .values(active_operation_job_id=None, updated_at_utc=now)
+                        .values(
+                            active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
+                            updated_at_utc=now,
+                        )
                     )
             if job["upload_batch_id"]:
                 connection.execute(
@@ -4366,16 +4762,17 @@ class DocumentsService:
                 principal=principal,
             )
             now = self._current_time()
-            connection.execute(
-                update(document_versions_table)
-                .where(document_versions_table.c.id == job["document_version_id"])
-                .values(
-                    status=DocumentVersionState.PENDING.value,
-                    terminal_at_utc=None,
-                    purge_after_at_utc=None,
-                    updated_at_utc=now,
+            if job["operation"] in {"initial", "replace"}:
+                connection.execute(
+                    update(document_versions_table)
+                    .where(document_versions_table.c.id == job["document_version_id"])
+                    .values(
+                        status=DocumentVersionState.PENDING.value,
+                        terminal_at_utc=None,
+                        purge_after_at_utc=None,
+                        updated_at_utc=now,
+                    )
                 )
-            )
             publication_id = _new_id("publication")
             replay_generation = int(job["replay_generation"]) + 1
             connection.execute(
@@ -4417,9 +4814,9 @@ class DocumentsService:
                     replay_generation=replay_generation,
                     failure_reason=None,
                     next_attempt_at_utc=None,
+                    replayed_by_user_id=actor_id,
                     **(
                         {
-                            "created_by_user_id": actor_id,
                             "quota_role_snapshot": str(getattr(principal, "role", "ops")),
                             "quota_department_id_snapshot": getattr(
                                 principal, "department_id", None
@@ -4434,7 +4831,16 @@ class DocumentsService:
             connection.execute(
                 update(documents_table)
                 .where(documents_table.c.id == job["document_id"])
-                .values(active_operation_job_id=job_id, updated_at_utc=now)
+                .values(
+                    active_operation_job_id=job_id,
+                    version=int(document["version"]) + 1,
+                    **(
+                        {"pending_version_id": job["document_version_id"]}
+                        if job["operation"] in {"initial", "replace"}
+                        else {}
+                    ),
+                    updated_at_utc=now,
+                )
             )
             if job["upload_batch_id"]:
                 connection.execute(
@@ -4544,6 +4950,8 @@ class DocumentsService:
                             if isinstance(item, Mapping)
                         ],
                         "ocr_low_confidence": row["ocr_low_confidence"],
+                        # 契约字段补齐：数据源语义未定义，输出 null 占位。
+                        "progress_text_hint": None,
                         "publication_id": row["active_publication_id"],
                         "processing_summary": row["processing_summary_json"],
                         "usage": row["usage_json"] if row["state"] == "succeeded" else None,
@@ -4560,6 +4968,51 @@ class DocumentsService:
             "max_limit": 200,
             "has_more": len(visible) > limit,
         }
+
+    def mark_job_indexing(self, *, job_id: str, attempt_id: str, fencing_token: int) -> bool:
+        """Worker 进入索引构建阶段时把 job 读模型标记为 ``stage="indexing"``。
+
+        使用 ``job_id + attempt_id + fencing_token`` 条件更新；失配时抛出
+        fence_conflict，worker 必须停止当前 attempt（设计 §2.3）。
+        """
+
+        with self._engine.begin() as connection:
+            attempt = (
+                connection.execute(
+                    select(
+                        ingestion_attempts_table.c.job_id,
+                        ingestion_attempts_table.c.fencing_token,
+                        ingestion_attempts_table.c.state,
+                    ).where(ingestion_attempts_table.c.id == attempt_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                attempt is None
+                or str(attempt["job_id"]) != job_id
+                or attempt["state"] != "running"
+                or int(attempt["fencing_token"]) != int(fencing_token)
+            ):
+                raise PlatformError(
+                    "fence_conflict", "The processing attempt is no longer current", {}, 409
+                )
+            updated = connection.execute(
+                update(ingestion_jobs_table)
+                .where(
+                    and_(
+                        ingestion_jobs_table.c.id == job_id,
+                        ingestion_jobs_table.c.state == IngestionJobState.RUNNING.value,
+                        ingestion_jobs_table.c.active_attempt_id == attempt_id,
+                    )
+                )
+                .values(stage="indexing", updated_at_utc=self._current_time())
+            )
+            if updated.rowcount != 1:
+                raise PlatformError(
+                    "fence_conflict", "The processing job is no longer current", {}, 409
+                )
+            return True
 
     def claim_job(
         self,

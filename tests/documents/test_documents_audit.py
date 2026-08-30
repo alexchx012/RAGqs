@@ -40,7 +40,7 @@ def test_document_delete_writes_audit_event(service, principal) -> None:
     service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="audit-delete-1",
     )
 
@@ -81,7 +81,7 @@ def test_version_restore_writes_audit_event(service, principal) -> None:
     replacement = service.replace_version(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"second edition"),
         idempotency_key="audit-replace-3",
     )
@@ -91,7 +91,7 @@ def test_version_restore_writes_audit_event(service, principal) -> None:
         principal=principal,
         document_id=item["document_id"],
         document_version_id=item["document_version_id"],
-        expected_version=2,
+        expected_version=4,
         idempotency_key="audit-restore-3",
     )
 
@@ -118,7 +118,7 @@ def test_version_restore_failure_writes_failure_audit(service, principal) -> Non
             principal=principal,
             document_id=item["document_id"],
             document_version_id=item["document_version_id"],
-            expected_version=1,
+            expected_version=2,
             idempotency_key="audit-restore-4",
         )
     assert error.value.code == "document_version_not_restorable"
@@ -261,7 +261,7 @@ def test_version_cleanup_retry_writes_audit_fact(service, principal) -> None:
     replacement = service.replace_version(
         principal=principal,
         document_id=created["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="audit-replace-7",
     )

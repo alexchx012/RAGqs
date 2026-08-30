@@ -749,6 +749,9 @@ def build_runtime(
         if documents_service._message_citation_preview_port is None:
             documents_service._message_citation_preview_port = message_citation_preview_port
     configured.setdefault("documents_service", documents_service)
+    if callable(getattr(indexing_service, "set_job_stage_sink", None)):
+        # 入库 worker 进入索引构建阶段时回写 job 读模型 stage（B9）。
+        indexing_service.set_job_stage_sink(documents_service.mark_job_indexing)
     if identity_access._personal_document_deletion is None or isinstance(
         identity_access._personal_document_deletion, UnavailablePersonalDocumentDeletionPort
     ):

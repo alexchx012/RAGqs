@@ -1492,7 +1492,8 @@ def test_process_stages_claimed_document_usage_context() -> None:
     assert dense.stage_kwargs is not None
     context = dense.stage_kwargs["usage_context"]
     assert context.execution_kind == "ingestion"
-    assert context.execution_id == request.job_id
+    # C8：异步文档处理的 execution_id 使用 attempt_id。
+    assert context.execution_id == request.attempt_id
     assert context.attempt_id == request.attempt_id
     assert context.generation_id == request.expected_generation_id
     assert context.replay_generation == 2

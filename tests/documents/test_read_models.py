@@ -72,7 +72,7 @@ def test_preview_and_content_expose_readable_superseded_version(service, princip
     replacement = service.replace_version(
         principal=principal,
         document_id=first["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"new content"),
         idempotency_key="replace-1",
     )
@@ -177,7 +177,7 @@ def test_preview_scopes_message_hits_to_the_selected_version(service, principal)
     replacement = service.replace_version(
         principal=principal,
         document_id=first["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"new content"),
         idempotency_key="replace-1",
     )
@@ -260,7 +260,7 @@ def test_active_read_lease_blocks_physical_document_deletion(service, principal)
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-after-read",
     )
 

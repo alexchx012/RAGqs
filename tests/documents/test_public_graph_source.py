@@ -337,7 +337,7 @@ def test_public_snapshot_contains_every_current_active_publication() -> None:
     service.delete_document(
         principal=principal,
         document_id=second["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-1",
     )
     after_delete = source.get_snapshot(source_revision=source.get_current_head().source_revision)

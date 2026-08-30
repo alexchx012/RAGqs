@@ -233,7 +233,7 @@ def test_replace_rejects_an_oversized_file_without_creating_a_version(service, p
         limited.replace_version(
             principal=principal,
             document_id=item["document_id"],
-            expected_version=1,
+            expected_version=2,
             file=_upload(content=b"12345"),
             idempotency_key="oversized-replacement",
         )
@@ -315,10 +315,14 @@ def test_replace_requires_expected_version_and_keeps_old_publication(service, pr
         )
     assert error.value.code == "document_version_conflict"
 
+    # C3a：发布事务也递增逻辑文档 version（创建 1 → 发布 2）。
+    assert (
+        service.list_documents(principal=principal, space_id="space_1")["items"][0]["version"] == 2
+    )
     replacement = service.replace_version(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=DocumentUpload(
             filename="revised.pdf", content=b"%PDF-1.7 new", media_kind="application/pdf"
         ),
@@ -360,7 +364,7 @@ def test_replace_rejects_another_document_dedup_claim_before_creating_version_or
         service.replace_version(
             principal=principal,
             document_id=second["document_id"],
-            expected_version=1,
+            expected_version=2,
             file=_upload(name="owner.txt", content=b"same"),
             idempotency_key="replace-conflict",
         )
@@ -396,7 +400,7 @@ def test_replace_publish_swaps_dedup_claim_to_new_active_version(service, princi
     replacement = service.replace_version(
         principal=principal,
         document_id=first["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(name="new.txt", content=b"new"),
         idempotency_key="swap-replace",
     )
@@ -455,7 +459,7 @@ def test_replace_publish_claim_conflict_fails_job_and_preserves_active_claim(
     replacement = service.replace_version(
         principal=principal,
         document_id=target["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(name="new-target.txt", content=b"new-target"),
         idempotency_key="race-replace",
     )
@@ -605,7 +609,7 @@ def test_replace_replays_before_document_lifecycle_validation(service, principal
     replacement = service.replace_version(
         principal=principal,
         document_id=first["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="replace-1",
     )
@@ -620,7 +624,7 @@ def test_replace_replays_before_document_lifecycle_validation(service, principal
         service.replace_version(
             principal=principal,
             document_id=first["document_id"],
-            expected_version=1,
+            expected_version=2,
             file=_upload(content=b"replacement"),
             idempotency_key="replace-1",
         )
