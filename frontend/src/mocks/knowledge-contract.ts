@@ -1136,7 +1136,7 @@ export class MockKnowledgeController {
     const items = [...this.submissions.values()]
       .filter((submission) => submission.status === 'pending' && scope.includes(submission.targetSpaceId))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((submission) => this.toSubmission(submission));
+      .map((submission) => this.toApprovalListItem(submission));
     return { items };
   }
 
@@ -1845,17 +1845,37 @@ export class MockKnowledgeController {
   private toSubmission(submission: StoredSubmission): Submission {
     return {
       submission_id: submission.submissionId,
-      space_id: submission.targetSpaceId,
       version: submission.version,
-      status: submission.status,
-      file_name: submission.name,
+      target_space_id: submission.targetSpaceId,
+      target_space_name: submission.targetSpaceName,
+      name: submission.name,
       media_kind: submission.mediaKind,
-      submitter_name: submission.submitterName,
-      submitter_department: submission.submitterDepartment,
-      file_size: submission.sizeBytes,
-      space_name: submission.targetSpaceName,
+      size_bytes: submission.sizeBytes,
+      status: submission.status,
       created_at: submission.createdAt,
       reviewed_at: submission.reviewedAt,
+      reject_reason: submission.rejectReason,
+      invalidated_reason: submission.invalidatedReason,
+      document_id: submission.documentId,
+      job_id: submission.jobId,
+    };
+  }
+
+  private toApprovalListItem(submission: StoredSubmission): ApprovalListItem {
+    return {
+      submission_id: submission.submissionId,
+      version: submission.version,
+      submitter: {
+        id: submission.submitterUserId,
+        display_name: submission.submitterName,
+        department: submission.submitterDepartment,
+      },
+      name: submission.name,
+      media_kind: submission.mediaKind,
+      size_bytes: submission.sizeBytes,
+      target_space_id: submission.targetSpaceId,
+      target_space_name: submission.targetSpaceName,
+      created_at: submission.createdAt,
     };
   }
 

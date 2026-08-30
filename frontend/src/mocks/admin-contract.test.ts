@@ -386,19 +386,16 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
     expect(opsList.items.length).toBe(4);
     expect(Object.keys(opsList.items[0] ?? {}).sort()).toEqual([
       'created_at',
-      'file_name',
-      'file_size',
       'media_kind',
-      'reviewed_at',
-      'space_id',
-      'space_name',
-      'status',
+      'name',
+      'size_bytes',
       'submission_id',
-      'submitter_department',
-      'submitter_name',
+      'submitter',
+      'target_space_id',
+      'target_space_name',
       'version',
     ]);
-    expect(opsList.items.every((item) => item.space_id === 'public')).toBe(true);
+    expect(opsList.items.every((item) => item.target_space_id === 'public')).toBe(true);
 
     const admin = bearerOf('admin');
     expect((await listSubmissions(admin)).items.length).toBe(7);
@@ -406,7 +403,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
 
   it('批准 202；重复审批 409 submission_already_reviewed', async () => {
     const ops = bearerOf('ops-wang');
-    const target = (await listSubmissions(ops)).items.find((item) => item.file_name === '行业研报汇总.pdf');
+    const target = (await listSubmissions(ops)).items.find((item) => item.name === '行业研报汇总.pdf');
     const approved = await postWithKey(
       ops,
       `/v1/approvals/submissions/${target?.submission_id}/approve`,
@@ -430,7 +427,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
   it('duplicate_document 行不移除；scope_changed 行失效；冻结投稿人 409', async () => {
     const ops = bearerOf('ops-wang');
     const items = (await listSubmissions(ops)).items;
-    const duplicate = items.find((item) => item.file_name === '公共制度汇编.pdf');
+    const duplicate = items.find((item) => item.name === '公共制度汇编.pdf');
     await expectError(
       await postWithKey(
         ops,
@@ -445,7 +442,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
       (await listSubmissions(ops)).items.some((item) => item.submission_id === duplicate?.submission_id),
     ).toBe(true);
 
-    const scopeChanged = items.find((item) => item.file_name === '跨部门协作指引.pdf');
+    const scopeChanged = items.find((item) => item.name === '跨部门协作指引.pdf');
     await expectError(
       await postWithKey(
         ops,
@@ -460,7 +457,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
       (await listSubmissions(ops)).items.some((item) => item.submission_id === scopeChanged?.submission_id),
     ).toBe(false);
 
-    const frozen = items.find((item) => item.file_name === '历史遗留材料.pdf');
+    const frozen = items.find((item) => item.name === '历史遗留材料.pdf');
     await expectError(
       await postWithKey(
         ops,
@@ -472,7 +469,7 @@ describe('admin contract：投稿审核（§8.4–8.5）', () => {
       'submitter_pending_delete',
     );
 
-    const normal = (await listSubmissions(ops)).items.find((item) => item.file_name === '行业研报汇总.pdf');
+    const normal = (await listSubmissions(ops)).items.find((item) => item.name === '行业研报汇总.pdf');
     await expectError(
       await postWithKey(
         ops,

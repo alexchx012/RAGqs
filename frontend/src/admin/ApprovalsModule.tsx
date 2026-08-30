@@ -448,14 +448,14 @@ export function ApprovalSubmissionsLayer() {
   const copyManage = copy.settings.knowledge.manage;
   const copyApprovals = copy.admin.approvals;
 
-  const departmentItems = items.filter((item) => item.space_id !== 'public');
-  const departmentNames = [...new Set(departmentItems.map((item) => item.space_name))];
+  const departmentItems = items.filter((item) => item.target_space_id !== 'public');
+  const departmentNames = [...new Set(departmentItems.map((item) => item.target_space_name))];
   const visibleItems = items.filter((item) => {
     if (spaceFilter === 'public') {
-      return item.space_id === 'public';
+      return item.target_space_id === 'public';
     }
     if (spaceFilter === 'department') {
-      return item.space_id !== 'public' && (departmentFilter === 'all' || item.space_name === departmentFilter);
+      return item.target_space_id !== 'public' && (departmentFilter === 'all' || item.target_space_name === departmentFilter);
     }
     return true;
   });
@@ -503,7 +503,7 @@ export function ApprovalSubmissionsLayer() {
     setRowError(item.submission_id, null);
     try {
       const blob = await settingsApi.getSubmissionContent(item.submission_id);
-      downloadSubmissionContent(blob, item.file_name);
+      downloadSubmissionContent(blob, item.name);
     } catch (error) {
       setRowError(
         item.submission_id,
@@ -675,20 +675,20 @@ export function ApprovalSubmissionsLayer() {
                     className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray"
                   >
                     <div role="cell" className="min-w-0">
-                      <p className="truncate text-[15px] text-ink-black">{item.file_name}</p>
+                      <p className="truncate text-[15px] text-ink-black">{item.name}</p>
                       <p className="mt-0.5 truncate text-[14px] text-smoke-gray">
                         {item.media_kind}
                       </p>
                     </div>
                     <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
-                      {item.submitter_name}
-                      {item.submitter_department !== null ? ` · ${item.submitter_department.name}` : ''}
+                      {item.submitter.display_name}
+                      {item.submitter.department !== null ? ` · ${item.submitter.department.name}` : ''}
                     </span>
                     <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
-                      {formatFileSize(item.file_size)}
+                      {formatFileSize(item.size_bytes)}
                     </span>
                     <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
-                      {item.space_name}
+                      {item.target_space_name}
                     </span>
                     <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
                       {formatDateTime(item.created_at)}

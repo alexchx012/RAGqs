@@ -46,6 +46,69 @@ def test_head_upgrade_creates_documents_tables(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_submission_contract_migration_adds_nullable_columns_to_legacy_rows(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'submission-contract.sqlite3'}"
+    config = _config(database_url)
+    command.upgrade(config, "0039_merge_chat_release_gate")
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO knowledge_submissions (
+                        id, space_id, submitter_user_id, version, status, file_name, media_kind,
+                        content_hash_sha256, private_object_key, object_manifest_json,
+                        created_at_utc, updated_at_utc
+                    ) VALUES (
+                        'submission_legacy', 'public', 'user_legacy', 1, 'pending', 'legacy.txt',
+                        'text/plain', 'legacy-hash', 'submissions/legacy/original', '{}',
+                        '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'
+                    )
+                    """
+                )
+            )
+
+        command.upgrade(config, "head")
+
+        columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("knowledge_submissions")
+        }
+        expected_columns = {
+            "submitter_role_snapshot",
+            "submitter_department_snapshot",
+            "submitter_display_name_snapshot",
+            "submitter_department_name_snapshot",
+            "invalidated_reason",
+            "invalidated_at",
+        }
+        assert expected_columns <= set(columns)
+        assert all(columns[column_name]["nullable"] for column_name in expected_columns)
+        with engine.connect() as connection:
+            legacy = connection.execute(
+                text(
+                    """
+                    SELECT submitter_role_snapshot, submitter_department_snapshot,
+                           submitter_display_name_snapshot, submitter_department_name_snapshot,
+                           invalidated_reason, invalidated_at
+                    FROM knowledge_submissions
+                    WHERE id = 'submission_legacy'
+                    """
+                )
+            ).mappings().one()
+        assert legacy == {
+            "submitter_role_snapshot": None,
+            "submitter_department_snapshot": None,
+            "submitter_display_name_snapshot": None,
+            "submitter_department_name_snapshot": None,
+            "invalidated_reason": None,
+            "invalidated_at": None,
+        }
+    finally:
+        engine.dispose()
+
+
 def test_documents_write_migration_hashes_legacy_keys_and_is_rerunnable() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     legacy = MetaData()

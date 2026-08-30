@@ -301,9 +301,9 @@ describe('knowledge contract mock：上传三分支', () => {
     ]);
 
     const submissions = (await (await listSubmissions(token, 'pending')).json()) as {
-      items: { file_name: string; status: string }[];
+      items: { name: string; status: string }[];
     };
-    expect(submissions.items.some((item) => item.file_name === '公共建议稿.md')).toBe(true);
+    expect(submissions.items.some((item) => item.name === '公共建议稿.md')).toBe(true);
   });
 
   it('初始管理上传：同一内容换文件名和同名换内容都创建新文档', async () => {
@@ -533,6 +533,51 @@ describe('knowledge contract mock：版本记录', () => {
 });
 
 describe('knowledge contract mock：投稿五态与 409', () => {
+  it('我的投稿与审核列表返回对齐后的字段形状', () => {
+    const submitterToken = bearerOf('zhangsan');
+    const mine = mockKnowledge.listSubmissions(submitterToken, 'all').items;
+    const invalidated = mine.find((item) => item.status === 'invalidated');
+    expect(invalidated).toBeDefined();
+    expect(Object.keys(invalidated!).sort()).toEqual(
+      [
+        'submission_id',
+        'version',
+        'target_space_id',
+        'target_space_name',
+        'name',
+        'media_kind',
+        'size_bytes',
+        'status',
+        'created_at',
+        'reviewed_at',
+        'reject_reason',
+        'invalidated_reason',
+        'document_id',
+        'job_id',
+      ].sort(),
+    );
+
+    const approval = mockKnowledge.listApprovals(bearerOf('minister-li')).items[0]!;
+    expect(Object.keys(approval).sort()).toEqual(
+      [
+        'submission_id',
+        'version',
+        'submitter',
+        'name',
+        'media_kind',
+        'size_bytes',
+        'target_space_id',
+        'target_space_name',
+        'created_at',
+      ].sort(),
+    );
+    expect(approval.submitter).toEqual({
+      id: expect.any(String),
+      display_name: expect.any(String),
+      department: expect.anything(),
+    });
+  });
+
   it('撤回后行保留转已撤回；409 version_conflict 与 state_conflict', async () => {
     const token = bearerOf('zhangsan');
     const upload = await uploadRequest(
@@ -633,7 +678,7 @@ describe('knowledge contract mock：投稿五态与 409', () => {
 describe('knowledge contract mock：查看内容审核范围（§8.4）', () => {
   /** 经对应角色待审列表按名取种子投稿 id（范围即 listApprovals 口径；无范围角色会 403，故用 ops/admin 视角查）。 */
   function pendingIdByName(token: string, name: string): string {
-    const item = mockKnowledge.listApprovals(token).items.find((entry) => entry.file_name === name);
+    const item = mockKnowledge.listApprovals(token).items.find((entry) => entry.name === name);
     if (item === undefined) {
       throw new Error(`pending submission not found: ${name}`);
     }
@@ -687,7 +732,7 @@ describe('knowledge contract mock：部长部门库审核', () => {
     expect(summary.submission_pending).toBeGreaterThan(0);
 
     const list = (await (await fetch(resolveUrl('/v1/approvals/submissions'), { headers: { Authorization: ministerToken } })).json()) as {
-      items: { submission_id: string; version: number; file_name: string }[];
+      items: { submission_id: string; version: number; name: string }[];
     };
     expect(list.items.length).toBe(summary.submission_pending);
     const target = list.items[0];
@@ -702,9 +747,9 @@ describe('knowledge contract mock：部长部门库审核', () => {
 
     // 投稿人侧联动
     const mine = (await (await listSubmissions(submitterToken)).json()) as {
-      items: { file_name: string; status: string }[];
+      items: { name: string; status: string }[];
     };
-    expect(mine.items.find((item) => item.file_name === target.file_name)?.status).toBe('approved');
+    expect(mine.items.find((item) => item.name === target.name)?.status).toBe('approved');
 
     // 铃铛送达（未读数含 submission_approved）
     expect(mockNotifications.unreadCount(submitterToken)).toBeGreaterThan(0);
@@ -737,7 +782,7 @@ describe('knowledge contract mock：部长部门库审核', () => {
     expect(((await reject.json()) as { status: string }).status).toBe('rejected');
 
     const mine = (await (await listSubmissions(submitterToken, 'rejected')).json()) as {
-      items: { file_name: string; status: string; reviewed_at: string | null }[];
+      items: { name: string; status: string; reviewed_at: string | null }[];
     };
     const rejected = mine.items.find((item) => item.status === 'rejected');
     expect(rejected).toBeDefined();
@@ -963,7 +1008,7 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
     const ministerToken = bearerOf('minister-li');
     const submitterToken = bearerOf('zhangsan');
     const list = (await (await fetch(resolveUrl('/v1/approvals/submissions'), { headers: { Authorization: ministerToken } })).json()) as {
-      items: { submission_id: string; version: number; file_name: string }[];
+      items: { submission_id: string; version: number; name: string }[];
     };
     const target = list.items[0];
 
@@ -980,14 +1025,14 @@ describe('knowledge contract mock：审批文档生命周期与通知接收者�
 
     // job 成功前：文档不可检索（部门库文档列表不出现）
     const before = (await (await listDocuments(ministerToken, 'department:d_finance')).json()) as { items: { name: string }[] };
-    expect(before.items.some((item) => item.name === target.file_name)).toBe(false);
+    expect(before.items.some((item) => item.name === target.name)).toBe(false);
 
     // job 成功后：文档可检索
     const jobId = approved.job_id ?? '';
     expect(jobId).toBeTruthy();
     mockKnowledge.advanceJob(ministerToken, jobId, 'succeeded');
     const after = (await (await listDocuments(ministerToken, 'department:d_finance')).json()) as { items: { name: string }[] };
-    expect(after.items.some((item) => item.name === target.file_name)).toBe(true);
+    expect(after.items.some((item) => item.name === target.name)).toBe(true);
   });
 
   it('幂等记录按 actor+endpoint+target 隔离：同 key 不同用户各自独立', async () => {

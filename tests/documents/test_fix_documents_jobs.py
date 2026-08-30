@@ -473,16 +473,16 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         department_id=None,
     )
     admin_items = service.list_approval_submissions(principal=admin)["items"]
-    assert {item["space_id"] for item in admin_items} == {"public", "department:d1"}
+    assert {item["target_space_id"] for item in admin_items} == {"public", "department:d1"}
     # admin 不可见范围外的空间（如 personal/space_1）不会出现在审核列表。
     assert all(
-        item["space_id"] == "public" or item["space_id"].startswith("department:")
+        item["target_space_id"] == "public" or item["target_space_id"].startswith("department:")
         for item in admin_items
     )
     kind_items = service.list_approval_submissions(
         principal=admin, target_kind="department"
     )["items"]
-    assert [item["space_id"] for item in kind_items] == ["department:d1"]
+    assert [item["target_space_id"] for item in kind_items] == ["department:d1"]
 
     ops = AuthPrincipal(
         user_id="ops_1",
@@ -492,7 +492,7 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         department_id=None,
     )
     ops_items = service.list_approval_submissions(principal=ops)["items"]
-    assert [item["space_id"] for item in ops_items] == ["public"]
+    assert [item["target_space_id"] for item in ops_items] == ["public"]
 
     minister = AuthPrincipal(
         user_id="minister_1",
@@ -502,7 +502,7 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         department_id="d1",
     )
     minister_items = service.list_approval_submissions(principal=minister)["items"]
-    assert [item["space_id"] for item in minister_items] == ["department:d1"]
+    assert [item["target_space_id"] for item in minister_items] == ["department:d1"]
 
     with pytest.raises(PlatformError) as error:
         service.list_approval_submissions(principal=submitter)

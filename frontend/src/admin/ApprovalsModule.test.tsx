@@ -175,7 +175,7 @@ function pendingQuotaRequest(token: string, applicantName: string) {
 }
 
 function pendingSubmission(token: string, name: string) {
-  const item = mockKnowledge.listApprovals(token).items.find((submission) => submission.file_name === name);
+  const item = mockKnowledge.listApprovals(token).items.find((submission) => submission.name === name);
   if (item === undefined) {
     throw new Error(`pending submission not found: ${name}`);
   }
