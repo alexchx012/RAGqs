@@ -40,6 +40,7 @@ from .image_vlm import (
 )
 from .models import IndexChunk
 from .prefix_cache import PrefixCacheManager
+from .profiles import document_profile_for_media_kind
 
 # OCR pages below this confidence are flagged low-confidence in the processing
 # receipt; the value is a stable default, not per-document configuration.
@@ -598,7 +599,8 @@ class ContentProcessor:
     ) -> ProcessingOutput:
         raw = content if isinstance(content, bytes) else content.encode("utf-8")
         kind = media_kind.strip().casefold()
-        profile = processing_config_version or request.processing_profile_version or "default"
+        document_profile = document_profile_for_media_kind(media_kind)
+        profile = processing_config_version or document_profile.config_version
         route_adapter = "text"
         local_usage_facts: list[dict[str, Any]] = []
         document_text = ""
@@ -1032,6 +1034,7 @@ class ContentProcessor:
         summary = dict(summary)
         summary["processing_list"] = self._processing_list(request, chunks)
         summary["media_kind"] = media_kind
+        summary["document_profile"] = document_profile.to_mapping()
         summary["route"] = {
             "adapter": route_adapter,
             "media_kind": kind,

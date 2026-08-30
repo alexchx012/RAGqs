@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from app.agents.selfeval import (
     AcceptingSelfEvaluationPort,
+    DeepRetrievalStrategyPlan,
     HeuristicSelfEvaluationPort,
     SelfEvaluationResult,
 )
@@ -64,3 +67,16 @@ def test_result_is_immutable() -> None:
     result = SelfEvaluationResult(acceptable=True)
     assert result.rewritten_query is None
     assert dict(result.diagnosis) == {}
+
+
+def test_deep_retrieval_strategy_plan_accepts_only_first_party_names() -> None:
+    plan = DeepRetrievalStrategyPlan.from_model_content(
+        '{"strategies":["rewrite","hyde","tree","document_summary"]}'
+    )
+
+    assert plan.operations == ("rewrite", "hyde", "tree", "document_summary")
+
+    with pytest.raises(ValueError):
+        DeepRetrievalStrategyPlan.from_model_content(
+            '{"strategies":["rewrite"],"tool_arguments":{"query":"leak"}}'
+        )

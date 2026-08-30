@@ -5,7 +5,7 @@ import json
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import Any
 
 from sqlalchemy import Connection, Engine, select, update
 
@@ -239,7 +239,8 @@ class RetrievalReleaseService:
             "version": profile.version,
             "top_k": profile.top_k,
             "candidate_limit": profile.candidate_limit,
-            "effort": profile.effort,
+            "dense_weight": profile.dense_weight,
+            "sparse_weight": profile.sparse_weight,
             "reranker_release": profile.reranker_release,
             "tokenizer_version": profile.tokenizer_version,
             "score_threshold": profile.score_threshold,
@@ -506,7 +507,9 @@ class RetrievalReleaseService:
             version=str(snapshot["version"]),
             top_k=int(snapshot["top_k"]),
             candidate_limit=int(snapshot["candidate_limit"]),
-            effort=cast(Literal["quick", "think", "deep"], str(snapshot["effort"])),
+            dense_weight=float(snapshot.get("dense_weight", 0.7)),
+            sparse_weight=float(snapshot.get("sparse_weight", 0.3)),
+            effort=profile.effort,
             reranker_release=str(snapshot["reranker_release"]),
             tokenizer_version=str(snapshot.get("tokenizer_version", "default")),
             score_threshold=snapshot.get("score_threshold"),

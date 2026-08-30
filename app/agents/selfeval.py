@@ -14,11 +14,47 @@ internal execution facts.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app.indexing.models import DEEP_RETRIEVAL_STRATEGIES, DeepRetrievalStrategy
+
 MIN_CANDIDATE_CHARS = 1
+
+
+@dataclass(frozen=True, slots=True)
+class DeepRetrievalStrategyPlan:
+    """Validated, tool-argument-free deep retrieval choices from the main model."""
+
+    operations: tuple[DeepRetrievalStrategy, ...]
+
+    def __post_init__(self) -> None:
+        if any(operation not in DEEP_RETRIEVAL_STRATEGIES for operation in self.operations):
+            raise ValueError("deep retrieval strategy is invalid")
+        if len(set(self.operations)) != len(self.operations):
+            raise ValueError("deep retrieval strategies must be unique")
+        granularities = {"sub_chunk", "parent_document", "document_summary"}
+        if sum(operation in granularities for operation in self.operations) > 1:
+            raise ValueError("deep retrieval granularity is ambiguous")
+
+    @classmethod
+    def from_model_content(cls, content: str) -> DeepRetrievalStrategyPlan:
+        """Accept the small JSON contract and deliberately discard model rationale."""
+
+        try:
+            value = json.loads(content)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise ValueError("deep retrieval plan must be JSON") from error
+        if not isinstance(value, Mapping) or set(value) != {"strategies"}:
+            raise ValueError("deep retrieval plan shape is invalid")
+        raw_operations = value["strategies"]
+        if not isinstance(raw_operations, list) or any(
+            not isinstance(operation, str) for operation in raw_operations
+        ):
+            raise ValueError("deep retrieval strategies are invalid")
+        return cls(tuple(raw_operations))
 
 
 @dataclass(frozen=True, slots=True)
