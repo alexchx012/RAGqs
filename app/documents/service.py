@@ -2666,6 +2666,10 @@ class DocumentsService:
         在内容处理前将源版本原始对象复制到新对象标识，实测大小与 SHA-256 并
         与源版本记录比对；校验通过后释放恢复持有引用。复制或校验失败走既有
         失败事务并保留持有引用，人工重放重新复制；复制期间取消则继续持有。
+
+        由 ``DocumentsJobCoordinator.claim`` 在领取携带恢复持有的 job 时于
+        attempt 事务提交后、返回租约前自动调用；调用方必须把此处的异常视为
+        该 job 已进入失败/重试调度（无有效租约返回）。
         """
 
         with self._engine.begin() as connection:
