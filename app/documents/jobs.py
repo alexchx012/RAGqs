@@ -12,6 +12,7 @@ from app.platform.errors import PlatformError
 
 from .domain import DocumentVersionState, IngestionJobState, PublicationState
 from .schema import (
+    document_version_restore_holds_table,
     document_versions_table,
     documents_table,
     ingestion_attempts_table,
@@ -313,17 +314,34 @@ class DocumentsJobCoordinator:
                     .values(result_state="running", updated_at_utc=now)
                 )
                 self._service._refresh_upload_batch(connection, job["upload_batch_id"], now)
-            return JobLease(
-                job_id=str(job["id"]),
-                attempt_id=attempt_id,
-                attempt_number=attempt_number,
-                fencing_token=fencing_token,
-                lease_owner=worker_id,
-                lease_expires_at=expires,
-                publication_id=publication_id,
-                expected_generation_id=str(publication["generation_id"]),
-                authorization_fence=authorization_fence,
+            restore_is_pending = bool(
+                connection.execute(
+                    select(func.count())
+                    .select_from(document_version_restore_holds_table)
+                    .where(document_version_restore_holds_table.c.job_id == job["id"])
+                ).scalar_one()
             )
+        lease = JobLease(
+            job_id=str(job["id"]),
+            attempt_id=attempt_id,
+            attempt_number=attempt_number,
+            fencing_token=fencing_token,
+            lease_owner=worker_id,
+            lease_expires_at=expires,
+            publication_id=publication_id,
+            expected_generation_id=str(publication["generation_id"]),
+            authorization_fence=authorization_fence,
+        )
+        if restore_is_pending:
+            # 恢复 job 的 worker 侧复制步骤：领取后、内容读取前执行（设计
+            # §2.3.2）。复制/校验失败由 copy_restore_source 走既有失败事务并
+            # 保留持有引用，租约随 job 终态失效。
+            self._service.copy_restore_source(
+                job_id=lease.job_id,
+                attempt_id=lease.attempt_id,
+                fencing_token=lease.fencing_token,
+            )
+        return lease
 
     def _reclaim_expired_attempts(self, connection, now: datetime) -> None:
         running_job_ids = (
