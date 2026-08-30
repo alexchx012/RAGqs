@@ -567,7 +567,7 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
     });
     try {
       const blob = await api.getSubmissionContent(approval.submission_id);
-      downloadSubmissionContent(blob, approval.file_name);
+      downloadSubmissionContent(blob, approval.name);
     } catch (error) {
       setRowErrors((errors) => {
         const next = new Map(errors);
@@ -710,11 +710,12 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
               >
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-w450 text-ink-black">{approval.file_name}</p>
+                    <p className="truncate text-[15px] font-w450 text-ink-black">{approval.name}</p>
                     <p className="mt-1 text-caption text-slate-gray">
-                      {approval.submitter_name}
-                      {approval.submitter_department !== null ? ` · ${approval.submitter_department.name}` : ''} ·{' '}
-                      {approval.media_kind} / {formatFileSize(approval.file_size)} ·{' '}
+                      {approval.submitter.display_name}
+                      {approval.submitter.department !== null ? ` · ${approval.submitter.department.name}` : ''} ·{' '}
+                      {approval.media_kind} / {formatFileSize(approval.size_bytes)} ·{' '}
+                      {approval.target_space_name} ·{' '}
                       {copy.settings.knowledge.manage.submittedAt(formatDateTime(approval.created_at))}
                     </p>
                     {rowErrors.get(approval.submission_id) !== undefined && (

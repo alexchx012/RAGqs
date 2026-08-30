@@ -5,6 +5,7 @@ from sqlalchemy import delete, select
 
 from app.documents.schema import (
     ingestion_attempts_table,
+    ingestion_jobs_table,
     knowledge_submissions_table,
     submission_execution_grants_table,
 )
@@ -61,6 +62,180 @@ def test_contribute_upload_creates_private_pending_submission(service, principal
         service.list_submissions(principal=principal)["items"][0]["submission_id"]
         == submission["submission_id"]
     )
+
+
+def test_submission_list_exposes_review_contract_fields_and_grant_ids(service, principal) -> None:
+    submission = service.create_submission(
+        principal=principal,
+        space_id="space_1",
+        file=_upload(),
+        idempotency_key="submission-list-contract-1",
+    )
+    reviewer = principal.__class__(
+        user_id="user_1",
+        auth_session_id="admin-session",
+        username="admin",
+        role="admin",
+        department_id=None,
+    )
+    approved = service.approve_submission(
+        principal=reviewer,
+        submission_id=submission["submission_id"],
+        expected_version=1,
+        idempotency_key="approve-list-contract-1",
+    )
+
+    assert service.list_submissions(principal=principal)["items"] == [
+        {
+            "submission_id": submission["submission_id"],
+            "version": 2,
+            "target_space_id": "space_1",
+            "target_space_name": "space_1",
+            "name": "guide.txt",
+            "media_kind": "text/plain",
+            "size_bytes": 5,
+            "status": "approved",
+            "created_at": "2026-01-01T00:00:00",
+            "reviewed_at": "2026-01-01T00:00:00",
+            "reject_reason": None,
+            "invalidated_reason": None,
+            "document_id": approved["document_id"],
+            "job_id": approved["job_id"],
+        }
+    ]
+
+
+def test_approval_list_uses_nested_submitter_snapshot_contract(service, principal) -> None:
+    class SnapshotIdentity:
+        def __init__(self) -> None:
+            self.display_name = "Alice Snapshot"
+            self.department = {"id": "department_snapshot", "name": "Snapshot Department"}
+            self.department_names = {"department_snapshot": "Snapshot Department"}
+
+        def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
+            del principal, space_id, action, connection
+            return "contribute"
+
+        def list_departments(self, *, actor, status: str) -> list[dict[str, str]]:
+            del actor, status
+            return [
+                {"id": department_id, "name": department_name}
+                for department_id, department_name in self.department_names.items()
+            ]
+
+        def user_response(self, user_id: str) -> dict[str, object]:
+            assert user_id == "user_1"
+            return {
+                "display_name": self.display_name,
+                "department": self.department,
+            }
+
+    identity = SnapshotIdentity()
+    service._identity_access = identity
+    submitter = principal.__class__(
+        user_id="user_1",
+        auth_session_id="submitter-session",
+        username="alice",
+        role="minister",
+        department_id="department_snapshot",
+    )
+    submission = service.create_submission(
+        principal=submitter,
+        space_id="department:department_snapshot",
+        file=_upload(),
+        idempotency_key="submission-approval-contract-1",
+    )
+    identity.display_name = "Alice Renamed"
+    identity.department = {"id": "department_live", "name": "Live Department"}
+    identity.department_names["department_snapshot"] = "Renamed Snapshot Department"
+    reviewer = principal.__class__(
+        user_id="user_1",
+        auth_session_id="admin-session",
+        username="admin",
+        role="admin",
+        department_id=None,
+    )
+
+    assert service.list_approval_submissions(principal=reviewer)["items"] == [
+        {
+            "submission_id": submission["submission_id"],
+            "version": 1,
+            "submitter": {
+                "id": "user_1",
+                "display_name": "Alice Snapshot",
+                "department": {"id": "department_snapshot", "name": "Snapshot Department"},
+            },
+            "name": "guide.txt",
+            "media_kind": "text/plain",
+            "size_bytes": 5,
+            "target_space_id": "department:department_snapshot",
+            "target_space_name": "Renamed Snapshot Department",
+            "created_at": "2026-01-01T00:00:00",
+        }
+    ]
+
+
+def test_submission_creation_and_approval_keep_submitter_snapshots(service, principal) -> None:
+    assert {
+        "submitter_role_snapshot",
+        "submitter_department_snapshot",
+        "submitter_display_name_snapshot",
+        "submitter_department_name_snapshot",
+        "invalidated_reason",
+        "invalidated_at",
+    } <= set(knowledge_submissions_table.c.keys())
+
+    submitter = principal.__class__(
+        user_id="user_1",
+        auth_session_id="submitter-session",
+        username="alice",
+        role="minister",
+        department_id="department_7",
+    )
+    submission = service.create_submission(
+        principal=submitter,
+        space_id="space_1",
+        file=_upload(),
+        idempotency_key="submission-snapshot-1",
+    )
+    reviewer = principal.__class__(
+        user_id="user_1",
+        auth_session_id="admin-session",
+        username="admin",
+        role="admin",
+        department_id=None,
+    )
+    approved = service.approve_submission(
+        principal=reviewer,
+        submission_id=submission["submission_id"],
+        expected_version=1,
+        idempotency_key="approve-snapshot-1",
+    )
+
+    with service._engine.connect() as connection:
+        stored_submission = (
+            connection.execute(
+                select(knowledge_submissions_table).where(
+                    knowledge_submissions_table.c.id == submission["submission_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        job = (
+            connection.execute(
+                select(ingestion_jobs_table).where(ingestion_jobs_table.c.id == approved["job_id"])
+            )
+            .mappings()
+            .one()
+        )
+
+    assert stored_submission["submitter_role_snapshot"] == "minister"
+    assert stored_submission["submitter_department_snapshot"] == "department_7"
+    assert stored_submission["submitter_display_name_snapshot"] == "alice"
+    assert stored_submission["submitter_department_name_snapshot"] is None
+    assert job["quota_role_snapshot"] == "minister"
+    assert job["quota_department_id_snapshot"] == "department_7"
 
 
 def test_contribute_upload_accepts_maximum_key_for_distinct_request_items(
@@ -285,6 +460,29 @@ def test_withdrawal_schedules_cleanup_without_revoking_uncleaned_owner_access(
     with pytest.raises(PlatformError) as error:
         service.submission_content(principal=principal, submission_id=submission["submission_id"])
     assert error.value.code == "submission_content_unavailable"
+    assert error.value.status_code == 404
+
+
+def test_missing_submission_storage_object_is_reported_as_not_found(service, principal) -> None:
+    submission = service.create_submission(
+        principal=principal,
+        space_id="space_1",
+        file=_upload(),
+        idempotency_key="submission-missing-storage-1",
+    )
+    with service._engine.connect() as connection:
+        private_object_key = connection.execute(
+            select(knowledge_submissions_table.c.private_object_key).where(
+                knowledge_submissions_table.c.id == submission["submission_id"]
+            )
+        ).scalar_one()
+    service._object_store.delete(private_object_key)
+
+    with pytest.raises(PlatformError) as error:
+        service.submission_content(principal=principal, submission_id=submission["submission_id"])
+
+    assert error.value.code == "submission_content_unavailable"
+    assert error.value.status_code == 404
 
 
 def test_identity_invalidation_is_sorted_notified_and_scheduled_for_cleanup(
@@ -325,6 +523,22 @@ def test_identity_invalidation_is_sorted_notified_and_scheduled_for_cleanup(
     }
     assert items[invalidated["submission_id"]]["status"] == "invalidated"
     assert items[retained["submission_id"]]["status"] == "pending"
+    assert "invalidated_reason" in items[invalidated["submission_id"]]
+    assert items[invalidated["submission_id"]]["invalidated_reason"] == "identity_authorization_changed"
+    assert items[invalidated["submission_id"]]["reviewed_at"] is None
+    with service._engine.connect() as connection:
+        invalidated_row = (
+            connection.execute(
+                select(knowledge_submissions_table).where(
+                    knowledge_submissions_table.c.id == invalidated["submission_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert invalidated_row["invalidated_at"] is not None
+    assert invalidated_row["review_reason"] is None
+    assert invalidated_row["reviewed_at_utc"] is None
     assert outbox.events == [
         {
             "event_type": "submission_invalidated",

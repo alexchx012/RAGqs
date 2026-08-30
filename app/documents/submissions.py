@@ -207,9 +207,9 @@ class SubmissionService:
                     version=next_version,
                     reviewer_user_id=None,
                     reviewer_role_snapshot=None,
-                    review_reason=command.reason,
+                    invalidated_reason=command.reason,
+                    invalidated_at=now,
                     private_object_cleanup_requested_at_utc=now,
-                    reviewed_at_utc=now,
                     updated_at_utc=now,
                 )
             ).rowcount
@@ -249,9 +249,9 @@ class SubmissionService:
                 version=next_version,
                 reviewer_user_id=actor_id,
                 reviewer_role_snapshot=str(reviewer.role),
-                review_reason=reason,
+                invalidated_reason=reason,
+                invalidated_at=now,
                 private_object_cleanup_requested_at_utc=now,
-                reviewed_at_utc=now,
                 updated_at_utc=now,
             )
         )
@@ -302,6 +302,9 @@ class SubmissionService:
         key = self._service._required_key(idempotency_key)
         info = self._service._file_fingerprint(file)
         actor_id = str(principal.user_id)
+        submitter_display_name, submitter_department_name = self._submission_identity_snapshot(
+            principal
+        )
         endpoint = "documents.submission_create"
         if idempotency_item_index is not None:
             endpoint = f"{endpoint}:{idempotency_item_index}"
@@ -337,6 +340,10 @@ class SubmissionService:
                     id=submission_id,
                     space_id=space_id,
                     submitter_user_id=actor_id,
+                    submitter_role_snapshot=str(principal.role),
+                    submitter_department_snapshot=getattr(principal, "department_id", None),
+                    submitter_display_name_snapshot=submitter_display_name,
+                    submitter_department_name_snapshot=submitter_department_name,
                     version=1,
                     status="pending",
                     file_name=info["filename"],
@@ -356,6 +363,8 @@ class SubmissionService:
                     reviewer_user_id=None,
                     reviewer_role_snapshot=None,
                     review_reason=None,
+                    invalidated_reason=None,
+                    invalidated_at=None,
                     created_at_utc=now,
                     reviewed_at_utc=None,
                     updated_at_utc=now,
@@ -392,8 +401,18 @@ class SubmissionService:
 
     def list(self, *, principal: Any, status: str | None = None) -> dict[str, Any]:
         with self._service._engine.connect() as connection:
-            query = select(knowledge_submissions_table).where(
-                knowledge_submissions_table.c.submitter_user_id == str(principal.user_id)
+            query = (
+                select(
+                    knowledge_submissions_table,
+                    submission_execution_grants_table.c.document_id,
+                    submission_execution_grants_table.c.job_id,
+                )
+                .outerjoin(
+                    submission_execution_grants_table,
+                    submission_execution_grants_table.c.submission_id
+                    == knowledge_submissions_table.c.id,
+                )
+                .where(knowledge_submissions_table.c.submitter_user_id == str(principal.user_id))
             )
             if status is not None:
                 if status not in {"pending", "approved", "rejected", "withdrawn", "invalidated"}:
@@ -406,7 +425,8 @@ class SubmissionService:
                 .mappings()
                 .all()
             )
-        return {"items": [self._public_row(row) for row in rows]}
+        department_names = self._department_names(principal)
+        return {"items": [self._public_row(row, department_names) for row in rows]}
 
     _APPROVAL_TARGET_KINDS = {"public", "department", "personal"}
 
@@ -467,25 +487,34 @@ class SubmissionService:
         department_names = self._department_names(principal)
         items = []
         for row in rows:
-            submitter_name, submitter_department = self._submitter_profile(
-                str(row["submitter_user_id"])
-            )
+            department_id = row["submitter_department_snapshot"]
+            department_name = row["submitter_department_name_snapshot"]
             items.append(
                 {
                     "submission_id": row["id"],
-                    "space_id": row["space_id"],
-                    "space_name": self._space_display_name(str(row["space_id"]), department_names),
                     "version": row["version"],
-                    "status": row["status"],
-                    "file_name": row["file_name"],
+                    "submitter": {
+                        "id": row["submitter_user_id"],
+                        "display_name": str(
+                            row["submitter_display_name_snapshot"] or row["submitter_user_id"]
+                        ),
+                        "department": (
+                            {
+                                "id": str(department_id),
+                                "name": str(department_name or department_id),
+                            }
+                            if department_id is not None
+                            else None
+                        ),
+                    },
+                    "name": row["file_name"],
                     "media_kind": row["media_kind"],
-                    "submitter_name": submitter_name,
-                    "submitter_department": submitter_department,
-                    "file_size": int((row["object_manifest_json"] or {}).get("size_bytes", 0)),
-                    "created_at": row["created_at_utc"].isoformat(),
-                    "reviewed_at": (
-                        row["reviewed_at_utc"].isoformat() if row["reviewed_at_utc"] else None
+                    "size_bytes": int((row["object_manifest_json"] or {}).get("size_bytes", 0)),
+                    "target_space_id": row["space_id"],
+                    "target_space_name": self._space_display_name(
+                        str(row["space_id"]), department_names
                     ),
+                    "created_at": row["created_at_utc"].isoformat(),
                 }
             )
         return {"items": items}
@@ -502,27 +531,32 @@ class SubmissionService:
             str(item["id"]): str(item["name"]) for item in departments if item.get("id") is not None
         }
 
-    def _submitter_profile(self, submitter_user_id: str) -> tuple[str, dict[str, str] | None]:
+    def _submission_identity_snapshot(self, principal: Any) -> tuple[str, str | None]:
+        submitter_user_id = str(principal.user_id)
+        fallback_name = str(getattr(principal, "username", None) or submitter_user_id)
+        department_id = getattr(principal, "department_id", None)
         identity_access = self._service._identity_access
-        if identity_access is not None and hasattr(identity_access, "user_response"):
-            try:
-                user = identity_access.user_response(submitter_user_id)
-            except PlatformError:
-                user = {}
-            name = str(
-                user.get("display_name")
-                or user.get("real_name")
-                or user.get("username")
-                or submitter_user_id
-            )
-            department = user.get("department")
-            if isinstance(department, dict) and department.get("id"):
-                return name, {
-                    "id": str(department["id"]),
-                    "name": str(department.get("name") or department["id"]),
-                }
-            return name, None
-        return submitter_user_id, None
+        if identity_access is None or not hasattr(identity_access, "user_response"):
+            return fallback_name, None
+        try:
+            user = identity_access.user_response(submitter_user_id)
+        except PlatformError:
+            return fallback_name, None
+        display_name = str(
+            user.get("display_name")
+            or user.get("real_name")
+            or user.get("username")
+            or fallback_name
+        )
+        department = user.get("department")
+        if (
+            isinstance(department, dict)
+            and department_id is not None
+            and str(department.get("id")) == str(department_id)
+            and department.get("name") is not None
+        ):
+            return display_name, str(department["name"])
+        return display_name, None
 
     @staticmethod
     def _space_display_name(space_id: str, department_names: dict[str, str]) -> str:
@@ -564,13 +598,13 @@ class SubmissionService:
             )
         if row["private_object_cleaned_at_utc"] is not None:
             raise PlatformError(
-                "submission_content_unavailable", "Submission content is unavailable", {}, 410
+                "submission_content_unavailable", "Submission content is unavailable", {}, 404
             )
         try:
             content, metadata = self._service._object_store.get(str(row["private_object_key"]))
         except (StorageKeyError, KeyError) as exc:
             raise PlatformError(
-                "submission_content_unavailable", "Submission content is unavailable", {}, 410
+                "submission_content_unavailable", "Submission content is unavailable", {}, 404
             ) from exc
         # §9.3 审计事实：待审原文件读取（成功投递后落库，best-effort 不阻断响应）。
         self._service._audit_best_effort(
@@ -842,8 +876,8 @@ class SubmissionService:
                         ocr_low_confidence=False,
                         notification_event_ids_json=[],
                         created_by_user_id=submission["submitter_user_id"],
-                        quota_role_snapshot="user",
-                        quota_department_id_snapshot=None,
+                        quota_role_snapshot=str(submission["submitter_role_snapshot"] or "user"),
+                        quota_department_id_snapshot=submission["submitter_department_snapshot"],
                         quota_exempt_reason="shared_library_submission",
                         created_at_utc=now,
                         updated_at_utc=now,
@@ -1201,15 +1235,25 @@ class SubmissionService:
             and role == "minister"
         )
 
-    @staticmethod
-    def _public_row(row: Any) -> dict[str, Any]:
+    def _public_row(self, row: Any, department_names: dict[str, str]) -> dict[str, Any]:
+        status = str(row["status"])
         return {
             "submission_id": row["id"],
-            "space_id": row["space_id"],
             "version": row["version"],
-            "status": row["status"],
-            "file_name": row["file_name"],
+            "target_space_id": row["space_id"],
+            "target_space_name": self._space_display_name(str(row["space_id"]), department_names),
+            "name": row["file_name"],
             "media_kind": row["media_kind"],
+            "size_bytes": int((row["object_manifest_json"] or {}).get("size_bytes", 0)),
+            "status": status,
             "created_at": row["created_at_utc"].isoformat(),
-            "reviewed_at": row["reviewed_at_utc"].isoformat() if row["reviewed_at_utc"] else None,
+            "reviewed_at": (
+                row["reviewed_at_utc"].isoformat()
+                if status in {"approved", "rejected"} and row["reviewed_at_utc"]
+                else None
+            ),
+            "reject_reason": row["review_reason"] if status == "rejected" else None,
+            "invalidated_reason": row["invalidated_reason"] if status == "invalidated" else None,
+            "document_id": row["document_id"],
+            "job_id": row["job_id"],
         }
