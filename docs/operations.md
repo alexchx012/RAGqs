@@ -158,10 +158,10 @@ When correctness is uncertain, preserve PostgreSQL and object storage, stop deri
 
 **Trigger:** a generation execution has a provider call in `dispatching` or `unknown` after a connection failure, timeout, or worker restart.
 
-1. The worker enters `provider_reconciling` after a transport failure or restart when the provider outcome is unknown. Reconciliation uses the immutable `provider_call_id` and idempotency key through the configured provider-status adapter.
-2. A confirmed completed call is recovered exactly once from the provider usage record and resumes publication from the persisted checkpoint. A confirmed not-sent call is recorded as not sent and may be retried at the same stage. An outcome that remains unknown is kept reconciling until the persisted reconciliation deadline.
-3. If the provider adapter cannot confirm a result, record the reconciliation reason and keep the provider ledger row recoverable; do not publish a user-visible answer or debit usage. Manual provider forensics may inform incident review, but must not bypass the persisted reconciliation protocol.
-4. At deadline expiry, the worker durably records `stop_requested`, then terminalizes the execution as `stopped` with `client_disconnected` and emits one terminal event. The normal failed-generation retry flow remains available where policy permits.
+1. The worker records a transport-uncertain execution as `provider_reconciling` and keeps the immutable `provider_call_id`, request fingerprint, generation `request_id`, and deadline. Provider confirmation runs outside database transactions; the decision is applied in a short follow-up transaction.
+2. A confirmed completed call reuses the provider result and measurement, completing the usage ledger before the persisted generation resumes publication. A confirmed not-sent call is marked `not_sent` and requeued at the same generation. A still-unknown call remains eligible for the next reconciliation pass.
+3. Optional manual forensics: query the provider's supported request-status API, provider logs, or billing record using the immutable `provider_call_id` and idempotency key. Findings must agree with the configured reconciliation adapter before mutating persisted state.
+4. If the result remains unknown at the deadline, the execution fails with `provider_result_unknown`, emits one terminal SSE `error` event carrying the persisted generation `request_id`, and does not create a new user-visible generation automatically.
 
 **Verify:** the generation has at most one terminal event, the user can use the normal failed-generation retry flow if permitted, and the usage ledger contains the original outbound attempt exactly once.
 
