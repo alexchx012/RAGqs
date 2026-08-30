@@ -544,6 +544,21 @@ describe('投稿审核（§8.4–8.5）', () => {
     expect(screen.getByText('行业研报汇总.pdf')).toBeInTheDocument();
   });
 
+  it('409 submitter_deleted（已注销投稿人种子）：同语义刷新列表（失效行消失）', async () => {
+    const token = loginToken('ops-wang');
+    await renderApprovals(
+      <ApprovalSubmissionsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    await user.click(within(rowOf('已注销账号材料.pdf')).getByRole('button', { name: copyManage.approve }));
+
+    await waitFor(() => expect(screen.queryByText('已注销账号材料.pdf')).not.toBeInTheDocument());
+    expect(screen.getByText('行业研报汇总.pdf')).toBeInTheDocument();
+  });
+
   it('409 version_conflict：行内提示 + 刷新列表', async () => {
     const token = loginToken('ops-wang');
     let conflict = true;

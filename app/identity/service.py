@@ -3069,6 +3069,18 @@ class IdentityAccessService:
         with self._engine.connect() as connection:
             return self._user_response_for_id(connection, user_id)
 
+    def account_lifecycle_status(self, user_id: str) -> str:
+        """Raw lifecycle status (`active`/`pending_delete`/`deleted`) for cross-domain
+        precondition checks that must distinguish the two non-active states;
+        `user_response` rejects every non-active account without exposing which."""
+        with self._engine.connect() as connection:
+            status = connection.execute(
+                select(identity_user_table.c.lifecycle_status).where(
+                    identity_user_table.c.id == user_id
+                )
+            ).scalar_one_or_none()
+        return str(status) if status is not None else "deleted"
+
     def list_sessions(
         self,
         *,

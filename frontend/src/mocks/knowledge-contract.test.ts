@@ -1074,7 +1074,7 @@ describe('knowledge contract mock：单文件上传错误码与恢复 409（fix-
     expect(error.error.code).toBe('unsupported_media_type');
   });
 
-  it('上传新版本：声明类型与内容不符返回 422 upload_content_type_mismatch envelope', async () => {
+  it('上传新版本：扩展名与声明媒体类型不符返回 422 upload_media_mismatch envelope', async () => {
     const token = bearerOf('zhangsan');
     const docs = (await (await listDocuments(token, 'personal:u_user')).json()) as {
       items: { id: string; version: number }[];
@@ -1089,7 +1089,7 @@ describe('knowledge contract mock：单文件上传错误码与恢复 409（fix-
     );
     expect(response.status).toBe(422);
     const error = (await response.json()) as { error: { code: string } };
-    expect(error.error.code).toBe('upload_content_type_mismatch');
+    expect(error.error.code).toBe('upload_media_mismatch');
   });
 
   it('恢复已清理版本：409 document_version_purged（区别于内容读取 410）', async () => {

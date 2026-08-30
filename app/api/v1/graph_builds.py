@@ -21,9 +21,19 @@ from app.platform.errors import PlatformError
 from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
-from .ops import require_ops
+from .ops import require_ops_role
 
 router = APIRouter(prefix="/ops/graph-builds", tags=["ops"])
+
+
+def require_graph_builds_ops(principal: AuthPrincipal) -> None:
+    """Graph-build control plane keeps a dedicated 403 code (后端设计 §2.6.1)."""
+    require_ops_role(
+        principal,
+        error_code="graph_build_forbidden",
+        message="Graph build ops access is required",
+    )
+
 
 # The operation-id contract is deliberately stricter than the platform-wide
 # idempotency limit: gb_create_<key> and gb_cancel_<key> remain within the
@@ -79,7 +89,7 @@ def graph_build_current(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     request: Request,
 ) -> dict[str, object]:
-    require_ops(principal)
+    require_graph_builds_ops(principal)
     return graph_service(request).current()
 
 
@@ -90,7 +100,7 @@ def graph_build_create(
     request: Request,
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
-    require_ops(principal)
+    require_graph_builds_ops(principal)
     key = _graph_idempotency_key(idempotency_key)
     view = graph_service(request).create(
         initiator_identity_id=principal.user_id,
@@ -111,7 +121,7 @@ def graph_build_cancel(
     request: Request,
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
-    require_ops(principal)
+    require_graph_builds_ops(principal)
     key = _graph_idempotency_key(idempotency_key)
     view = graph_service(request).cancel(
         actor_identity_id=principal.user_id,

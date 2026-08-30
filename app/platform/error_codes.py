@@ -9,7 +9,7 @@ from __future__ import annotations
 
 REGISTERED_ERROR_CODES = frozenset(
     """
-    ab_pair_expired ab_pair_not_found ab_vote_already_submitted ab_vote_forbidden
+    ab_pair_expired ab_pair_not_found ab_vote_already_submitted
     account_already_deleted account_archive_failed account_archive_pending
     account_archive_restore_required account_archive_verification_failed
     account_cleanup_target_failed account_not_deletable account_retirement_unconfirmed
@@ -46,13 +46,15 @@ REGISTERED_ERROR_CODES = frozenset(
     evaluation_judge_transport_error evaluation_judge_unavailable evaluation_leaderboard_forbidden
     evaluation_lease_lost evaluation_not_eligible evaluation_pair_expiry_unavailable
     evaluation_policy_invalid evaluation_retrieval_unavailable evaluation_run_forbidden
-    evaluation_space_unavailable event_id_conflict feedback_already_submitted feedback_not_available
+    evaluation_space_unavailable event_id_conflict execution_recovery_exhausted
+    feedback_already_submitted feedback_not_available
     fence_conflict forbidden forbidden_target gc_blocked gc_operation_not_found
     generation_already_terminal generation_conflict generation_deadline_exceeded
     generation_not_found generation_not_retryable generation_not_writable
     generation_revocation_conflict generation_revocation_unavailable
     generation_revocation_unverified generation_source_conflict generation_source_missing
-    generation_state_conflict graph_build_estimate_unavailable graph_build_in_progress
+    generation_state_conflict graph_build_estimate_unavailable graph_build_forbidden
+    graph_build_in_progress
     graph_build_lease_lost graph_build_not_cancellable graph_build_not_found
     graph_build_stage_unavailable graph_build_unavailable graph_cleanup_failed
     graph_component_cleanup_required graph_component_not_found graph_provider_call_failed
@@ -98,11 +100,11 @@ REGISTERED_ERROR_CODES = frozenset(
     source_scope_changed space_action_forbidden space_not_found sparse_analyzer_unavailable
     sparse_config_invalid startup_error streaming_response_required structured_parse_failed
     submission_already_reviewed submission_content_forbidden submission_content_unavailable
-    submission_forbidden submission_grant_invalid submission_not_deletable submission_not_found
-    submission_not_pending submission_scope_changed submission_version_conflict
-    submitter_pending_delete table_parse_failed too_many_attempts tree_provider_invalid
+    submission_forbidden submission_grant_invalid submission_not_found
+    submission_scope_changed submission_state_conflict
+    submitter_deleted submitter_pending_delete table_parse_failed too_many_attempts tree_provider_invalid
     unsupported_event_type unsupported_media_type unsupported_schema_version upload_batch_not_found
-    upload_content_type_mismatch upload_too_large usage_event_not_found user_pending_delete
+    upload_content_type_mismatch upload_media_mismatch upload_too_large usage_event_not_found user_pending_delete
     username_exists validation_error vector_config_invalid version_conflict visibility_unavailable
     wrong_old_password bad_request conflict http_error rate_limited internal_error
     """.split()

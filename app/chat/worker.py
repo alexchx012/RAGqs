@@ -582,18 +582,32 @@ class ChatGenerationWorker:
                     chat_generation_table.c.message_id,
                     chat_generation_table.c.status,
                     chat_generation_table.c.request_id,
+                    chat_generation_table.c.absolute_deadline_at_utc,
                 ).where(chat_generation_table.c.id == generation_id)
             )
             .mappings()
             .one()
         )
         if str(generation["status"]) in {"running", "stop_requested"}:
+            # The two unrecoverable shapes keep distinct codes (后端设计 §2.5):
+            # the absolute deadline reached vs recovery quota exhausted early.
+            deadline_passed = _utc(generation["absolute_deadline_at_utc"]) <= now
+            error_code = (
+                "generation_deadline_exceeded"
+                if deadline_passed
+                else "execution_recovery_exhausted"
+            )
+            error_message = (
+                "The generation deadline expired before further execution"
+                if deadline_passed
+                else "The generation could not be recovered before its deadline"
+            )
             connection.execute(
                 update(chat_generation_table)
                 .where(chat_generation_table.c.id == generation_id)
                 .values(
                     status="failed",
-                    last_error_code="execution_recovery_exhausted",
+                    last_error_code=error_code,
                     updated_at_utc=now,
                 )
             )
@@ -608,8 +622,8 @@ class ChatGenerationWorker:
                 generation_id=generation_id,
                 event_type="error",
                 data={
-                    "code": "execution_recovery_exhausted",
-                    "message": "The generation could not be recovered before its deadline",
+                    "code": error_code,
+                    "message": error_message,
                     "details": {},
                     "request_id": str(generation.get("request_id") or "req_system"),
                 },

@@ -140,9 +140,18 @@ class SubmissionService:
             try:
                 submitter = identity_access.user_response(str(submission["submitter_user_id"]))
             except PlatformError:
-                submitter = {"lifecycle_status": "deleted"}
-            if submitter.get("lifecycle_status") != "active":
-                return existing_claim, "submitter_not_active"
+                # user_response rejects every non-active account without exposing
+                # which; the review split needs the actual lifecycle state
+                # (后端设计 §6.4：submitter_pending_delete / submitter_deleted)。
+                lifecycle_reader = getattr(identity_access, "account_lifecycle_status", None)
+                lifecycle_status = (
+                    lifecycle_reader(str(submission["submitter_user_id"]))
+                    if callable(lifecycle_reader)
+                    else "deleted"
+                )
+                if lifecycle_status == "pending_delete":
+                    return existing_claim, "submitter_pending_delete"
+                return existing_claim, "submitter_deleted"
             if not self._can_contribute(
                 user_id=str(submission["submitter_user_id"]),
                 role=str(submitter.get("role", "")),
@@ -728,9 +737,9 @@ class SubmissionService:
                     key=key,
                     fingerprint=fingerprint,
                 )
-                if invalid_reason == "submitter_not_active":
+                if invalid_reason in {"submitter_pending_delete", "submitter_deleted"}:
                     deferred_conflict = PlatformError(
-                        "submitter_pending_delete",
+                        invalid_reason,
                         "The submitter account is no longer active",
                         {"version": int(invalidated["version"])},
                         409,
@@ -1072,11 +1081,17 @@ class SubmissionService:
                 )
             if int(row["version"]) != expected_version:
                 raise PlatformError(
-                    "submission_version_conflict", "Submission version does not match", {}, 409
+                    "version_conflict",
+                    "Submission version does not match",
+                    {"current_version": int(row["version"])},
+                    409,
                 )
             if row["status"] not in {"rejected", "withdrawn", "invalidated"}:
                 raise PlatformError(
-                    "submission_not_deletable", "Submission cannot be deleted", {}, 409
+                    "submission_state_conflict",
+                    "Submission cannot be deleted",
+                    {"status": str(row["status"])},
+                    409,
                 )
             connection.execute(
                 delete(knowledge_submissions_table).where(
@@ -1145,8 +1160,20 @@ class SubmissionService:
             )
             if replay is not None:
                 return replay
-            if int(row["version"]) != expected_version or row["status"] != "pending":
-                raise PlatformError("submission_not_pending", "Submission is not pending", {}, 409)
+            if int(row["version"]) != expected_version:
+                raise PlatformError(
+                    "version_conflict",
+                    "Submission version does not match",
+                    {"current_version": int(row["version"])},
+                    409,
+                )
+            if row["status"] != "pending":
+                raise PlatformError(
+                    "submission_state_conflict",
+                    "Submission is not pending",
+                    {"status": str(row["status"])},
+                    409,
+                )
             now = self._service._current_time()
             connection.execute(
                 update(knowledge_submissions_table)

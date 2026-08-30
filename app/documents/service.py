@@ -1555,7 +1555,7 @@ class DocumentsService:
         )
 
     def _validate_upload_media(self, filename: str, media_kind: str) -> None:
-        """Single-file upload contract: unsupported media -> 415, declared/content
+        """Single-file upload contract: unsupported media -> 415, declared/extension
         mismatch -> 422 (mirrors the frontend upload contract)."""
         declared = media_kind.strip()
         by_type = _UPLOAD_MEDIA_KINDS_BY_TYPE.get(declared.lower())
@@ -1563,8 +1563,8 @@ class DocumentsService:
         by_extension = _UPLOAD_MEDIA_KINDS_BY_EXTENSION.get(extension)
         if by_type is not None and by_extension is not None and by_type != by_extension:
             raise PlatformError(
-                "upload_content_type_mismatch",
-                "File content does not match the declared media type",
+                "upload_media_mismatch",
+                "File extension does not match the declared media type",
                 {"file": filename},
                 422,
             )

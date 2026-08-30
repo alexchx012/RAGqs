@@ -667,3 +667,73 @@ def test_approved_submission_event_carries_document_and_job_ids(service, princip
             "reason": None,
         }
     ]
+
+
+class _InactiveSubmitterIdentity:
+    """user_response 拒绝所有非 active 账号；审核拆分依赖 account_lifecycle_status
+    区分 pending_delete 与 deleted（后端设计 §6.4）。"""
+
+    def __init__(self, lifecycle_status: str) -> None:
+        self.lifecycle_status = lifecycle_status
+
+    def user_response(self, user_id: str) -> dict[str, object]:
+        raise PlatformError("authentication_required", "The account is not active", {}, 401)
+
+    def account_lifecycle_status(self, user_id: str) -> str:
+        del user_id
+        return self.lifecycle_status
+
+
+def _assert_invalidated_with_reason(service, submission_id: str, reason: str) -> None:
+    with service._engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(knowledge_submissions_table).where(
+                    knowledge_submissions_table.c.id == submission_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["status"] == "invalidated"
+    assert row["invalidated_reason"] == reason
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_status", "expected_code"),
+    [
+        ("pending_delete", "submitter_pending_delete"),
+        ("deleted", "submitter_deleted"),
+    ],
+)
+def test_review_splits_submitter_account_conflicts_by_lifecycle(
+    service, principal, lifecycle_status, expected_code
+) -> None:
+    """账号 pending_delete 与 deleted 分别返回专用 409，invalidated_reason
+    落库对应机器原因（后端设计 §6.4）。"""
+    submission = service.create_submission(
+        principal=principal,
+        space_id="space_1",
+        file=_upload(),
+        idempotency_key=f"submitter-split-{lifecycle_status}",
+    )
+    service._identity_access = _InactiveSubmitterIdentity(lifecycle_status)
+    reviewer = principal.__class__(
+        user_id="admin_1",
+        auth_session_id="admin-session",
+        username="admin",
+        role="admin",
+        department_id=None,
+    )
+
+    with pytest.raises(PlatformError) as error:
+        service.approve_submission(
+            principal=reviewer,
+            submission_id=submission["submission_id"],
+            expected_version=submission["version"],
+            idempotency_key=f"submitter-split-approve-{lifecycle_status}",
+        )
+    assert error.value.code == expected_code
+    assert error.value.status_code == 409
+    assert error.value.details == {"version": submission["version"] + 1}
+    _assert_invalidated_with_reason(service, submission["submission_id"], expected_code)

@@ -702,7 +702,7 @@ def test_ab_vote_by_non_owner_returns_403_and_missing_message_keeps_404() -> Non
         headers={**bob_headers, "Idempotency-Key": "bob-vote"},
     )
     assert forbidden.status_code == 403
-    assert forbidden.json()["error"]["code"] == "ab_vote_forbidden"
+    assert forbidden.json()["error"]["code"] == "forbidden"
     # An authorized voter referencing a nonexistent message keeps the
     # existing resource semantics (A1).
     missing = env["client"].post(
@@ -787,7 +787,7 @@ def test_ab_pair_is_space_isolated_and_cross_space_vote_is_forbidden() -> None:
             request=AbVoteRequest(pair_id=pair_id, choice="0"),
             idempotency_key="cross-space-vote",
         )
-    assert raised.value.code == "ab_vote_forbidden"
+    assert raised.value.code == "forbidden"
     assert raised.value.status_code == 403
     # No vote landed for the inaccessible space (A3).
     with env["engine"].connect() as connection:
