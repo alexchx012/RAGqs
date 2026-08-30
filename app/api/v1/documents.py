@@ -14,9 +14,10 @@ from app.documents.preview import (
     is_pdf_preview_content,
     parse_single_byte_range,
 )
-from app.documents.service import DocumentsService, DocumentUpload
+from app.documents.service import DocumentsService, DocumentUpload, RejectedUpload
 from app.documents.uploads import read_limited_upload
 from app.identity.service import AuthPrincipal
+from app.platform.errors import PlatformError
 from app.platform.http_contract import validate_idempotency_key
 
 from .dependencies import current_principal
@@ -91,7 +92,30 @@ async def upload_documents(
 ) -> dict[str, object]:
     service = document_service(request)
     key = _key(idempotency_key)
-    uploads = [await _upload(file, max_bytes=service.max_upload_bytes) for file in files]
+    if len(files) > service.max_files_per_request:
+        raise PlatformError(
+            "validation_error",
+            "Too many files in one request",
+            {"max_files_per_request": service.max_files_per_request},
+            422,
+        )
+    uploads: list[DocumentUpload | RejectedUpload] = []
+    consumed = 0
+    for file in files:
+        try:
+            upload = await _upload(file, max_bytes=service.max_upload_bytes)
+        except PlatformError as error:
+            uploads.append(RejectedUpload(filename=file.filename or "", error=error))
+            continue
+        consumed += len(upload.content)
+        if consumed > service.max_request_bytes:
+            raise PlatformError(
+                "upload_too_large",
+                "Request exceeds the aggregate upload size limit",
+                {"max_request_bytes": service.max_request_bytes},
+                413,
+            )
+        uploads.append(upload)
     return await anyio.to_thread.run_sync(
         lambda: service.create_upload(
             principal=principal, space_id=space_id, files=uploads, idempotency_key=key

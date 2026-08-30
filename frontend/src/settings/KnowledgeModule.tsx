@@ -49,7 +49,7 @@ function pendingUploadCount(sessionKey: string | null): number {
   if (entry === null) {
     return 0;
   }
-  return entry.response.items.filter((item) => 'filename' in item && item.status === 'pending').length;
+  return entry.response.items.filter((item) => item.accepted && item.status === 'pending').length;
 }
 
 /** 个人库 = kind=personal && permission=manage（消费服务端返回项，不拼 id）。 */

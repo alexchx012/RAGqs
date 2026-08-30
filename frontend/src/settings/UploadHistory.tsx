@@ -23,8 +23,8 @@ export function UploadHistorySection({ sessionKey }: { readonly sessionKey: stri
   if (entry === null) {
     return null;
   }
-  const acceptedCount = entry.response.items.length;
-  const failedCount = 0;
+  const acceptedCount = entry.response.items.filter((item) => item.accepted).length;
+  const failedCount = entry.response.items.length - acceptedCount;
 
   return (
     <section aria-label={copy.settings.knowledge.uploads.historyTitle} className="rounded-[var(--radius-elevatedcards)] border border-[var(--color-hairline)] p-4">
@@ -56,27 +56,37 @@ function formatTime(value: string): string {
 }
 
 function UploadHistoryItemRow({ item }: { item: UploadItem }) {
-  if ('filename' in item) {
-    if (item.deduplicated === true) {
-      return (
-        <li className="text-caption text-slate-gray">
-          {`${item.filename} · ${copy.settings.knowledge.upload.deduplicated}`}
-        </li>
-      );
-    }
+  if (!item.accepted) {
     return (
-      <li className="text-caption text-success">
-        {`${item.filename} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : item.status}`}
+      <li className="text-caption text-danger">
+        {`${item.name} · ${copy.settings.knowledge.upload.itemError(item.error.code)}`}
+      </li>
+    );
+  }
+  if ('submission_id' in item) {
+    return (
+      <li className="text-caption text-slate-gray">
+        {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : item.status}`}
+      </li>
+    );
+  }
+  if (item.deduplicated) {
+    return (
+      <li className="text-caption text-slate-gray">
+        {`${item.name} · ${copy.settings.knowledge.upload.deduplicated}`}
       </li>
     );
   }
   return (
-    <li className="text-caption text-slate-gray">
-      {`${item.submission_id} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : item.status}`}
+    <li className="text-caption text-success">
+      {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : item.status}`}
     </li>
   );
 }
 
 function uploadItemKey(item: UploadItem): string {
-  return 'filename' in item ? item.filename : item.submission_id;
+  if (!item.accepted) {
+    return `rejected:${item.name}`;
+  }
+  return 'submission_id' in item ? item.submission_id : item.document_id;
 }

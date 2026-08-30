@@ -371,6 +371,8 @@ class SubmissionService:
                 )
             )
             response = {
+                "accepted": True,
+                "name": file.filename,
                 "submission_id": submission_id,
                 "version": 1,
                 "status": "pending",

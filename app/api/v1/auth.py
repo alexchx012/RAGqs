@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.documents.uploads import read_limited_upload
 from app.identity.service import (
     AuthPrincipal,
     AuthResult,
@@ -17,6 +18,8 @@ from app.platform.config import PlatformSettings
 from .dependencies import current_principal, identity_access_service, session_action_principal
 
 router = APIRouter(tags=["auth"])
+
+_AVATAR_MAX_BYTES = 5 * 1024 * 1024
 
 
 class LoginRequest(BaseModel):
@@ -200,9 +203,11 @@ async def replace_avatar(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     service: Annotated[IdentityAccessService, Depends(identity_access_service)],
 ) -> dict[str, str]:
+    # 入口分块限读：超 5 MiB 立即终止并返回 413 upload_too_large；
+    # 服务层 5 MiB 校验保留为边界兜底，不再承担入口资源保护。
     return service.replace_avatar(
         user_id=principal.user_id,
-        content=await file.read(),
+        content=await read_limited_upload(file, max_bytes=_AVATAR_MAX_BYTES),
         content_type=file.content_type or "application/octet-stream",
     )
 

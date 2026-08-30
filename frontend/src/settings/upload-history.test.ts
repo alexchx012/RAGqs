@@ -7,7 +7,9 @@ function entry(name: string) {
       upload_batch_id: 'ub_1',
       items: [
         {
-          filename: name,
+          accepted: true as const,
+          name,
+          space_id: 'personal:u_user',
           document_id: 'doc_1',
           document_version_id: 'ver_1',
           job_id: 'job_1',
@@ -27,8 +29,8 @@ describe('upload-history（review A2：按 auth session 隔离）', () => {
     clearUploadHistory();
     expect(recordUploadHistory(entry('A'), 'sess1:u_user')).toBe(true);
     expect(recordUploadHistory(entry('B'), 'sess2:u_user')).toBe(true);
-    expect(readUploadHistory('sess1:u_user')?.response.items[0]).toMatchObject({ filename: 'A' });
-    expect(readUploadHistory('sess2:u_user')?.response.items[0]).toMatchObject({ filename: 'B' });
+    expect(readUploadHistory('sess1:u_user')?.response.items[0]).toMatchObject({ name: 'A' });
+    expect(readUploadHistory('sess2:u_user')?.response.items[0]).toMatchObject({ name: 'B' });
     // 未认证（null）写入被拒
     expect(recordUploadHistory(entry('C'), null)).toBe(false);
     expect(readUploadHistory(null)).toBeNull();
@@ -43,7 +45,7 @@ describe('upload-history（review A2：按 auth session 隔离）', () => {
     expect(recordUploadHistory(entry('new'), 'sessB:u_user')).toBe(true);
     expect(listener).toHaveBeenCalledTimes(2);
     // 会话 A 的槽位不被 B 覆盖
-    expect(readUploadHistory('sessA:u_user')?.response.items[0]).toMatchObject({ filename: 'old' });
+    expect(readUploadHistory('sessA:u_user')?.response.items[0]).toMatchObject({ name: 'old' });
     unsubscribe();
   });
 });
