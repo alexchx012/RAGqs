@@ -211,11 +211,17 @@ def _budget_notice_payload(notice: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class RetrievalRequest:
-    """Keeps one generation reference lease for a request and its citations."""
+    """Keeps one generation reference lease for a request and its citations.
+
+    Document read leases acquired by the visibility gate during search and
+    citation resolution are tracked here and released when the request exits,
+    so retrieval never waits for the lease TTL to stop blocking purge.
+    """
 
     def __init__(self, service: RetrievalService, lease: GenerationReferenceLease) -> None:
         self._service = service
         self._lease = lease
+        self._document_leases: list[Mapping[str, Any]] = []
 
     @property
     def generation_id(self) -> str:
@@ -231,6 +237,13 @@ class RetrievalRequest:
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         del exc_type, exc, traceback
         self._service._generation.release_reference_lease(self._lease.lease_id)
+        self._release_document_leases()
+
+    def _release_document_leases(self) -> None:
+        leases, self._document_leases = self._document_leases, []
+        releaser = getattr(self._service._visibility, "release_read_leases", None)
+        if leases and callable(releaser):
+            releaser(leases)
 
     def search(
         self,
@@ -248,6 +261,7 @@ class RetrievalRequest:
             narrowing_scope=narrowing_scope,
             profile=profile,
             budget=budget,
+            document_leases=self._document_leases,
         )
 
     def resolve_citation(self, hit: RetrievalHit, *, principal: Any = None) -> Mapping[str, Any]:
@@ -255,7 +269,12 @@ class RetrievalRequest:
             self._service._visibility,
             self._service._generation,
             identity_access=self._service._identity,
-        ).resolve(hit, principal=principal, generation_lease=self._lease)
+        ).resolve(
+            hit,
+            principal=principal,
+            generation_lease=self._lease,
+            collect_leases=self._document_leases,
+        )
 
 
 class NoopReranker:
@@ -435,12 +454,25 @@ class RetrievalService:
         return RetrievalScope.from_value(getter(principal))
 
     def _visibility_fact(
-        self, candidate: IndexChunk, principal: Any
+        self,
+        candidate: IndexChunk,
+        principal: Any,
+        *,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> DocumentVisibilityFact | None:
         if self._visibility is None:
             return None
         if callable(self._visibility):
-            return _fact(self._visibility(candidate, principal), candidate)
+            raw = self._visibility(candidate, principal)
+        else:
+            raw = self._get_visibility_facts_port()(candidate)
+        if collect_leases is not None and isinstance(raw, Mapping):
+            lease = raw.get("read_lease")
+            if isinstance(lease, Mapping):
+                collect_leases.append(dict(lease))
+        return _fact(raw, candidate)
+
+    def _get_visibility_facts_port(self) -> Any:
         getter = getattr(self._visibility, "get_visibility_fact", None)
         if getter is None:
             getter = getattr(self._visibility, "visibility_fact", None)
@@ -448,25 +480,37 @@ class RetrievalService:
             raise PlatformError(
                 "visibility_unavailable", "Document visibility facts are unavailable", {}, 503
             )
-        return _fact(getter(candidate, principal), candidate)
+        return getter
 
     def _visibility_facts(
-        self, candidates: Sequence[IndexChunk], principal: Any
+        self,
+        candidates: Sequence[IndexChunk],
+        principal: Any,
+        *,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> Mapping[tuple[str, str], DocumentVisibilityFact | None]:
         if not candidates:
             return {}
         if self._visibility is None:
             return {}
         if callable(self._visibility):
-            return {
-                (candidate.space_id, candidate.document_id): _fact(
-                    self._visibility(candidate, principal), candidate
-                )
-                for candidate in candidates
-            }
+            facts: dict[tuple[str, str], DocumentVisibilityFact | None] = {}
+            for candidate in candidates:
+                raw = self._visibility(candidate, principal)
+                if collect_leases is not None and isinstance(raw, Mapping):
+                    lease = raw.get("read_lease")
+                    if isinstance(lease, Mapping):
+                        collect_leases.append(dict(lease))
+                facts[(candidate.space_id, candidate.document_id)] = _fact(raw, candidate)
+            return facts
         getter = getattr(self._visibility, "get_visibility_facts", None)
         if callable(getter):
             values = getter(candidates, principal)
+            for raw in values.values():
+                if collect_leases is not None and isinstance(raw, Mapping):
+                    lease = raw.get("read_lease")
+                    if isinstance(lease, Mapping):
+                        collect_leases.append(dict(lease))
             return {
                 (candidate.space_id, candidate.document_id): _fact(
                     values.get((candidate.space_id, candidate.document_id)), candidate
@@ -474,7 +518,9 @@ class RetrievalService:
                 for candidate in candidates
             }
         return {
-            (candidate.space_id, candidate.document_id): self._visibility_fact(candidate, principal)
+            (candidate.space_id, candidate.document_id): self._visibility_fact(
+                candidate, principal, collect_leases=collect_leases
+            )
             for candidate in candidates
         }
 
@@ -580,6 +626,7 @@ class RetrievalService:
         quota: int,
         principal: Any,
         metadata_prefilter: MetadataPrefilter | None = None,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> list[RetrievalHit]:
         hits: list[RetrievalHit] = []
         cursor: str | None = None
@@ -608,7 +655,9 @@ class RetrievalService:
                 break
             candidates = tuple(_provider_candidate(raw) for raw in page.items)
             facts = self._visibility_facts(
-                tuple(candidate for candidate, _ in candidates), principal
+                tuple(candidate for candidate, _ in candidates),
+                principal,
+                collect_leases=collect_leases,
             )
             rejected = 0
             for candidate, provider_score in candidates:
@@ -657,6 +706,7 @@ class RetrievalService:
         profile: RetrievalProfile,
         principal: Any,
         metadata_prefilter: MetadataPrefilter | None,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> tuple[list[RetrievalHit], list[Mapping[str, Any]]]:
         kinds = tuple(
             _backend_kind(provider, fallback="dense" if index == 0 else "sparse")
@@ -681,6 +731,7 @@ class RetrievalService:
                     quota=quotas[index],
                     principal=principal,
                     metadata_prefilter=metadata_prefilter,
+                    collect_leases=collect_leases,
                 )
             except Exception as error:
                 payload = error
@@ -772,6 +823,7 @@ class RetrievalService:
         narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
         profile: RetrievalProfile | None = None,
         budget: RAGOperationBudgetPort | None = None,
+        document_leases: list[Mapping[str, Any]] | None = None,
     ) -> RetrievalResult:
         if not isinstance(query, str) or not query.strip():
             raise PlatformError("validation_error", "query is required", {}, 422)
@@ -818,6 +870,7 @@ class RetrievalService:
                 selected,
                 principal,
                 route.metadata_prefilter,
+                collect_leases=document_leases,
             )
             degradations.extend(query_degradations)
             if budget is not None:
@@ -861,7 +914,11 @@ class RetrievalService:
         # Re-read lifecycle/publication/ACL facts after reranking. A document can
         # be retired while an upstream provider or cross-encoder is running.
         if self._visibility is not None and reranked:
-            final_facts = self._visibility_facts(tuple(hit.chunk for hit in reranked), principal)
+            final_facts = self._visibility_facts(
+                tuple(hit.chunk for hit in reranked),
+                principal,
+                collect_leases=document_leases,
+            )
             reranked = tuple(
                 hit
                 for hit in reranked
@@ -992,7 +1049,9 @@ class RetrievalService:
                                 )
                                 if self._visible(
                                     tree_chunk,
-                                    self._visibility_fact(tree_chunk, principal),
+                                    self._visibility_fact(
+                                        tree_chunk, principal, collect_leases=document_leases
+                                    ),
                                     scope,
                                     lease.generation_id,
                                 ):
@@ -1215,6 +1274,7 @@ class CitationService:
         *,
         principal: Any = None,
         generation_lease: GenerationReferenceLease | None = None,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         candidate = hit.chunk
         lease = (
@@ -1229,12 +1289,17 @@ class CitationService:
             if candidate.generation_id != generation_id:
                 return {"state": "unavailable"}
             if callable(self._visibility):
-                fact = _fact(self._visibility(candidate, principal), candidate)
+                raw_fact: Any = self._visibility(candidate, principal)
             else:
                 getter = getattr(self._visibility, "get_visibility_fact", None)
                 if getter is None:
                     getter = getattr(self._visibility, "visibility_fact", None)
-                fact = _fact(getter(candidate, principal), candidate) if getter else None
+                raw_fact = getter(candidate, principal) if getter else None
+            if collect_leases is not None and isinstance(raw_fact, Mapping):
+                lease_ref = raw_fact.get("read_lease")
+                if isinstance(lease_ref, Mapping):
+                    collect_leases.append(dict(lease_ref))
+            fact = _fact(raw_fact, candidate)
             if fact is None or not RetrievalService._visible(
                 candidate,
                 fact,

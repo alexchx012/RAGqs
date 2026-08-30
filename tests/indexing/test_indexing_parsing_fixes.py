@@ -310,7 +310,8 @@ def test_execution_status_constraint_drops_reconciliation_placeholder() -> None:
         if isinstance(constraint, CheckConstraint)
     }
     text = constraints["ck_chat_generation_execution_status"]
-    assert "provider_reconciling" not in text
+    # 现行契约：provider_reconciling 是合法执行状态（worker 恢复流权威实现）。
+    assert "'provider_reconciling'" in text
     assert "'expired'" in text
 
 
@@ -329,8 +330,8 @@ def test_worker_recovery_row_has_no_reconciliation_state() -> None:
     from app.chat import worker
 
     source = inspect.getsource(worker)
+    # 占位列已被移除；provider_reconciling 状态本身是现行恢复流的一部分。
     assert "provider_reconciliation_state" not in source
-    assert "provider_reconciling" not in source
 
 
 def test_migrations_head_rejects_reconciliation_placeholder_status(

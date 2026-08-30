@@ -58,7 +58,7 @@ def test_delete_redacts_before_committing_pending_delete(service, principal) -> 
     response = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-1",
     )
 
@@ -75,7 +75,7 @@ def test_delete_uses_documents_scoped_lifecycle_command(service, principal) -> N
     response = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-1",
     )
 
@@ -89,7 +89,7 @@ def test_delete_fails_closed_without_lifecycle_port(service, principal) -> None:
         service.delete_document(
             principal=principal,
             document_id=item["document_id"],
-            expected_version=1,
+            expected_version=2,
             idempotency_key="delete-1",
         )
     assert error.value.code == "document_lifecycle_unavailable"

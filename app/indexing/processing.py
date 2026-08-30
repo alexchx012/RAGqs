@@ -1204,7 +1204,7 @@ class ContentProcessor:
             model=fact.model,
             operation=fact.operation,
             execution_kind="document_processing",
-            execution_id=request.job_id,
+            execution_id=request.attempt_id,
             attempt_id=request.attempt_id,
             generation_id=request.expected_generation_id,
             resource_id=f"{request.publication_id}:{fact.unit_id}:{fact.chunk_id}",
@@ -1280,7 +1280,8 @@ class ContentProcessor:
             )
             self._usage_submission.submit_local_usage(
                 execution_kind="document_processing",
-                execution_id=request.job_id,
+                # 异步处理四元组的 execution_id 是 attempt_id（设计 §2.4.2）。
+                execution_id=request.attempt_id,
                 stage=str(fact.get("stage", "document_ingestion")),
                 resource_kind=str(fact.get("resource_kind", "document")),
                 measurement=measurement,

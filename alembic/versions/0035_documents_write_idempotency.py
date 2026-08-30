@@ -19,7 +19,19 @@ def _columns(bind, table_name: str) -> set[str]:
     return {column["name"] for column in sa.inspect(bind).get_columns(table_name)}
 
 
-def _idempotency_copy_table() -> sa.Table:
+def _primary_key_name(bind, table_name: str) -> str:
+    """Live primary-key constraint name, for batch PK replacement.
+
+    The application schema declares this PK without a name, so PostgreSQL
+    autonames it (``documents_idempotency_pkey``); batch mode must drop the
+    old PK by its real name rather than one invented by ``copy_from``.
+    Non-PostgreSQL backends (SQLite tests) reflect no name, so keep the
+    explicit name the migration always used there.
+    """
+    return sa.inspect(bind).get_pk_constraint(table_name)["name"] or "pk_documents_idempotency"
+
+
+def _idempotency_copy_table(pk_name: str) -> sa.Table:
     metadata = MetaData()
     return sa.Table(
         "documents_idempotency",
@@ -39,7 +51,7 @@ def _idempotency_copy_table() -> sa.Table:
             "endpoint",
             "target_id",
             "idempotency_key",
-            name="pk_documents_idempotency",
+            name=pk_name,
         ),
         CheckConstraint(
             "status IN ('reserved','completed')",
@@ -58,12 +70,16 @@ def upgrade() -> None:
         with op.batch_alter_table("documents_idempotency", recreate="always") as batch:
             batch.add_column(sa.Column("idempotency_key_hash", sa.String(length=64), nullable=True))
 
-        rows = bind.execute(
-            sa.text(
-                "SELECT actor_id, endpoint, target_id, idempotency_key "
-                "FROM documents_idempotency"
+        rows = (
+            bind.execute(
+                sa.text(
+                    "SELECT actor_id, endpoint, target_id, idempotency_key "
+                    "FROM documents_idempotency"
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         for row in rows:
             key_hash = hashlib.sha256(str(row["idempotency_key"]).encode("utf-8")).hexdigest()
             bind.execute(
@@ -81,10 +97,11 @@ def upgrade() -> None:
                 },
             )
 
+        pk_name = _primary_key_name(bind, "documents_idempotency")
         with op.batch_alter_table(
             "documents_idempotency",
             recreate="always",
-            copy_from=_idempotency_copy_table(),
+            copy_from=_idempotency_copy_table(pk_name),
         ) as batch:
             batch.drop_column("idempotency_key")
             batch.alter_column(
@@ -93,7 +110,7 @@ def upgrade() -> None:
                 nullable=False,
             )
             batch.create_primary_key(
-                "pk_documents_idempotency",
+                pk_name,
                 ["actor_id", "endpoint", "target_id", "idempotency_key_hash"],
             )
 
@@ -119,7 +136,7 @@ def upgrade() -> None:
         )
 
 
-def _idempotency_hash_copy_table() -> sa.Table:
+def _idempotency_hash_copy_table(pk_name: str) -> sa.Table:
     metadata = MetaData()
     return sa.Table(
         "documents_idempotency",
@@ -138,7 +155,7 @@ def _idempotency_hash_copy_table() -> sa.Table:
             "endpoint",
             "target_id",
             "idempotency_key_hash",
-            name="pk_documents_idempotency",
+            name=pk_name,
         ),
         CheckConstraint(
             "status IN ('reserved','completed')",
@@ -150,24 +167,21 @@ def _idempotency_hash_copy_table() -> sa.Table:
 def downgrade() -> None:
     bind = op.get_bind()
     if "idempotency_key_hash" in _columns(bind, "documents_idempotency"):
-        remaining = bind.execute(
-            sa.text("SELECT COUNT(*) FROM documents_idempotency")
-        ).scalar_one()
+        remaining = bind.execute(sa.text("SELECT COUNT(*) FROM documents_idempotency")).scalar_one()
         if remaining:
             # Hashed keys cannot be turned back into plaintext.
             raise RuntimeError("downgrade cannot recover plaintext idempotency keys")
         # Empty table: restore the pre-hash plaintext shape so a fresh
         # database can still roll all the way back to base.
+        pk_name = _primary_key_name(bind, "documents_idempotency")
         with op.batch_alter_table(
             "documents_idempotency",
             recreate="always",
-            copy_from=_idempotency_hash_copy_table(),
+            copy_from=_idempotency_hash_copy_table(pk_name),
         ) as batch:
             batch.drop_column("idempotency_key_hash")
-            batch.add_column(
-                sa.Column("idempotency_key", sa.String(length=256), nullable=False)
-            )
+            batch.add_column(sa.Column("idempotency_key", sa.String(length=256), nullable=False))
             batch.create_primary_key(
-                "pk_documents_idempotency",
+                pk_name,
                 ["actor_id", "endpoint", "target_id", "idempotency_key"],
             )

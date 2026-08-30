@@ -190,9 +190,31 @@ class DocumentsJobCoordinator:
             authorization_fence = self._service._worker_authorization_fence(
                 connection, job=job, document=document
             )
+            cycle_attempt_number = (
+                int(
+                    connection.execute(
+                        select(func.count())
+                        .select_from(ingestion_attempts_table)
+                        .where(
+                            and_(
+                                ingestion_attempts_table.c.job_id == job["id"],
+                                ingestion_attempts_table.c.replay_generation
+                                == job["replay_generation"],
+                            )
+                        )
+                    ).scalar_one()
+                )
+                + 1
+            )
             attempt_id = _id("attempt")
             expires = now + self._lease_ttl
-            subject_user_id = str(job["created_by_user_id"])
+            # 初始执行序列的执行/额度主体是原上传者；人工重放序列切换为
+            # 重放操作者（created_by_user_id 不改写，主体切换见设计 2.3）。
+            subject_user_id = (
+                str(job["replayed_by_user_id"])
+                if int(job["replay_generation"]) > 0 and job["replayed_by_user_id"]
+                else str(job["created_by_user_id"])
+            )
             space_id = str(document["space_id"])
             cost_center_key, space_kind, space_owner_user_id = (
                 self._service._publication_space_ownership(
@@ -244,7 +266,7 @@ class DocumentsJobCoordinator:
                     id=attempt_id,
                     job_id=job["id"],
                     attempt_number=attempt_number,
-                    cycle_attempt_number=attempt_number,
+                    cycle_attempt_number=cycle_attempt_number,
                     replay_generation=job["replay_generation"],
                     state="running",
                     lease_owner=worker_id,
@@ -448,6 +470,7 @@ class DocumentsJobCoordinator:
                         .values(
                             pending_version_id=None,
                             active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
                             updated_at_utc=now,
                         )
                     )
@@ -460,7 +483,11 @@ class DocumentsJobCoordinator:
                                 documents_table.c.active_operation_job_id == expired_job_id,
                             )
                         )
-                        .values(active_operation_job_id=None, updated_at_utc=now)
+                        .values(
+                            active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
+                            updated_at_utc=now,
+                        )
                     )
             if job["upload_batch_id"]:
                 connection.execute(
