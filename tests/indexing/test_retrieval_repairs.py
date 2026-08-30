@@ -71,6 +71,8 @@ def _production_settings():
             "RAG_OBJECT_STORAGE_BUCKET": "rag-prod",
             "RAG_PROVIDER_NAME": "openai-compatible",
             "RAG_PROVIDER_API_KEY": "provider-secret",
+            "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
+            "RAG_EVALUATION_JUDGE_API_KEY": "judge-secret",
             "RAG_BUSINESS_TIMEZONE": "UTC",
             "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",

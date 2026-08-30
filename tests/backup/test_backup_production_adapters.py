@@ -751,6 +751,8 @@ def test_production_requires_backup_target_namespace() -> None:
         "RAG_OBJECT_STORAGE_BUCKET": "rag-prod",
         "RAG_PROVIDER_NAME": "openai-compatible",
         "RAG_PROVIDER_API_KEY": "provider-secret",
+        "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
+        "RAG_EVALUATION_JUDGE_API_KEY": "judge-secret",
         "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS": "90",
         "RAG_BUSINESS_TIMEZONE": "UTC",
         "RAG_DEBUG": "false",
