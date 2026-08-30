@@ -17,8 +17,9 @@ REGISTERED_ERROR_CODES = frozenset(
     archive_proof_mismatch archive_proof_unavailable archive_verifier_unavailable
     authentication_required authorization_changed authorization_scope_invalid
     authorization_scope_unavailable avatar_cleanup_conflict avatar_cleanup_unavailable
-    avatar_cleanup_unverified avatar_storage_unavailable backup_component_invalid
-    backup_in_progress backup_not_found backup_not_restorable billing_allocation_conflict
+    avatar_cleanup_unverified avatar_not_found avatar_storage_unavailable backup_component_invalid
+    backup_in_progress backup_not_found backup_not_restorable
+    backup_object_checksum_mismatch billing_allocation_conflict
     billing_allocation_mismatch billing_currency_mismatch billing_source_conflict
     billing_source_id_missing billing_source_metadata_rejected billing_source_not_found
     budget_exhausted budget_invariant budget_meter_not_found budget_policy_invalid
@@ -35,12 +36,13 @@ REGISTERED_ERROR_CODES = frozenset(
     department_deactivation_unverified department_has_active_work department_has_members
     department_inactive department_name_exists department_not_found document_content_unavailable
     document_deleted document_lifecycle_unavailable document_not_found document_not_published
-    document_operation_in_progress document_pending_delete document_redaction_incomplete
-    document_unavailable document_version_changed document_version_conflict
-    document_version_not_found document_version_not_restorable document_version_purged
-    document_version_unavailable duplicate_document embedding_config_conflict
-    embedding_config_invalid embedding_dimension_mismatch embedding_failed embedding_input_invalid
-    embedding_provider_dispatch_failed embedding_usage_context_invalid
+    document_object_unavailable document_operation_in_progress document_pending_delete
+    document_redaction_incomplete document_unavailable document_version_changed
+    document_version_conflict document_version_not_found document_version_not_restorable
+    document_version_purged document_version_unavailable duplicate_document
+    embedding_config_conflict embedding_config_invalid embedding_dimension_mismatch
+    embedding_failed embedding_input_invalid embedding_provider_dispatch_failed
+    embedding_usage_context_invalid
     embedding_usage_context_required embedding_usage_unavailable estimated_cost_exceeds_limit
     evaluation_generation_unavailable evaluation_judge_deadline_exceeded
     evaluation_judge_transport_error evaluation_judge_unavailable evaluation_leaderboard_forbidden
@@ -84,16 +86,19 @@ REGISTERED_ERROR_CODES = frozenset(
     processing_receipt_conflict processor_unavailable producer_not_authorized
     prompt_enhance_rate_limited prompt_enhance_timeout prompt_enhance_unavailable
     provider_call_not_found provider_call_state_conflict provider_dispatch_failed
-    provider_not_supported provider_reconciliation_contract_error
-    provider_reconciliation_unavailable provider_result_unknown provider_unavailable
-    public_graph_source_manifest_invalid public_graph_source_revision_not_found
+    provider_not_supported provider_rate_limited provider_reconciliation_contract_error
+    provider_reconciliation_unavailable provider_result_unknown provider_timeout
+    provider_unavailable public_graph_source_manifest_invalid
+    public_graph_source_revision_not_found
     public_graph_source_unavailable public_source_manifest_invalid public_source_outbox_unavailable
     quota_debit_not_found quota_event_outbox_unavailable quota_exceeded quota_request_not_approvable
     rate_limit_exceeded read_lease_unavailable reader_unavailable recipient_account_inactive
     recipient_role_mismatch refresh_reuse_detected release_gate_failed repair_target_not_found
-    reranker_unavailable restore_in_progress restore_not_found restore_rebuild_unavailable
-    restore_target_not_found retirement_conflict retirement_event_missing retirement_not_pending
-    retirement_unverified retrieval_degradation retrieval_failed retrieval_profile_superseded
+    reranker_unavailable restore_copy_failed restore_copy_mismatch restore_hold_missing
+    restore_in_progress restore_not_found restore_rebuild_unavailable restore_stage_unknown
+    restore_target_not_found restore_validation_without_session retirement_conflict
+    retirement_event_missing retirement_not_pending retirement_unverified
+    retrieval_degradation retrieval_failed retrieval_profile_superseded
     retrieval_release_gate_conflict retrieval_release_unavailable retrieval_request_required
     retry_scope_changed revision_conflict revision_gap rollback_not_eligible session_revoked
     shadow_evaluation_in_progress shadow_evaluation_not_found sheet_not_found
