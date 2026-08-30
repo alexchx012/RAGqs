@@ -1045,7 +1045,7 @@ class DocumentsService:
             add("submission_grant", str(grant_id))
             add("submission_record", str(submission_id))
             derived += 2
-        generations: list[str] = []
+        generations: Sequence[str] = []
         # 未 purged 索引 generation 枚举依赖 indexing 的 generation 登记表；
         # 精简 schema（部分单元测试库）没有该登记表时退化为 revisions 全集。
         from sqlalchemy import inspect as sa_inspect
@@ -2999,8 +2999,10 @@ class DocumentsService:
             )
             raise
         measured_hash = hashlib.sha256(content).hexdigest()
-        if len(content) != int(source["size_bytes"]) or measured_hash != str(
-            source["content_hash_sha256"]
+        if (
+            source is None
+            or len(content) != int(source["size_bytes"])
+            or measured_hash != str(source["content_hash_sha256"])
         ):
             self.fail_job(
                 job_id=job_id,

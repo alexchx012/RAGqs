@@ -706,6 +706,7 @@ class GenerationService:
                 user_id=user_id,
             )
             now = self._now(connection)
+            context = current_context()
             result = self._create_generation(
                 connection,
                 user_id=user_id,
@@ -715,9 +716,7 @@ class GenerationService:
                 effort_level=str(failed["requested_effort_level"]),
                 scope_json=dict(failed["request_scope_json"]),
                 now=now,
-                request_id=(
-                    current_context().request_id if current_context() is not None else "req_system"
-                ),
+                request_id=(context.request_id if context is not None else "req_system"),
                 parent=failed,
             )
             self._record_idempotency(

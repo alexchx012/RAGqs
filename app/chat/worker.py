@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -468,15 +468,15 @@ class ChatGenerationWorker:
                 .mappings()
                 .all()
             )
-            calls_by_execution = {}
+            calls_by_execution: dict[str, dict[str, Any]] = {}
             from app.usage.schema import provider_call_table
 
-            for call in connection.execute(
+            for call_row in connection.execute(
                 select(provider_call_table).where(
                     provider_call_table.c.execution_id.in_([r["execution_id"] for r in rows])
                 )
             ).mappings():
-                calls_by_execution.setdefault(str(call["execution_id"]), dict(call))
+                calls_by_execution.setdefault(str(call_row["execution_id"]), dict(call_row))
         reconciled = 0
         for row in rows:
             call = calls_by_execution.get(str(row["execution_id"]))
@@ -1802,7 +1802,9 @@ class ChatGenerationWorker:
             # production runtime always supplies the ledger-backed method.
             self._usage.complete_provider_call(**kwargs)
 
-    def _complete_deferred_provider_calls_public(self, candidates: list[Mapping[str, Any]]) -> None:
+    def _complete_deferred_provider_calls_public(
+        self, candidates: Sequence[Mapping[str, Any]]
+    ) -> None:
         for item in candidates:
             call_id = item.get("_provider_call_id")
             if not call_id:
@@ -1817,7 +1819,7 @@ class ChatGenerationWorker:
             )
 
     def _source_scope_is_current(
-        self, generation: Mapping[str, Any], candidates: list[Mapping[str, Any]]
+        self, generation: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]]
     ) -> bool:
         citations: list[Mapping[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
