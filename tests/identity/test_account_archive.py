@@ -23,6 +23,7 @@ from app.platform.database import core_metadata, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
 from app.platform.storage import MemoryObjectStore
+from app.usage.schema import usage_metadata
 
 _BASE_ENV = {
     "RAG_PLATFORM_PROFILE": "development",
@@ -55,6 +56,7 @@ def _build(tmp_path, extra_env: dict[str, str] | None = None):
         chat_metadata,
         documents_metadata,
         outbox_metadata,
+        usage_metadata,
     ):
         metadata.create_all(engine)
     return runtime, engine, object_store
