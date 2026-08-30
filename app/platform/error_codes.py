@@ -7,8 +7,7 @@ prove that every literal code has a documented home.
 
 from __future__ import annotations
 
-REGISTERED_ERROR_CODES = frozenset(
-    """
+REGISTERED_ERROR_CODES = frozenset("""
     ab_pair_expired ab_pair_not_found ab_vote_already_submitted
     account_already_deleted account_archive_failed account_archive_pending
     account_archive_restore_required account_archive_verification_failed
@@ -112,8 +111,7 @@ REGISTERED_ERROR_CODES = frozenset(
     upload_content_type_mismatch upload_media_mismatch upload_too_large usage_event_not_found user_pending_delete
     username_exists validation_error vector_config_invalid version_conflict visibility_unavailable
     wrong_old_password bad_request conflict http_error rate_limited internal_error
-    """.split()
-)
+    """.split())
 
 # Short alias for callers that want the contract name used in API documentation.
 ERROR_CODES = REGISTERED_ERROR_CODES

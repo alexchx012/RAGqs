@@ -874,7 +874,9 @@ class ChatGenerationWorker:
                     execution_id=execution_id,
                     fencing_token=fencing_token,
                     control_version=control_version,
-                    candidates=[dict(item) for item in recovered_candidates if isinstance(item, Mapping)],
+                    candidates=[
+                        dict(item) for item in recovered_candidates if isinstance(item, Mapping)
+                    ],
                 )
                 return
         profile_id = str(generation["retrieval_profile_id"])
@@ -1146,7 +1148,7 @@ class ChatGenerationWorker:
                         ),
                         next_step_is_rag=True,
                     )
-                        != upgraded
+                    != upgraded
                 ):
                     self._complete_deferred_provider_calls_public(candidates)
                     break
@@ -1396,7 +1398,10 @@ class ChatGenerationWorker:
                 )
             ).scalar_one_or_none()
             merged_checkpoint = dict(checkpoint)
-            if isinstance(existing_checkpoint, Mapping) and "scope_retry_count" in existing_checkpoint:
+            if (
+                isinstance(existing_checkpoint, Mapping)
+                and "scope_retry_count" in existing_checkpoint
+            ):
                 merged_checkpoint.setdefault(
                     "scope_retry_count", int(existing_checkpoint["scope_retry_count"])
                 )
@@ -1797,9 +1802,7 @@ class ChatGenerationWorker:
             # production runtime always supplies the ledger-backed method.
             self._usage.complete_provider_call(**kwargs)
 
-    def _complete_deferred_provider_calls_public(
-        self, candidates: list[Mapping[str, Any]]
-    ) -> None:
+    def _complete_deferred_provider_calls_public(self, candidates: list[Mapping[str, Any]]) -> None:
         for item in candidates:
             call_id = item.get("_provider_call_id")
             if not call_id:
@@ -1833,15 +1836,11 @@ class ChatGenerationWorker:
         if not callable(method):
             return True
         try:
-            current = method(
-                tuple(citations), principal=_principal_from_generation(generation)
-            )
+            current = method(tuple(citations), principal=_principal_from_generation(generation))
         except PlatformError:
             return False
         expected_ids = {_source_identity(item) for item in citations}
-        current_ids = {
-            _source_identity(item) for item in current if isinstance(item, Mapping)
-        }
+        current_ids = {_source_identity(item) for item in current if isinstance(item, Mapping)}
         return current_ids == expected_ids
 
     # ------------------------------------------------------------- publication
@@ -2041,9 +2040,9 @@ class ChatGenerationWorker:
                         "generation_id": str(generation["id"]),
                         "message_id": str(generation["message_id"]),
                         "status": "completed",
-                        },
-                        now=now,
-                    )
+                    },
+                    now=now,
+                )
         except PlatformError as error:
             if error.code == "source_scope_changed":
                 # Provider work has already happened, so preserve its accounting

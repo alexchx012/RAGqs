@@ -479,9 +479,9 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         item["target_space_id"] == "public" or item["target_space_id"].startswith("department:")
         for item in admin_items
     )
-    kind_items = service.list_approval_submissions(
-        principal=admin, target_kind="department"
-    )["items"]
+    kind_items = service.list_approval_submissions(principal=admin, target_kind="department")[
+        "items"
+    ]
     assert [item["target_space_id"] for item in kind_items] == ["department:d1"]
 
     ops = AuthPrincipal(

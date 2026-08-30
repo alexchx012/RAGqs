@@ -225,9 +225,7 @@ class GenerationService:
                 429,
             )
 
-    def _enforce_rate_limit(
-        self, connection: Connection, *, user_id: str, now: datetime
-    ) -> None:
+    def _enforce_rate_limit(self, connection: Connection, *, user_id: str, now: datetime) -> None:
         cutoff = now - timedelta(minutes=1)
         rows = connection.execute(
             select(chat_generation_table.c.id)
@@ -717,7 +715,9 @@ class GenerationService:
                 effort_level=str(failed["requested_effort_level"]),
                 scope_json=dict(failed["request_scope_json"]),
                 now=now,
-                request_id=(current_context().request_id if current_context() is not None else "req_system"),
+                request_id=(
+                    current_context().request_id if current_context() is not None else "req_system"
+                ),
                 parent=failed,
             )
             self._record_idempotency(

@@ -674,9 +674,11 @@ def load_platform_settings(
                 ),
                 "generation_disconnect_grace_seconds": _int(
                     env,
-                    "RAG_GENERATION_DISCONNECT_GRACE_SECONDS"
-                    if _optional(env, "RAG_GENERATION_DISCONNECT_GRACE_SECONDS") is not None
-                    else "GENERATION_DISCONNECT_GRACE_SECONDS",
+                    (
+                        "RAG_GENERATION_DISCONNECT_GRACE_SECONDS"
+                        if _optional(env, "RAG_GENERATION_DISCONNECT_GRACE_SECONDS") is not None
+                        else "GENERATION_DISCONNECT_GRACE_SECONDS"
+                    ),
                 ),
                 "enhance_model": _optional(env, "RAG_CHAT_ENHANCE_MODEL"),
                 "enhance_timeout_seconds": _int(env, "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS"),

@@ -12,8 +12,8 @@ from alembic import command
 from alembic.config import Config
 from app.chat.schema import chat_metadata
 from app.documents.schema import documents_metadata
-from app.indexing.schema import indexing_metadata
 from app.identity.schema import identity_metadata
+from app.indexing.schema import indexing_metadata
 from app.outbox.schema import outbox_metadata
 from app.platform.database import core_metadata
 

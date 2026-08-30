@@ -221,12 +221,15 @@ def test_provider_result_unknown_emits_parseable_error_event() -> None:
     env["runtime"].resolve("chat_generation_worker").run_maintenance()
 
     with env["engine"].connect() as connection:
-        error_event = connection.execute(
-            select(chat_generation_event_table)
-            .where(
-                chat_generation_event_table.c.generation_id == result.generation_id,
-                chat_generation_event_table.c.event_type == "error",
+        error_event = (
+            connection.execute(
+                select(chat_generation_event_table).where(
+                    chat_generation_event_table.c.generation_id == result.generation_id,
+                    chat_generation_event_table.c.event_type == "error",
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert error_event["data_json"]["code"] == "provider_result_unknown"
     assert error_event["data_json"]["request_id"] == generation["request_id"]

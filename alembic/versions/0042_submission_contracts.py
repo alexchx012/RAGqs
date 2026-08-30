@@ -33,7 +33,9 @@ def upgrade() -> None:
             )
         if "submitter_department_name_snapshot" not in existing_columns:
             batch.add_column(
-                sa.Column("submitter_department_name_snapshot", sa.String(length=256), nullable=True)
+                sa.Column(
+                    "submitter_department_name_snapshot", sa.String(length=256), nullable=True
+                )
             )
         if "invalidated_reason" not in existing_columns:
             batch.add_column(sa.Column("invalidated_reason", sa.String(length=256), nullable=True))

@@ -53,9 +53,7 @@ def test_submission_contract_migration_adds_nullable_columns_to_legacy_rows(tmp_
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
-            connection.execute(
-                text(
-                    """
+            connection.execute(text("""
                     INSERT INTO knowledge_submissions (
                         id, space_id, submitter_user_id, version, status, file_name, media_kind,
                         content_hash_sha256, private_object_key, object_manifest_json,
@@ -65,9 +63,7 @@ def test_submission_contract_migration_adds_nullable_columns_to_legacy_rows(tmp_
                         'text/plain', 'legacy-hash', 'submissions/legacy/original', '{}',
                         '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'
                     )
-                    """
-                )
-            )
+                    """))
 
         command.upgrade(config, "head")
 
@@ -86,17 +82,13 @@ def test_submission_contract_migration_adds_nullable_columns_to_legacy_rows(tmp_
         assert expected_columns <= set(columns)
         assert all(columns[column_name]["nullable"] for column_name in expected_columns)
         with engine.connect() as connection:
-            legacy = connection.execute(
-                text(
-                    """
+            legacy = connection.execute(text("""
                     SELECT submitter_role_snapshot, submitter_department_snapshot,
                            submitter_display_name_snapshot, submitter_department_name_snapshot,
                            invalidated_reason, invalidated_at
                     FROM knowledge_submissions
                     WHERE id = 'submission_legacy'
-                    """
-                )
-            ).mappings().one()
+                    """)).mappings().one()
         assert legacy == {
             "submitter_role_snapshot": None,
             "submitter_department_snapshot": None,

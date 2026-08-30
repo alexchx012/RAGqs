@@ -598,9 +598,7 @@ class RecordingChatRetrievalPort:
     ) -> tuple[Mapping[str, Any], ...]:
         del principal
         return tuple(
-            self.citations.get(
-                (str(citation["document_id"]), str(citation["chunk_id"])), citation
-            )
+            self.citations.get((str(citation["document_id"]), str(citation["chunk_id"])), citation)
             for citation in citations
         )
 

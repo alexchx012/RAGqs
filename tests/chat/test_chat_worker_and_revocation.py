@@ -527,9 +527,11 @@ def test_provider_reconciliation_unavailability_cannot_block_deadline_expiry() -
     env = build_test_env()
     token, _ = provision_and_login(env["identity"], "alice")
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     result = _ask(env, principal, conversation_id, key="reconcile-unavailable-deadline")
     _set_provider_reconciling(env, generation_id=result.generation_id)
     with env["engine"].begin() as connection:
@@ -546,7 +548,9 @@ def test_provider_reconciliation_unavailability_cannot_block_deadline_expiry() -
     with env["engine"].connect() as connection:
         generation = (
             connection.execute(
-                select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
             )
             .mappings()
             .one()
@@ -569,9 +573,11 @@ def test_confirmed_provider_result_reuses_content_without_resending() -> None:
     env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
     token, _ = provision_and_login(env["identity"], "alice")
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     result = _ask(env, principal, conversation_id, key="reconcile-completed")
     _set_provider_reconciling(env, generation_id=result.generation_id)
 
@@ -593,11 +599,15 @@ def test_confirmed_provider_result_reuses_content_without_resending() -> None:
     worker.run_once()
 
     with env["engine"].connect() as connection:
-        message = connection.execute(
-            select(chat_message_table.c.content, chat_message_table.c.status).where(
-                chat_message_table.c.id == result.message_id
+        message = (
+            connection.execute(
+                select(chat_message_table.c.content, chat_message_table.c.status).where(
+                    chat_message_table.c.id == result.message_id
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert message == {"content": "recovered answer", "status": "completed"}
     assert env["provider"].calls == []
 
@@ -606,9 +616,11 @@ def test_confirmed_usage_without_chat_content_stays_reconciling() -> None:
     env = build_test_env()
     token, _ = provision_and_login(env["identity"], "alice")
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     result = _ask(env, principal, conversation_id, key="reconcile-missing-content")
     _set_provider_reconciling(env, generation_id=result.generation_id)
 
@@ -640,9 +652,11 @@ def test_confirmed_not_sent_retries_the_same_generation_stage() -> None:
     env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
     token, _ = provision_and_login(env["identity"], "alice")
     principal = env["identity"].authenticate_access_token(token)
-    conversation_id = env["client"].post(
-        "/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    conversation_id = (
+        env["client"]
+        .post("/v1/conversations", json={}, headers={"Authorization": f"Bearer {token}"})
+        .json()["id"]
+    )
     result = _ask(env, principal, conversation_id, key="reconcile-not-sent")
     _set_provider_reconciling(env, generation_id=result.generation_id)
 
@@ -768,12 +782,16 @@ def test_disconnect_reaper_preserves_an_existing_manual_stop_request() -> None:
     worker = env["runtime"].resolve("chat_generation_worker")
     worker.run_maintenance()
     with env["engine"].connect() as connection:
-        pending = connection.execute(
-            select(
-                chat_generation_table.c.status,
-                chat_generation_table.c.stop_reason,
-            ).where(chat_generation_table.c.id == result.generation_id)
-        ).mappings().one()
+        pending = (
+            connection.execute(
+                select(
+                    chat_generation_table.c.status,
+                    chat_generation_table.c.stop_reason,
+                ).where(chat_generation_table.c.id == result.generation_id)
+            )
+            .mappings()
+            .one()
+        )
     assert pending == {"status": "stop_requested", "stop_reason": "manual_request"}
 
     worker.run_once()
@@ -1372,7 +1390,9 @@ def test_source_scope_change_discards_the_candidate_and_regenerates() -> None:
     with env["engine"].connect() as connection:
         generation = (
             connection.execute(
-                select(chat_generation_table).where(chat_generation_table.c.id == result.generation_id)
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
             )
             .mappings()
             .one()

@@ -13,9 +13,10 @@ def test_literal_platform_errors_are_registered() -> None:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            if not (
-                isinstance(node.func, ast.Name) and node.func.id == "PlatformError"
-            ) or not node.args:
+            if (
+                not (isinstance(node.func, ast.Name) and node.func.id == "PlatformError")
+                or not node.args
+            ):
                 continue
             code = node.args[0]
             if isinstance(code, ast.Constant) and isinstance(code.value, str):

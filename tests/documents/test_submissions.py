@@ -524,7 +524,10 @@ def test_identity_invalidation_is_sorted_notified_and_scheduled_for_cleanup(
     assert items[invalidated["submission_id"]]["status"] == "invalidated"
     assert items[retained["submission_id"]]["status"] == "pending"
     assert "invalidated_reason" in items[invalidated["submission_id"]]
-    assert items[invalidated["submission_id"]]["invalidated_reason"] == "identity_authorization_changed"
+    assert (
+        items[invalidated["submission_id"]]["invalidated_reason"]
+        == "identity_authorization_changed"
+    )
     assert items[invalidated["submission_id"]]["reviewed_at"] is None
     with service._engine.connect() as connection:
         invalidated_row = (
