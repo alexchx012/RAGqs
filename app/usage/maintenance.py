@@ -41,6 +41,8 @@ from app.platform.persistence import FenceViolation, LeaseUnavailable
 from app.platform.runtime import PlatformRuntime, build_runtime
 from app.platform.worker import WorkerRuntime, create_worker_runtime
 
+from .reconcile import reconcile_unknown_calls
+
 _logger = logging.getLogger(__name__)
 
 _CANCEL_TASK_PREFIX = "usage-maintenance:cancel:"
@@ -78,6 +80,8 @@ def _default_owner() -> str:
 class MaintenanceStats:
     completed: int
     deferred: int
+    reconciled: int = 0
+    recovered: int = 0
 
 
 class UsageMaintenanceWorker:
@@ -97,6 +101,32 @@ class UsageMaintenanceWorker:
         calendar = runtime.resolve("business_calendar")
         completed = 0
         deferred = 0
+        reconciled = 0
+        recovered = 0
+
+        ledger = runtime.resolve("usage_ledger")
+        reconciliation_port = runtime.resolve("provider_reconciliation_port")
+        meter = runtime.resolve("local_usage_meter")
+        now = clock.now_utc()
+        if ledger is not None and reconciliation_port is not None:
+            try:
+                reconciled = reconcile_unknown_calls(
+                    engine,
+                    ledger,
+                    reconciliation_port,
+                    older_than_utc=now,
+                    limit=validated_limit,
+                )
+            except Exception as exc:
+                deferred += 1
+                _logger.warning("usage provider reconciliation deferred: %s", exc)
+        if meter is not None and callable(getattr(meter, "recover_expired", None)):
+            try:
+                recovered = len(meter.recover_expired(now_utc=now))
+            except Exception as exc:
+                deferred += 1
+                _logger.warning("local usage meter recovery deferred: %s", exc)
+
         # 候选列表：调用方事务内 calendar lock + 单一 DB now（与 Task 7-10 同构）。
         with engine.begin() as connection:
             lock = calendar.lock_or_verify(connection)
@@ -118,7 +148,12 @@ class UsageMaintenanceWorker:
                 completed += 1
             except (FenceViolation, LeaseUnavailable, PlatformError):
                 deferred += 1
-        return MaintenanceStats(completed=completed, deferred=deferred)
+        return MaintenanceStats(
+            completed=completed,
+            deferred=deferred,
+            reconciled=reconciled,
+            recovered=recovered,
+        )
 
     def _cancel(
         self,
@@ -185,6 +220,8 @@ def run_usage_maintenance_once(
         return MaintenanceStats(
             completed=revoked.completed + regular.completed,
             deferred=revoked.deferred + regular.deferred,
+            reconciled=revoked.reconciled + regular.reconciled,
+            recovered=revoked.recovered + regular.recovered,
         )
     finally:
         if owns_runtime:
@@ -247,7 +284,13 @@ def main(argv: list[str] | None = None) -> None:
         print("ragqs-usage-maintenance: RAG_MAINTENANCE_KEY is required", file=sys.stderr)
         raise SystemExit(2) from None
     stats = run_usage_maintenance_once(settings, revoke_all=args.revoke_all)
-    _logger.info("usage maintenance completed=%s deferred=%s", stats.completed, stats.deferred)
+    _logger.info(
+        "usage maintenance completed=%s deferred=%s reconciled=%s recovered=%s",
+        stats.completed,
+        stats.deferred,
+        stats.reconciled,
+        stats.recovered,
+    )
 
 
 if __name__ == "__main__":

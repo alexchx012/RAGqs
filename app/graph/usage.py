@@ -173,6 +173,27 @@ class UsageLedgerSubmissionAdapter:
             started_at_utc=started_at_utc,
         )
 
+    def complete_provider_call_in_transaction(
+        self,
+        connection: Any,
+        *,
+        provider_call_id: str,
+        measurement: ProviderMeasurement,
+        ownership: OwnershipSnapshot,
+        result: str,
+        provider_request_id: str | None = None,
+        started_at_utc: object | None = None,
+    ) -> str:
+        return self._ledger.complete_provider_call_in_transaction(
+            connection,
+            provider_call_id=provider_call_id,
+            measurement=measurement,
+            ownership=ownership,
+            result=result,
+            provider_request_id=provider_request_id,
+            started_at_utc=started_at_utc,
+        )
+
     def mark_not_sent(self, provider_call_id: str) -> None:
         self._ledger.mark_not_sent(provider_call_id)
 

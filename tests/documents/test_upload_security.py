@@ -21,7 +21,7 @@ from app.platform.storage import MemoryObjectStore
 
 
 class _Identity:
-    def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+    def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
         assert action in {"manage", "contribute", "read"}
         return "manage"
 
@@ -62,56 +62,60 @@ def _pdf(content: bytes = b"%PDF-1.7 doc") -> DocumentUpload:
     return DocumentUpload(filename="guide.pdf", content=content, media_kind="application/pdf")
 
 
-def test_disallowed_media_type_is_rejected(service, principal) -> None:
+def test_disallowed_media_type_is_rejected_per_item(service, principal) -> None:
     upload = DocumentUpload(
         filename="tool.exe", content=b"MZ payload", media_kind="application/octet-stream"
     )
-    with pytest.raises(PlatformError) as exc_info:
-        service.create_upload(
-            principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-1"
-        )
-    assert exc_info.value.code == "upload_media_type_not_allowed"
+    result = service.create_upload(
+        principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-1"
+    )
+    item = result["items"][0]
+    assert item["accepted"] is False
+    assert item["error"]["code"] == "upload_media_type_not_allowed"
 
 
-def test_magic_number_mismatch_is_rejected(service, principal) -> None:
-    with pytest.raises(PlatformError) as exc_info:
-        service.create_upload(
-            principal=principal,
-            space_id="space_1",
-            files=[_pdf(b"not really a pdf")],
-            idempotency_key="sec-2",
-        )
-    assert exc_info.value.code == "upload_media_mismatch"
+def test_magic_number_mismatch_is_rejected_per_item(service, principal) -> None:
+    result = service.create_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_pdf(b"not really a pdf")],
+        idempotency_key="sec-2",
+    )
+    item = result["items"][0]
+    assert item["accepted"] is False
+    assert item["error"]["code"] == "upload_content_type_mismatch"
 
 
-def test_archive_content_is_rejected(service, principal) -> None:
+def test_archive_content_is_rejected_per_item(service, principal) -> None:
     upload = DocumentUpload(
         filename="dump.zip", content=b"PK\x03\x04 archive", media_kind="text/plain"
     )
-    with pytest.raises(PlatformError) as exc_info:
-        service.create_upload(
-            principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-3"
-        )
-    assert exc_info.value.code == "upload_archive_not_allowed"
+    result = service.create_upload(
+        principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-3"
+    )
+    item = result["items"][0]
+    assert item["accepted"] is False
+    assert item["error"]["code"] == "upload_archive_not_allowed"
 
 
-def test_text_with_nul_bytes_is_rejected(service, principal) -> None:
+def test_text_with_nul_bytes_is_rejected_per_item(service, principal) -> None:
     upload = DocumentUpload(filename="note.txt", content=b"head\x00tail", media_kind="text/plain")
-    with pytest.raises(PlatformError) as exc_info:
-        service.create_upload(
-            principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-4"
-        )
-    assert exc_info.value.code == "upload_content_invalid"
+    result = service.create_upload(
+        principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-4"
+    )
+    item = result["items"][0]
+    assert item["accepted"] is False
+    assert item["error"]["code"] == "upload_content_invalid"
 
 
 def test_rejected_upload_leaves_no_documents_or_jobs(service, principal) -> None:
-    with pytest.raises(PlatformError):
-        service.create_upload(
-            principal=principal,
-            space_id="space_1",
-            files=[_pdf(b"not really a pdf")],
-            idempotency_key="sec-5",
-        )
+    result = service.create_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_pdf(b"not really a pdf")],
+        idempotency_key="sec-5",
+    )
+    assert result["items"][0]["accepted"] is False
     with service._engine.connect() as connection:
         documents = connection.execute(
             select(func.count()).select_from(documents_table)
@@ -136,7 +140,7 @@ def test_zip_container_office_type_requires_zip_magic() -> None:
             media_kind="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             content=b"plain word text",
         )
-    assert exc_info.value.code == "upload_media_mismatch"
+    assert exc_info.value.code == "upload_content_type_mismatch"
 
 
 def test_admin_viewing_foreign_personal_library_is_audited(service, principal) -> None:
@@ -245,14 +249,15 @@ _EICAR = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*
 
 def test_malware_upload_is_rejected_without_side_effects(service, principal) -> None:
     upload = DocumentUpload(filename="eicar.txt", content=_EICAR, media_kind="text/plain")
-    with pytest.raises(PlatformError) as exc_info:
-        service.create_upload(
-            principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-m1"
-        )
-    assert exc_info.value.code == "malware_detected"
-    assert exc_info.value.status_code == 422
+    result = service.create_upload(
+        principal=principal, space_id="space_1", files=[upload], idempotency_key="sec-m1"
+    )
+    item = result["items"][0]
+    assert item["accepted"] is False
+    error = item["error"]
+    assert error["code"] == "malware_detected"
     # The error object reveals no scan detail, storage path or object key.
-    assert set(exc_info.value.details) == {"media_type"}
+    assert set(error["details"]) == {"media_type"}
     with service._engine.connect() as connection:
         documents = connection.execute(
             select(func.count()).select_from(documents_table)

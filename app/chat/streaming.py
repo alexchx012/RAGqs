@@ -13,6 +13,7 @@ from app.platform.errors import PlatformError
 
 from .events import list_events_after
 from .leases import (
+    DEFAULT_DISCONNECT_GRACE_SECONDS,
     create_lease,
     invalidate_lease,
     renew_lease,
@@ -34,6 +35,7 @@ class GenerationStreamService:
         poll_seconds: float = 0.2,
         lease_seconds: int = 90,
         heartbeat_seconds: int = 30,
+        disconnect_grace_seconds: int = DEFAULT_DISCONNECT_GRACE_SECONDS,
     ) -> None:
         self._engine = engine
         self._clock = clock
@@ -41,6 +43,7 @@ class GenerationStreamService:
         self._poll_seconds = poll_seconds
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
+        self._disconnect_grace_seconds = disconnect_grace_seconds
 
     async def stream(
         self,
@@ -120,6 +123,7 @@ class GenerationStreamService:
                 connection,
                 lease_token=lease_token,
                 now=self._now(connection),
+                grace_seconds=self._disconnect_grace_seconds,
             )
 
     def _now(self, connection: Any) -> Any:

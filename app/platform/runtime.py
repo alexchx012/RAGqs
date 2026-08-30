@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
@@ -65,6 +65,7 @@ from app.graph import (
     SqlAlchemyPublicGraphStore,
     UsageLedgerSubmissionAdapter,
 )
+from app.graph.ports import GraphComponentCoordinatorPort, PublicGraphSourcePort
 from app.identity.archive import IdentityArchiveProofIssuer, IdentityArchiveProofVerifier
 from app.identity.cleanup import ObjectStoreAccountDeletionCleanupPort
 from app.identity.ports import (
@@ -76,6 +77,7 @@ from app.identity.ports import (
 from app.identity.service import IdentityAccessService
 from app.indexing import (
     ContentProcessor,
+    GenerationManager,
     IndexingService,
     NoopReranker,
     RetrievalReleaseService,
@@ -100,6 +102,7 @@ from app.indexing.image_vlm import (
 from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
 from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.prefix_cache import PrefixCacheManager
+from app.indexing.profiles import SqlAlchemyLibraryProfileResolver
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -126,6 +129,11 @@ from app.usage.metering import LocalUsageMeterService
 from app.usage.observability import UsageResourceMetrics
 from app.usage.price import PriceCatalogService
 from app.usage.quota import QuotaService
+from app.usage.reconcile import (
+    LedgerBackedProviderReconciliationPort,
+    NoopProviderReconciliationPort,
+    UnavailableProviderReconciliationPort,
+)
 from app.usage.requests import QuotaRequestService
 
 from .config import PlatformSettings, validate_startup_settings
@@ -214,6 +222,27 @@ def _default_prompt_enhance_provider(settings: PlatformSettings) -> PromptEnhanc
         api_key=api_key.get_secret_value(),
         model=settings.chat.enhance_model,
         timeout_seconds=settings.chat.enhance_timeout_seconds,
+    )
+
+
+def _default_chat_provider(settings: PlatformSettings) -> Any:
+    """生成 provider 装配：全局 ProviderSettings（DASHSCOPE_API_KEY）就绪时接
+    DashScope 生产 chat adapter；未配置保持 Unavailable（dev/test 503 fail-closed）。"""
+
+    from app.platform.chat_provider import (
+        CHAT_GENERATION_MODEL,
+        CHAT_GENERATION_TIMEOUT_SECONDS,
+        DashScopeChatProvider,
+    )
+
+    api_key = settings.provider.api_key
+    if api_key is None or not api_key.get_secret_value().strip():
+        return UnavailableChatProviderPort()
+    return DashScopeChatProvider(
+        base_url=settings.provider.base_url or PROMPT_ENHANCE_DEFAULT_BASE_URL,
+        api_key=api_key.get_secret_value(),
+        model=CHAT_GENERATION_MODEL,
+        timeout_seconds=CHAT_GENERATION_TIMEOUT_SECONDS,
     )
 
 
@@ -454,6 +483,10 @@ def build_runtime(
         engine, now=clock.now_utc
     )
     configured.setdefault("retrieval_release_service", retrieval_releases)
+    library_profile_resolver = configured.get("library_profile_resolver") or (
+        SqlAlchemyLibraryProfileResolver(engine)
+    )
+    configured.setdefault("library_profile_resolver", library_profile_resolver)
     generation_repository.set_retrieval_release_gate(retrieval_releases.is_released_for_generation)
     reranker = configured.get("indexing_reranker")
     if reranker is None:
@@ -594,10 +627,11 @@ def build_runtime(
         dense_writer=dense_writer,
         sparse_provider=sparse_provider,
         sparse_provider_name=settings.index.sparse_provider,
-        generation_manager=generation_manager,
+        generation_manager=cast(GenerationManager, generation_manager),
         reranker=reranker,
         environment=settings.profile,
         profile_resolver=retrieval_releases.resolve,
+        library_profile_resolver=library_profile_resolver,
         identity_access=identity_access,
         visibility_facts=visibility_facts,
         source_service=public_graph_source_service,
@@ -621,6 +655,10 @@ def build_runtime(
     )
     prices = configured.get("price_catalog") or PriceCatalogService(engine, clock)
     ledger = configured.get("usage_ledger") or UsageLedger(engine, clock, calendar, prices)
+    provider_reconciliation_port = configured.get("provider_reconciliation_port") or (
+        LedgerBackedProviderReconciliationPort(engine)
+    )
+    configured.setdefault("provider_reconciliation_port", provider_reconciliation_port)
     usage_metrics = configured.get("usage_resource_metrics") or UsageResourceMetrics()
     configured.setdefault("usage_resource_metrics", usage_metrics)
     local_usage_meter = configured.get("local_usage_meter") or LocalUsageMeterService(
@@ -656,6 +694,8 @@ def build_runtime(
     configured.setdefault("submission_outbox_port", submission_outbox_port)
     configured.setdefault("ingestion_outbox_port", ingestion_outbox_port)
     configured.setdefault("quota_request_service", quota_request_service)
+    if isinstance(identity_access, IdentityAccessService):
+        identity_access._quota_request_service = quota_request_service
     indexing_usage_submission = configured.get("indexing_usage_submission") or (
         UsageLedgerSubmissionAdapter(ledger)
     )
@@ -676,6 +716,8 @@ def build_runtime(
             ingestion_notification_port=ingestion_outbox_port,
             public_graph_source_service=public_graph_source_service,
             max_upload_bytes=settings.documents.upload_max_bytes,
+            max_files_per_request=settings.documents.upload_max_files_per_request,
+            max_request_bytes=settings.documents.upload_max_request_bytes,
             cleanup_max_attempts=settings.documents.cleanup_max_attempts,
             version_retention_days=settings.documents.version_retention_days,
             preview_renderer=preview_renderer,
@@ -700,6 +742,9 @@ def build_runtime(
         if documents_service._message_citation_preview_port is None:
             documents_service._message_citation_preview_port = message_citation_preview_port
     configured.setdefault("documents_service", documents_service)
+    if callable(getattr(indexing_service, "set_job_stage_sink", None)):
+        # 入库 worker 进入索引构建阶段时回写 job 读模型 stage（B9）。
+        indexing_service.set_job_stage_sink(documents_service.mark_job_indexing)
     if identity_access._personal_document_deletion is None or isinstance(
         identity_access._personal_document_deletion, UnavailablePersonalDocumentDeletionPort
     ):
@@ -725,11 +770,13 @@ def build_runtime(
     graph_usage_submission = configured.get("graph_usage_submission") or (
         UsageLedgerSubmissionAdapter(ledger)
     )
+    graph_coordinator = indexing_service.graph
+    assert graph_coordinator is not None
     graph_build_service = configured.get("graph_build_service") or GraphBuildService(
         engine,
         repository=graph_build_repository,
-        source=public_graph_source_service,
-        coordinator=indexing_service.graph,
+        source=cast(PublicGraphSourcePort, public_graph_source_service),
+        coordinator=cast(GraphComponentCoordinatorPort, graph_coordinator),
         availability=graph_availability_port,
         extractor=graph_build_extractor,
         outbox=graph_build_outbox_port,
@@ -757,7 +804,7 @@ def build_runtime(
         IndexingChatRetrievalPort(indexing_service)
     )
     configured.setdefault("chat_retrieval_port", chat_retrieval)
-    chat_provider = configured.get("chat_provider_port") or UnavailableChatProviderPort()
+    chat_provider = configured.get("chat_provider_port") or _default_chat_provider(settings)
     configured.setdefault("chat_provider_port", chat_provider)
     prompt_enhance_provider = configured.get("prompt_enhance_provider_port") or (
         _default_prompt_enhance_provider(settings)
@@ -773,6 +820,12 @@ def build_runtime(
         UsageLedgerSubmissionAdapter(ledger)
     )
     configured.setdefault("chat_usage_submission", chat_usage)
+    provider_reconciliation = configured.get("provider_reconciliation_port") or (
+        UnavailableProviderReconciliationPort()
+        if settings.profile == "production"
+        else NoopProviderReconciliationPort()
+    )
+    configured.setdefault("provider_reconciliation_port", provider_reconciliation)
     generation_budget_meter = configured.get("generation_budget_meter")
     if settings.profile == "production":
         if not isinstance(generation_budget_meter, BudgetMeterService):
@@ -796,6 +849,7 @@ def build_runtime(
             budget_meter=generation_budget_meter,
             ab_source_filter=chat_ab_source_filter,
             candidate_config_versions=tuple(settings.evaluation.candidate_configs),
+            ask_rate_limit_per_minute=settings.chat.ask_rate_limit_per_minute,
         )
     )
     configured.setdefault("chat_generation_service", chat_generation_service)
@@ -804,6 +858,7 @@ def build_runtime(
             engine,
             clock=clock,
             authorization=chat_authorization,
+            disconnect_grace_seconds=settings.chat.generation_disconnect_grace_seconds,
         )
     )
     configured.setdefault("chat_stream_service", chat_stream_service)
@@ -817,6 +872,8 @@ def build_runtime(
         budget_meter=generation_budget_meter,
         self_evaluator=configured.get("agents_self_evaluator"),
         effort_rag_limits=settings.chat.effort_rag_call_limits,
+        disconnect_grace_seconds=settings.chat.generation_disconnect_grace_seconds,
+        provider_reconciliation=provider_reconciliation,
     )
     configured.setdefault("chat_generation_worker", chat_worker)
     evaluation_repository = configured.get("evaluation_repository") or (
@@ -951,16 +1008,56 @@ def build_runtime(
     # Backup/restore orchestration: the gate reader backs the API read-gate
     # middleware; the orchestration service itself is only registered when
     # its schema is available (fresh databases before the migration resolve
-    # it to None and the API simply runs with the gate open). The provider
-    # ports are registered as adapters so the backup maintenance worker shares
-    # the exact instances the orchestration service was built with.
+    # it to None and the API simply runs with the gate open). A configured
+    # backup target wires the production provider adapters (Postgres snapshot,
+    # object snapshot, object manifest) and the restore-side validation/
+    # rebuild/post-gate adapters; without one, dev/test keep the Noop
+    # defaults. The provider ports are registered as adapters so the backup
+    # maintenance worker shares the exact instances the orchestration service
+    # was built with.
     from app.backup.gate import MaintenanceGateReader
     from app.backup.ports import EmptyObjectManifest, NoopObjectSnapshot, NoopPostgresBackup
 
     configured.setdefault("maintenance_gate_reader", MaintenanceGateReader(engine))
-    configured.setdefault("backup_postgres_port", NoopPostgresBackup())
-    configured.setdefault("backup_object_snapshot_port", NoopObjectSnapshot())
-    configured.setdefault("backup_object_manifest_port", EmptyObjectManifest())
+    backup_target_prefix = settings.backup.target_key_prefix
+    if backup_target_prefix is not None:
+        from app.backup.adapters import (
+            ProductionDerivedRebuild,
+            ProductionFactValidation,
+            ProductionObjectManifest,
+            ProductionObjectSnapshot,
+            ProductionPostGateValidation,
+            ProductionPostgresBackup,
+        )
+
+        configured.setdefault(
+            "backup_postgres_port",
+            ProductionPostgresBackup(engine, object_store, backup_target_prefix),
+        )
+        configured.setdefault(
+            "backup_object_snapshot_port",
+            ProductionObjectSnapshot(engine, object_store, backup_target_prefix),
+        )
+        configured.setdefault(
+            "backup_object_manifest_port",
+            ProductionObjectManifest(engine, object_store),
+        )
+        fact_validation = ProductionFactValidation(engine, object_store)
+        derived_rebuild = ProductionDerivedRebuild(
+            engine,
+            dense_writer=dense_writer,
+            sparse_provider=sparse_provider,
+            prefix_cache=prefix_cache,
+            now=clock.now_utc,
+        )
+        post_gate_validation = ProductionPostGateValidation(engine, object_store)
+    else:
+        configured.setdefault("backup_postgres_port", NoopPostgresBackup())
+        configured.setdefault("backup_object_snapshot_port", NoopObjectSnapshot())
+        configured.setdefault("backup_object_manifest_port", EmptyObjectManifest())
+        fact_validation = None
+        derived_rebuild = None
+        post_gate_validation = None
     if "backup_restore_service" not in configured:
         from app.backup.service import BackupRestoreService
 
@@ -972,6 +1069,9 @@ def build_runtime(
                 postgres_backup=configured["backup_postgres_port"],
                 object_snapshot=configured["backup_object_snapshot_port"],
                 object_manifest=configured["backup_object_manifest_port"],
+                fact_validation=fact_validation,
+                derived_rebuild=derived_rebuild,
+                post_gate_validation=post_gate_validation,
             )
     # Backup operations layer: the write gate reader backs the write-gate
     # middleware and the in-process tracker lets the backup worker drain
@@ -1022,6 +1122,9 @@ def build_runtime(
         "compaction_worker",
         CompactionWorker(worker_runtime, lifecycle=outbox_lifecycle),
     )
+    from app.documents.worker import IngestionWorker
+
+    configured.setdefault("ingestion_worker", IngestionWorker(worker_runtime))
     # Retention & operations orchestration assembly. Destructive effects stay
     # inside the owner domains; retention only drives owner entries and owns
     # its reconciliation/findings/receipts and the server-driven read models.

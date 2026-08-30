@@ -1,6 +1,6 @@
 /*
  * 站内提醒类型（契约《前端接口需求.md》§5.1、§13）。
- * type 为后端下发枚举：九类已知值之外允许未知值（§1 未知枚举兜底：保留条目、
+ * type 为后端下发枚举：十类已知值之外允许未知值（§1 未知枚举兜底：保留条目、
  * 后端 title + 通用图标展示，不展示机读值、不崩溃）。
  * event_occurred_at 为业务事件实际发生时间（ISO 8601 UTC），用于相对时间展示。
  */
@@ -14,7 +14,8 @@ export type KnownNotificationType =
   | 'submission_rejected'
   | 'submission_invalidated'
   | 'calibration_window_suggested'
-  | 'graph_build_completed';
+  | 'graph_build_completed'
+  | 'evaluation_judge_configuration_missing';
 
 /** type 以后端下发为准，未知值兜底为 string。 */
 export type NotificationType = KnownNotificationType | (string & {});
@@ -43,12 +44,17 @@ export interface GraphBuildPayload {
   readonly failure_class?: string;
 }
 
+export interface EvaluationJudgePayload {
+  readonly missing_variable_names: string[];
+}
+
 /** payload 携带跳转所需 ID（§13）；未知类型保持后端原样对象。 */
 export type NotificationPayload =
   | IngestionPayload
   | QuotaPayload
   | SubmissionPayload
   | GraphBuildPayload
+  | EvaluationJudgePayload
   | Record<string, unknown>;
 
 export interface NotificationItem {

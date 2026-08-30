@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.pool import StaticPool
 
+from app.documents.schema import documents_metadata, documents_table
 from app.identity.ports import NoopDepartmentWorkCheckPort
 from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationRevocationPort
 from app.identity.schema import (
@@ -19,6 +20,7 @@ from app.identity.schema import (
     identity_user_table,
 )
 from app.identity.service import IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
 from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
@@ -32,6 +34,8 @@ def make_service(*, settings: AuthSettings | None = None) -> IdentityAccessServi
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
     return IdentityAccessService(
         engine,
         settings or AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -84,16 +88,42 @@ def test_list_spaces_ignores_a_concurrent_public_space_initialization(
             )
         return original_execute(connection, statement, *args, **kwargs)
 
+    now = datetime.now(UTC)
+    with service._engine.begin() as connection:
+        for document_id, lifecycle_status in (
+            ("doc_public_active", "active"),
+            ("doc_public_deleted", "deleted"),
+        ):
+            connection.execute(
+                documents_table.insert().values(
+                    id=document_id,
+                    space_id="public",
+                    lifecycle_status=lifecycle_status,
+                    active_version_id=None,
+                    pending_version_id=None,
+                    active_operation_job_id=None,
+                    deletion_id=None,
+                    version=1,
+                    name="Document",
+                    normalized_name="document",
+                    media_kind="text/plain",
+                    created_by_user_id=str(principal.user_id),
+                    uploaded_at_utc=now,
+                    created_at_utc=now,
+                    updated_at_utc=now,
+                )
+            )
+
     monkeypatch.setattr(Connection, "execute", execute_after_racing_request)
 
-    spaces = service.list_spaces(principal=principal)
+    spaces = service.list_spaces(principal=principal, with_document_counts=True)
 
     assert {
         "id": "public",
         "kind": "public",
         "name": "Public knowledge space",
         "permission": "manage",
-        "document_count": 0,
+        "document_count": 1,
     } in spaces
 
 
@@ -272,6 +302,7 @@ def test_session_revocation_claim_prevents_duplicate_delivery_during_reentry() -
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),

@@ -80,10 +80,13 @@ No business scheduler runs inside the API process. External CronJobs/workflows c
 | Generation lease | Default 90-second execution lease, renewed every 30 seconds. Subscription leases are also 90 seconds with a 30-second SSE heartbeat and 60-second disconnect grace. |
 | Outbox delivery | 60-second delivery lease, renewed every 20 seconds. Delivery attempts and fencing tokens are persisted. |
 | Ingestion attempt | One job has at most four automatic attempts: initial plus three retries after 1 minute, 5 minutes, and 30 minutes with jitter. |
+| Ingestion worker | The resident `ragqs-ingestion-worker` claims pending/due jobs, renews the five-minute attempt lease every 20 seconds while processing, stages indexing output, and commits publication through the fenced documents transaction. `RAG_INGESTION_*` settings control lease, heartbeat, and poll intervals. |
 | Outbox retry | Up to eight automatic attempts with waits of 5 seconds, 30 seconds, 2 minutes, 10 minutes, 30 minutes, 2 hours, and 6 hours with jitter; the eighth failure is `dead_letter`. |
 | Shadow evaluation | An external schedule calls `POST /admin/evaluations/shadow-runs` with an idempotency key. The HTTP handler only creates a queued run. |
 | Graph maintenance | `ops` explicitly creates a graph run. There is no automatic trigger or automatic replay. |
 | Chat maintenance | An external schedule invokes `ragqs-chat-maintenance` with `RAG_MAINTENANCE_KEY`; it reaps generation leases and executes queued chat generations. |
+| Usage maintenance | An external schedule invokes `ragqs-usage-maintenance` with `RAG_MAINTENANCE_KEY`; each tick reconciles unknown provider calls, recovers expired local usage meters, and processes quota cancellation candidates. |
+| Documents maintenance | An external schedule invokes `ragqs-documents-maintenance` with `RAG_MAINTENANCE_KEY`; it deletes private objects for withdrawn or invalidated submissions and records the cleanup timestamp. The operation is idempotent. |
 | Backup maintenance | The resident `ragqs-backup-maintenance` worker claims due schedule windows, executes backups under the write gate, drives restores, and applies retention expiry from persisted state. Cadence, gate settle/drain timings and sweep batch size come from the `RAG_BACKUP_*` settings. |
 | Retention and GC | Maintenance work is persisted and idempotent. Its cadence is a profile value; it must be frequent enough to honor lifecycle deadlines and must never remove an active reference. |
 | Backup | Use the deployment backup profile, record `backup_id`, validate the object manifest, and alert on any incomplete component. |
@@ -155,10 +158,10 @@ When correctness is uncertain, preserve PostgreSQL and object storage, stop deri
 
 **Trigger:** a generation execution has a provider call in `dispatching` or `unknown` after a connection failure, timeout, or worker restart.
 
-1. Chat provider reconciliation is **not implemented**: there is no `provider_reconciling` execution status and no worker protocol to enter one. Never report or record a reconciled outcome for a chat generation; that state does not exist.
-2. If the provider result is unknown, let the existing execution protocol run its course: the attempt either completes on the persisted execution or transitions to `retry_wait`/`failed` with the recorded error classification. Do not mark an unknown outcome as completed.
-3. Optional manual forensics: query the provider's supported request-status API, provider logs, or billing record using the immutable `provider_call_id` and idempotency key. Findings inform incident review only; they must not mutate the generation's terminal state.
-4. If the result remains unknown at the deadline, the execution fails with the recorded classification and the usage ledger keeps the original outbound attempt exactly once. Do not create a new user-visible generation automatically.
+1. The worker records a transport-uncertain execution as `provider_reconciling` and keeps the immutable `provider_call_id`, request fingerprint, generation `request_id`, and deadline. Provider confirmation runs outside database transactions; the decision is applied in a short follow-up transaction.
+2. A confirmed completed call reuses the provider result and measurement, completing the usage ledger before the persisted generation resumes publication. A confirmed not-sent call is marked `not_sent` and requeued at the same generation. A still-unknown call remains eligible for the next reconciliation pass.
+3. Optional manual forensics: query the provider's supported request-status API, provider logs, or billing record using the immutable `provider_call_id` and idempotency key. Findings must agree with the configured reconciliation adapter before mutating persisted state.
+4. If the result remains unknown at the deadline, the execution fails with `provider_result_unknown`, emits one terminal SSE `error` event carrying the persisted generation `request_id`, and does not create a new user-visible generation automatically.
 
 **Verify:** the generation has at most one terminal event, the user can use the normal failed-generation retry flow if permitted, and the usage ledger contains the original outbound attempt exactly once.
 
@@ -339,7 +342,7 @@ For a rejected action, record the server error code and preserve the original st
 | Graph build | `GET /ops/graph-builds/current`, `POST /ops/graph-builds`, protected cancel | `ops` only |
 | Shadow evaluation | `POST /admin/evaluations/shadow-runs`, `GET .../{run_id}` | Run creation `ops`; read `ops`/`admin` |
 | Calibration | `GET/POST /calibration/window` | Read per contract; mutations `ops` only |
-| A/B vote | `POST /messages/{id}/ab-vote` | Current authorized voter; non-owner or cross-space votes return `403 ab_vote_forbidden`; idempotent |
+| A/B vote | `POST /messages/{id}/ab-vote` | Current authorized voter; non-owner or cross-space votes return `403 forbidden`; idempotent |
 | Metrics | `GET /metrics/dashboard`, `GET /metrics/operations` | Role-filtered read projection |
 
 These interfaces are not permission shortcuts. The server recomputes current ACL, lifecycle, version, lease, and idempotency conditions for every operation.

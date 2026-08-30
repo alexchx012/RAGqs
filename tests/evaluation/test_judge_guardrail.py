@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import pytest
 
 from app.evaluation.policy import assert_judge_family_isolation, model_family
@@ -70,7 +73,12 @@ def _production_environment(**overrides: str) -> dict[str, str]:
         "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
         "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
         "RAG_AUTH_ADMIN_ROSTER": "admin",
-        "USER_DELETION_ARCHIVE_DIR": "C:/var/ragqs/user-archive",
+        "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
+        # production 校验 os.path.isabs 且会 makedirs + 写探针文件：必须用本平台
+        # 绝对且可写的路径，硬编码盘符路径在 Linux CI 上必挂。
+        "USER_DELETION_ARCHIVE_DIR": os.path.join(
+            tempfile.gettempdir(), "ragqs-user-deletion-archive"
+        ),
     }
     values.update(overrides)
     return values

@@ -52,6 +52,15 @@ class ActiveGenerationPort(Protocol):
 
 
 class GraphComponentCoordinatorPort(Protocol):
+    def request_index_generation_gc(
+        self,
+        *,
+        candidate_generation_id: str,
+        reconciliation_run_id: str,
+        operation_id: str,
+        caller_principal: str | None = None,
+    ) -> Any: ...
+
     def reserve_graph_component_stage(
         self,
         *,

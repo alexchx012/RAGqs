@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import Engine, and_, or_, select, update
 from sqlalchemy.engine import Connection
@@ -31,7 +32,7 @@ from app.platform.errors import PlatformError
 
 from .ledger import OwnershipSnapshot, ProviderMeasurement, UsageLedger  # noqa: F401
 from .ports import ProviderReconciliationPort
-from .schema import provider_call_table
+from .schema import provider_call_table, usage_event_table
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,9 @@ class ConfirmedUsage:
     result: str
     started_at_utc: datetime
     provider_request_id: str | None = None
+    # Chat reconciliation returns the original answer body so the worker can
+    # resume publication without issuing the provider call again.
+    content: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +92,119 @@ class UnavailableProviderReconciliationPort:
             503,
             True,
         )
+
+
+class LedgerBackedProviderReconciliationPort:
+    """生产对账端口：以 usage ledger 的持久化状态为 provider 侧确认事实。
+
+    DashScope compatible-mode 未提供按 provider_call_id 的结果查询 API；
+    生产实现基于账本不变量做保守判定（§2.9 deadline 契约保证 provider 调用
+    不会越过 deadline 继续处理）：
+
+    - 行不存在 → ``StillUnknown``（无法确认，保持 unknown）；
+    - ``prepared``（从未 dispatch）→ ``ConfirmedNotSent``（确定未发送——
+      worker 在 prepare 与 dispatch 之间崩溃的恢复场景）；
+    - ``not_sent`` → ``ConfirmedNotSent``；
+    - ``completed`` → ``ConfirmedUsage``（从 usage_event 恢复计量与归属）；
+    - ``dispatching``/``unknown`` → ``StillUnknown``（已发送但结果未知，
+      保守不虚构用量；provider 侧查询 API 就绪后在此接入）。
+
+    只读查询：port 契约要求 provider 查询在事务外执行（connection=None，
+    不得回写账本）。
+    """
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+
+    def confirm(
+        self,
+        *,
+        provider_call_id: str,
+        fingerprint: str,
+        connection: Connection | None,
+    ) -> ConfirmedUsage | ConfirmedNotSent | StillUnknown:
+        del fingerprint, connection
+        with self._engine.connect() as reader:
+            call = (
+                reader.execute(
+                    select(provider_call_table).where(
+                        provider_call_table.c.provider_call_id == provider_call_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if call is None:
+                return StillUnknown()
+            status = str(call["status"])
+            if status == "prepared":
+                # prepare 已提交但从未进入 dispatching：确定未发送。
+                return ConfirmedNotSent()
+            if status == "not_sent":
+                return ConfirmedNotSent()
+            if status != "completed":
+                return StillUnknown()
+            event = (
+                reader.execute(
+                    select(usage_event_table)
+                    .where(
+                        usage_event_table.c.provider_call_id == provider_call_id,
+                        usage_event_table.c.event_kind == "provider_usage",
+                    )
+                    .order_by(usage_event_table.c.created_at_utc.desc())
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+            if event is None:
+                # completed 行缺少 usage 事件属于账本不变量缺口：不虚构用量。
+                return StillUnknown()
+            return ConfirmedUsage(
+                measurement=_measurement_from_event(event),
+                ownership=_ownership_from_event(event),
+                result=str(event["result"]),
+                started_at_utc=_utc(event["started_at_utc"]),
+                provider_request_id=(
+                    str(event["provider_request_id"])
+                    if event["provider_request_id"] is not None
+                    else None
+                ),
+            )
+
+
+def _measurement_from_event(event: Any) -> ProviderMeasurement:
+    sources = event["measurement_sources"]
+    return ProviderMeasurement(
+        input_tokens=event["input_tokens"],
+        prompt_cache_hit_tokens=event["prompt_cache_hit_tokens"],
+        prompt_cache_miss_tokens=event["prompt_cache_miss_tokens"],
+        output_tokens=event["output_tokens"],
+        reasoning_tokens=event["reasoning_tokens"],
+        image_count=event["image_count"],
+        visual_input_tokens=event["visual_input_tokens"],
+        embedding_input_tokens=event["embedding_input_tokens"],
+        vector_count=event["vector_count"],
+        measurement_sources=dict(sources) if isinstance(sources, dict) else {},
+    )
+
+
+def _ownership_from_event(event: Any) -> OwnershipSnapshot:
+    values = dict(event["ownership_json"] or {})
+    source_space_ids = values.pop("source_space_ids", None)
+    return OwnershipSnapshot(
+        actor_user_id=str(values.get("actor_user_id") or ""),
+        actor_role_snapshot=str(values.get("actor_role_snapshot") or ""),
+        actor_department_id_snapshot=values.get("actor_department_id_snapshot"),
+        quota_subject_user_id=values.get("quota_subject_user_id"),
+        cost_center_key=str(values.get("cost_center_key") or ""),
+        space_id=values.get("space_id"),
+        space_kind=values.get("space_kind"),
+        space_owner_user_id=values.get("space_owner_user_id"),
+        authorization_version=values.get("authorization_version"),
+        fence_token=values.get("fence_token"),
+        source_space_ids=tuple(source_space_ids or ()),
+    )
 
 
 def _utc(value: datetime) -> datetime:

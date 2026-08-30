@@ -95,6 +95,17 @@ afterEach(() => {
 });
 
 describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', () => {
+  it('显示投稿目标空间与失效原因', async () => {
+    const api = createContractApi();
+
+    await renderLayer(api);
+
+    expect(
+      (await screen.findAllByText(copy.settings.knowledge.submissions.targetSpace('财务部'))).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(copy.settings.knowledge.submissions.invalidatedReason)).toBeInTheDocument();
+  });
+
   it('筛选切换重新请求；撤回固定两点确认后行原地保留转已撤回', async () => {
     // 新增一个公开库投稿（种子 + 新增均可见）
     const api = createContractApi();
@@ -105,7 +116,7 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
       [{ name: '待撤回稿件.md', size: 5, type: 'text/markdown' }],
       'idem-layer-1',
     );
-    expect(upload.items[0]?.status).toBe('pending');
+    expect(upload.items[0]?.accepted).toBe(true);
     const user = userEvent.setup();
 
     await renderLayer(api);
@@ -140,14 +151,14 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
     await renderLayer(api);
 
     // 五态种子引入多个可删除行：按目标文件名定位其所在行的「删除」
-    const targetRow = (await screen.findByText(target.file_name)).closest('li') as HTMLElement;
+    const targetRow = (await screen.findByText(target.name)).closest('li') as HTMLElement;
     await user.click(
       within(targetRow).getByRole('button', { name: copy.settings.knowledge.submissions.delete }),
     );
-    expect(screen.getByText(copy.settings.knowledge.submissions.deleteConfirmDescription(target.file_name))).toBeInTheDocument();
+    expect(screen.getByText(copy.settings.knowledge.submissions.deleteConfirmDescription(target.name))).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.delete }));
 
-    await waitFor(() => expect(screen.queryByText(target.file_name)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText(target.name)).not.toBeInTheDocument());
   });
 });
 
@@ -278,7 +289,7 @@ describe('SubmissionsLayer mutation filter generation（review A4）', () => {
     });
     // 服务端确已 withdrawn（数据验证）
     const withdrawn = mockKnowledge.listSubmissions(token, 'withdrawn');
-    expect(withdrawn.items.some((item) => item.file_name === '代际撤回.md')).toBe(true);
+    expect(withdrawn.items.some((item) => item.name === '代际撤回.md')).toBe(true);
     void upload;
   });
 });

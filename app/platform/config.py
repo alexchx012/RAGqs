@@ -70,16 +70,48 @@ class ProviderSettings(_StrictModel):
 class WorkerSettings(_StrictModel):
     concurrency: int = Field(default=1, ge=1, le=128)
     lease_seconds: int = Field(default=60, ge=5, le=3600)
+    ingestion_lease_seconds: int = Field(default=300, ge=5, le=3600)
+    ingestion_heartbeat_seconds: int = Field(default=20, ge=1, le=300)
+    ingestion_poll_interval_seconds: int = Field(default=5, ge=1, le=3600)
+
+    @model_validator(mode="after")
+    def validate_ingestion_heartbeat(self) -> WorkerSettings:
+        if self.ingestion_heartbeat_seconds >= self.ingestion_lease_seconds:
+            raise ValueError("ingestion heartbeat must be shorter than the ingestion lease")
+        return self
 
 
 class BackupSettings(_StrictModel):
     """Resident backup maintenance worker tuning (schedule poll, write-gate
-    drain protocol and retention sweep batch size)."""
+    drain protocol and retention sweep batch size) plus the backup target in
+    object storage."""
 
     schedule_interval_seconds: int = Field(default=60, ge=5, le=3600)
     gate_settle_seconds: float = Field(default=2.0, ge=0.0, le=300.0)
     gate_drain_timeout_seconds: float = Field(default=30.0, ge=1.0, le=900.0)
     retention_batch_limit: int = Field(default=50, ge=1, le=1000)
+    # 备份目标：对象存储 bucket 内的备份命名空间（必填段）与可选子前缀。
+    # 备份/恢复产物统一落在该键前缀下，不与业务对象混放；生产未配置命名空间
+    # 时启动拒绝（fail-closed，见 validate_startup_settings）。
+    target_namespace: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_-]*$"
+    )
+    target_prefix: str | None = Field(
+        default=None, min_length=1, max_length=256, pattern=r"^[a-z0-9][a-z0-9_/-]*$"
+    )
+
+    @property
+    def target_key_prefix(self) -> str | None:
+        """Effective object key prefix of the backup target, or None when no
+        backup target is configured (dev/test keep the Noop defaults)."""
+
+        if self.target_namespace is None:
+            return None
+        namespace = self.target_namespace.strip("/")
+        prefix = (self.target_prefix or "").strip("/")
+        if prefix:
+            return f"{namespace}/{prefix}"
+        return namespace
 
 
 class LoggingSettings(_StrictModel):
@@ -146,6 +178,8 @@ class ChatSettings(_StrictModel):
     effort_rag_call_limit_quick: int = Field(default=1, ge=1)
     effort_rag_call_limit_think: int = Field(default=8, ge=1)
     effort_rag_call_limit_deep: int = Field(default=10, ge=1)
+    ask_rate_limit_per_minute: int = Field(default=20, ge=1)
+    generation_disconnect_grace_seconds: int = Field(default=60, ge=0, le=3600)
     # 「优化输入」端点：模型名以 Literal 锁死（平台唯一支持的增强模型），密钥与
     # 地址复用全局 ProviderSettings；超时与输入上限为可部署配置。
     enhance_model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
@@ -163,6 +197,8 @@ class ChatSettings(_StrictModel):
 
 class DocumentsSettings(_StrictModel):
     upload_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
+    upload_max_files_per_request: int = Field(default=20, ge=1)
+    upload_max_request_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     cleanup_max_attempts: int = Field(default=3, ge=1)
     version_retention_days: int = Field(default=30, ge=1)
 
@@ -208,6 +244,8 @@ class AuthSettings(_StrictModel):
     bootstrap_password: SecretStr | None = None
     bootstrap_real_name: str | None = None
     bootstrap_display_name: str | None = None
+    # Roster 条目是不可变 user_id：bootstrap 必须按清单预声明的 id 建号。
+    bootstrap_user_id: str | None = None
 
     @model_validator(mode="after")
     def validate_bootstrap_settings(self) -> AuthSettings:
@@ -284,10 +322,15 @@ _ENV_KEYS = {
     "RAG_PROVIDER_BASE_URL",
     "RAG_WORKER_CONCURRENCY",
     "RAG_WORKER_LEASE_SECONDS",
+    "RAG_INGESTION_LEASE_SECONDS",
+    "RAG_INGESTION_HEARTBEAT_SECONDS",
+    "RAG_INGESTION_POLL_INTERVAL_SECONDS",
     "RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS",
     "RAG_BACKUP_GATE_SETTLE_SECONDS",
     "RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS",
     "RAG_BACKUP_RETENTION_BATCH_LIMIT",
+    "RAG_BACKUP_TARGET_NAMESPACE",
+    "RAG_BACKUP_TARGET_PREFIX",
     "RAG_LOG_LEVEL",
     "RAG_INDEX_NAMESPACE",
     "RAG_INDEX_SPARSE_PROVIDER",
@@ -323,6 +366,10 @@ _ENV_KEYS = {
     "RAG_EFFORT_RAG_CALL_LIMIT_QUICK",
     "RAG_EFFORT_RAG_CALL_LIMIT_THINK",
     "RAG_EFFORT_RAG_CALL_LIMIT_DEEP",
+    "RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE",
+    "CHAT_ASK_RATE_LIMIT_PER_MINUTE",
+    "RAG_GENERATION_DISCONNECT_GRACE_SECONDS",
+    "GENERATION_DISCONNECT_GRACE_SECONDS",
     "RAG_CHAT_ENHANCE_MODEL",
     "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS",
     "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS",
@@ -341,6 +388,8 @@ _ENV_KEYS = {
     "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PREFIX_TOKEN_LIMIT",
     "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER",
     "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
+    "RAG_UPLOAD_MAX_FILES_PER_REQUEST",
+    "RAG_UPLOAD_MAX_REQUEST_BYTES",
     "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS",
     "RAG_EVALUATION_JUDGE_CREDENTIAL_REF",
     "RAG_EVALUATION_JUDGE_BASE_URL",
@@ -366,7 +415,13 @@ _ENV_KEYS = {
     "RAG_AUTH_BOOTSTRAP_PASSWORD",
     "RAG_AUTH_BOOTSTRAP_REAL_NAME",
     "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME",
+    "RAG_AUTH_BOOTSTRAP_USER_ID",
     "RAG_DEBUG",
+}
+
+_UNPREFIXED_SUPPORTED_KEYS = {
+    "CHAT_ASK_RATE_LIMIT_PER_MINUTE",
+    "GENERATION_DISCONNECT_GRACE_SECONDS",
 }
 _LEGACY_OR_FORBIDDEN_KEYS = {
     "DATABASE_URL",
@@ -456,7 +511,11 @@ def load_platform_settings(
     relevant = {
         key: value
         for key, value in env.items()
-        if key.startswith("RAG_") or key in _LEGACY_OR_FORBIDDEN_KEYS
+        if (
+            key.startswith("RAG_")
+            or key in _LEGACY_OR_FORBIDDEN_KEYS
+            or key in _UNPREFIXED_SUPPORTED_KEYS
+        )
     }
     unknown = sorted(key for key in relevant if key not in _ENV_KEYS)
     if unknown:
@@ -490,6 +549,9 @@ def load_platform_settings(
             for key, value in {
                 "concurrency": _int(env, "RAG_WORKER_CONCURRENCY"),
                 "lease_seconds": _int(env, "RAG_WORKER_LEASE_SECONDS"),
+                "ingestion_lease_seconds": _int(env, "RAG_INGESTION_LEASE_SECONDS"),
+                "ingestion_heartbeat_seconds": _int(env, "RAG_INGESTION_HEARTBEAT_SECONDS"),
+                "ingestion_poll_interval_seconds": _int(env, "RAG_INGESTION_POLL_INTERVAL_SECONDS"),
             }.items()
             if value is not None
         },
@@ -500,6 +562,8 @@ def load_platform_settings(
                 "gate_settle_seconds": _float(env, "RAG_BACKUP_GATE_SETTLE_SECONDS"),
                 "gate_drain_timeout_seconds": _float(env, "RAG_BACKUP_GATE_DRAIN_TIMEOUT_SECONDS"),
                 "retention_batch_limit": _int(env, "RAG_BACKUP_RETENTION_BATCH_LIMIT"),
+                "target_namespace": _optional(env, "RAG_BACKUP_TARGET_NAMESPACE"),
+                "target_prefix": _optional(env, "RAG_BACKUP_TARGET_PREFIX"),
             }.items()
             if value is not None
         },
@@ -590,6 +654,8 @@ def load_platform_settings(
             key: value
             for key, value in {
                 "upload_max_bytes": _int(env, "RAG_DOCUMENTS_UPLOAD_MAX_BYTES"),
+                "upload_max_files_per_request": _int(env, "RAG_UPLOAD_MAX_FILES_PER_REQUEST"),
+                "upload_max_request_bytes": _int(env, "RAG_UPLOAD_MAX_REQUEST_BYTES"),
                 "cleanup_max_attempts": _int(env, "RAG_DOCUMENTS_CLEANUP_MAX_ATTEMPTS"),
                 "version_retention_days": _int(env, "DOCUMENT_VERSION_RETENTION_DAYS"),
             }.items()
@@ -601,6 +667,19 @@ def load_platform_settings(
                 "effort_rag_call_limit_quick": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_QUICK"),
                 "effort_rag_call_limit_think": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_THINK"),
                 "effort_rag_call_limit_deep": _int(env, "RAG_EFFORT_RAG_CALL_LIMIT_DEEP"),
+                "ask_rate_limit_per_minute": (
+                    _int(env, "RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE")
+                    if _optional(env, "RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE") is not None
+                    else _int(env, "CHAT_ASK_RATE_LIMIT_PER_MINUTE")
+                ),
+                "generation_disconnect_grace_seconds": _int(
+                    env,
+                    (
+                        "RAG_GENERATION_DISCONNECT_GRACE_SECONDS"
+                        if _optional(env, "RAG_GENERATION_DISCONNECT_GRACE_SECONDS") is not None
+                        else "GENERATION_DISCONNECT_GRACE_SECONDS"
+                    ),
+                ),
                 "enhance_model": _optional(env, "RAG_CHAT_ENHANCE_MODEL"),
                 "enhance_timeout_seconds": _int(env, "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS"),
                 "enhance_max_prompt_chars": _int(env, "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS"),
@@ -657,6 +736,7 @@ def load_platform_settings(
                 "bootstrap_password": _optional(env, "RAG_AUTH_BOOTSTRAP_PASSWORD"),
                 "bootstrap_real_name": _optional(env, "RAG_AUTH_BOOTSTRAP_REAL_NAME"),
                 "bootstrap_display_name": _optional(env, "RAG_AUTH_BOOTSTRAP_DISPLAY_NAME"),
+                "bootstrap_user_id": _optional(env, "RAG_AUTH_BOOTSTRAP_USER_ID"),
             }.items()
             if value not in (None, ())
         },
@@ -766,6 +846,10 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
             raise ValueError("production auth allowed origins are required")
         if not settings.auth.admin_roster:
             raise ValueError("production auth admin roster is required")
+        if not settings.backup.target_namespace:
+            raise ValueError(
+                "production requires a backup target namespace (RAG_BACKUP_TARGET_NAMESPACE)"
+            )
         _precheck_user_deletion_archive_dir(settings)
     if settings.index.contextual_retrieval_provider != "disabled":
         if not settings.index.contextual_retrieval_base_url:
@@ -791,9 +875,15 @@ def _resolve_user_deletion_archive_dir(auth: AuthSettings, profile: str) -> str:
         if profile == "production":
             raise ValueError("production requires USER_DELETION_ARCHIVE_DIR to be configured")
         return os.path.abspath(os.path.join("data", "user-deletion-archives"))
-    path = os.path.abspath(os.path.expanduser(configured.strip()))
-    if not os.path.isabs(path):
-        raise ValueError("USER_DELETION_ARCHIVE_DIR must be an absolute path")
+    # isabs must run on the raw configured string: expanduser would turn "~/x"
+    # into an absolute path and silently mask a deployment-relative location.
+    raw = configured.strip()
+    if not os.path.isabs(raw):
+        raise ValueError(
+            "USER_DELETION_ARCHIVE_DIR must be an absolute path "
+            "(~ expansion and relative paths are not accepted)"
+        )
+    path = os.path.abspath(os.path.expanduser(raw))
     lowered = {part.lower() for part in path.replace("\\", "/").split("/")}
     if lowered & _FORBIDDEN_ARCHIVE_DIR_PARTS:
         raise ValueError(

@@ -80,7 +80,7 @@ def test_completed_delete_becomes_non_descriptive_tombstone(service, principal) 
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-1",
     )
     service.finalize_deletion(document_id=item["document_id"], deletion_id=deletion["deletion_id"])
@@ -98,7 +98,7 @@ def test_expired_superseded_version_is_purged_through_cleanup_targets(service, p
     replacement = service.replace_version(
         principal=principal,
         document_id=created["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="replace-retention-1",
     )
@@ -129,7 +129,7 @@ def test_deletion_cleanup_retries_only_failed_targets(service, principal) -> Non
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-retry-1",
     )
 
@@ -185,7 +185,7 @@ def test_retention_registers_and_cleans_receipt_derived_resources(service, princ
     replacement = service.replace_version(
         principal=principal,
         document_id=original["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="replace-derived-retention-1",
     )
@@ -232,7 +232,7 @@ def test_deletion_waits_for_and_retries_failed_derived_cleanup_target(service, p
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-derived-1",
     )
 
@@ -242,7 +242,9 @@ def test_deletion_waits_for_and_retries_failed_derived_cleanup_target(service, p
     with service._engine.connect() as connection:
         targets = {
             (row["backend_kind"], row["resource_id"]): row["state"]
-            for row in connection.execute(select(document_deletion_cleanup_targets_table)).mappings()
+            for row in connection.execute(
+                select(document_deletion_cleanup_targets_table)
+            ).mappings()
         }
     assert targets[("index", "index-1")] == "failed"
     assert targets[("parsing", "parse-1")] == "pending"
@@ -250,9 +252,11 @@ def test_deletion_waits_for_and_retries_failed_derived_cleanup_target(service, p
     assert service.finalize_deletion(
         document_id=item["document_id"], deletion_id=deletion["deletion_id"]
     ) == {"document_id": item["document_id"], "state": "deleted"}
-    assert derived_cleanup.cleaned[:3] == [
+    # 派生索引目标排首段；世代枚举目标缀于 stage 索引资源之后。
+    assert derived_cleanup.cleaned[:4] == [
         ("index", "index-1"),
         ("index", "index-1"),
+        ("index", "index_generation:generation_initial"),
         ("parsing", "parse-1"),
     ]
 
@@ -276,7 +280,7 @@ def test_deletion_cleanup_stops_retrying_a_target_after_three_failures(service, 
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-derived-retry-limit-1",
     )
 
@@ -293,7 +297,8 @@ def test_deletion_cleanup_stops_retrying_a_target_after_three_failures(service, 
         target = (
             connection.execute(
                 select(document_deletion_cleanup_targets_table).where(
-                    document_deletion_cleanup_targets_table.c.backend_kind == "index"
+                    document_deletion_cleanup_targets_table.c.backend_kind == "index",
+                    document_deletion_cleanup_targets_table.c.resource_id == "index-persistent",
                 )
             )
             .mappings()

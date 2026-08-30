@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from _helpers import alembic_config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 
 from alembic import command
 from app.outbox.schema import OUTBOX_TABLE_NAMES
@@ -239,3 +239,160 @@ def _assert_full_event_identity_guarded(engine) -> None:
             {"eid": event_id},
         )
 
+
+def test_postgres_backfills_inboxes_and_compact_due_index_serves_the_scan() -> None:
+    """0040（A1/A7/A11）：存量用户逐一补建 inbox（退休账号除外、已有 inbox 不
+    覆盖）；compact 候选查询在 PostgreSQL 下走 partial index；metric prune 走
+    observed 索引。"""
+    import uuid
+
+    if not _pg_url():
+        pytest.skip("PostgreSQL integration environment is not configured")
+    from _helpers import build_identity_service
+    from sqlalchemy import create_engine
+
+    from app.identity.schema import identity_user_table
+
+    database_url = _pg_url()
+    schema = f"mig_backfill_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(database_url)
+    try:
+        with admin.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    finally:
+        admin.dispose()
+    scoped = _scoped_url(database_url, schema)
+    engine = create_engine(scoped)
+    try:
+        config = alembic_config(scoped)
+        command.upgrade(config, "0039_chat_release_merge")
+
+        identity = build_identity_service(engine)
+        for name in ("plain-user", "inbox-user", "retired-user"):
+            identity.provision_user(
+                username=name,
+                password="Password1",
+                real_name=name.title(),
+                display_name=name.title(),
+                role="user",
+                department_id=None,
+            )
+        with engine.begin() as connection:
+            fetched = dict(
+                connection.execute(
+                    select(identity_user_table.c.username, identity_user_table.c.id)
+                ).all()
+            )
+        plain = fetched["plain-user"]
+        inbox_keeper = fetched["inbox-user"]
+        retired = fetched["retired-user"]
+
+        # 模拟存量：清空 inbox；退休账号留墓碑；一个用户保留非默认 inbox 值。
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM notification_inbox"))
+            connection.execute(
+                text(
+                    "INSERT INTO outbox_account_retirement_tombstone "
+                    "(recipient_user_id, next_notification_seq, read_through_seq, retired_at_utc) "
+                    "VALUES (:uid, 1, 0, now())"
+                ),
+                {"uid": retired},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO notification_inbox "
+                    "(recipient_user_id, next_notification_seq, read_through_seq, "
+                    "read_all_at_utc, version, retired) VALUES (:uid, 5, 3, NULL, 7, FALSE)"
+                ),
+                {"uid": inbox_keeper},
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    text(
+                        "SELECT recipient_user_id, next_notification_seq, read_through_seq, "
+                        "version FROM notification_inbox"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            by_user = {row["recipient_user_id"]: row for row in rows}
+            assert set(by_user) == {plain, inbox_keeper}
+            assert by_user[plain]["next_notification_seq"] == 1
+            assert by_user[plain]["read_through_seq"] == 0
+            assert by_user[plain]["version"] == 1
+            assert by_user[inbox_keeper]["next_notification_seq"] == 5
+            assert by_user[inbox_keeper]["read_through_seq"] == 3
+            assert by_user[inbox_keeper]["version"] == 7
+
+            # compact 候选扫描必须走 partial index：墓碑行不进索引，少量到期
+            # 行可被索引命中（大表使规划器自然选择索引路径）。
+            connection.execute(
+                text(
+                    "INSERT INTO outbox_event (event_id, event_type, schema_version, "
+                    "aggregate_type, aggregate_id, transition_version, occurred_at_utc, "
+                    "payload_json, payload_fingerprint, trace_id, created_at_utc, storage_state, "
+                    "compact_after_at_utc, compacted_at_utc, compacted_delivery_summary_json) "
+                    "SELECT 'evtc_' || g, 'ingestion_completed', NULL, 'ingestion_job', "
+                    "'job_' || g, g, now(), NULL, 'fp_' || g, NULL, now(), 'compacted', "
+                    "NULL, now(), '[]' FROM generate_series(1, 20000) g"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO outbox_event (event_id, event_type, schema_version, "
+                    "aggregate_type, aggregate_id, transition_version, occurred_at_utc, "
+                    "payload_json, payload_fingerprint, trace_id, created_at_utc, storage_state, "
+                    "compact_after_at_utc, compacted_at_utc, compacted_delivery_summary_json) "
+                    "VALUES ('evt_due_1', 'ingestion_completed', 1, 'ingestion_job', 'job_due', 1, "
+                    "now(), '{}', 'fp_due', 'trace', now(), 'full', now() - interval '1 hour', "
+                    "NULL, NULL)"
+                )
+            )
+            connection.execute(text("ANALYZE outbox_event"))
+            plan = "\n".join(
+                connection.execute(
+                    text(
+                        "EXPLAIN (COSTS OFF) SELECT event_id FROM outbox_event "
+                        "WHERE storage_state = 'full' AND compact_after_at_utc IS NOT NULL "
+                        "AND compact_after_at_utc <= now()"
+                    )
+                ).scalars()
+            )
+            assert "ix_outbox_event_compact_due" in plan
+
+            connection.execute(
+                text(
+                    "INSERT INTO outbox_metric (metric_name, observed_at_utc, value, event_id) "
+                    "SELECT 'outbox.deliveries.delivered', now(), 1.0, NULL "
+                    "FROM generate_series(1, 20000)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO outbox_metric (metric_name, observed_at_utc, value, event_id) "
+                    "VALUES ('outbox.deliveries.delivered', now() - interval '31 days', 1.0, NULL)"
+                )
+            )
+            connection.execute(text("ANALYZE outbox_metric"))
+            metric_plan = "\n".join(
+                connection.execute(
+                    text(
+                        "EXPLAIN (COSTS OFF) SELECT id FROM outbox_metric "
+                        "WHERE observed_at_utc < now() - interval '30 days'"
+                    )
+                ).scalars()
+            )
+            assert "ix_outbox_metric_observed" in metric_plan
+    finally:
+        engine.dispose()
+        admin = create_engine(database_url)
+        try:
+            with admin.begin() as connection:
+                connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        finally:
+            admin.dispose()

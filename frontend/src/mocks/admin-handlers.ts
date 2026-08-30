@@ -668,7 +668,8 @@ export function createAdminHandlers(
           ['username', 'real_name', 'display_name', 'department_id', 'role', 'initial_password'],
           ['username', 'real_name', 'department_id', 'role', 'initial_password'],
         );
-        // 用户写操作不带 Idempotency-Key（契约 §12：用户名唯一约束兜底重复提交）。
+        // 与真实后端一致：用户写操作必须携带 Idempotency-Key（缺失 422）。
+        requireIdempotencyKey(request);
         return HttpResponse.json(
           controller.createUser(request.headers.get('Authorization'), {
             username: requireStringField(body, 'username'),
@@ -689,6 +690,7 @@ export function createAdminHandlers(
       try {
         const body = await jsonObject(request);
         requireKeyShape(body, ['expected_version', 'role', 'department_id'], ['expected_version']);
+        requireIdempotencyKey(request);
         const expectedVersion = requireExpectedVersion(body);
         const input: { expected_version: number; role?: Role; department_id?: string | null } = {
           expected_version: expectedVersion,
@@ -711,6 +713,7 @@ export function createAdminHandlers(
       try {
         const body = await jsonObject(request);
         requireExactKeys(body, ['expected_version']);
+        requireIdempotencyKey(request);
         const expectedVersion = requireExpectedVersion(body);
         return HttpResponse.json(
           controller.deleteUser(

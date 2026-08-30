@@ -12,6 +12,7 @@ from app.platform.errors import PlatformError
 
 from .domain import DocumentVersionState, IngestionJobState, PublicationState
 from .schema import (
+    document_version_restore_holds_table,
     document_versions_table,
     documents_table,
     ingestion_attempts_table,
@@ -190,9 +191,31 @@ class DocumentsJobCoordinator:
             authorization_fence = self._service._worker_authorization_fence(
                 connection, job=job, document=document
             )
+            cycle_attempt_number = (
+                int(
+                    connection.execute(
+                        select(func.count())
+                        .select_from(ingestion_attempts_table)
+                        .where(
+                            and_(
+                                ingestion_attempts_table.c.job_id == job["id"],
+                                ingestion_attempts_table.c.replay_generation
+                                == job["replay_generation"],
+                            )
+                        )
+                    ).scalar_one()
+                )
+                + 1
+            )
             attempt_id = _id("attempt")
             expires = now + self._lease_ttl
-            subject_user_id = str(job["created_by_user_id"])
+            # 初始执行序列的执行/额度主体是原上传者；人工重放序列切换为
+            # 重放操作者（created_by_user_id 不改写，主体切换见设计 2.3）。
+            subject_user_id = (
+                str(job["replayed_by_user_id"])
+                if int(job["replay_generation"]) > 0 and job["replayed_by_user_id"]
+                else str(job["created_by_user_id"])
+            )
             space_id = str(document["space_id"])
             cost_center_key, space_kind, space_owner_user_id = (
                 self._service._publication_space_ownership(
@@ -244,7 +267,7 @@ class DocumentsJobCoordinator:
                     id=attempt_id,
                     job_id=job["id"],
                     attempt_number=attempt_number,
-                    cycle_attempt_number=attempt_number,
+                    cycle_attempt_number=cycle_attempt_number,
                     replay_generation=job["replay_generation"],
                     state="running",
                     lease_owner=worker_id,
@@ -291,16 +314,108 @@ class DocumentsJobCoordinator:
                     .values(result_state="running", updated_at_utc=now)
                 )
                 self._service._refresh_upload_batch(connection, job["upload_batch_id"], now)
+            restore_is_pending = bool(
+                connection.execute(
+                    select(func.count())
+                    .select_from(document_version_restore_holds_table)
+                    .where(document_version_restore_holds_table.c.job_id == job["id"])
+                ).scalar_one()
+            )
+        lease = JobLease(
+            job_id=str(job["id"]),
+            attempt_id=attempt_id,
+            attempt_number=attempt_number,
+            fencing_token=fencing_token,
+            lease_owner=worker_id,
+            lease_expires_at=expires,
+            publication_id=publication_id,
+            expected_generation_id=str(publication["generation_id"]),
+            authorization_fence=authorization_fence,
+        )
+        if restore_is_pending:
+            # 恢复 job 的 worker 侧复制步骤：领取后、内容读取前执行（设计
+            # §2.3.2）。复制/校验失败由 copy_restore_source 走既有失败事务并
+            # 保留持有引用，租约随 job 终态失效。
+            self._service.copy_restore_source(
+                job_id=lease.job_id,
+                attempt_id=lease.attempt_id,
+                fencing_token=lease.fencing_token,
+            )
+        return lease
+
+    def renew(
+        self,
+        lease: JobLease,
+        *,
+        worker_id: str | None = None,
+        lease_ttl: timedelta | None = None,
+    ) -> JobLease | None:
+        """Extend a running attempt only while its owner and fencing token match."""
+
+        owner = lease.lease_owner if worker_id is None else worker_id
+        if not isinstance(owner, str) or not owner.strip():
+            raise PlatformError("validation_error", "worker_id is required", {}, 422)
+        ttl = self._lease_ttl if lease_ttl is None else lease_ttl
+        if ttl.total_seconds() <= 0:
+            raise ValueError("lease_ttl must be positive")
+        with self._service._engine.begin() as connection:
+            now = self._service._current_time()
+            attempt = (
+                connection.execute(
+                    select(ingestion_attempts_table)
+                    .where(
+                        and_(
+                            ingestion_attempts_table.c.id == lease.attempt_id,
+                            ingestion_attempts_table.c.job_id == lease.job_id,
+                            ingestion_attempts_table.c.state == "running",
+                            ingestion_attempts_table.c.lease_owner == owner,
+                            ingestion_attempts_table.c.fencing_token == lease.fencing_token,
+                            ingestion_attempts_table.c.lease_expires_at_utc > now,
+                            ingestion_jobs_table.c.id == lease.job_id,
+                            ingestion_jobs_table.c.state == IngestionJobState.RUNNING.value,
+                            ingestion_jobs_table.c.active_attempt_id == lease.attempt_id,
+                        )
+                    )
+                    .select_from(
+                        ingestion_attempts_table.join(
+                            ingestion_jobs_table,
+                            ingestion_jobs_table.c.id == ingestion_attempts_table.c.job_id,
+                        )
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if attempt is None:
+                return None
+            expires = now + ttl
+            updated = connection.execute(
+                update(ingestion_attempts_table)
+                .where(
+                    and_(
+                        ingestion_attempts_table.c.id == lease.attempt_id,
+                        ingestion_attempts_table.c.job_id == lease.job_id,
+                        ingestion_attempts_table.c.state == "running",
+                        ingestion_attempts_table.c.lease_owner == owner,
+                        ingestion_attempts_table.c.fencing_token == lease.fencing_token,
+                        ingestion_attempts_table.c.lease_expires_at_utc > now,
+                    )
+                )
+                .values(lease_expires_at_utc=expires, updated_at_utc=now)
+            ).rowcount
+            if updated != 1:
+                return None
             return JobLease(
-                job_id=str(job["id"]),
-                attempt_id=attempt_id,
-                attempt_number=attempt_number,
-                fencing_token=fencing_token,
-                lease_owner=worker_id,
+                job_id=lease.job_id,
+                attempt_id=lease.attempt_id,
+                attempt_number=lease.attempt_number,
+                fencing_token=lease.fencing_token,
+                lease_owner=owner,
                 lease_expires_at=expires,
-                publication_id=publication_id,
-                expected_generation_id=str(publication["generation_id"]),
-                authorization_fence=authorization_fence,
+                publication_id=lease.publication_id,
+                expected_generation_id=lease.expected_generation_id,
+                authorization_fence=lease.authorization_fence,
             )
 
     def _reclaim_expired_attempts(self, connection, now: datetime) -> None:
@@ -448,6 +563,7 @@ class DocumentsJobCoordinator:
                         .values(
                             pending_version_id=None,
                             active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
                             updated_at_utc=now,
                         )
                     )
@@ -460,7 +576,11 @@ class DocumentsJobCoordinator:
                                 documents_table.c.active_operation_job_id == expired_job_id,
                             )
                         )
-                        .values(active_operation_job_id=None, updated_at_utc=now)
+                        .values(
+                            active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
+                            updated_at_utc=now,
+                        )
                     )
             if job["upload_batch_id"]:
                 connection.execute(

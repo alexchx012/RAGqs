@@ -4,17 +4,20 @@ import hashlib
 import hmac
 import json
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import Engine, and_, delete, exists, func, literal, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.elements import ColumnElement
 
+from app.documents.schema import documents_table
+from app.outbox.schema import notification_inbox_table
 from app.platform.config import AuthSettings, _resolve_user_deletion_archive_dir
 from app.platform.context import current_context
 from app.platform.database import _insert_do_nothing, platform_audit_table
@@ -73,6 +76,8 @@ from .schema import (
 Role = Literal["user", "minister", "ops", "admin"]
 _ROLES = frozenset({"user", "minister", "ops", "admin"})
 _COMPLETED_HISTORY_RETENTION = timedelta(days=90)
+# 同源头像内容端点（前端接口需求 §2.5）：API 响应中的 avatar_url 恒为该相对路径。
+AVATAR_CONTENT_PATH = "/v1/users/me/avatar"
 
 
 class _ArchiveRestoreRequired(Exception):
@@ -231,6 +236,7 @@ class IdentityAccessService:
         submission_invalidation_port: PendingSubmissionInvalidationPort | None = None,
         archive_issuer: Any = None,
         personal_document_deletion: PersonalDocumentDeletionPort | None = None,
+        quota_request_service: Any | None = None,
     ) -> None:
         self._engine = engine
         self._settings = settings
@@ -256,6 +262,7 @@ class IdentityAccessService:
         self._personal_document_deletion = (
             personal_document_deletion or UnavailablePersonalDocumentDeletionPort()
         )
+        self._quota_request_service = quota_request_service
         self._profile: str = "development"
 
     def _current_time(self) -> datetime:
@@ -371,7 +378,15 @@ class IdentityAccessService:
         )
 
     @staticmethod
-    def _user_response(record: dict[str, object]) -> dict[str, object]:
+    def _public_avatar_url(avatar_url: object) -> object:
+        # Storage keeps the internal object key; API consumers always receive
+        # the loadable same-origin content endpoint (前端接口需求 §2.5).
+        if isinstance(avatar_url, str) and avatar_url.startswith("object://avatars/"):
+            return AVATAR_CONTENT_PATH
+        return avatar_url
+
+    @classmethod
+    def _user_response(cls, record: dict[str, object]) -> dict[str, object]:
         department_id = record["department_id"]
         department_name = record.get("department_name")
         return {
@@ -381,7 +396,7 @@ class IdentityAccessService:
             "real_name": record["real_name"],
             "department": {"id": department_id, "name": department_name} if department_id else None,
             "role": record["role"],
-            "avatar_url": record["avatar_url"],
+            "avatar_url": cls._public_avatar_url(record["avatar_url"]),
         }
 
     def _user_response_for_id(self, connection: Connection, user_id: str) -> dict[str, object]:
@@ -466,13 +481,17 @@ class IdentityAccessService:
         role: Role,
         department_id: str | None,
         now: datetime,
+        user_id: str | None = None,
     ) -> dict[str, object]:
         if role not in _ROLES:
             raise PlatformError("validation_error", "Role is invalid", {}, 422)
         _validate_password_rule(password)
         normalized_username = _normalize_username(username)
-        roster = {item.strip().casefold() for item in self._settings.admin_roster if item.strip()}
-        if role == "admin" and roster and normalized_username not in roster:
+        record_id = user_id if user_id is not None else _new_id("user")
+        # Roster entries are immutable user_ids (§9.2): a new admin seat only
+        # exists when the deployment pre-declared the exact account id.
+        roster = {item.strip() for item in self._settings.admin_roster if item.strip()}
+        if role == "admin" and roster and record_id not in roster:
             raise PlatformError(
                 "forbidden_target", "Admin seats are managed by the deployment roster", {}, 403
             )
@@ -487,7 +506,7 @@ class IdentityAccessService:
         normalized_real_name = _normalize_name(real_name, subject="Real name")
         normalized_user_name = _normalize_name(username, subject="Username")
         return {
-            "id": _new_id("user"),
+            "id": record_id,
             "username": normalized_user_name,
             "normalized_username": normalized_username,
             "password_hash": hash_password(password),
@@ -540,6 +559,18 @@ class IdentityAccessService:
             if department["status"] != "active":
                 raise PlatformError("department_inactive", "Department is inactive", {}, 409)
         connection.execute(identity_user_table.insert().values(**record))
+        # 通知 inbox 与账号同事务建立（设计 §13.5）：next_seq=1、read_through=0，
+        # 存量用户由 0040 迁移回填；退休账号的 inbox 删除后不重建。
+        connection.execute(
+            notification_inbox_table.insert().values(
+                recipient_user_id=record["id"],
+                next_notification_seq=1,
+                read_through_seq=0,
+                read_all_at_utc=None,
+                version=1,
+                retired=False,
+            )
+        )
         connection.execute(
             identity_space_table.insert().values(
                 id=f"personal:{record['id']}",
@@ -846,6 +877,7 @@ class IdentityAccessService:
         password: str,
         real_name: str,
         display_name: str,
+        user_id: str | None = None,
     ) -> dict[str, object]:
         """Create the single deployment-managed administrator for an empty identity database."""
 
@@ -858,8 +890,9 @@ class IdentityAccessService:
             role="admin",
             department_id=None,
             now=now,
+            user_id=user_id,
         )
-        roster = {item.strip().casefold() for item in self._settings.admin_roster if item.strip()}
+        roster = {item.strip() for item in self._settings.admin_roster if item.strip()}
         if not roster:
             raise PlatformError(
                 "admin_roster_invalid",
@@ -906,7 +939,8 @@ class IdentityAccessService:
     def reconcile_admin_roster(self) -> list[str]:
         """Apply a deployment roster removal through the normal irreversible lifecycle."""
 
-        roster = {item.strip().casefold() for item in self._settings.admin_roster if item.strip()}
+        # Roster entries are immutable user_ids; renames never affect reconciliation.
+        roster = {item.strip() for item in self._settings.admin_roster if item.strip()}
         if not roster:
             raise PlatformError(
                 "admin_roster_invalid", "The admin roster must contain a seat", {}, 503
@@ -927,7 +961,7 @@ class IdentityAccessService:
                 .mappings()
                 .all()
             )
-            if not any(admin["normalized_username"] in roster for admin in admins):
+            if not any(str(admin["id"]) in roster for admin in admins):
                 raise PlatformError(
                     "admin_roster_invalid",
                     "The declared admin roster has no active seat",
@@ -935,7 +969,7 @@ class IdentityAccessService:
                     503,
                 )
             for admin in admins:
-                if admin["normalized_username"] in roster:
+                if str(admin["id"]) in roster:
                     continue
                 user_id = str(admin["id"])
                 self._invalidate_pending_submissions(
@@ -1291,7 +1325,13 @@ class IdentityAccessService:
                 actor_id=actor.user_id,
                 resource_type="user",
                 resource_id=user_id,
-                result="user_updated",
+                # Department moves carry their own fact code (设计 §9.3):
+                # generic user_updated would hide authorization-relevant moves.
+                result=(
+                    "user_department_changed"
+                    if final_department_id != target["department_id"]
+                    else "user_updated"
+                ),
                 occurred_at=now,
             )
             return result
@@ -1528,6 +1568,13 @@ class IdentityAccessService:
                 lifecycle_status="pending_delete",
                 reason="account_pending_delete",
             )
+            if self._quota_request_service is not None:
+                self._quota_request_service.cancel_for_account(
+                    connection,
+                    user_id=user_id,
+                    reason="account_pending_delete",
+                    now=now,
+                )
             updated = connection.execute(
                 update(identity_user_table)
                 .where(
@@ -1664,8 +1711,9 @@ class IdentityAccessService:
         with self._engine.begin() as connection:
             workflow = (
                 connection.execute(
-                    select(identity_deletion_workflow_table)
-                    .where(identity_deletion_workflow_table.c.user_id == user_id)
+                    select(identity_deletion_workflow_table).where(
+                        identity_deletion_workflow_table.c.user_id == user_id
+                    )
                 )
                 .mappings()
                 .one_or_none()
@@ -1676,9 +1724,7 @@ class IdentityAccessService:
                 )
             if workflow["status"] != "pending" or workflow["archive_completed_at_utc"] is not None:
                 return {"user_id": user_id, "archive_status": "already_archived"}
-            snapshot_dir = str(
-                workflow["archive_dir_snapshot"] or self._effective_archive_dir()
-            )
+            snapshot_dir = str(workflow["archive_dir_snapshot"] or self._effective_archive_dir())
             deletion_id = str(workflow["cleanup_operation_id"])
             builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
             try:
@@ -1750,11 +1796,16 @@ class IdentityAccessService:
         self,
         connection: Connection,
         *,
-        workflow: Mapping[str, object],
+        workflow: Mapping[Any, Any],
         user_id: str,
         now: datetime,
-    ) -> None:
-        """§9.2.1 archive gate: verify the package, rebuild or stop-and-alert."""
+    ) -> tuple[str, int | None, str]:
+        """§9.2.1 archive gate: verify the package, rebuild or stop-and-alert.
+
+        Returns the authoritative (file_name, size_bytes, sha256) after the gate
+        so the caller's final verification uses the rebuilt record instead of the
+        pre-transaction workflow snapshot.
+        """
 
         from .archive_package import AccountArchivePackageBuilder
 
@@ -1770,14 +1821,18 @@ class IdentityAccessService:
         snapshot_dir = str(workflow["archive_dir_snapshot"] or self._effective_archive_dir())
         builder = AccountArchivePackageBuilder(snapshot_dir, self._object_store)
         expected_sha256 = str(workflow["archive_sha256"] or "")
-        expected_size = workflow["archive_size_bytes"]
+        expected_size = cast("int | None", workflow["archive_size_bytes"])
         if builder.verify(
             user_id=user_id,
             deletion_id=deletion_id,
             expected_sha256=expected_sha256,
-            expected_size=int(expected_size) if expected_size is not None else None,
+            expected_size=expected_size,
         ):
-            return
+            return (
+                str(workflow["archive_file_name"] or ""),
+                expected_size,
+                expected_sha256,
+            )
         completed_targets = connection.execute(
             select(func.count())
             .select_from(identity_account_cleanup_target_table)
@@ -1801,7 +1856,7 @@ class IdentityAccessService:
                     archive_alert=None,
                 )
             )
-            return
+            return (record.file_name, record.size_bytes, record.sha256)
         # The alert must outlive this transaction's rollback, so it is
         # persisted by finalize_pending_deletion after the outer rollback.
         raise _ArchiveRestoreRequired()
@@ -1814,19 +1869,15 @@ class IdentityAccessService:
         backend_kind: str,
         resource_id: str,
     ) -> bool:
-        status = (
-            connection.execute(
-                select(identity_account_cleanup_target_table.c.status)
-                .where(
-                    and_(
-                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
-                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
-                        identity_account_cleanup_target_table.c.resource_id == resource_id,
-                    )
+        status = connection.execute(
+            select(identity_account_cleanup_target_table.c.status).where(
+                and_(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                    identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                    identity_account_cleanup_target_table.c.resource_id == resource_id,
                 )
             )
-            .scalar_one_or_none()
-        )
+        ).scalar_one_or_none()
         return status == "completed"
 
     def _record_cleanup_target(
@@ -1840,19 +1891,15 @@ class IdentityAccessService:
         last_error: str | None,
         now: datetime,
     ) -> None:
-        existing = (
-            connection.execute(
-                select(identity_account_cleanup_target_table.c.deletion_id)
-                .where(
-                    and_(
-                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
-                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
-                        identity_account_cleanup_target_table.c.resource_id == resource_id,
-                    )
+        existing = connection.execute(
+            select(identity_account_cleanup_target_table.c.deletion_id).where(
+                and_(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                    identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                    identity_account_cleanup_target_table.c.resource_id == resource_id,
                 )
             )
-            .scalar_one_or_none()
-        )
+        ).scalar_one_or_none()
         if existing is None:
             connection.execute(
                 identity_account_cleanup_target_table.insert().values(
@@ -1900,15 +1947,14 @@ class IdentityAccessService:
         # the current avatar object must be removed (and recorded as a target)
         # while the row still carries it. Replaced avatars are already handled
         # by the identity object-cleanup queue above.
-        avatar_url = (
-            connection.execute(
-                select(identity_user_table.c.avatar_url).where(
-                    identity_user_table.c.id == user_id
-                )
-            ).scalar_one_or_none()
-        )
+        avatar_url = connection.execute(
+            select(identity_user_table.c.avatar_url).where(identity_user_table.c.id == user_id)
+        ).scalar_one_or_none()
         if self._is_cleanup_target_completed(
-            connection, deletion_id=deletion_id, backend_kind="object_store.avatar", resource_id=user_id
+            connection,
+            deletion_id=deletion_id,
+            backend_kind="object_store.avatar",
+            resource_id=user_id,
         ):
             pass
         else:
@@ -1950,10 +1996,19 @@ class IdentityAccessService:
                     True,
                 )
         targets: tuple[tuple[str, str], ...] = (
-            ("postgres.chat_conversation_groups", "DELETE FROM chat_conversation_group WHERE owner_user_id = :user_id"),
-            ("postgres.chat_conversations", "DELETE FROM chat_conversation WHERE owner_user_id = :user_id"),
+            (
+                "postgres.chat_conversation_groups",
+                "DELETE FROM chat_conversation_group WHERE owner_user_id = :user_id",
+            ),
+            (
+                "postgres.chat_conversations",
+                "DELETE FROM chat_conversation WHERE owner_user_id = :user_id",
+            ),
             ("postgres.chat_messages", "DELETE FROM chat_message WHERE owner_user_id = :user_id"),
-            ("postgres.chat_message_feedback", "DELETE FROM chat_message_feedback WHERE voter_user_id = :user_id"),
+            (
+                "postgres.chat_message_feedback",
+                "DELETE FROM chat_message_feedback WHERE voter_user_id = :user_id",
+            ),
             (
                 "postgres.user_tasks",
                 """
@@ -1961,23 +2016,22 @@ class IdentityAccessService:
                   AND document_id IN (SELECT id FROM documents WHERE lifecycle_status = 'deleted')
                 """,
             ),
-            ("postgres.identity_spaces", "DELETE FROM identity_space WHERE owner_user_id = :user_id"),
+            (
+                "postgres.identity_spaces",
+                "DELETE FROM identity_space WHERE owner_user_id = :user_id",
+            ),
         )
         failed = False
         for backend_kind, sql in targets:
-            completed = (
-                connection.execute(
-                    select(identity_account_cleanup_target_table.c.status)
-                    .where(
-                        and_(
-                            identity_account_cleanup_target_table.c.deletion_id == deletion_id,
-                            identity_account_cleanup_target_table.c.backend_kind == backend_kind,
-                            identity_account_cleanup_target_table.c.resource_id == user_id,
-                        )
+            completed = connection.execute(
+                select(identity_account_cleanup_target_table.c.status).where(
+                    and_(
+                        identity_account_cleanup_target_table.c.deletion_id == deletion_id,
+                        identity_account_cleanup_target_table.c.backend_kind == backend_kind,
+                        identity_account_cleanup_target_table.c.resource_id == user_id,
                     )
                 )
-                .scalar_one_or_none()
-            )
+            ).scalar_one_or_none()
             if completed == "completed":
                 continue
             try:
@@ -2109,7 +2163,7 @@ class IdentityAccessService:
                     409,
                     True,
                 )
-            self._verify_or_restore_archive(
+            _, archive_size_bytes, archive_sha256 = self._verify_or_restore_archive(
                 connection, workflow=workflow, user_id=user_id, now=now
             )
             pending_personal_documents: int
@@ -2278,10 +2332,14 @@ class IdentityAccessService:
                 str(workflow["archive_dir_snapshot"] or self._effective_archive_dir()),
                 self._object_store,
             )
+            # Final verification must compare against the record the gate just
+            # verified or rebuilt — not the stale in-transaction workflow row
+            # (a rebuild stamps a new manifest timestamp, hence a new sha256).
             if not final_builder.verify(
                 user_id=user_id,
                 deletion_id=str(workflow["cleanup_operation_id"]),
-                expected_sha256=str(workflow["archive_sha256"] or ""),
+                expected_sha256=archive_sha256,
+                expected_size=archive_size_bytes,
             ):
                 raise PlatformError(
                     "account_archive_verification_failed",
@@ -2399,7 +2457,9 @@ class IdentityAccessService:
         if role is not None and role not in _ROLES:
             raise PlatformError("validation_error", "Role is invalid", {}, 422)
         query = q.strip().casefold() if q and q.strip() else None
-        conditions = [identity_user_table.c.lifecycle_status.in_(("active", "pending_delete"))]
+        conditions: list[ColumnElement[bool]] = [
+            identity_user_table.c.lifecycle_status.in_(("active", "pending_delete"))
+        ]
         if actor.role == "ops":
             conditions.append(identity_user_table.c.role.in_(("user", "minister")))
         if department_id is not None:
@@ -2768,28 +2828,76 @@ class IdentityAccessService:
             department_id=user["department_id"],
         )
 
+    @staticmethod
+    def _space_document_counts(
+        connection: Connection, space_ids: Collection[str]
+    ) -> dict[str, int]:
+        """Live per-space document counts, excluding deleted documents."""
+        if not space_ids:
+            return {}
+        rows = connection.execute(
+            select(documents_table.c.space_id, func.count())
+            .where(
+                and_(
+                    documents_table.c.space_id.in_(list(space_ids)),
+                    documents_table.c.lifecycle_status != "deleted",
+                )
+            )
+            .group_by(documents_table.c.space_id)
+        ).all()
+        return {str(space_id): int(count) for space_id, count in rows}
+
     def list_spaces(
         self,
         *,
         principal: AuthPrincipal,
         usage: Literal["retrieval", "upload", "manage"] = "manage",
+        with_document_counts: bool = False,
+        connection: Connection | None = None,
     ) -> list[dict[str, object]]:
         if usage not in {"retrieval", "upload", "manage"}:
             raise PlatformError("validation_error", "Space usage is invalid", {}, 422)
+        if connection is not None:
+            return self._list_spaces_on(
+                connection,
+                principal=principal,
+                usage=usage,
+                with_document_counts=with_document_counts,
+            )
         with self._engine.begin() as connection:
-            principal = self._current_acl_principal(connection, principal)
-            self._ensure_public_space(connection, self._current_time())
-            rows = (
-                connection.execute(
-                    select(identity_space_table, identity_department_table.c.status)
-                    .outerjoin(
-                        identity_department_table,
-                        identity_space_table.c.department_id == identity_department_table.c.id,
-                    )
-                    .order_by(identity_space_table.c.id)
+            return self._list_spaces_on(
+                connection,
+                principal=principal,
+                usage=usage,
+                with_document_counts=with_document_counts,
+            )
+
+    def _list_spaces_on(
+        self,
+        connection: Connection,
+        *,
+        principal: AuthPrincipal,
+        usage: Literal["retrieval", "upload", "manage"],
+        with_document_counts: bool = False,
+    ) -> list[dict[str, object]]:
+        principal = self._current_acl_principal(connection, principal)
+        self._ensure_public_space(connection, self._current_time())
+        rows = (
+            connection.execute(
+                select(identity_space_table, identity_department_table.c.status)
+                .outerjoin(
+                    identity_department_table,
+                    identity_space_table.c.department_id == identity_department_table.c.id,
                 )
-                .mappings()
-                .all()
+                .order_by(identity_space_table.c.id)
+            )
+            .mappings()
+            .all()
+        )
+        counts: dict[str, int] = {}
+        if with_document_counts:
+            counts = self._space_document_counts(
+                connection, {str(row[identity_space_table.c.id]) for row in rows}
             )
         items: list[dict[str, object]] = []
         for row in rows:
@@ -2830,7 +2938,7 @@ class IdentityAccessService:
                 "kind": kind,
                 "name": row[identity_space_table.c.name],
                 "permission": permission,
-                "document_count": 0,
+                "document_count": counts.get(str(row[identity_space_table.c.id]), 0),
             }
             if kind == "department":
                 item["department_status"] = department_status
@@ -2856,15 +2964,23 @@ class IdentityAccessService:
         principal: AuthPrincipal,
         space_id: str,
         action: Literal["read", "contribute", "manage"],
+        connection: Connection | None = None,
     ) -> Literal["read", "contribute", "manage"]:
         if action not in {"read", "contribute", "manage"}:
             raise PlatformError("validation_error", "Space action is invalid", {}, 422)
+        if connection is not None:
+            # Same-transaction ACL (设计 §9.1.1): lock the department rows in the
+            # caller's write transaction so a concurrent deactivation either
+            # commits first (this grant then sees "inactive") or waits until
+            # this creation commits — the interleaving window is closed.
+            connection.execute(select(identity_department_table.c.id).with_for_update())
+            candidates = self.list_spaces(
+                principal=principal, usage="manage", connection=connection
+            )
+        else:
+            candidates = self.list_spaces(principal=principal, usage="manage")
         item = next(
-            (
-                candidate
-                for candidate in self.list_spaces(principal=principal, usage="manage")
-                if candidate["id"] == space_id
-            ),
+            (candidate for candidate in candidates if candidate["id"] == space_id),
             None,
         )
         if item is None:
@@ -2875,9 +2991,95 @@ class IdentityAccessService:
             raise PlatformError("space_action_forbidden", "Space action is not allowed", {}, 403)
         return permission  # type: ignore[return-value]
 
+    def authorize_space_for_worker(
+        self,
+        *,
+        user_id: str,
+        space_id: str,
+        action: Literal["read", "contribute", "manage"],
+        connection: Connection | None = None,
+    ) -> Literal["read", "contribute", "manage"]:
+        """Authorize a persisted worker operation without requiring a user session."""
+
+        if action not in {"read", "contribute", "manage"}:
+            raise PlatformError("validation_error", "Space action is invalid", {}, 422)
+        transaction = nullcontext(connection) if connection is not None else self._engine.begin()
+        with transaction as active_connection:
+            assert active_connection is not None
+            user = (
+                active_connection.execute(
+                    select(identity_user_table).where(identity_user_table.c.id == str(user_id))
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if user is None or user["lifecycle_status"] != "active":
+                raise PlatformError(
+                    "authorization_changed",
+                    "The direct-ingest authorization is no longer current",
+                    {},
+                    409,
+                )
+            self._ensure_public_space(active_connection, self._current_time())
+            row = (
+                active_connection.execute(
+                    select(identity_space_table, identity_department_table.c.status)
+                    .outerjoin(
+                        identity_department_table,
+                        identity_space_table.c.department_id == identity_department_table.c.id,
+                    )
+                    .where(identity_space_table.c.id == str(space_id))
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise PlatformError("space_not_found", "Space was not found", {}, 404)
+            role = str(user["role"])
+            department_id = user["department_id"]
+            kind = row[identity_space_table.c.kind]
+            department_status = row[identity_department_table.c.status]
+            permission: str | None = None
+            if kind == "personal":
+                if row[identity_space_table.c.owner_user_id] == str(user_id):
+                    permission = "manage"
+                elif role in {"ops", "admin"}:
+                    permission = "read"
+            elif kind == "public":
+                permission = "manage" if role in {"ops", "admin"} else "contribute"
+            elif kind == "department":
+                own_department = row[identity_space_table.c.department_id] == department_id
+                if department_status == "active":
+                    if role in {"ops", "admin"}:
+                        permission = "manage"
+                    elif own_department:
+                        permission = "manage" if role == "minister" else "contribute"
+                elif role in {"ops", "admin"}:
+                    permission = "read"
+            if permission is None:
+                raise PlatformError("space_not_found", "Space was not found", {}, 404)
+            permission_rank = {"read": 0, "contribute": 1, "manage": 2}
+            if permission_rank[permission] < permission_rank[action]:
+                raise PlatformError(
+                    "space_action_forbidden", "Space action is not allowed", {}, 403
+                )
+            return permission  # type: ignore[return-value]
+
     def user_response(self, user_id: str) -> dict[str, object]:
         with self._engine.connect() as connection:
             return self._user_response_for_id(connection, user_id)
+
+    def account_lifecycle_status(self, user_id: str) -> str:
+        """Raw lifecycle status (`active`/`pending_delete`/`deleted`) for cross-domain
+        precondition checks that must distinguish the two non-active states;
+        `user_response` rejects every non-active account without exposing which."""
+        with self._engine.connect() as connection:
+            status = connection.execute(
+                select(identity_user_table.c.lifecycle_status).where(
+                    identity_user_table.c.id == user_id
+                )
+            ).scalar_one_or_none()
+        return str(status) if status is not None else "deleted"
 
     def list_sessions(
         self,
@@ -3076,7 +3278,28 @@ class IdentityAccessService:
         except Exception:
             self._delete_or_defer_uploaded_avatar(user_id=str(user_id), object_key=key, now=now)
             raise
-        return {"avatar_url": url}
+        return {"avatar_url": AVATAR_CONTENT_PATH}
+
+    def avatar_content(self, *, user_id: object) -> tuple[bytes, str]:
+        """Return (payload, content_type) for the caller's own uploaded avatar."""
+
+        if self._object_store is None:
+            raise PlatformError(
+                "avatar_storage_unavailable", "Avatar storage is unavailable", {}, 503, True
+            )
+        with self._engine.connect() as connection:
+            avatar_url = connection.execute(
+                select(identity_user_table.c.avatar_url).where(
+                    identity_user_table.c.id == str(user_id)
+                )
+            ).scalar_one_or_none()
+        if not isinstance(avatar_url, str) or not avatar_url.startswith("object://"):
+            raise PlatformError("avatar_not_found", "The account has no avatar", {}, 404)
+        try:
+            content, metadata = self._object_store.get(avatar_url.removeprefix("object://"))
+        except (StorageKeyError, KeyError) as exc:
+            raise PlatformError("avatar_not_found", "The account has no avatar", {}, 404) from exc
+        return bytes(content), str(metadata.content_type)
 
     @staticmethod
     def _object_cleanup_operation_id(object_key: str) -> str:
@@ -3399,7 +3622,7 @@ class IdentityAccessService:
                     429,
                     True,
                 )
-            user_record: Mapping[str, object] | None = None
+            user_record: Mapping[Any, Any] | None = None
             if login_error is None:
                 user_record = (
                     connection.execute(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -15,12 +15,20 @@ from sqlalchemy.engine import Connection, Engine
 
 from app.agents.selfeval import (
     AcceptingSelfEvaluationPort,
+    DeepRetrievalStrategyPlan,
     HeuristicSelfEvaluationPort,
     SelfEvaluationPort,
 )
+from app.indexing.models import DEEP_RETRIEVAL_STRATEGIES, DeepRetrievalStrategy
 from app.platform.errors import PlatformError
 from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
 from app.usage.ports import UsageSubmissionPort
+from app.usage.reconcile import (
+    ConfirmedNotSent,
+    ConfirmedUsage,
+    ReconciliationOnlyAmount,
+    StillUnknown,
+)
 
 from .budget import (
     EFFORT_CANDIDATE_LIMITS,
@@ -65,11 +73,56 @@ def _utc(value: Any) -> datetime:
     return value.astimezone(UTC)
 
 
+def _source_identity(item: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    """Identity used by the final publication recheck.
+
+    A document/chunk pair is not sufficient: replacing the active version or
+    publication must invalidate a candidate even when the physical chunk IDs
+    happen to be reused.
+    """
+
+    return (
+        str(item.get("document_id", "")),
+        str(item.get("document_version_id", "")),
+        str(item.get("publication_id", "")),
+        str(item.get("chunk_id", "")),
+    )
+
+
+def _public_route_summary(route_output: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep SSE route telemetry to stable choices, never model text or tool inputs."""
+
+    route = route_output if isinstance(route_output, Mapping) else {}
+    kind = str(route.get("kind") or "no_rewrite")
+    if kind not in {"no_rewrite", "rewrite", "split_subquestions", "hyde"}:
+        kind = "no_rewrite"
+    raw_strategies = route.get("strategy_operations", ())
+    strategies = (
+        [str(operation) for operation in raw_strategies if operation in DEEP_RETRIEVAL_STRATEGIES]
+        if isinstance(raw_strategies, (list, tuple))
+        else []
+    )
+    granularity = str(route.get("return_granularity") or "parent_document")
+    if granularity not in {"sub_chunk", "parent_document", "document_summary"}:
+        granularity = "parent_document"
+    return {"kind": kind, "strategies": strategies, "return_granularity": granularity}
+
+
 @dataclass(slots=True)
 class WorkerOutcome:
     executed: str | None
     stage: str
     details: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ProviderCallOutcome:
+    response: Any
+    provider_call_id: str
+    measurement: ProviderMeasurement
+    ownership: OwnershipSnapshot
+    started_at_utc: datetime
+    provider_request_id: str | None
 
 
 class ChatGenerationWorker:
@@ -89,6 +142,9 @@ class ChatGenerationWorker:
         lease_seconds: int = EXECUTION_LEASE_SECONDS,
         max_physical_executions: int = MAX_PHYSICAL_EXECUTIONS,
         effort_rag_limits: Mapping[str, int] | None = None,
+        disconnect_grace_seconds: int = 60,
+        provider_reconciliation: Any | None = None,
+        max_scope_retries: int = 1,
     ) -> None:
         self._engine = engine
         self._clock = clock
@@ -104,6 +160,9 @@ class ChatGenerationWorker:
         self._lease_seconds = lease_seconds
         self._max_physical_executions = max_physical_executions
         self._effort_rag_limits = effort_rag_limits
+        self._disconnect_grace_seconds = disconnect_grace_seconds
+        self._provider_reconciliation = provider_reconciliation
+        self._max_scope_retries = max_scope_retries
 
     def _now(self, connection: Connection | None = None) -> datetime:
         value = self._clock.now_utc(connection)
@@ -121,11 +180,17 @@ class ChatGenerationWorker:
             consumed = consume_durable_revocation_commands(connection, now=now)
             self._reap_disconnect_grace(connection, now=now)
             recovered = self._recover_expired_executions(connection, now=now)
+            # Do not let an unavailable external reconciliation adapter prevent
+            # an already-expired unknown result from reaching its terminal state.
+            self._expire_provider_reconciling_executions(connection, now=now)
+        reconciled = self._reconcile_provider_reconciling(now=now)
+        with self._engine.begin() as connection:
             self._expire_provider_reconciling_executions(connection, now=now)
             expired_pairs = self._expire_past_deadline_pairs(connection, now=now)
         return {
             "revocation_commands_consumed": consumed,
             "executions_recovered": recovered,
+            "provider_calls_reconciled": reconciled,
             "ab_pairs_expired": expired_pairs,
         }
 
@@ -136,7 +201,7 @@ class ChatGenerationWorker:
                     chat_generation_table.c.id,
                     chat_generation_table.c.disconnect_deadline_at_utc,
                 ).where(
-                    chat_generation_table.c.status.in_(["running", "stop_requested"]),
+                    chat_generation_table.c.status == "running",
                     chat_generation_table.c.disconnect_deadline_at_utc.is_not(None),
                 )
             )
@@ -159,16 +224,34 @@ class ChatGenerationWorker:
                 update(chat_generation_table)
                 .where(
                     chat_generation_table.c.id == generation_id,
-                    chat_generation_table.c.status.in_(["running", "stop_requested"]),
+                    chat_generation_table.c.status == "running",
                 )
                 .values(
-                    status="stopped",
+                    status="stop_requested",
                     stop_reason="client_disconnected",
+                    control_version=chat_generation_table.c.control_version + 1,
                     updated_at_utc=now,
                 )
             ).rowcount
             if updated:
+                # Persist the intermediate state/event before terminal close.
+                # This makes the durable lifecycle observable to SSE replayers.
+                append_event(
+                    connection,
+                    generation_id=generation_id,
+                    event_type="stop_requested",
+                    data={
+                        "generation_id": generation_id,
+                        "reason": "client_disconnected",
+                    },
+                    now=now,
+                )
                 self._discard_unfinished_ab_pair(connection, generation_id=generation_id, now=now)
+                connection.execute(
+                    update(chat_generation_table)
+                    .where(chat_generation_table.c.id == generation_id)
+                    .values(status="stopped", updated_at_utc=now)
+                )
                 self._append_terminal(
                     connection,
                     generation_id=generation_id,
@@ -187,6 +270,21 @@ class ChatGenerationWorker:
                     .values(
                         status="stopped",
                         stop_reason="client_disconnected",
+                        updated_at_utc=now,
+                    )
+                )
+                connection.execute(
+                    update(chat_generation_execution_table)
+                    .where(
+                        chat_generation_execution_table.c.generation_id == generation_id,
+                        chat_generation_execution_table.c.status.in_(
+                            ["queued", "retry_wait", "running"]
+                        ),
+                    )
+                    .values(
+                        status="cancelled",
+                        lease_owner=None,
+                        lease_expires_at_utc=None,
                         updated_at_utc=now,
                     )
                 )
@@ -352,12 +450,143 @@ class ChatGenerationWorker:
                     "code": "provider_result_unknown",
                     "message": "The provider result could not be reconciled before the deadline",
                     "details": {},
-                    "request_id": "req_system",
+                    "request_id": str(generation.get("request_id") or "req_system"),
                 },
                 now=now,
             )
             expired += 1
         return expired
+
+    def _reconcile_provider_reconciling(self, *, now: datetime) -> int:
+        """Resolve unknown provider calls without holding a database transaction
+        across the provider query.
+
+        A confirmed usage is first recovered in the usage ledger, then the chat
+        execution is made runnable with the persisted response checkpoint.  A
+        confirmed-not-sent call is simply requeued for the same generation.
+        """
+
+        port = self._provider_reconciliation
+        if port is None:
+            return 0
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(
+                        chat_generation_execution_table.c.execution_id,
+                        chat_generation_execution_table.c.generation_id,
+                        chat_generation_execution_table.c.checkpoint_json,
+                        chat_generation_execution_table.c.status,
+                        chat_generation_table.c.absolute_deadline_at_utc,
+                    )
+                    .join(
+                        chat_generation_table,
+                        chat_generation_table.c.id
+                        == chat_generation_execution_table.c.generation_id,
+                    )
+                    .where(chat_generation_execution_table.c.status == "provider_reconciling")
+                )
+                .mappings()
+                .all()
+            )
+            calls_by_execution: dict[str, dict[str, Any]] = {}
+            from app.usage.schema import provider_call_table
+
+            for call_row in connection.execute(
+                select(provider_call_table).where(
+                    provider_call_table.c.execution_id.in_([r["execution_id"] for r in rows])
+                )
+            ).mappings():
+                calls_by_execution.setdefault(str(call_row["execution_id"]), dict(call_row))
+        reconciled = 0
+        for row in rows:
+            call = calls_by_execution.get(str(row["execution_id"]))
+            if call is None:
+                continue
+            decision = port.confirm(
+                provider_call_id=str(call["provider_call_id"]),
+                fingerprint=str(call["request_fingerprint"]),
+                connection=None,
+            )
+            if not isinstance(
+                decision, (ConfirmedUsage, ConfirmedNotSent, StillUnknown, ReconciliationOnlyAmount)
+            ):
+                raise PlatformError(
+                    "provider_reconciliation_contract_error",
+                    "Provider reconciliation returned an invalid decision",
+                    {},
+                    502,
+                    True,
+                )
+            if isinstance(decision, StillUnknown):
+                continue
+            execution_id = str(row["execution_id"])
+            if isinstance(decision, ConfirmedUsage):
+                checkpoint = dict(row["checkpoint_json"] or {})
+                pending = checkpoint.get("pending_candidate")
+                # A usage-only confirmation is sufficient for the generic
+                # ledger reconciler, but chat cannot publish without the
+                # original response body. Leave it reconciling until the
+                # provider adapter can supply that result (or the deadline
+                # produces provider_result_unknown) rather than publishing an
+                # empty answer.
+                if isinstance(pending, Mapping) and decision.content is None:
+                    continue
+                self._usage.recover_unknown_call(
+                    provider_call_id=str(call["provider_call_id"]),
+                    measurement=decision.measurement,
+                    ownership=decision.ownership,
+                    result=decision.result,
+                    provider_request_id=decision.provider_request_id,
+                    started_at_utc=decision.started_at_utc,
+                )
+                if isinstance(pending, Mapping):
+                    pending = {**dict(pending), "content": str(decision.content)}
+                    next_checkpoint = {
+                        "phase": "provider_reconciled",
+                        "candidates": [dict(pending)],
+                    }
+                else:
+                    next_checkpoint = None
+                with self._engine.begin() as connection:
+                    connection.execute(
+                        update(chat_generation_execution_table)
+                        .where(
+                            chat_generation_execution_table.c.execution_id == execution_id,
+                            chat_generation_execution_table.c.status == "provider_reconciling",
+                        )
+                        .values(
+                            status="retry_wait",
+                            next_attempt_at_utc=now,
+                            checkpoint_json=next_checkpoint,
+                            last_error_classification=None,
+                            updated_at_utc=now,
+                        )
+                    )
+                reconciled += 1
+            elif isinstance(decision, ConfirmedNotSent):
+                self._usage.mark_not_sent(str(call["provider_call_id"]))
+                with self._engine.begin() as connection:
+                    connection.execute(
+                        update(chat_generation_execution_table)
+                        .where(
+                            chat_generation_execution_table.c.execution_id == execution_id,
+                            chat_generation_execution_table.c.status == "provider_reconciling",
+                        )
+                        .values(
+                            status="retry_wait",
+                            next_attempt_at_utc=now,
+                            checkpoint_json=None,
+                            last_error_classification=None,
+                            updated_at_utc=now,
+                        )
+                    )
+                reconciled += 1
+            else:
+                # Amount-only accounting is owned by the usage reconciler. Chat
+                # remains pending until a complete result is confirmed.
+                continue
+        return reconciled
 
     def _terminalize_unrecoverable(
         self, connection: Connection, *, generation_id: str, now: datetime
@@ -373,18 +602,33 @@ class ChatGenerationWorker:
                 select(
                     chat_generation_table.c.message_id,
                     chat_generation_table.c.status,
+                    chat_generation_table.c.request_id,
+                    chat_generation_table.c.absolute_deadline_at_utc,
                 ).where(chat_generation_table.c.id == generation_id)
             )
             .mappings()
             .one()
         )
         if str(generation["status"]) in {"running", "stop_requested"}:
+            # The two unrecoverable shapes keep distinct codes (后端设计 §2.5):
+            # the absolute deadline reached vs recovery quota exhausted early.
+            deadline_passed = _utc(generation["absolute_deadline_at_utc"]) <= now
+            error_code = (
+                "generation_deadline_exceeded"
+                if deadline_passed
+                else "execution_recovery_exhausted"
+            )
+            error_message = (
+                "The generation deadline expired before further execution"
+                if deadline_passed
+                else "The generation could not be recovered before its deadline"
+            )
             connection.execute(
                 update(chat_generation_table)
                 .where(chat_generation_table.c.id == generation_id)
                 .values(
                     status="failed",
-                    last_error_code="execution_recovery_exhausted",
+                    last_error_code=error_code,
                     updated_at_utc=now,
                 )
             )
@@ -399,10 +643,10 @@ class ChatGenerationWorker:
                 generation_id=generation_id,
                 event_type="error",
                 data={
-                    "code": "execution_recovery_exhausted",
-                    "message": "The generation could not be recovered before its deadline",
+                    "code": error_code,
+                    "message": error_message,
                     "details": {},
-                    "request_id": "req_system",
+                    "request_id": str(generation.get("request_id") or "req_system"),
                 },
                 now=now,
             )
@@ -605,20 +849,28 @@ class ChatGenerationWorker:
         effort: str,
         snapshot: Mapping[str, Any] | None,
         deadline: datetime,
-    ) -> BudgetMeter | None:
-        """Adapt the usage metering pricer into the logical RAG operation meter."""
+    ) -> BudgetMeter:
+        """Build one logical-operation meter whether or not usage persistence is configured."""
 
+        pricer: Callable[[str, int], float | None]
         if self._budget_meter is None:
-            return None
-        usage = self._budget_meter
+            price_version = "local-logical"
 
-        def pricer(operation: str, tokens: int) -> float | None:
-            try:
-                return float(usage.estimate_cost(operation, tokens))
-            except Exception:
-                return None
+            def local_pricer(_operation: str, _tokens: int) -> float:
+                return 0.0
 
-        price_version = str((snapshot or {}).get("price_version_id") or "usage-metering")
+            pricer = local_pricer
+        else:
+            usage = self._budget_meter
+
+            def usage_pricer(operation: str, tokens: int) -> float | None:
+                try:
+                    return float(usage.estimate_cost(operation, tokens))
+                except Exception:
+                    return None
+
+            pricer = usage_pricer
+            price_version = str((snapshot or {}).get("price_version_id") or "usage-metering")
         ceiling = (snapshot or {}).get("max_estimated_cost_amount")
         try:
             max_cost = float(ceiling) if ceiling is not None else 1000.0
@@ -643,6 +895,19 @@ class ChatGenerationWorker:
         fencing_token: int,
     ) -> None:
         checkpoint = self._load_checkpoint(execution_id=execution_id)
+        if checkpoint.get("phase") == "provider_reconciled":
+            recovered_candidates = checkpoint.get("candidates")
+            if isinstance(recovered_candidates, list) and recovered_candidates:
+                self._publish(
+                    generation=generation,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    candidates=[
+                        dict(item) for item in recovered_candidates if isinstance(item, Mapping)
+                    ],
+                )
+                return
         profile_id = str(generation["retrieval_profile_id"])
         profile_version = str(generation["retrieval_profile_version"])
         candidate_config_versions = self._candidate_config_versions_for_generation(
@@ -659,19 +924,27 @@ class ChatGenerationWorker:
             checkpoint.get("budget", checkpoint) if checkpoint else None,
         )
         budget_meter_snapshot = None
-        rag_budget_meter = None
         if self._budget_meter is not None:
             budget_meter_snapshot = self._budget_meter.ensure_meter(
                 generation_id=str(generation["id"]),
                 effort_level=effort,
                 deadline_at_utc=generation["absolute_deadline_at_utc"],
             )
-            rag_budget_meter = self._build_rag_budget_meter(
-                effort,
-                budget_meter_snapshot,
-                _utc(generation["absolute_deadline_at_utc"]),
-            )
+        rag_budget_meter = self._build_rag_budget_meter(
+            effort,
+            budget_meter_snapshot,
+            _utc(generation["absolute_deadline_at_utc"]),
+        )
         hits: tuple[RetrievalHitOutcome, ...] = ()
+        strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
+        if effort == "deep":
+            strategy_operations = self._plan_deep_retrieval(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                budget=rag_budget_meter,
+            )
 
         round_index = int(checkpoint.get("round_index", 0)) if checkpoint else 0
         # Deep-tier progress rows: one step index per retrieval round, with the
@@ -716,6 +989,13 @@ class ChatGenerationWorker:
                     budget_meter_snapshot = self._budget_meter.meter(generation_id=generation_id)
                 upgraded = budget.upgrade_effort()
                 assert upgraded is not None
+                assert rag_budget_meter.upgrade_policy(
+                    self._build_rag_budget_meter(
+                        upgraded,
+                        budget_meter_snapshot,
+                        _utc(generation["absolute_deadline_at_utc"]),
+                    ).policy
+                )
                 if not self._persist_effort_upgrade(
                     generation_id=generation_id,
                     execution_id=execution_id,
@@ -783,6 +1063,7 @@ class ChatGenerationWorker:
                 profile_version=profile_version,
                 effort=budget.effort_level,
                 budget=rag_budget_meter,
+                strategy_operations=strategy_operations if round_index == 0 else (),
             )
             if self._budget_meter is not None:
                 self._budget_meter.settle(
@@ -800,7 +1081,7 @@ class ChatGenerationWorker:
                     control_version=control_version,
                     phase="retrieval_routed",
                     generation=generation,
-                    detail={"route": dict(outcome.route_output or {"kind": "no_rewrite"})},
+                    detail={"route": _public_route_summary(outcome.route_output)},
                 )
             hits, missing_identities = select_budget_candidates(
                 hits,
@@ -889,16 +1170,22 @@ class ChatGenerationWorker:
                 candidate_config_versions=candidate_config_versions,
                 retrieval_budget=rag_budget_meter,
                 query=effective_query,
+                logical_budget=rag_budget_meter,
             )
-            evaluation = evaluator.evaluate(
-                query=effective_query,
-                candidate_content=candidates[0]["content"],
-                citations=tuple(citations),
-                context_items=tuple(_hit_mapping(hit) for hit in hits),
-            )
+            try:
+                evaluation = evaluator.evaluate(
+                    query=effective_query,
+                    candidate_content=candidates[0]["content"],
+                    citations=tuple(citations),
+                    context_items=tuple(_hit_mapping(hit) for hit in hits),
+                )
+            except Exception:
+                self._complete_deferred_provider_calls_public(candidates)
+                raise
             if evaluation.acceptable or evaluation.rewritten_query is None:
                 break
             if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
+                self._complete_deferred_provider_calls_public(candidates)
                 break
             if not budget.can_start_rag_round():
                 previous_effort = budget.effort_level
@@ -919,9 +1206,19 @@ class ChatGenerationWorker:
                     )
                     != upgraded
                 ):
+                    self._complete_deferred_provider_calls_public(candidates)
                     break
+                if self._budget_meter is not None:
+                    budget_meter_snapshot = self._budget_meter.meter(generation_id=generation_id)
                 upgraded = budget.upgrade_effort()
                 assert upgraded is not None
+                assert rag_budget_meter.upgrade_policy(
+                    self._build_rag_budget_meter(
+                        upgraded,
+                        budget_meter_snapshot,
+                        _utc(generation["absolute_deadline_at_utc"]),
+                    ).policy
+                )
                 if not self._persist_effort_upgrade(
                     generation_id=generation_id,
                     execution_id=execution_id,
@@ -930,6 +1227,7 @@ class ChatGenerationWorker:
                     previous_effort=previous_effort,
                     upgraded_effort=upgraded,
                 ):
+                    self._complete_deferred_provider_calls_public(candidates)
                     return
                 generation = {
                     **generation,
@@ -945,6 +1243,9 @@ class ChatGenerationWorker:
                     detail={"effort_level": upgraded},
                     generation=generation,
                 )
+            # The current draft is discarded before the rewritten query is
+            # retrieved; settle its provider calls independently of publish.
+            self._complete_deferred_provider_calls_public(candidates)
             rewrite_reservation_id = None
             if self._budget_meter is not None:
                 rewrite_reservation_id = f"rag:{generation_id}:rewrite-{budget.rag_calls_used}"
@@ -1047,19 +1348,25 @@ class ChatGenerationWorker:
                 },
             ):
                 return
-        if not self._persist_checkpoint(
-            generation_id=generation_id,
-            execution_id=execution_id,
-            fencing_token=fencing_token,
-            control_version=control_version,
-            checkpoint={
-                "phase": "generation_ready",
-                "round_index": budget.rag_calls_used,
-                "completed_operations": ["generation_candidates_ready"],
-                "query_config_version": profile_version,
-                "budget": budget.to_checkpoint(),
-            },
-        ):
+        try:
+            checkpoint_persisted = self._persist_checkpoint(
+                generation_id=generation_id,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                checkpoint={
+                    "phase": "generation_ready",
+                    "round_index": budget.rag_calls_used,
+                    "completed_operations": ["generation_candidates_ready"],
+                    "query_config_version": profile_version,
+                    "budget": budget.to_checkpoint(),
+                },
+            )
+        except Exception:
+            self._complete_deferred_provider_calls_public(candidates)
+            raise
+        if not checkpoint_persisted:
+            self._complete_deferred_provider_calls_public(candidates)
             return
         self._publish(
             generation=generation,
@@ -1150,6 +1457,19 @@ class ChatGenerationWorker:
 
         with self._engine.begin() as connection:
             now = self._now(connection)
+            existing_checkpoint = connection.execute(
+                select(chat_generation_execution_table.c.checkpoint_json).where(
+                    chat_generation_execution_table.c.execution_id == execution_id
+                )
+            ).scalar_one_or_none()
+            merged_checkpoint = dict(checkpoint)
+            if (
+                isinstance(existing_checkpoint, Mapping)
+                and "scope_retry_count" in existing_checkpoint
+            ):
+                merged_checkpoint.setdefault(
+                    "scope_retry_count", int(existing_checkpoint["scope_retry_count"])
+                )
             current_generation = (
                 select(chat_generation_table.c.id)
                 .where(
@@ -1170,7 +1490,7 @@ class ChatGenerationWorker:
                 )
                 .values(
                     checkpoint_version=chat_generation_execution_table.c.checkpoint_version + 1,
-                    checkpoint_json=dict(checkpoint),
+                    checkpoint_json=merged_checkpoint,
                     updated_at_utc=now,
                 )
             ).rowcount
@@ -1191,6 +1511,54 @@ class ChatGenerationWorker:
             )
         )
 
+    def _plan_deep_retrieval(
+        self,
+        *,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        budget: BudgetMeter,
+    ) -> tuple[DeepRetrievalStrategy, ...]:
+        """Use the main chat model transport for one validated deep strategy plan."""
+
+        request = ChatProviderRequest(
+            generation_id=str(generation["id"]),
+            owner_user_id=str(generation["owner_user_id"]),
+            content=str(generation["request_content"]),
+            effort_level="deep",
+            candidate=None,
+            context_items=(),
+            source_conflict_contract=source_conflict_contract(),
+            purpose="deep_retrieval_plan",
+        )
+        try:
+            response = self._provider_call(
+                request,
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                logical_budget=budget,
+            )
+            return DeepRetrievalStrategyPlan.from_model_content(response.content).operations
+        except ValueError:
+            reason = "strategy_plan_invalid"
+        except PlatformError as error:
+            if error.code == "provider_result_unknown":
+                raise
+            reason = "strategy_plan_unavailable"
+        self._emit_notice(
+            generation_id=str(generation["id"]),
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+            kind="retrieval_degraded",
+            detail={"reason": reason},
+            generation=generation,
+        )
+        return ()
+
     def _produce_candidates(
         self,
         *,
@@ -1203,6 +1571,7 @@ class ChatGenerationWorker:
         candidate_config_versions: tuple[str, str] | None = None,
         retrieval_budget: Any | None = None,
         query: str | None = None,
+        logical_budget: BudgetMeter | None = None,
     ) -> list[dict[str, Any]]:
         pair = self._pair_for_generation(generation_id=str(generation["id"]))
         candidate_numbers = (0, 1) if pair is not None else (0,)
@@ -1275,20 +1644,55 @@ class ChatGenerationWorker:
                 context_items=context,
                 source_conflict_contract=source_conflict_contract(),
             )
-            response = self._provider_call(
-                request,
-                generation=generation,
-                execution_id=execution_id,
-                fencing_token=fencing_token,
-                control_version=control_version,
-            )
             answer_mode = _answer_mode(candidate_hits, candidate_citations)
+            pending_checkpoint = {
+                "phase": "provider_pending",
+                "pending_candidate": {
+                    "candidate": candidate,
+                    "content": "",
+                    "citations": [dict(item) for item in candidate_citations],
+                    "answer_mode": answer_mode,
+                },
+            }
+            try:
+                response = self._provider_call(
+                    request,
+                    generation=generation,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    defer_completion=True,
+                    pending_checkpoint=pending_checkpoint,
+                    logical_budget=logical_budget,
+                )
+            except Exception:
+                # Earlier candidates are known results even if a later
+                # candidate fails or becomes unknown.
+                self._complete_deferred_provider_calls_public(results)
+                raise
+            provider_meta: dict[str, Any] = {}
+            if isinstance(response, ProviderCallOutcome):
+                provider_response = response.response
+                provider_meta = {
+                    "_provider_call_id": response.provider_call_id,
+                    "_provider_measurement": response.measurement,
+                    "_provider_ownership": response.ownership,
+                    "_provider_started_at_utc": response.started_at_utc,
+                    "_provider_request_id": response.provider_request_id,
+                }
+            else:
+                provider_response = response
             results.append(
                 {
                     "candidate": candidate,
-                    "content": response.content,
+                    "content": provider_response.content,
                     "citations": candidate_citations,
                     "answer_mode": answer_mode,
+                    **provider_meta,
+                }
+            )
+                    "answer_mode": answer_mode,
+                    **provider_meta,
                 }
             )
         return results
@@ -1347,13 +1751,16 @@ class ChatGenerationWorker:
         execution_id: str,
         fencing_token: int,
         control_version: int,
+        defer_completion: bool = False,
+        pending_checkpoint: Mapping[str, Any] | None = None,
+        logical_budget: BudgetMeter | None = None,
     ) -> Any:
         budget_reservation_id = None
         estimated_cost = Decimal("0")
         if self._budget_meter is not None:
             candidate_key = request.candidate if request.candidate is not None else 0
             budget_reservation_id = (
-                f"provider:{request.generation_id}:{execution_id}:{candidate_key}"
+                f"provider:{request.generation_id}:{execution_id}:{request.purpose}:{candidate_key}"
             )
             estimated_tokens = self._estimated_provider_tokens(request)
             estimated_cost = self._budget_meter.estimate_cost("chat_generation", estimated_tokens)
@@ -1368,6 +1775,13 @@ class ChatGenerationWorker:
                 estimated_cost=estimated_cost,
                 is_rag=False,
             )
+        logical_reservation = None
+        if logical_budget is not None:
+            logical_reservation = logical_budget.reserve(
+                "chat_generation",
+                estimated_tokens=self._estimated_provider_tokens(request),
+                now=self._now(),
+            )
         call_id = self._usage.prepare_provider_call(
             provider="chat",
             model="chat-model",
@@ -1376,7 +1790,9 @@ class ChatGenerationWorker:
             execution_id=execution_id,
             generation_id=str(generation["id"]),
             deadline_utc=generation["absolute_deadline_at_utc"],
-            request_fingerprint=f"chat:{generation['id']}:{execution_id}",
+            request_fingerprint=(
+                f"chat:{generation['id']}:{execution_id}:{request.purpose}:{request.candidate or 0}"
+            ),
         )
         started_at = self._now()
         if not self._usage.mark_dispatching(call_id, started_at_provider=started_at):
@@ -1421,6 +1837,8 @@ class ChatGenerationWorker:
         try:
             response = self._provider.generate(request)
         except PlatformError as error:
+            if logical_budget is not None and logical_reservation is not None:
+                logical_budget.reconcile(logical_reservation, actual_tokens=0)
             if self._budget_meter is not None:
                 self._budget_meter.mark_unknown(
                     generation_id=str(generation["id"]),
@@ -1448,11 +1866,24 @@ class ChatGenerationWorker:
             # 已派发但传输中断（连接断开/超时等）：结果未知而非确定失败，
             # 按 §6.5 记 unknown 并以 provider_result_unknown 终态化（SSE error 事件）。
             self._usage.mark_unknown(call_id)
+            if pending_checkpoint is not None:
+                self._persist_checkpoint(
+                    generation_id=str(generation["id"]),
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    checkpoint={
+                        **dict(pending_checkpoint),
+                        "provider_call_id": call_id,
+                    },
+                )
             if self._budget_meter is not None:
                 self._budget_meter.mark_unknown(
                     generation_id=str(generation["id"]),
                     reservation_id=budget_reservation_id,
                 )
+            if logical_budget is not None and logical_reservation is not None:
+                logical_budget.reconcile(logical_reservation, actual_tokens=0)
             raise PlatformError(
                 "provider_result_unknown",
                 "The chat provider result is unknown after dispatch",
@@ -1471,20 +1902,39 @@ class ChatGenerationWorker:
             vector_count=None,
             measurement_sources={},
         )
+        provider_request_id = getattr(response, "provider_request_id", None)
+        actual_tokens = (
+            int(getattr(response, "input_tokens", 0) or 0)
+            + int(getattr(response, "output_tokens", 0) or 0)
+            + int(getattr(response, "reasoning_tokens", 0) or 0)
+        )
+        if logical_budget is not None and logical_reservation is not None:
+            logical_budget.reconcile(logical_reservation, actual_tokens=actual_tokens)
+        if defer_completion:
+            if self._budget_meter is not None:
+                self._budget_meter.settle(
+                    generation_id=str(generation["id"]),
+                    reservation_id=budget_reservation_id,
+                    actual_tokens=actual_tokens,
+                    actual_cost=self._budget_meter.estimate_cost("chat_generation", actual_tokens),
+                )
+            return ProviderCallOutcome(
+                response=response,
+                provider_call_id=call_id,
+                measurement=measurement,
+                ownership=ownership,
+                started_at_utc=started_at,
+                provider_request_id=provider_request_id,
+            )
         self._usage.complete_provider_call(
             provider_call_id=call_id,
             measurement=measurement,
             ownership=ownership,
             result="succeeded",
-            provider_request_id=getattr(response, "provider_request_id", None),
+            provider_request_id=provider_request_id,
             started_at_utc=started_at,
         )
         if self._budget_meter is not None:
-            actual_tokens = (
-                int(getattr(response, "input_tokens", 0) or 0)
-                + int(getattr(response, "output_tokens", 0) or 0)
-                + int(getattr(response, "reasoning_tokens", 0) or 0)
-            )
             self._budget_meter.settle(
                 generation_id=str(generation["id"]),
                 reservation_id=budget_reservation_id,
@@ -1492,6 +1942,71 @@ class ChatGenerationWorker:
                 actual_cost=self._budget_meter.estimate_cost("chat_generation", actual_tokens),
             )
         return response
+
+    def _complete_deferred_provider_call_in_transaction(
+        self, connection: Connection, item: Mapping[str, Any]
+    ) -> None:
+        call_id = item.get("_provider_call_id")
+        if not call_id:
+            return
+        method = getattr(self._usage, "complete_provider_call_in_transaction", None)
+        kwargs = {
+            "provider_call_id": str(call_id),
+            "measurement": item["_provider_measurement"],
+            "ownership": item["_provider_ownership"],
+            "result": "succeeded",
+            "provider_request_id": item.get("_provider_request_id"),
+            "started_at_utc": item.get("_provider_started_at_utc"),
+        }
+        if callable(method):
+            method(connection, **kwargs)
+        else:
+            # Test adapters predating the connection-aware port remain usable;
+            # production runtime always supplies the ledger-backed method.
+            self._usage.complete_provider_call(**kwargs)
+
+    def _complete_deferred_provider_calls_public(
+        self, candidates: Sequence[Mapping[str, Any]]
+    ) -> None:
+        for item in candidates:
+            call_id = item.get("_provider_call_id")
+            if not call_id:
+                continue
+            self._usage.complete_provider_call(
+                provider_call_id=str(call_id),
+                measurement=item["_provider_measurement"],
+                ownership=item["_provider_ownership"],
+                result="succeeded",
+                provider_request_id=item.get("_provider_request_id"),
+                started_at_utc=item.get("_provider_started_at_utc"),
+            )
+
+    def _source_scope_is_current(
+        self, generation: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]]
+    ) -> bool:
+        citations: list[Mapping[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for item in candidates:
+            for citation in item.get("citations", ()) or ():
+                if not isinstance(citation, Mapping):
+                    continue
+                key = _source_identity(citation)
+                if key in seen:
+                    continue
+                seen.add(key)
+                citations.append(citation)
+        if not citations:
+            return True
+        method = getattr(self._retrieval, "revalidate_citations", None)
+        if not callable(method):
+            return True
+        try:
+            current = method(tuple(citations), principal=_principal_from_generation(generation))
+        except PlatformError:
+            return False
+        expected_ids = {_source_identity(item) for item in citations}
+        current_ids = {_source_identity(item) for item in current if isinstance(item, Mapping)}
+        return current_ids == expected_ids
 
     # ------------------------------------------------------------- publication
 
@@ -1504,176 +2019,206 @@ class ChatGenerationWorker:
         control_version: int,
         candidates: list[dict[str, Any]],
     ) -> None:
-        with self._engine.begin() as connection:
-            now = self._now(connection)
-            if not self._fence_current(
-                connection,
-                generation_id=str(generation["id"]),
-                execution_id=execution_id,
-                fencing_token=fencing_token,
-                control_version=control_version,
-            ):
-                self._cancel_stale_execution(
+        stale_publication = False
+        try:
+            with self._engine.begin() as connection:
+                now = self._now(connection)
+                if not self._fence_current(
                     connection,
-                    execution_id=execution_id,
                     generation_id=str(generation["id"]),
-                    now=now,
-                )
-                return
-            current_execution = connection.execute(
-                update(chat_generation_execution_table)
-                .where(
-                    chat_generation_execution_table.c.execution_id == execution_id,
-                    chat_generation_execution_table.c.generation_id == str(generation["id"]),
-                    chat_generation_execution_table.c.fencing_token == fencing_token,
-                    chat_generation_execution_table.c.status == "running",
-                )
-                .values(heartbeat_at_utc=now, updated_at_utc=now)
-            ).rowcount
-            if not current_execution:
-                self._cancel_stale_execution(
-                    connection,
                     execution_id=execution_id,
-                    generation_id=str(generation["id"]),
-                    now=now,
-                )
-                return
-            current_generation = connection.execute(
-                update(chat_generation_table)
-                .where(
-                    chat_generation_table.c.id == str(generation["id"]),
-                    chat_generation_table.c.control_version == control_version,
-                    chat_generation_table.c.status == "running",
-                )
-                .values(updated_at_utc=now)
-            ).rowcount
-            if not current_generation:
-                self._cancel_stale_execution(
-                    connection,
-                    execution_id=execution_id,
-                    generation_id=str(generation["id"]),
-                    now=now,
-                )
-                return
-            pair = self._pair_row(connection, generation_id=str(generation["id"]))
-            ab_open = pair is not None and len(candidates) == 2
-            near_duplicate = bool(
-                ab_open
-                and _rouge_l(candidates[0]["content"], candidates[1]["content"])
-                >= AB_NEAR_DUPLICATE_ROUGE_L
-            )
-            if near_duplicate:
-                assert pair is not None
-                connection.execute(
-                    update(chat_ab_candidate_table)
-                    .where(
-                        chat_ab_candidate_table.c.pair_id == pair["pair_id"],
-                        chat_ab_candidate_table.c.candidate == 1,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                ):
+                    stale_publication = True
+                    self._cancel_stale_execution(
+                        connection,
+                        execution_id=execution_id,
+                        generation_id=str(generation["id"]),
+                        now=now,
                     )
-                    .values(status="discarded")
+                    return
+                current_execution = connection.execute(
+                    update(chat_generation_execution_table)
+                    .where(
+                        chat_generation_execution_table.c.execution_id == execution_id,
+                        chat_generation_execution_table.c.generation_id == str(generation["id"]),
+                        chat_generation_execution_table.c.fencing_token == fencing_token,
+                        chat_generation_execution_table.c.status == "running",
+                    )
+                    .values(heartbeat_at_utc=now, updated_at_utc=now)
+                ).rowcount
+                if not current_execution:
+                    stale_publication = True
+                    self._cancel_stale_execution(
+                        connection,
+                        execution_id=execution_id,
+                        generation_id=str(generation["id"]),
+                        now=now,
+                    )
+                    return
+                current_generation = connection.execute(
+                    update(chat_generation_table)
+                    .where(
+                        chat_generation_table.c.id == str(generation["id"]),
+                        chat_generation_table.c.control_version == control_version,
+                        chat_generation_table.c.status == "running",
+                    )
+                    .values(updated_at_utc=now)
+                ).rowcount
+                if not current_generation:
+                    stale_publication = True
+                    self._cancel_stale_execution(
+                        connection,
+                        execution_id=execution_id,
+                        generation_id=str(generation["id"]),
+                        now=now,
+                    )
+                    return
+
+                # Revalidate after the execution/generation fence is current,
+                # but before any provider ledger or public chat writes commit.
+                if not self._source_scope_is_current(generation, candidates):
+                    raise PlatformError(
+                        "source_scope_changed",
+                        "The retrieval source scope changed before publication",
+                        {"generation_id": str(generation["id"])},
+                        409,
+                        True,
+                    )
+
+                pair = self._pair_row(connection, generation_id=str(generation["id"]))
+                for item in candidates:
+                    self._complete_deferred_provider_call_in_transaction(connection, item)
+                ab_open = pair is not None and len(candidates) == 2
+                near_duplicate = bool(
+                    ab_open
+                    and _rouge_l(candidates[0]["content"], candidates[1]["content"])
+                    >= AB_NEAR_DUPLICATE_ROUGE_L
                 )
-                connection.execute(
-                    update(chat_ab_pair_table)
-                    .where(chat_ab_pair_table.c.pair_id == pair["pair_id"])
-                    .values(status="expired", updated_at_utc=now)
-                )
-                ab_open = False
-            for item in candidates if ab_open else candidates[:1]:
-                self._append_terminal(
-                    connection,
-                    generation_id=str(generation["id"]),
-                    event_type="answer",
-                    data={
-                        "candidate": item["candidate"],
-                        "content": item["content"],
-                        "citations": item["citations"],
-                        "answer_mode": item["answer_mode"],
-                        "effort_level": str(generation["effective_effort_level"]),
-                        "upgraded_from": generation["upgraded_from"],
-                    },
-                    now=now,
-                )
-                if pair is not None:
+                if near_duplicate:
+                    assert pair is not None
                     connection.execute(
                         update(chat_ab_candidate_table)
                         .where(
                             chat_ab_candidate_table.c.pair_id == pair["pair_id"],
-                            chat_ab_candidate_table.c.candidate == item["candidate"],
+                            chat_ab_candidate_table.c.candidate == 1,
                         )
-                        .values(
-                            status="published",
-                            content=item["content"],
-                            citations_json=list(item["citations"]),
-                            answer_mode=item["answer_mode"],
-                        )
+                        .values(status="discarded")
                     )
-            message_values: dict[str, Any] = {
-                "status": "completed",
-                "stop_reason": None,
-                "updated_at_utc": now,
-            }
-            if pair is not None:
-                if ab_open:
-                    # The pair's expires_at_utc was frozen at creation as the
-                    # earlier of the policy TTL and the window deadline (A31);
-                    # opening for voting must not overwrite it.
-                    connection.execute(
-                        update(chat_ab_pair_table)
-                        .where(chat_ab_pair_table.c.pair_id == pair["pair_id"])
-                        .values(
-                            status="open",
-                            updated_at_utc=now,
-                        )
-                    )
-                    # A/B open: assistant body stays empty until a vote selects one candidate.
-                    message_values["content"] = ""
-                    message_values["answer_mode"] = None
-                    message_values["citations_json"] = None
-                else:
                     connection.execute(
                         update(chat_ab_pair_table)
                         .where(chat_ab_pair_table.c.pair_id == pair["pair_id"])
                         .values(status="expired", updated_at_utc=now)
                     )
+                    ab_open = False
+                for item in candidates if ab_open else candidates[:1]:
+                    self._append_terminal(
+                        connection,
+                        generation_id=str(generation["id"]),
+                        event_type="answer",
+                        data={
+                            "candidate": item["candidate"],
+                            "content": item["content"],
+                            "citations": item["citations"],
+                            "answer_mode": item["answer_mode"],
+                            "effort_level": str(generation["effective_effort_level"]),
+                            "upgraded_from": generation["upgraded_from"],
+                        },
+                        now=now,
+                    )
+                    if pair is not None:
+                        connection.execute(
+                            update(chat_ab_candidate_table)
+                            .where(
+                                chat_ab_candidate_table.c.pair_id == pair["pair_id"],
+                                chat_ab_candidate_table.c.candidate == item["candidate"],
+                            )
+                            .values(
+                                status="published",
+                                content=item["content"],
+                                citations_json=list(item["citations"]),
+                                answer_mode=item["answer_mode"],
+                            )
+                        )
+                message_values: dict[str, Any] = {
+                    "status": "completed",
+                    "stop_reason": None,
+                    "updated_at_utc": now,
+                }
+                if pair is not None:
+                    if ab_open:
+                        # The pair's expires_at_utc was frozen at creation as the
+                        # earlier of the policy TTL and the window deadline (A31);
+                        # opening for voting must not overwrite it.
+                        connection.execute(
+                            update(chat_ab_pair_table)
+                            .where(chat_ab_pair_table.c.pair_id == pair["pair_id"])
+                            .values(
+                                status="open",
+                                updated_at_utc=now,
+                            )
+                        )
+                        # A/B open: assistant body stays empty until a vote selects one candidate.
+                        message_values["content"] = ""
+                        message_values["answer_mode"] = None
+                        message_values["citations_json"] = None
+                    else:
+                        connection.execute(
+                            update(chat_ab_pair_table)
+                            .where(chat_ab_pair_table.c.pair_id == pair["pair_id"])
+                            .values(status="expired", updated_at_utc=now)
+                        )
+                        visible = candidates[0]
+                        message_values["content"] = visible["content"]
+                        message_values["answer_mode"] = visible["answer_mode"]
+                        message_values["citations_json"] = list(visible["citations"])
+                else:
                     visible = candidates[0]
                     message_values["content"] = visible["content"]
                     message_values["answer_mode"] = visible["answer_mode"]
                     message_values["citations_json"] = list(visible["citations"])
-            else:
-                visible = candidates[0]
-                message_values["content"] = visible["content"]
-                message_values["answer_mode"] = visible["answer_mode"]
-                message_values["citations_json"] = list(visible["citations"])
-            connection.execute(
-                update(chat_message_table)
-                .where(chat_message_table.c.id == generation["message_id"])
-                .values(**message_values)
-            )
-            connection.execute(
-                update(chat_generation_table)
-                .where(chat_generation_table.c.id == str(generation["id"]))
-                .values(
-                    status="completed",
-                    stop_reason=None,
-                    updated_at_utc=now,
+                connection.execute(
+                    update(chat_message_table)
+                    .where(chat_message_table.c.id == generation["message_id"])
+                    .values(**message_values)
                 )
-            )
-            connection.execute(
-                update(chat_generation_execution_table)
-                .where(chat_generation_execution_table.c.execution_id == execution_id)
-                .values(status="completed", checkpoint_json=None, updated_at_utc=now)
-            )
-            self._append_terminal(
-                connection,
-                generation_id=str(generation["id"]),
-                event_type="done",
-                data={
-                    "generation_id": str(generation["id"]),
-                    "message_id": str(generation["message_id"]),
-                    "status": "completed",
-                },
-                now=now,
-            )
+                connection.execute(
+                    update(chat_generation_table)
+                    .where(chat_generation_table.c.id == str(generation["id"]))
+                    .values(
+                        status="completed",
+                        stop_reason=None,
+                        updated_at_utc=now,
+                    )
+                )
+                connection.execute(
+                    update(chat_generation_execution_table)
+                    .where(chat_generation_execution_table.c.execution_id == execution_id)
+                    .values(status="completed", checkpoint_json=None, updated_at_utc=now)
+                )
+                self._append_terminal(
+                    connection,
+                    generation_id=str(generation["id"]),
+                    event_type="done",
+                    data={
+                        "generation_id": str(generation["id"]),
+                        "message_id": str(generation["message_id"]),
+                        "status": "completed",
+                    },
+                    now=now,
+                )
+        except PlatformError as error:
+            if error.code == "source_scope_changed":
+                # Provider work has already happened, so preserve its accounting
+                # even though the answer is rejected by the publication fence.
+                self._complete_deferred_provider_calls_public(candidates)
+            raise
+        finally:
+            if stale_publication:
+                # Commit the stale execution cancellation first; the public
+                # wrapper then records only the provider ledger rows.
+                self._complete_deferred_provider_calls_public(candidates)
 
     def _stop_terminal(self, *, execution_id: str, generation_id: str, stop_reason: str) -> None:
         with self._engine.begin() as connection:
@@ -1852,6 +2397,36 @@ class ChatGenerationWorker:
                     )
                 )
                 return
+            if error.code == "source_scope_changed":
+                execution_row = connection.execute(
+                    select(chat_generation_execution_table.c.checkpoint_json).where(
+                        chat_generation_execution_table.c.execution_id == execution_id,
+                        chat_generation_execution_table.c.generation_id == generation_id,
+                    )
+                ).scalar_one_or_none()
+                checkpoint = dict(execution_row) if isinstance(execution_row, Mapping) else {}
+                retries = int(checkpoint.get("scope_retry_count", 0))
+                if retries < self._max_scope_retries:
+                    connection.execute(
+                        update(chat_generation_execution_table)
+                        .where(
+                            chat_generation_execution_table.c.execution_id == execution_id,
+                            chat_generation_execution_table.c.status == "running",
+                        )
+                        .values(
+                            status="retry_wait",
+                            lease_owner=None,
+                            lease_expires_at_utc=None,
+                            next_attempt_at_utc=now,
+                            checkpoint_json={
+                                **checkpoint,
+                                "scope_retry_count": retries + 1,
+                            },
+                            last_error_classification=error.code,
+                            updated_at_utc=now,
+                        )
+                    )
+                    return
             connection.execute(
                 update(chat_generation_table)
                 .where(chat_generation_table.c.id == generation_id)
@@ -1885,7 +2460,7 @@ class ChatGenerationWorker:
                     "code": error.code,
                     "message": error.message,
                     "details": dict(error.details),
-                    "request_id": "req_system",
+                    "request_id": str(generation.get("request_id") or "req_system"),
                 },
                 now=now,
             )

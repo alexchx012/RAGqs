@@ -215,6 +215,8 @@ export const zhCN = {
               return '不支持该文件类型';
             case 'upload_content_type_mismatch':
               return '文件内容与声明类型不符';
+            case 'upload_media_mismatch':
+              return '文件类型与扩展名不符';
             case 'unsafe_archive':
               return '压缩包存在安全风险';
             case 'malware_detected':

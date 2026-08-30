@@ -47,6 +47,10 @@ from .schema import (
 MAX_CYCLE_ATTEMPTS = 8
 LEASE_SECONDS = 60
 RETRY_DELAYS_SECONDS = (5, 30, 120, 600, 1800, 7200, 21600)
+# Single compaction round claims at most this many due events, aligned with the
+# delivery claim batch, so one maintenance transaction stays bounded; a backlog
+# converges over consecutive rounds.
+COMPACT_BATCH = 100
 
 _PENDING_STATUSES = ("pending", "retry_wait")
 
@@ -360,6 +364,14 @@ class OutboxDispatcher:
                 now = self._current_time(connection)
                 delivered_at = now
                 recipients = self._recipients_for(connection, claim.event_id)
+                if claim.consumer_name == V1_CONSUMER and not recipients:
+                    # A zero-recipient role event keeps its pending delivery:
+                    # the consumer completes with recipient_count=0 and the
+                    # outcome is observable through the metric; the business
+                    # transaction is never rolled back.
+                    self._record_metric(
+                        connection, "outbox.deliveries.zero_recipients", event_id=claim.event_id
+                    )
                 if claim.consumer_name == V1_CONSUMER:
                     # event 与 tombstone 只依赖 claim，对同一 event 的全部
                     # 收件人只读取一次；per-document redaction 锁同样只取一次。
@@ -477,7 +489,9 @@ class OutboxDispatcher:
     def _recipients_for(self, connection: Connection, event_id: str) -> list[dict[str, object]]:
         rows = (
             connection.execute(
-                select(outbox_recipient_table).where(outbox_recipient_table.c.event_id == event_id)
+                select(outbox_recipient_table)
+                .where(outbox_recipient_table.c.event_id == event_id)
+                .order_by(outbox_recipient_table.c.recipient_user_id)
             )
             .mappings()
             .all()
@@ -605,7 +619,8 @@ class OutboxDispatcher:
                         outbox_delivery_table.c.cycle_attempt_number,
                         outbox_delivery_table.c.lease_owner,
                         outbox_delivery_table.c.fence_token,
-                    ).where(
+                    )
+                    .where(
                         and_(
                             outbox_delivery_table.c.status == "running",
                             outbox_delivery_table.c.lease_expires_at_utc <= now,
@@ -1054,11 +1069,13 @@ class OutboxDispatcher:
                 )
             candidates = (
                 connection.execute(
-                    select(outbox_event_table.c.event_id).where(
+                    select(outbox_event_table.c.event_id)
+                    .where(
                         outbox_event_table.c.storage_state == "full",
                         outbox_event_table.c.compact_after_at_utc.is_not(None),
                         outbox_event_table.c.compact_after_at_utc <= current,
                     )
+                    .limit(COMPACT_BATCH)
                 )
                 .scalars()
                 .all()

@@ -162,8 +162,12 @@ def test_empty_group_is_deleted_after_last_conversation_moved_out() -> None:
 
     c1 = client.post("/v1/conversations", json={}, headers=headers).json()["id"]
     c2 = client.post("/v1/conversations", json={}, headers=headers).json()["id"]
-    group_a = client.post("/v1/conversation-groups", json={"name": "a"}, headers=headers).json()["id"]
-    group_b = client.post("/v1/conversation-groups", json={"name": "b"}, headers=headers).json()["id"]
+    group_a = client.post("/v1/conversation-groups", json={"name": "a"}, headers=headers).json()[
+        "id"
+    ]
+    group_b = client.post("/v1/conversation-groups", json={"name": "b"}, headers=headers).json()[
+        "id"
+    ]
 
     def group_ids() -> set[str]:
         listing = client.get("/v1/conversations", headers=headers).json()
@@ -526,7 +530,11 @@ def test_ab_pair_open_vote_and_expiry() -> None:
     detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
     assistant = detail["messages"][1]
     assert assistant["ab"]["status"] == "open"
-    assert assistant["ab"]["candidates"] == [0, 1]
+    assert [candidate["candidate"] for candidate in assistant["ab"]["candidates"]] == [0, 1]
+    assert all(
+        {"candidate", "content", "citations", "answer_mode"}.issubset(candidate)
+        for candidate in assistant["ab"]["candidates"]
+    )
     pair_id = assistant["ab"]["pair_id"]
 
     vote = env["client"].post(
@@ -694,7 +702,7 @@ def test_ab_vote_by_non_owner_returns_403_and_missing_message_keeps_404() -> Non
         headers={**bob_headers, "Idempotency-Key": "bob-vote"},
     )
     assert forbidden.status_code == 403
-    assert forbidden.json()["error"]["code"] == "ab_vote_forbidden"
+    assert forbidden.json()["error"]["code"] == "forbidden"
     # An authorized voter referencing a nonexistent message keeps the
     # existing resource semantics (A1).
     missing = env["client"].post(
@@ -779,7 +787,7 @@ def test_ab_pair_is_space_isolated_and_cross_space_vote_is_forbidden() -> None:
             request=AbVoteRequest(pair_id=pair_id, choice="0"),
             idempotency_key="cross-space-vote",
         )
-    assert raised.value.code == "ab_vote_forbidden"
+    assert raised.value.code == "forbidden"
     assert raised.value.status_code == 403
     # No vote landed for the inaccessible space (A3).
     with env["engine"].connect() as connection:

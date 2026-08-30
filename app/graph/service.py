@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -43,6 +44,8 @@ GRAPH_CONSUMER_ID = "public_graph"
 CREATE_OP_PREFIX = "gb_create"
 CANCEL_OP_PREFIX = "gb_cancel"
 GC_OP_PREFIX = "gb_gc"
+
+_logger = logging.getLogger(__name__)
 
 
 def _new_id(prefix: str) -> str:
@@ -128,6 +131,7 @@ class GraphBuildService:
                 request_hash=request_hash,
             )
             if reservation == "replay":
+                assert replay is not None
                 if "error" in (replay or {}):
                     raise _error_from_response(replay)
                 return _view_from_response(replay)
@@ -161,7 +165,8 @@ class GraphBuildService:
         reservation_created_at: datetime,
     ) -> GraphRunRecord:
         head, snapshot, estimated_calls, active_generation_id, has_active = self._freeze_source(
-            expected_source_revision=expected_source_revision
+            expected_source_revision=expected_source_revision,
+            initiator_identity_id=initiator_identity_id,
         )
         if has_active:
             raise PlatformError(
@@ -320,8 +325,61 @@ class GraphBuildService:
                 reservation_created_at=reservation_created_at,
             )
 
-    def _freeze_source(self, *, expected_source_revision: int) -> tuple[Any, Any, int, str, bool]:
+    def _freeze_source(
+        self,
+        *,
+        expected_source_revision: int,
+        initiator_identity_id: str,
+    ) -> tuple[Any, Any, int, str, bool]:
         """Read and freeze the current public source facts without holding locks."""
+        try:
+            return self._freeze_source_locked(
+                expected_source_revision=expected_source_revision,
+            )
+        except PlatformError as exc:
+            # §9.3 审计事实：source revision 冲突。失败事务回滚会抹掉同事务
+            # 审计，因此落库走独立的 best-effort 事务（不掩盖原错误）。
+            if exc.code == "graph_source_changed":
+                self._audit_source_conflict_best_effort(
+                    initiator_identity_id=initiator_identity_id,
+                    expected_source_revision=expected_source_revision,
+                )
+            raise
+
+    def _audit_source_conflict_best_effort(
+        self,
+        *,
+        initiator_identity_id: str,
+        expected_source_revision: int,
+    ) -> None:
+        from app.platform.context import current_context
+        from app.platform.database import platform_audit_table
+
+        try:
+            with self._engine.begin() as connection:
+                context = current_context()
+                connection.execute(
+                    platform_audit_table.insert().values(
+                        actor_id=initiator_identity_id,
+                        resource_type="graph.build_source",
+                        resource_id=f"revision:{expected_source_revision}",
+                        request_id=context.request_id if context is not None else "req_graph",
+                        occurred_at_utc=_now(),
+                        result="graph_source_changed",
+                        details_json={"expected_source_revision": expected_source_revision},
+                    )
+                )
+        except Exception:  # noqa: BLE001 - audit must never mask the original failure
+            _logger.warning(
+                "graph source-conflict audit write failed for revision %s",
+                expected_source_revision,
+            )
+
+    def _freeze_source_locked(
+        self,
+        *,
+        expected_source_revision: int,
+    ) -> tuple[Any, Any, int, str, bool]:
         with self._engine.begin() as connection:
             head = self._source.get_current_head(connection=connection)
             if int(head.source_revision) < 1:
@@ -390,6 +448,7 @@ class GraphBuildService:
                 request_hash=request_hash,
             )
             if reservation == "replay":
+                assert replay is not None
                 if "error" in (replay or {}):
                     raise _error_from_response(replay)
                 return _view_from_response(replay)
@@ -508,14 +567,13 @@ class GraphBuildService:
             component = self._active_component(connection)
             latest = self._repository.latest_run(connection=connection)
         availability, active_generation = self._availability_view(head, component)
+        latest_view = GraphRunView.from_record(latest)
         return {
             "space_id": "public",
             "source_revision": int(head.source_revision),
             "graph_availability": availability,
             "active_generation": active_generation,
-            "latest_run": (
-                GraphRunView.from_record(latest).to_dict() if latest is not None else None
-            ),
+            "latest_run": latest_view.to_dict() if latest_view is not None else None,
         }
 
     def _active_component(self, connection: Any) -> ActiveGraphComponent | None:

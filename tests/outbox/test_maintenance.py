@@ -104,6 +104,28 @@ def test_maintenance_keeps_only_the_latest_50_notifications_per_user() -> None:
     alice = provision_user(identity, username="alice")
     for index in range(55):
         deliver(engine, user_ids=(alice,), event_id=f"evt_{index}")
+    # 物化事务内裁剪已把该用户压到 50 条在线（evt_0..evt_4 已带收据）；补 5 条
+    # 存量行（旧版本遗留数据语义）使后台 retire 任务扫到超限存量。
+    with engine.begin() as connection:
+        for index in range(5):
+            connection.execute(
+                notification_table.insert().values(
+                    id=f"n_legacy_{index}",
+                    event_id=f"evt_legacy_{index}",
+                    recipient_user_id=alice,
+                    notification_type="ingestion_completed",
+                    title="Legacy stock",
+                    payload_json={},
+                    document_id=None,
+                    document_version_id=None,
+                    event_occurred_at_utc=fixed_now(),
+                    materialized_at_utc=fixed_now(),
+                    notification_seq=1000 + index,
+                    read_at_utc=None,
+                    retire_after_at_utc=fixed_now() + timedelta(days=90),
+                    redacted=False,
+                )
+            )
     maintenance = NotificationRetentionMaintenance(engine, now=lambda: fixed_now())
 
     retired = maintenance.run_once(limit=200)
@@ -112,7 +134,8 @@ def test_maintenance_keeps_only_the_latest_50_notifications_per_user() -> None:
     remaining = notification_ids(engine, alice)
     assert len(remaining) == 50
     receipts = receipt_events(engine, alice)
-    assert len(receipts) == 5
+    # 5 条来自物化内裁剪，5 条来自后台 retire。
+    assert len(receipts) == 10
     with engine.connect() as connection:
         inbox = connection.execute(
             select(notification_inbox_table.c.next_notification_seq).where(
@@ -166,6 +189,28 @@ def test_maintenance_is_idempotent_and_receipts_are_permanent() -> None:
     alice = provision_user(identity, username="alice")
     for index in range(52):
         deliver(engine, user_ids=(alice,), event_id=f"evt_{index}")
+    # 物化事务内裁剪后无超限存量；补 2 条存量行（旧版本遗留数据语义）验证
+    # 后台 retire 的幂等与收据永久性。
+    with engine.begin() as connection:
+        for index in range(2):
+            connection.execute(
+                notification_table.insert().values(
+                    id=f"n_legacy_{index}",
+                    event_id=f"evt_legacy_{index}",
+                    recipient_user_id=alice,
+                    notification_type="ingestion_completed",
+                    title="Legacy stock",
+                    payload_json={},
+                    document_id=None,
+                    document_version_id=None,
+                    event_occurred_at_utc=fixed_now(),
+                    materialized_at_utc=fixed_now(),
+                    notification_seq=1000 + index,
+                    read_at_utc=None,
+                    retire_after_at_utc=fixed_now() + timedelta(days=90),
+                    redacted=False,
+                )
+            )
     maintenance = NotificationRetentionMaintenance(engine, now=lambda: fixed_now())
 
     first = maintenance.run_once(limit=200)
@@ -175,7 +220,8 @@ def test_maintenance_is_idempotent_and_receipts_are_permanent() -> None:
     assert second == 0
     with engine.connect() as connection:
         assert len(connection.execute(select(notification_table)).all()) == 50
-        assert len(connection.execute(select(notification_delivery_receipt_table)).all()) == 2
+        # 2 条来自物化内裁剪，2 条来自后台 retire；第二次运行零新增。
+        assert len(connection.execute(select(notification_delivery_receipt_table)).all()) == 4
 
 
 def test_maintenance_does_not_touch_unread_watermark_or_read_state() -> None:

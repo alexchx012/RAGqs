@@ -160,6 +160,8 @@ interface StoredSubmission {
   readonly scopeChanged: boolean;
   /** 夹具：审核时投稿人账号已冻结（409 submitter_pending_delete）。 */
   readonly submitterFrozen: boolean;
+  /** 夹具：审核时投稿人账号已删除（409 submitter_deleted）。 */
+  readonly submitterDeleted: boolean;
   /** 查看内容用受控文件流。 */
   content: { bytes: Uint8Array; type: string } | null;
 }
@@ -503,15 +505,35 @@ export class MockKnowledgeController {
     const items: UploadItem[] = [];
     const accepted: { file: UploadFileInput; doc: StoredDocument; job: StoredJob; initialClaimKey: string }[] = [];
 
-    // 管理上传在服务端事务中执行；先完成整批校验，避免错误响应留下半批文档或任务。
-    for (const file of files) {
+    // per-file 契约：先逐文件分类，校验失败项（accepted=false + name/error）不创建
+    // 任何投稿/文档/job；请求级失败仅限鉴权与 manage 配额整批条件。
+    type UploadOutcome =
+      | { readonly kind: 'rejected'; readonly name: string; readonly error: { readonly code: string; readonly message: string; readonly details: Record<string, unknown> } }
+      | { readonly kind: 'accepted'; readonly file: UploadFileInput };
+    const outcomes: readonly UploadOutcome[] = files.map((file) => {
       const error = this.uploadErrorFor(file);
-      if (error !== null) {
-        throw new MockHttpError(422, error.code, error.details);
-      }
-    }
+      return error === null
+        ? { kind: 'accepted' as const, file }
+        : { kind: 'rejected' as const, name: file.name, error };
+    });
+    const rejectedCount = outcomes.filter((outcome) => outcome.kind === 'rejected').length;
 
-    for (const file of files) {
+    for (const outcome of outcomes) {
+      if (outcome.kind === 'rejected') {
+        items.push({
+          accepted: false,
+          name: outcome.name,
+          document_id: null,
+          document_version_id: null,
+          job_id: null,
+          publication_id: null,
+          submission_id: null,
+          space_id: null,
+          error: outcome.error,
+        });
+        continue;
+      }
+      const file = outcome.file;
       // 初始上传仅在规范化文件名和内容 hash 都相同的情况下去重。
       if (permission === 'manage') {
         const hash = file.contentHash ?? this.fallbackHash(file);
@@ -519,7 +541,9 @@ export class MockKnowledgeController {
         const existing = this.findInitialUploadDuplicate(initialClaimKey);
         if (existing !== undefined) {
           items.push({
-            filename: file.name,
+            accepted: true,
+            name: file.name,
+            space_id: spaceId,
             document_id: existing.id,
             document_version_id: existing.activeVersionId,
             job_id: null,
@@ -536,7 +560,9 @@ export class MockKnowledgeController {
         (doc as { initialUploadJobId: string | null }).initialUploadJobId = job.jobId;
         accepted.push({ file, doc, job, initialClaimKey });
         items.push({
-          filename: file.name,
+          accepted: true,
+          name: file.name,
+          space_id: spaceId,
           document_id: doc.id,
           document_version_id: doc.activeVersionId,
           job_id: job.jobId,
@@ -547,6 +573,8 @@ export class MockKnowledgeController {
       } else {
         const submission = this.createSubmission(user, space, file);
         items.push({
+          accepted: true,
+          name: file.name,
           submission_id: submission.submissionId,
           version: submission.version,
           status: 'pending',
@@ -583,11 +611,13 @@ export class MockKnowledgeController {
 
     if (permission === 'manage') {
       const uploadBatchId = this.nextId('ub');
-      const deduplicated = items.filter((item) => 'filename' in item && item.deduplicated).length;
+      const deduplicated = items.filter(
+        (item) => item.accepted && 'deduplicated' in item && item.deduplicated,
+      ).length;
       this.batches.set(uploadBatchId, {
         uploadBatchId,
         jobIds: accepted.map((entry) => entry.job.jobId),
-        rejected: 0,
+        rejected: rejectedCount,
         deduplicated,
       });
       for (const entry of accepted) {
@@ -1136,7 +1166,7 @@ export class MockKnowledgeController {
     const items = [...this.submissions.values()]
       .filter((submission) => submission.status === 'pending' && scope.includes(submission.targetSpaceId))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((submission) => this.toSubmission(submission));
+      .map((submission) => this.toApprovalListItem(submission));
     return { items };
   }
 
@@ -1166,6 +1196,11 @@ export class MockKnowledgeController {
     if (submission.submitterFrozen) {
       this.markSubmissionInvalidated(submission, 'submitter_pending_delete');
       throw new MockHttpError(409, 'submitter_pending_delete');
+    }
+    // 投稿人账号已删除：同语义刷新列表（后端设计 §6.4 双码拆分）。
+    if (submission.submitterDeleted) {
+      this.markSubmissionInvalidated(submission, 'submitter_deleted');
+      throw new MockHttpError(409, 'submitter_deleted');
     }
     return submission;
   }
@@ -1324,6 +1359,7 @@ export class MockKnowledgeController {
     this.seedSubmission('u_minister', 'minister-li', 'public', '公共库', '公共制度汇编.pdf', 'pdf', 8192, '2026-07-27T02:00:00Z', { submitterDepartment: finance });
     this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '跨部门协作指引.pdf', 'pdf', 3072, '2026-07-27T03:00:00Z', { submitterDepartment: finance, scopeChanged: true });
     this.seedSubmission('u_ghost', 'ghost', 'public', '公共库', '历史遗留材料.pdf', 'pdf', 1024, '2026-07-27T04:00:00Z', { submitterFrozen: true });
+    this.seedSubmission('u_purged', 'purged', 'public', '公共库', '已注销账号材料.pdf', 'pdf', 2048, '2026-07-27T04:30:00Z', { submitterDeleted: true });
     this.seedSubmission('u_extra_wang', 'wangwu', 'department:d_hr', '人事部', '招聘流程优化.docx', 'word', 1536, '2026-07-27T05:00:00Z', { submitterDepartment: { id: 'd_hr', name: '人事部' } });
 
     // §10.1 运维任务队列种子（独立任务池，不进上传结果层）：
@@ -1464,6 +1500,7 @@ export class MockKnowledgeController {
       readonly submitterDepartment?: { id: string; name: string } | null;
       readonly scopeChanged?: boolean;
       readonly submitterFrozen?: boolean;
+      readonly submitterDeleted?: boolean;
       /** 初始状态（默认 pending）；非 pending 用于「我的投稿」五态展示种子。 */
       readonly status?: SubmissionStatus;
       readonly rejectReason?: string;
@@ -1490,6 +1527,7 @@ export class MockKnowledgeController {
       jobId: null,
       scopeChanged: options.scopeChanged ?? false,
       submitterFrozen: options.submitterFrozen ?? false,
+      submitterDeleted: options.submitterDeleted ?? false,
       content: { bytes: new TextEncoder().encode(`mock content for ${name}`), type: 'application/pdf' },
     };
     this.submissions.set(submission.submissionId, submission);
@@ -1693,6 +1731,7 @@ export class MockKnowledgeController {
       jobId: null,
       scopeChanged: false,
       submitterFrozen: false,
+      submitterDeleted: false,
       content: { bytes: new TextEncoder().encode(`mock content for ${file.name}`), type: file.type || 'application/octet-stream' },
     };
     this.submissions.set(submission.submissionId, submission);
@@ -1746,8 +1785,8 @@ export class MockKnowledgeController {
     }
     if (file.type === 'text/plain' && file.name.endsWith('.pdf')) {
       return {
-        code: 'upload_content_type_mismatch',
-        message: 'upload_content_type_mismatch',
+        code: 'upload_media_mismatch',
+        message: 'upload_media_mismatch',
         details: { file: file.name },
       };
     }
@@ -1845,17 +1884,37 @@ export class MockKnowledgeController {
   private toSubmission(submission: StoredSubmission): Submission {
     return {
       submission_id: submission.submissionId,
-      space_id: submission.targetSpaceId,
       version: submission.version,
-      status: submission.status,
-      file_name: submission.name,
+      target_space_id: submission.targetSpaceId,
+      target_space_name: submission.targetSpaceName,
+      name: submission.name,
       media_kind: submission.mediaKind,
-      submitter_name: submission.submitterName,
-      submitter_department: submission.submitterDepartment,
-      file_size: submission.sizeBytes,
-      space_name: submission.targetSpaceName,
+      size_bytes: submission.sizeBytes,
+      status: submission.status,
       created_at: submission.createdAt,
       reviewed_at: submission.reviewedAt,
+      reject_reason: submission.rejectReason,
+      invalidated_reason: submission.invalidatedReason,
+      document_id: submission.documentId,
+      job_id: submission.jobId,
+    };
+  }
+
+  private toApprovalListItem(submission: StoredSubmission): ApprovalListItem {
+    return {
+      submission_id: submission.submissionId,
+      version: submission.version,
+      submitter: {
+        id: submission.submitterUserId,
+        display_name: submission.submitterName,
+        department: submission.submitterDepartment,
+      },
+      name: submission.name,
+      media_kind: submission.mediaKind,
+      size_bytes: submission.sizeBytes,
+      target_space_id: submission.targetSpaceId,
+      target_space_name: submission.targetSpaceName,
+      created_at: submission.createdAt,
     };
   }
 

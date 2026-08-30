@@ -21,9 +21,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          # docs/项目设计/ 按仓库约定仅保存在本地（.git/info/exclude），不进 Git，
+          # 因此这里只校验仓库内 tracked 的设计/运维产物。
           required_files=(
-            "docs/项目设计/后端设计.md"
-            "docs/项目设计/前端接口需求.md"
             "docs/deployment.md"
             "docs/operations.md"
             "alembic.ini"
@@ -44,27 +44,9 @@ jobs:
             }
           }
 
-          backend="docs/项目设计/后端设计.md"
-          frontend="docs/项目设计/前端接口需求.md"
           deployment="docs/deployment.md"
           operations="docs/operations.md"
 
-          require_text "$backend" "非流式兼容 JSON 的序列化决策"
-          require_text "$backend" "POST /chat"
-          require_text "$backend" "answer_mode"
-          require_text "$frontend" "POST /chat"
-          require_text "$frontend" "answer_mode"
-
-          require_text "$backend" "POST /messages/{id}/ab-vote"
-          require_text "$backend" "ab_pair"
-          require_text "$backend" "ab_vote"
-          require_text "$frontend" "POST /messages/{id}/ab-vote"
-
-          require_text "$backend" "calibration_window"
-          require_text "$backend" "GET /calibration/window"
-          require_text "$backend" "POST /calibration/window"
-          require_text "$frontend" "GET /calibration/window"
-          require_text "$frontend" "POST /calibration/window"
           require_text "$operations" "POST /calibration/window"
 
           require_text "$deployment" "alembic upgrade head"
@@ -98,19 +80,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install migration dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[postgres]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked migration dependencies
+        run: uv sync --locked --extra postgres
 
       - name: Validate migration source and single head
         run: |
           set -euo pipefail
 
-          python -m compileall -q alembic
+          uv run --locked --extra postgres python -m compileall -q alembic
           head_file="$(mktemp)"
           trap 'rm -f "$head_file"' EXIT
-          alembic heads > "$head_file"
+          uv run --locked --extra postgres alembic heads > "$head_file"
           head_count="$(grep -cv '^[[:space:]]*$' "$head_file" || true)"
           test "$head_count" -eq 1 || {
             echo "expected exactly one Alembic head, found: $head_count"
@@ -121,12 +106,12 @@ jobs:
       - name: Apply migration to an empty PostgreSQL database
         env:
           RAG_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
-        run: alembic upgrade head
+        run: uv run --locked --extra postgres alembic upgrade head
 
       - name: Verify database migration head
         env:
           RAG_DATABASE_URL: postgresql://ragqs:ragqs@localhost:5432/ragqs_ci
-        run: alembic current --check-heads
+        run: uv run --locked --extra postgres alembic current --check-heads
 
 # New runtime behavior belongs in design-driven contract tests written with each
 # reconstructed vertical slice. Do not add legacy tests or builds as substitutes.

@@ -65,6 +65,39 @@ def test_library_baseline_allocates_vector_seventy_sparse_thirty() -> None:
     assert allocate_candidate_quotas(8, ("dense",)) == (8,)
 
 
+def test_exact_match_route_can_allocate_equal_dense_and_sparse_candidates() -> None:
+    assert allocate_candidate_quotas(
+        10,
+        ("dense", "sparse"),
+        dense_weight=0.5,
+        sparse_weight=0.5,
+    ) == (5, 5)
+
+
+def test_retrieval_resolves_library_profile_from_the_authorized_scope() -> None:
+    provider = InMemorySparseIndexProvider(provider_name="sparse")
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        library_profile_resolver=lambda scope: "structured-table-csv",
+    )
+
+    result = service.search("text", principal="user_1")
+
+    assert result.profile.library_profile_id == "structured-table-csv"
+
+
+def test_retrieval_profile_applies_effort_to_baseline_without_mutating_it() -> None:
+    baseline = RetrievalProfile(top_k=20, candidate_limit=50, effort="deep")
+
+    transformed = baseline.with_effort_transform()
+
+    assert (baseline.top_k, baseline.candidate_limit) == (20, 50)
+    assert (transformed.top_k, transformed.candidate_limit) == (60, 150)
+
+
 def test_hybrid_search_unions_quota_limited_candidates_before_rerank() -> None:
     dense = InMemoryIndexWriter(provider_name="dense")
     sparse = InMemorySparseIndexProvider(provider_name="sparse")
@@ -499,6 +532,86 @@ def test_budget_gate_rejection_skips_subquestion_and_sends_notice() -> None:
         and item.get("detail", {}).get("reason") == "budget_exhausted"
     ]
     assert notices
+
+
+def test_deep_strategy_failure_keeps_default_hybrid_candidates() -> None:
+    class FailingHydeProvider(InMemorySparseIndexProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_queries: list[str] = []
+
+        def search(self, query, *args, **kwargs):  # type: ignore[no-untyped-def]
+            self.seen_queries.append(query)
+            if query.startswith("检索假设："):
+                raise RuntimeError("HyDE is unavailable")
+            return super().search(query, *args, **kwargs)
+
+    provider = FailingHydeProvider()
+    _publish(provider, _chunk("chunk_1"), "attempt_1")
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+    )
+
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=4,
+            candidate_limit=4,
+            effort="deep",
+            strategy_operations=("hyde",),
+        ),
+    )
+
+    assert result.hits
+    assert set(provider.seen_queries) == {"text", "检索假设：text"}
+    assert {
+        "code": "retrieval_degraded",
+        "kind": "retrieval_degraded",
+        "reason": "strategy_unavailable",
+        "strategy": "hyde",
+    } in result.degradations
+
+
+def test_deep_combined_plan_stops_tree_work_at_ten_logical_rag_operations() -> None:
+    from types import SimpleNamespace
+
+    provider = InMemorySparseIndexProvider()
+    for index in range(9):
+        _publish(provider, _chunk(f"chunk_{index}", document_id=f"document_{index}"), str(index))
+    tree_candidates: list[object] = []
+
+    def tree_router(query, candidates, *, max_documents, rag_call_limit):
+        del query, max_documents, rag_call_limit
+        tree_candidates.extend(candidates)
+        return SimpleNamespace(skipped=False, reason=None, documents=())
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        reranker=_ScoredReranker(),
+        tree_router=tree_router,
+    )
+    meter = _meter("deep")
+    service.search(
+        "请帮我，第一项报销流程；第二项发票抬头",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=4,
+            candidate_limit=4,
+            effort="deep",
+            strategy_operations=("rewrite", "split_subquestions", "hyde", "tree"),
+        ),
+        budget=meter,
+    )
+
+    assert meter.rag_calls_used == 10
+    assert len(tree_candidates) == 3
 
 
 def test_library_latency_and_tree_order_observability_routes() -> None:

@@ -11,7 +11,7 @@ from datetime import date, datetime, time
 from typing import Any, Protocol
 from zipfile import BadZipFile
 
-from openpyxl import load_workbook
+from openpyxl import load_workbook  # type: ignore[import-untyped]
 
 from app.platform.errors import PlatformError
 

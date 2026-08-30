@@ -123,6 +123,35 @@ def _stage(engine, releases, *, gate_version_id, profile=RetrievalProfile()):
     )
 
 
+def test_release_snapshot_keeps_baseline_and_resolve_keeps_request_effort() -> None:
+    engine = _engine()
+    releases = RetrievalReleaseService(engine)
+    gate = _register_gate(engine)
+    staged = _stage(
+        engine,
+        releases,
+        gate_version_id=str(gate["id"]),
+        profile=RetrievalProfile(top_k=20, candidate_limit=50, effort="quick"),
+    )
+
+    assert "effort" not in staged["profile_json"]
+    assert staged["profile_json"]["dense_weight"] == 0.7
+    assert staged["profile_json"]["sparse_weight"] == 0.3
+
+    releases.release(
+        str(staged["id"]),
+        metrics=_metrics(),
+        hardware_profile=_suite()["hardware_profile"],
+    )
+
+    resolved = releases.resolve(
+        RetrievalProfile(effort="deep"),
+        generation_id="generation_initial",
+    )
+
+    assert (resolved.top_k, resolved.candidate_limit, resolved.effort) == (20, 50, "deep")
+
+
 def test_gate_versions_are_immutable_and_supersede_the_open_version() -> None:
     engine = _engine()
     gates = RetrievalReleaseGateService(engine)

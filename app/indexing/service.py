@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
 from app.platform.errors import PlatformError
@@ -47,6 +47,7 @@ class IndexingService:
         reranker: Any | None = None,
         environment: str = "test",
         profile_resolver: Any | None = None,
+        library_profile_resolver: Any | None = None,
         tree_router: Any | None = None,
         graph_router: Any | None = None,
         graph_store: Any | None = None,
@@ -91,14 +92,16 @@ class IndexingService:
             if source_service is not None
             else None
         )
+        self._job_stage_sink: Callable[..., Any] | None = None
         self.retrieval = RetrievalService(
             self.generation,
-            (self.dense_writer, self.sparse_provider),
+            cast(Sequence[SparseIndexProvider], (self.dense_writer, self.sparse_provider)),
             identity_access=identity_access,
             visibility_facts=visibility_facts,
             reranker=reranker,
             environment=environment,
             profile_resolver=profile_resolver,
+            library_profile_resolver=library_profile_resolver,
             tree_router=tree_router,
             graph_router=graph_router or getattr(graph_store, "route", None),
             graph_reader=self.graph,
@@ -339,6 +342,17 @@ class IndexingService:
         value = self._now()
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
+    def set_job_stage_sink(self, sink: Callable[..., Any] | None) -> None:
+        """Wire the ingestion job read-model stage reporter.
+
+        The sink is invoked with ``(job_id, attempt_id, fencing_token)`` when the
+        processing attempt enters the index-building phase. Documents runtime
+        wires it to ``DocumentsService.mark_job_indexing``; a fence conflict from
+        the sink aborts the attempt before any index staging happens.
+        """
+
+        self._job_stage_sink = sink
+
     @staticmethod
     def _document_embedding_usage_context(
         request: IndexStagingRequest,
@@ -399,7 +413,9 @@ class IndexingService:
             )
             return EmbeddingUsageContext(
                 execution_kind=execution_kind,
-                execution_id=request.job_id,
+                # 异步文档处理的四元组 execution_id 使用 attempt_id（设计 §2.4.2），
+                # 同一 job 的重试/重放各自生成事件，不再命中账本唯一约束。
+                execution_id=request.attempt_id,
                 attempt_id=request.attempt_id,
                 generation_id=request.expected_generation_id,
                 publication_id=request.publication_id,
@@ -435,6 +451,13 @@ class IndexingService:
             content_manifest_hash=content_manifest_hash,
             **options,
         )
+        if self._job_stage_sink is not None:
+            # 解析完成、进入索引构建阶段：更新 job 读模型 stage（B9）。
+            self._job_stage_sink(
+                job_id=request.job_id,
+                attempt_id=request.attempt_id,
+                fencing_token=request.fencing_token,
+            )
         try:
             self.dense_writer.stage_chunks(
                 request.attempt_id,

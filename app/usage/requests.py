@@ -77,6 +77,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Engine, and_, func, select, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.documents.schema import knowledge_submissions_table
 from app.identity.schema import identity_user_table
@@ -772,7 +773,7 @@ class QuotaRequestService:
                     )
                 ).scalar_one()
         role = str(getattr(actor, "role", ""))
-        space_filter = None
+        space_filter: ColumnElement[bool] | None = None
         if role == "admin":
             space_filter = (
                 knowledge_submissions_table.c.space_id == "public"
@@ -965,12 +966,14 @@ class QuotaRequestService:
         affected = 0
         pending_ids = (
             connection.execute(
-                select(quota_request_table.c.quota_request_id).where(
+                select(quota_request_table.c.quota_request_id)
+                .where(
                     and_(
                         quota_request_table.c.applicant_user_id == user_id,
                         quota_request_table.c.status == "pending",
                     )
                 )
+                .with_for_update()
             )
             .scalars()
             .all()

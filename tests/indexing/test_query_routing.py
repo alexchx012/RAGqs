@@ -97,6 +97,37 @@ def test_aggregate_quote_ordinal_and_pronoun_signals_shape_route_fields() -> Non
     assert pronoun.query_history_ref == "conversation_history"
 
 
+def test_exact_match_signals_shift_hybrid_candidate_weights() -> None:
+    route = RuleQueryRouter().route('"数字化转型"的编号 2024 是什么')
+
+    assert route.dense_weight == 0.5
+    assert route.sparse_weight == 0.5
+
+
+def test_deep_plan_combines_first_party_query_strategies_before_one_rerank() -> None:
+    route = RuleQueryRouter().route(
+        "请帮我，第一项报销流程；第二项发票抬头",
+        strategy_operations=("rewrite", "split_subquestions", "hyde", "tree", "document_summary"),
+    )
+
+    assert route.kind == "no_rewrite"
+    assert route.strategy_operations == (
+        "rewrite",
+        "split_subquestions",
+        "hyde",
+        "tree",
+        "document_summary",
+    )
+    assert route.return_granularity == "document_summary"
+    assert route.search_queries() == (
+        "请帮我，第一项报销流程；第二项发票抬头",
+        "第一项报销流程；第二项发票抬头",
+        "请帮我，第一项报销流程",
+        "第二项发票抬头",
+        "检索假设：请帮我，第一项报销流程；第二项发票抬头",
+    )
+
+
 def test_metadata_prefilter_only_narrows_and_validates_typed_fields() -> None:
     prefilter = MetadataPrefilter(
         published_from="2024-01-01",
@@ -135,10 +166,50 @@ def test_retrieval_service_runs_each_split_query_additively() -> None:
     result = service.search(
         "报销流程是什么；发票抬头怎么填写",
         principal="user_1",
-        profile=RetrievalProfile(candidate_limit=10),
+        profile=RetrievalProfile(top_k=10, candidate_limit=10),
     )
     assert result.route_output is not None
     assert result.route_output["kind"] == "split_subquestions"
     # Candidates are unioned first, then uniformly reranked with the original query.
     assert seen == ["报销流程是什么；发票抬头怎么填写"]
     assert {hit.chunk.chunk_id for hit in result.candidates} >= {"a", "b"}
+
+
+def test_retrieval_service_applies_a_deep_plan_as_one_unified_rerank() -> None:
+    provider = InMemorySparseIndexProvider(provider_name="sparse")
+    _publish(provider, _chunk("a", document_id="document_a"), "a")
+    rerank_queries: list[str] = []
+
+    class CapturingReranker(NoopReranker):
+        def rerank(self, query, hits, profile):
+            rerank_queries.append(query)
+            return super().rerank(query, hits, profile)
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        reranker=CapturingReranker(),
+    )
+    query = "请帮我，第一项报销流程；第二项发票抬头"
+    result = service.search(
+        query,
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=10,
+            candidate_limit=10,
+            effort="deep",
+            strategy_operations=("rewrite", "split_subquestions", "hyde", "tree"),
+        ),
+    )
+
+    assert result.route_output is not None
+    assert result.route_output["strategy_operations"] == [
+        "rewrite",
+        "split_subquestions",
+        "hyde",
+        "tree",
+    ]
+    assert result.profile.route_tree is True
+    assert rerank_queries == [query]

@@ -67,7 +67,7 @@ class SqlAlchemyPublicGraphStore:
         }
         entity_rows: list[dict[str, Any]] = []
         relation_rows: list[dict[str, Any]] = []
-        validated_resources: list[tuple[str, Mapping[str, str], list[Any], list[Any]]] = []
+        validated_resources: list[tuple[str, dict[str, str], list[Any], list[Any]]] = []
         node_keys: set[str] = set()
         created_at = self._now()
         for resource in resources:
@@ -367,7 +367,7 @@ class SqlAlchemyPublicGraphStore:
                 or any(normalized in str(alias).casefold() for alias in row["aliases_json"])
             ][:limit]
             keys = {str(row["canonical_key"]) for row in matched}
-            relations = []
+            relations: Sequence[Mapping[Any, Any]] = ()
             if keys:
                 relations = (
                     connection.execute(

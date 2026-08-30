@@ -220,7 +220,9 @@ class TwoStageReranker:
             )
             for score, hit in zip(final_scores, merged, strict=True)
         )
-        reranked = tuple(sorted(reranked, key=lambda hit: (-hit.rerank_score, hit.chunk.chunk_id)))
+        reranked = tuple(
+            sorted(reranked, key=lambda hit: (-(hit.rerank_score or 0.0), hit.chunk.chunk_id))
+        )
         threshold = self._release.score_threshold
         if threshold is not None:
             reranked = tuple(hit for hit in reranked if (hit.rerank_score or 0.0) >= threshold)

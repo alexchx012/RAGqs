@@ -54,7 +54,7 @@ def pretokens(text: str) -> str:
     """Meilisearch-only jieba field; not part of the generic sparse contract."""
 
     try:
-        import jieba
+        import jieba  # type: ignore[import-untyped]
     except ImportError as exc:  # pragma: no cover - dependency is declared
         raise PlatformError(
             "sparse_analyzer_unavailable", "jieba is required for Meilisearch", {}, 503
@@ -133,7 +133,7 @@ class HttpMeilisearchClient:
             "Content-Type": "application/json",
         }
 
-    def _request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
+    def _request(self, method: str, path: str, payload: Any | None = None) -> Any:
         url = urljoin(self._base, path.lstrip("/"))
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
@@ -499,10 +499,10 @@ class MeilisearchSparseIndexProvider:
             raise PlatformError(
                 "index_release_blocked", "documents validation rejected publish", {}, 409
             )
-        published = [
+        published_docs: list[dict[str, Any]] = [
             {**dict(item), "id": _published_id(item), "status": "published"} for item in staged
         ]
-        self._client.add_documents(self._index, published)
+        self._client.add_documents(self._index, published_docs)
         self._client.delete_documents(self._index, tuple(str(item["id"]) for item in staged))
         return StageResult(
             "published",

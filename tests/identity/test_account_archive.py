@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import insert, select, update
 
 from app.chat.schema import chat_conversation_table, chat_metadata
 from app.documents.schema import document_versions_table, documents_metadata, documents_table
+from app.identity.archive_package import _hash_file
 from app.identity.ports import NoopAccountRetirementGateway
 from app.identity.schema import (
     identity_account_cleanup_target_table,
@@ -126,6 +127,21 @@ def test_archive_dir_config_rules(tmp_path) -> None:
         _resolve_user_deletion_archive_dir(forbidden_auth, "production")
 
 
+def test_archive_dir_relative_paths_are_rejected(tmp_path) -> None:
+    # A3/A16: 相对路径（含 ~ 展开形态）在解析层直接拒绝，生产预检因此拒绝启动。
+    from app.platform.config import AuthSettings, _resolve_user_deletion_archive_dir
+
+    for bad in ("archives", "./archives", "../archives", "~/ragqs-archives"):
+        auth = AuthSettings(user_deletion_archive_dir=bad)
+        with pytest.raises(ValueError, match="absolute path"):
+            _resolve_user_deletion_archive_dir(auth, "production")
+        with pytest.raises(ValueError, match="absolute path"):
+            _resolve_user_deletion_archive_dir(auth, "development")
+    # 绝对路径不受影响。
+    ok = AuthSettings(user_deletion_archive_dir=str(tmp_path / "archives"))
+    assert _resolve_user_deletion_archive_dir(ok, "production") == str(tmp_path / "archives")
+
+
 def test_deletion_transaction_snapshots_archive_dir(tmp_path) -> None:
     archive_dir = tmp_path / "archives"
     runtime, engine, _ = _build(tmp_path, {"USER_DELETION_ARCHIVE_DIR": str(archive_dir)})
@@ -215,9 +231,7 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
     with engine.connect() as connection:
         avatar_key = (
             connection.execute(
-                select(identity_user_table.c.avatar_url).where(
-                    identity_user_table.c.id == user_id
-                )
+                select(identity_user_table.c.avatar_url).where(identity_user_table.c.id == user_id)
             ).scalar_one()
         ).removeprefix("object://")
     finalized = service.finalize_pending_deletion(user_id=user_id)
@@ -226,15 +240,23 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
     assert not object_store.exists(avatar_key)
 
     with engine.connect() as connection:
-        user = connection.execute(
-            identity_user_table.select().where(identity_user_table.c.id == user_id)
-        ).mappings().one()
-        assert user["lifecycle_status"] == "deleted"
-        targets = connection.execute(
-            identity_account_cleanup_target_table.select().where(
-                identity_account_cleanup_target_table.c.deletion_id == deletion_id
+        user = (
+            connection.execute(
+                identity_user_table.select().where(identity_user_table.c.id == user_id)
             )
-        ).mappings().all()
+            .mappings()
+            .one()
+        )
+        assert user["lifecycle_status"] == "deleted"
+        targets = (
+            connection.execute(
+                identity_account_cleanup_target_table.select().where(
+                    identity_account_cleanup_target_table.c.deletion_id == deletion_id
+                )
+            )
+            .mappings()
+            .all()
+        )
         backend_kinds = {row["backend_kind"] for row in targets}
         assert "postgres.chat_conversations" in backend_kinds
         assert "postgres.identity_spaces" in backend_kinds
@@ -276,14 +298,48 @@ def test_archive_missing_before_cleanup_is_rebuilt(tmp_path) -> None:
     service.build_deletion_archive(user_id=user_id)
     workflow = _workflow(engine, user_id)
     package = archive_dir / str(workflow["archive_file_name"])
-    original_sha = workflow["archive_sha256"]
     # corrupt the package before any destructive cleanup: rebuild from frozen data
     package.write_bytes(b"corrupted")
     _expire_retention(engine, user_id)
     result = service.finalize_pending_deletion(user_id=user_id)
     assert result["lifecycle_status"] == "deleted"
     rebuilt = _workflow(engine, user_id)
-    assert rebuilt["archive_sha256"] == original_sha
+    # DB record must describe the package that is actually on disk after the rebuild
+    assert rebuilt["archive_sha256"] == _hash_file(str(package))[1]
+    assert rebuilt["archive_size_bytes"] == package.stat().st_size
+    runtime.close()
+
+
+def test_archive_rebuild_with_shifted_clock_still_finalizes(tmp_path) -> None:
+    """A10 回归：重建与初始构建的 manifest 时间戳不同（非同秒巧合）仍能 finalize。
+
+    生产 PostgreSQL 的时钟带微秒精度；修复前 finalize 的最终校验沿用重建前的
+    旧 SHA，与磁盘上重建出的新包必然失配，造成删除 finalize 死循环。
+    """
+
+    archive_dir = tmp_path / "archives"
+    runtime, engine, _ = _build(tmp_path, {"USER_DELETION_ARCHIVE_DIR": str(archive_dir)})
+    service = runtime.resolve("identity_access")
+    admin, target = _admin_and_target(service)
+    user_id = target["id"]
+    service.delete_managed_user(
+        actor=admin, user_id=user_id, expected_version=1, idempotency_key="k"
+    )
+    service.build_deletion_archive(user_id=user_id)
+    workflow = _workflow(engine, user_id)
+    original_sha = workflow["archive_sha256"]
+    package = archive_dir / str(workflow["archive_file_name"])
+    # force the rebuild to stamp a strictly later manifest timestamp
+    shifted = datetime.now(UTC) + timedelta(hours=1)
+    service._now = lambda: shifted
+    package.write_bytes(b"corrupted")
+    _expire_retention(engine, user_id)
+    result = service.finalize_pending_deletion(user_id=user_id)
+    assert result["lifecycle_status"] == "deleted"
+    rebuilt = _workflow(engine, user_id)
+    disk_sha = _hash_file(str(package))[1]
+    assert disk_sha != original_sha  # manifest timestamp changed the package bytes
+    assert rebuilt["archive_sha256"] == disk_sha
     runtime.close()
 
 
@@ -371,9 +427,11 @@ def test_personal_document_subworkflow_delegation(tmp_path) -> None:
         )
     assert pending == 1  # document entered pending_delete, not yet a tombstone
     with engine.connect() as connection:
-        doc = connection.execute(
-            documents_table.select().where(documents_table.c.id == "doc-active")
-        ).mappings().one()
+        doc = (
+            connection.execute(documents_table.select().where(documents_table.c.id == "doc-active"))
+            .mappings()
+            .one()
+        )
     assert doc["lifecycle_status"] == "pending_delete"
     # idempotent reuse: second delegation does not fail or duplicate
     with engine.begin() as connection:

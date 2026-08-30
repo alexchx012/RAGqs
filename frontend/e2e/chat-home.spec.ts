@@ -31,7 +31,7 @@ test('ask renders, citation hover card opens preview in a new window, and upvote
   // 提问（quick 档：mock answer 携带一条 page 引用 doc_1）
   await composer.fill('annual leave policy question');
   await page.getByRole('button', { name: copy.chat.composer.sendAria }).click();
-  await expect(composer).toHaveValue('');
+  await expect(composer).toBeEmpty();
 
   // 回答正文出现（e2e 默认 no-preference，模拟流式逐段 —— 等正文非空）
   const answerBlock = page
@@ -78,7 +78,10 @@ test('think effort shows the effort-upgraded system notice and streams the answe
   const composer = page.getByLabel(copy.chat.composer.inputPlaceholder);
 
   // 切到「思考」档
-  await page.getByRole('radio', { name: copy.chat.composer.effortThink }).click();
+  await page.getByRole('button', { name: copy.chat.composer.addMenuAria }).click();
+  const effortGroup = page.getByRole('radiogroup', { name: copy.chat.composer.effortAria });
+  await expect(effortGroup).toBeVisible();
+  await effortGroup.getByRole('radio', { name: copy.chat.composer.effortThink }).click();
   await composer.fill('think effort question');
   await page.getByRole('button', { name: copy.chat.composer.sendAria }).click();
 

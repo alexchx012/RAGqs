@@ -10,6 +10,7 @@ from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsSer
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import AuthPrincipal, IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings, load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.storage import MemoryObjectStore
@@ -23,16 +24,19 @@ def _engine():
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     return engine
 
 
 class _AllAccess:
-    def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+    def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
         return "manage"
 
 
-def _admin_and_user(engine, *, retention_days: int = 30) -> tuple[IdentityAccessService, AuthPrincipal, AuthPrincipal, str]:
+def _admin_and_user(
+    engine, *, retention_days: int = 30
+) -> tuple[IdentityAccessService, AuthPrincipal, AuthPrincipal, str]:
     service = IdentityAccessService(
         engine,
         AuthSettings(
@@ -117,10 +121,10 @@ def test_admin_roster_removal_uses_configured_retention() -> None:
     secret = "test-secret-that-is-long-enough"
     first = IdentityAccessService(
         engine,
-        AuthSettings(secret_key=secret, admin_roster=("retained", "removed")),
+        AuthSettings(secret_key=secret),
         revocation_port=NoopGenerationRevocationPort(),
     )
-    first.provision_user(
+    retained = first.provision_user(
         username="retained",
         password="Password1",
         real_name="Retained",
@@ -140,7 +144,7 @@ def test_admin_roster_removal_uses_configured_retention() -> None:
         engine,
         AuthSettings(
             secret_key=secret,
-            admin_roster=("retained",),
+            admin_roster=(str(retained["id"]),),
             user_deletion_retention_days=5,
         ),
         revocation_port=NoopGenerationRevocationPort(),

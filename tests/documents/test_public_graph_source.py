@@ -27,7 +27,7 @@ from .test_commands import _accept
 
 
 class _PublicIdentity:
-    def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+    def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
         assert principal.user_id == "user_1"
         assert space_id == "public"
         assert action in {"manage", "contribute", "read"}
@@ -337,7 +337,7 @@ def test_public_snapshot_contains_every_current_active_publication() -> None:
     service.delete_document(
         principal=principal,
         document_id=second["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-1",
     )
     after_delete = source.get_snapshot(source_revision=source.get_current_head().source_revision)

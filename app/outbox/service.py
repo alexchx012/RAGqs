@@ -162,16 +162,10 @@ class NotificationService:
                 text("SELECT pg_advisory_xact_lock(hashtext(:lock))"),
                 {"lock": f"ragqs:notifications:read-all:{user_id}"},
             )
-        highest = connection.execute(
-            select(func.max(notification_table.c.notification_seq)).where(
-                notification_table.c.recipient_user_id == user_id,
-                notification_table.c.retire_after_at_utc > now,
-            )
-        ).scalar_one()
-        highest = int(highest or 0)
         inbox = (
             connection.execute(
                 select(
+                    notification_inbox_table.c.next_notification_seq,
                     notification_inbox_table.c.read_through_seq,
                     notification_inbox_table.c.version,
                 ).where(notification_inbox_table.c.recipient_user_id == user_id)
@@ -180,10 +174,18 @@ class NotificationService:
             .one_or_none()
         )
         if inbox is None:
+            # inbox 随账号创建事务建立并由迁移回填后，正常运行不会走到这里；
+            # 兜底只为直插用户的测试保持可用，创建即一次性写入。
+            highest = connection.execute(
+                select(func.max(notification_table.c.notification_seq)).where(
+                    notification_table.c.recipient_user_id == user_id
+                )
+            ).scalar_one()
+            highest = int(highest or 0)
             connection.execute(
                 notification_inbox_table.insert().values(
                     recipient_user_id=user_id,
-                    next_notification_seq=1,
+                    next_notification_seq=highest + 1,
                     read_through_seq=highest,
                     read_all_at_utc=now,
                     version=1,
@@ -191,7 +193,12 @@ class NotificationService:
                 )
             )
             return
-        target = max(int(inbox["read_through_seq"]), highest)
+        # 水位基准对齐设计：next_notification_seq - 1（含已退休尾通知，行为
+        # 等价）。仅在真正推进水位时写 read_through_seq/read_all_at/version，
+        # 无新通知的重复 read-all 逐字段零写入。
+        target = int(inbox["next_notification_seq"]) - 1
+        if target <= int(inbox["read_through_seq"]):
+            return
         updated = connection.execute(
             update(notification_inbox_table)
             .where(

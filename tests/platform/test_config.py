@@ -42,6 +42,7 @@ def production_environment(**overrides: str) -> dict[str, str]:
         "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
         "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
         "RAG_AUTH_ADMIN_ROSTER": "admin",
+        "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
     }
     values.update(overrides)
     return values
@@ -127,6 +128,30 @@ def test_default_observability_retention_is_ninety_days() -> None:
     settings = load_platform_settings(values)
 
     assert settings.observability.api_metric_retention_days == 90
+
+
+def test_chat_sse_limits_have_contract_defaults_and_manifest_aliases() -> None:
+    defaults = load_platform_settings(development_environment())
+    assert defaults.chat.ask_rate_limit_per_minute == 20
+    assert defaults.chat.generation_disconnect_grace_seconds == 60
+
+    prefixed = load_platform_settings(
+        development_environment(
+            RAG_CHAT_ASK_RATE_LIMIT_PER_MINUTE="3",
+            RAG_GENERATION_DISCONNECT_GRACE_SECONDS="7",
+        )
+    )
+    assert prefixed.chat.ask_rate_limit_per_minute == 3
+    assert prefixed.chat.generation_disconnect_grace_seconds == 7
+
+    aliases = load_platform_settings(
+        development_environment(
+            CHAT_ASK_RATE_LIMIT_PER_MINUTE="4",
+            GENERATION_DISCONNECT_GRACE_SECONDS="8",
+        )
+    )
+    assert aliases.chat.ask_rate_limit_per_minute == 4
+    assert aliases.chat.generation_disconnect_grace_seconds == 8
 
 
 def test_configuration_includes_shared_logging_and_index_namespace() -> None:
@@ -379,6 +404,7 @@ def test_production_explicit_utc_is_allowed_and_invalid_tz_rejected(tmp_path) ->
             "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
             "RAG_AUTH_ADMIN_ROSTER": "root",
+            "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
             "RAG_BUSINESS_TIMEZONE": "UTC",
             "USER_DELETION_ARCHIVE_DIR": str(archive_dir),
         }
@@ -503,6 +529,28 @@ def test_backup_settings_reject_out_of_range_values() -> None:
         load_platform_settings(development_environment(RAG_BACKUP_RETENTION_BATCH_LIMIT="0"))
     with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
         load_platform_settings(development_environment(RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS="1"))
+
+
+def test_ingestion_worker_schedule_settings_keep_heartbeat_inside_lease() -> None:
+    settings = load_platform_settings(
+        development_environment(
+            RAG_INGESTION_LEASE_SECONDS="120",
+            RAG_INGESTION_HEARTBEAT_SECONDS="30",
+            RAG_INGESTION_POLL_INTERVAL_SECONDS="15",
+        )
+    )
+
+    assert settings.worker.ingestion_lease_seconds == 120
+    assert settings.worker.ingestion_heartbeat_seconds == 30
+    assert settings.worker.ingestion_poll_interval_seconds == 15
+
+    with pytest.raises(PlatformConfigurationError, match="^platform configuration is invalid$"):
+        load_platform_settings(
+            development_environment(
+                RAG_INGESTION_LEASE_SECONDS="20",
+                RAG_INGESTION_HEARTBEAT_SECONDS="20",
+            )
+        )
 
 
 def test_effort_rag_call_limits_default_and_env_overrides() -> None:

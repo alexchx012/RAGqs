@@ -53,7 +53,9 @@ def upgrade() -> None:
         if "operation_kind" not in vote_columns:
             batch.add_column(
                 sa.Column(
-                    "operation_kind", sa.String(length=32), nullable=False,
+                    "operation_kind",
+                    sa.String(length=32),
+                    nullable=False,
                     server_default="ab_vote",
                 )
             )

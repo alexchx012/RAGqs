@@ -4,7 +4,7 @@ no-op, retention inner limit and per-pass dead-letter counting."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from _helpers import (
@@ -531,6 +531,29 @@ def test_retention_inner_loop_honors_the_global_limit() -> None:
         if claim is None:
             break
         dispatcher.run_consumer_and_finalize(claim, owner="worker-1")
+    # 物化事务内裁剪已把每用户压到 50 条在线；再各补 5 条存量行（旧版本遗留
+    # 数据语义）使其重新超限，后台 retire 任务才有存量可扫。
+    for user_id, prefix in ((alice, "a"), (bob, "b")):
+        with engine.begin() as connection:
+            for index in range(5):
+                connection.execute(
+                    notification_table.insert().values(
+                        id=f"n_legacy_{prefix}_{index}",
+                        event_id=f"evt_legacy_{prefix}_{index}",
+                        recipient_user_id=user_id,
+                        notification_type="ingestion_completed",
+                        title="Legacy stock",
+                        payload_json={},
+                        document_id=None,
+                        document_version_id=None,
+                        event_occurred_at_utc=fixed_now(),
+                        materialized_at_utc=fixed_now(),
+                        notification_seq=1000 + index,
+                        read_at_utc=None,
+                        retire_after_at_utc=fixed_now() + timedelta(days=90),
+                        redacted=False,
+                    )
+                )
 
     retired = NotificationRetentionMaintenance(engine, now=lambda: fixed_now()).run_once(limit=5)
 

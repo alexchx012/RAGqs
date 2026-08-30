@@ -27,7 +27,7 @@ def _superseded_version(service, principal) -> dict:
     replacement = service.replace_version(
         principal=principal,
         document_id=original["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="contract-misc-replace-1",
     )
@@ -48,7 +48,7 @@ def test_restore_purged_source_returns_409_with_details(service, principal) -> N
             principal=principal,
             document_id=original["document_id"],
             document_version_id=original["document_version_id"],
-            expected_version=2,
+            expected_version=4,
             idempotency_key="contract-misc-restore-1",
         )
     assert error.value.code == "document_version_purged"
@@ -71,7 +71,7 @@ def test_replace_version_rejects_unsupported_media_with_415(service, principal) 
     assert error.value.details["file"] == "movie.mkv"
 
 
-def test_replace_version_rejects_content_type_mismatch_with_422(service, principal) -> None:
+def test_replace_version_rejects_media_mismatch_with_422(service, principal) -> None:
     original = _superseded_version(service, principal)
     with pytest.raises(PlatformError) as error:
         service.replace_version(
@@ -81,7 +81,7 @@ def test_replace_version_rejects_content_type_mismatch_with_422(service, princip
             file=_upload(name="report.pdf", content=b"x"),
             idempotency_key="contract-misc-mismatch-1",
         )
-    assert error.value.code == "upload_content_type_mismatch"
+    assert error.value.code == "upload_media_mismatch"
     assert error.value.status_code == 422
 
 
@@ -90,7 +90,7 @@ def test_replace_version_still_accepts_supported_media(service, principal) -> No
     result = service.replace_version(
         principal=principal,
         document_id=original["document_id"],
-        expected_version=2,
+        expected_version=4,
         file=_upload(name="notes.txt", content=b"md notes"),
         idempotency_key="contract-misc-ok-1",
     )

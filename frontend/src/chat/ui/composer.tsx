@@ -9,7 +9,7 @@
  *   （打开/过滤/方向键/Enter/Tab/Esc/鼠标照设计稿）。设计稿 Model 区块对应努力档位，已入菜单。
  * - 增强药丸（优化输入）仅注入 onEnhance 时显示；增强中播 conic 渐变描边旋转环 + 正文 shimmer，
  *   完成后药丸变「还原」；AbortSignal 中止 / 失败均还原原文；高度变化走 FLIP。生成中隐藏增强药丸。
- * - 发送键 22px 圆形（设计稿几何；不沿用旧 40px）：空输入禁用；生成中变停止键（Square 图标，
+ * - 发送键 28px 圆形（22px 设计稿几何经 UI 审查放大；不沿用旧 40px）：空输入禁用；生成中变停止键（Square 图标，
  *   canStop/stopping 语义不变）。发送语义：onSend 返回 false 或抛错时保留输入；接受时清空编辑器
  *   （发送期间继续输入的稿件保留）。
  * - 「+」菜单 / 斜杠面板打开期间经 useEscShield 挂空盾：Esc 由面板自身关闭逻辑消费，不下传到抽屉层。
@@ -749,7 +749,7 @@ export function Composer({
                 onClick={() => setMenuOpen((o) => !o)}
               >
                 <span className="chat-composer-plus-icon">
-                  <Plus size={14} />
+                  <Plus size={16} />
                 </span>
               </button>
 
@@ -762,7 +762,7 @@ export function Composer({
                     onClick={() => openPicker('image')}
                   >
                     <span className="chat-composer-menu-icon">
-                      <ImageIcon size={14} />
+                      <ImageIcon size={16} />
                     </span>
                     <span className="chat-composer-menu-name">{copy.chat.composer.addPhotos}</span>
                   </button>
@@ -773,7 +773,7 @@ export function Composer({
                     onClick={() => openPicker('file')}
                   >
                     <span className="chat-composer-menu-icon">
-                      <Paperclip size={14} />
+                      <Paperclip size={16} />
                     </span>
                     <span className="chat-composer-menu-name">{copy.chat.composer.attachFiles}</span>
                   </button>
@@ -792,13 +792,13 @@ export function Composer({
                       onClick={() => setSkillsOpen(true)}
                     >
                       <span className="chat-composer-menu-icon">
-                        <BookOpen size={14} />
+                        <BookOpen size={16} />
                       </span>
                       <span className="chat-composer-menu-name">
                         {copy.chat.composer.skillsLabel}
                       </span>
                       <span className="chat-composer-menu-chevron">
-                        <ChevronRight size={14} />
+                        <ChevronRight size={16} />
                       </span>
                     </button>
                     {skillsOpen && (
@@ -828,7 +828,7 @@ export function Composer({
                       onClick={() => setScopeOpen((open) => !open)}
                     >
                       <span className="chat-composer-menu-icon">
-                        <Database size={14} />
+                        <Database size={16} />
                       </span>
                       <span className="chat-composer-menu-name">
                         {copy.chat.composer.scopeLabel}
@@ -838,7 +838,7 @@ export function Composer({
                       )}
                       <span className="chat-composer-scope-summary">{scopeText}</span>
                       <span className="chat-composer-menu-chevron">
-                        <ChevronRight size={14} />
+                        <ChevronRight size={16} />
                       </span>
                     </button>
                     {scopeOpen && (
@@ -873,7 +873,7 @@ export function Composer({
                   className="chat-composer-icon-btn chat-composer-spinner-btn"
                   aria-label={copy.chat.composer.enhancingAria}
                 >
-                  <LoaderCircle size={14} className="chat-composer-spinner" />
+                  <LoaderCircle size={16} className="chat-composer-spinner" />
                 </span>
               ) : (
                 pillMounted && (
@@ -906,7 +906,7 @@ export function Composer({
                   disabled={!canStop || stopping}
                   onClick={onStop}
                 >
-                  <Square aria-hidden="true" size={14} className="fill-current" />
+                  <Square aria-hidden="true" size={16} className="fill-current" />
                 </button>
               ) : (
                 <button
@@ -922,7 +922,7 @@ export function Composer({
                   disabled={!sendActive}
                   onClick={() => void submit()}
                 >
-                  <ArrowUp aria-hidden="true" size={14} />
+                  <ArrowUp aria-hidden="true" size={16} />
                 </button>
               )}
             </div>

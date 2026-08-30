@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 
 from app.chat.schema import chat_metadata
@@ -17,12 +17,21 @@ from app.identity.ports import (
     NoopPersonalDocumentDeletionPort,
 )
 from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationRevocationPort
-from app.identity.schema import identity_deletion_workflow_table, identity_metadata
+from app.identity.schema import (
+    identity_deletion_workflow_table,
+    identity_metadata,
+    identity_user_table,
+)
 from app.identity.service import IdentityAccessService
 from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
-from app.platform.database import core_metadata
+from app.platform.database import SqlAlchemyDatabaseClock, core_metadata, platform_audit_table
 from app.platform.errors import PlatformError
+from app.usage.calendar import BusinessCalendarService
+from app.usage.ports import NoopOutboxEnqueuePort
+from app.usage.quota import QuotaService
+from app.usage.requests import QuotaRequestService
+from app.usage.schema import quota_request_table, usage_metadata
 
 
 def make_service(**kwargs: object) -> IdentityAccessService:
@@ -33,6 +42,7 @@ def make_service(**kwargs: object) -> IdentityAccessService:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     kwargs.setdefault("revocation_port", NoopGenerationRevocationPort())
     kwargs.setdefault("department_work_check", NoopDepartmentWorkCheckPort())
     kwargs.setdefault("deletion_cleanup_port", NoopAccountDeletionCleanupPort())
@@ -240,6 +250,124 @@ def test_admin_delete_starts_irreversible_pending_delete_lifecycle() -> None:
     assert exc_info.value.code == "invalid_credentials"
 
 
+def test_delete_cancels_pending_quota_requests_in_the_same_transaction() -> None:
+    service = make_service()
+    usage_metadata.create_all(service._engine)
+    clock = SqlAlchemyDatabaseClock(service._engine)
+    calendar = BusinessCalendarService(service._engine, clock, "UTC")
+    quota_requests = QuotaRequestService(
+        service._engine,
+        clock,
+        calendar,
+        QuotaService(service._engine, clock, calendar),
+        NoopOutboxEnqueuePort(),
+    )
+    service._quota_request_service = quota_requests
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    applicant = service.authenticate_access_token(
+        service.login(username="alice", password="Password1").access_token
+    )
+    request_id = quota_requests.create(
+        actor=applicant,
+        requested_pages=25,
+        idempotency_key="quota-request-before-delete",
+    )["id"]
+
+    service.delete_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=1,
+        idempotency_key="delete-with-pending-quota",
+    )
+
+    with service._engine.connect() as connection:
+        quota_row = (
+            connection.execute(
+                select(quota_request_table).where(
+                    quota_request_table.c.quota_request_id == request_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        lifecycle_status = connection.execute(
+            select(identity_user_table.c.lifecycle_status).where(
+                identity_user_table.c.id == user["id"]
+            )
+        ).scalar_one()
+    assert lifecycle_status == "pending_delete"
+    assert quota_row["status"] == "cancelled"
+    assert quota_row["cancel_reason"] == "account_pending_delete"
+
+
+def test_delete_rolls_back_when_quota_cancellation_fails() -> None:
+    class FailingQuotaRequests:
+        def cancel_for_account(self, *args, **kwargs) -> int:
+            del args, kwargs
+            raise RuntimeError("quota cancellation failed")
+
+    service = make_service(quota_request_service=FailingQuotaRequests())
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+
+    with pytest.raises(RuntimeError, match="quota cancellation failed"):
+        service.delete_managed_user(
+            actor=admin,
+            user_id=user["id"],
+            expected_version=1,
+            idempotency_key="delete-failing-quota-cancellation",
+        )
+
+    with service._engine.connect() as connection:
+        lifecycle_status = connection.execute(
+            select(identity_user_table.c.lifecycle_status).where(
+                identity_user_table.c.id == user["id"]
+            )
+        ).scalar_one()
+        workflow = connection.execute(
+            select(identity_deletion_workflow_table.c.user_id).where(
+                identity_deletion_workflow_table.c.user_id == user["id"]
+            )
+        ).scalar_one_or_none()
+    assert lifecycle_status == "active"
+    assert workflow is None
+
+
 def test_pending_delete_emits_account_revocation_without_an_active_session() -> None:
     class RecordingRevocationPort:
         def __init__(self) -> None:
@@ -285,8 +413,6 @@ def test_pending_delete_emits_account_revocation_without_an_active_session() -> 
     assert command.auth_session_id is None
     assert command.reason == "account_pending_delete"
     assert command.identity_transition_version == 2
-
-
 
 
 def _prepare_account_deletion(service: IdentityAccessService, *, user_id: str) -> None:
@@ -361,6 +487,7 @@ def test_deletion_finalization_fails_closed_without_cleanup_confirmation() -> No
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -507,6 +634,7 @@ def test_failed_revocation_rolls_back_the_managed_user_transition() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -729,6 +857,7 @@ def test_department_deactivation_requires_an_explicit_work_check_adapter() -> No
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     service = IdentityAccessService(
         engine,
         AuthSettings(secret_key="test-secret-that-is-long-enough"),
@@ -795,3 +924,63 @@ def test_department_deactivation_blocks_nonterminal_work() -> None:
         )
 
     assert exc_info.value.code == "department_has_active_work"
+
+
+def test_managed_user_department_move_writes_a_dedicated_audit_code() -> None:
+    """设计 §9.3：部门调动不再仅记通用 user_updated，需专属结果码。"""
+
+    service = make_service()
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    department = service.create_department(
+        actor=admin,
+        name="Finance",
+        idempotency_key="department-create-audit-1",
+    )
+
+    service.update_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=1,
+        role=None,
+        department_id=department["id"],
+        department_provided=True,
+        idempotency_key="user-update-dept-1",
+    )
+    service.update_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=2,
+        role="ops",
+        department_id=None,
+        department_provided=False,
+        idempotency_key="user-update-role-1",
+    )
+
+    with service._engine.connect() as connection:
+        results = [
+            str(row[0])
+            for row in connection.execute(
+                select(platform_audit_table.c.result).where(
+                    platform_audit_table.c.resource_id == user["id"],
+                )
+            ).all()
+        ]
+    assert results == ["user_department_changed", "user_updated"]

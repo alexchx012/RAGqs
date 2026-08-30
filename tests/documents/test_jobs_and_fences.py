@@ -186,13 +186,11 @@ def test_cancel_bumps_fencing_token_and_rejects_old_worker_receipt(service, prin
 
     # 取消在同一事务内递增 fencing token：持有旧 token 的 worker 无法发布。
     with service._engine.connect() as connection:
-        stored_token = (
-            connection.execute(
-                ingestion_attempts_table.select()
-                .with_only_columns(ingestion_attempts_table.c.fencing_token)
-                .where(ingestion_attempts_table.c.id == lease.attempt_id)
-            ).scalar_one()
-        )
+        stored_token = connection.execute(
+            ingestion_attempts_table.select()
+            .with_only_columns(ingestion_attempts_table.c.fencing_token)
+            .where(ingestion_attempts_table.c.id == lease.attempt_id)
+        ).scalar_one()
     assert stored_token > old_token
 
     with pytest.raises(PlatformError) as error:
@@ -204,9 +202,11 @@ def test_cancel_bumps_fencing_token_and_rejects_old_worker_receipt(service, prin
                 "attempt_id": lease.attempt_id,
                 "fencing_token": old_token,
                 "publication_id": lease.publication_id,
-                "generation_id": lease.authorization_fence.get("generation_id")
-                if isinstance(lease.authorization_fence, dict)
-                else lease.authorization_fence.generation_id,
+                "generation_id": (
+                    lease.authorization_fence.get("generation_id")
+                    if isinstance(lease.authorization_fence, dict)
+                    else lease.authorization_fence.generation_id
+                ),
                 "document_id": item["document_id"],
                 "document_version_id": item["document_version_id"],
                 "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
@@ -235,7 +235,7 @@ def test_reindex_keeps_active_version_and_stages_new_publication(service, princi
     response = service.reindex(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="reindex-1",
     )
     assert response["document_version_id"] == item["document_version_id"]
@@ -254,7 +254,7 @@ def test_cancel_discards_staged_publication(service, principal) -> None:
     job = service.reindex(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="reindex-1",
     )
     cancelled = service.cancel_job(principal=principal, job_id=job["job_id"])
@@ -283,7 +283,7 @@ def test_replay_is_ops_only_and_uses_new_publication(service, principal) -> None
     job = service.reindex(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="reindex-1",
     )
     lease = service.claim_job(worker_id="worker_1", job_id=job["job_id"])
@@ -412,8 +412,10 @@ def test_direct_replay_uses_ops_as_execution_quota_and_notification_subject(
         },
     )
 
+    # C3c：重放后额度主体切 ops，created_by_user_id 保留原上传者，
+    # 通知接收者随 created_by 仍为原上传者。
     assert quota.recorded[-1]["quota_subject_user_id"] == "ops_1"
-    assert notifications.calls[-1]["recipient_user_id"] == "ops_1"
+    assert notifications.calls[-1]["recipient_user_id"] == "user_1"
 
 
 def test_list_jobs_projects_replay_inputs_and_hides_nonterminal_failure_reason(
@@ -467,27 +469,39 @@ def test_receipt_requires_current_lease_and_generation(service, principal) -> No
     assert error.value.code == "fence_conflict"
 
     lease = service.claim_job(worker_id="worker_1", job_id=item["job_id"])
-    with pytest.raises(PlatformError) as error:
-        service.accept_processing_receipt(
-            principal=principal,
-            job_id=item["job_id"],
-            receipt={
-                "job_id": item["job_id"],
-                "attempt_id": lease.attempt_id,
-                "fencing_token": lease.fencing_token,
-                "publication_id": lease.publication_id,
-                "generation_id": "stale-generation",
-                "document_id": item["document_id"],
-                "document_version_id": item["document_version_id"],
-                "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
-                "stage_resources": [],
-                "processing_config_version": "v1",
-                "authorization_fence": dict(lease.authorization_fence),
-                **_receipt_request_echoes(service, lease.attempt_id),
-                **_receipt_contract_fields(),
-            },
+    # 07-4.9.21 代际冲突自动重暂存：stale generation receipt 不再向调用方抛
+    # 409 拒绝——冲突 attempt 按可重试失败记账（retry_wait + generation_conflict），
+    # 下一 attempt 在 claim 时自动以新活动代际重走 stage→publish（预算沿用）。
+    response = service.accept_processing_receipt(
+        principal=principal,
+        job_id=item["job_id"],
+        receipt={
+            "job_id": item["job_id"],
+            "attempt_id": lease.attempt_id,
+            "fencing_token": lease.fencing_token,
+            "publication_id": lease.publication_id,
+            "generation_id": "stale-generation",
+            "document_id": item["document_id"],
+            "document_version_id": item["document_version_id"],
+            "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
+            "stage_resources": [],
+            "processing_config_version": "v1",
+            "authorization_fence": dict(lease.authorization_fence),
+            **_receipt_request_echoes(service, lease.attempt_id),
+            **_receipt_contract_fields(),
+        },
+    )
+    assert response["state"] == "retry_wait"
+    with service._engine.connect() as connection:
+        job_row = (
+            connection.execute(
+                ingestion_jobs_table.select().where(ingestion_jobs_table.c.id == item["job_id"])
+            )
+            .mappings()
+            .one()
         )
-    assert error.value.code == "generation_conflict"
+    assert job_row["failure_reason"] == "generation_conflict"
+    assert job_row["next_attempt_at_utc"] is not None
 
 
 def test_receipt_requires_complete_contract_before_publication(service, principal) -> None:
@@ -552,7 +566,7 @@ def test_receipt_discards_when_direct_acl_is_revoked(service, principal) -> None
     lease = service.claim_job(worker_id="worker-acl", job_id=created["job_id"])
 
     class _RevokedIdentity:
-        def authorize_space(self, *, principal, space_id, action):
+        def authorize_space(self, *, principal, space_id, action, connection=None):
             del principal, space_id, action
             raise PlatformError("space_action_forbidden", "Access was revoked", {}, 403)
 
@@ -746,7 +760,7 @@ def test_receipt_revalidates_direct_acl_after_handoff_publish(service, principal
             result = super().publish(request, connection=connection)
 
             class _RevokedIdentity:
-                def authorize_space(self, *, principal, space_id, action):
+                def authorize_space(self, *, principal, space_id, action, connection=None):
                     del principal, space_id, action
                     raise PlatformError("space_action_forbidden", "Access was revoked", {}, 403)
 
@@ -808,13 +822,14 @@ def test_handoff_and_quota_are_part_of_publication_transaction(service, principa
     _accept(service, principal, item)
     assert len(handoff.published) == 1
     assert quota.checked == [{"quota_subject_user_id": "user_1", "pages": 1, "role": "user"}]
-    assert quota.recorded[0]["quota_operation_id"].startswith("processing_list:")
+    # C8：ingestion 额度操作身份是稳定的 job_id。
+    assert quota.recorded[0]["quota_operation_id"] == item["job_id"]
     assert quota.recorded[0]["publication_id"] == item["publication_id"]
 
     reindex = service.reindex(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="reindex-1",
     )
     service.claim_job(worker_id="worker_1", job_id=reindex["job_id"])
@@ -1010,7 +1025,7 @@ def test_same_content_replace_deduplicates_before_quota_admission(service, princ
     response = service.replace_version(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(),
         idempotency_key="same-content-replace",
     )
@@ -1019,7 +1034,8 @@ def test_same_content_replace_deduplicates_before_quota_admission(service, princ
         "document_id": item["document_id"],
         "document_version_id": item["document_version_id"],
         "job_id": None,
-        "version": 1,
+        # C3a：发布事务递增后文档 version 为 2。
+        "version": 2,
         "deduplicated": True,
         "status": "active",
     }
@@ -1032,7 +1048,7 @@ def test_replay_rejects_a_stale_replacement_after_a_newer_version_is_active(
     failed = service.replace_version(
         principal=principal,
         document_id=first["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"failed replacement"),
         idempotency_key="replace-failed",
     )
@@ -1046,7 +1062,7 @@ def test_replay_rejects_a_stale_replacement_after_a_newer_version_is_active(
     newer = service.replace_version(
         principal=principal,
         document_id=first["document_id"],
-        expected_version=2,
+        expected_version=4,
         file=_upload(content=b"new active version"),
         idempotency_key="replace-newer",
     )

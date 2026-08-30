@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.engine import Connection, Engine
@@ -19,11 +19,15 @@ from app.documents.upload_security import (
     validate_upload_security,
 )
 from app.identity.ports import DepartmentWorkState
+from app.indexing.schema import (
+    index_generation_changes_table,
+    index_generations_table,
+)
 from app.outbox.ports import DocumentNotificationRedactionCommand
 from app.platform.context import current_context
 from app.platform.database import _insert_do_nothing, platform_audit_table
 from app.platform.errors import PlatformError
-from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH
+from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH, batch_item_error
 from app.platform.storage import MemoryObjectStore, ObjectMetadata, ObjectStorePort, StorageKeyError
 
 from .domain import (
@@ -78,6 +82,19 @@ class DocumentUpload:
 
 
 @dataclass(frozen=True, slots=True)
+class RejectedUpload:
+    """A batch file already rejected at the HTTP layer (e.g. oversized read).
+
+    Per-file contract: the rejection travels with the batch instead of failing
+    the whole request; the service turns it into a rejected response item
+    without persisting any submission, job or private object.
+    """
+
+    filename: str
+    error: PlatformError
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentVersionReference:
     """A renewable read lease on one document version.
 
@@ -92,6 +109,36 @@ class DocumentVersionReference:
     document_id: str
     document_version_id: str
     expires_at: datetime
+
+
+# Per-file isolation covers upload-safety validation only. Anything else
+# (authorization, quota, storage outage) keeps failing the whole request.
+_UPLOAD_SAFETY_ERROR_CODES = frozenset(
+    {
+        "upload_too_large",
+        "upload_media_type_not_allowed",
+        "upload_content_type_mismatch",
+        "upload_media_mismatch",
+        "upload_archive_not_allowed",
+        "upload_content_invalid",
+        "malware_detected",
+        "validation_error",
+    }
+)
+
+
+def _batch_rejected_item(filename: str, error: PlatformError) -> dict[str, Any]:
+    return {
+        "accepted": False,
+        "name": filename,
+        "document_id": None,
+        "document_version_id": None,
+        "job_id": None,
+        "publication_id": None,
+        "submission_id": None,
+        "space_id": None,
+        "error": batch_item_error(error)["error"],
+    }
 
 
 # Supported upload media kinds, mirroring the frontend upload contract
@@ -157,6 +204,13 @@ def _metered_pages(
     if metering_class == "image":
         provider = metering.get("image_provider") if isinstance(metering, Mapping) else None
         return 0 if provider == "internvl" else images
+    # B4 内嵌图片（PDF figure 块）：internvl 只记用量不扣页；其余 provider 按
+    # 既有文档载体 pages+images 折叠（1 图=1 页）。
+    embedded_provider = (
+        metering.get("embedded_image_provider") if isinstance(metering, Mapping) else None
+    )
+    if embedded_provider == "internvl":
+        return pages
     return pages + images
 
 
@@ -299,11 +353,17 @@ class DocumentsService:
         version_retention_days: int = 30,
         read_lease_ttl: timedelta = timedelta(minutes=5),
         max_upload_bytes: int = 25 * 1024 * 1024,
+        max_files_per_request: int = 20,
+        max_request_bytes: int = 100 * 1024 * 1024,
         cleanup_max_attempts: int = 3,
         malware_scanner: Any | None = None,
     ) -> None:
         if max_upload_bytes < 1:
             raise ValueError("max_upload_bytes must be positive")
+        if max_files_per_request < 1:
+            raise ValueError("max_files_per_request must be positive")
+        if max_request_bytes < 1:
+            raise ValueError("max_request_bytes must be positive")
         if cleanup_max_attempts < 1:
             raise ValueError("cleanup_max_attempts must be positive")
         self._engine = engine
@@ -321,6 +381,8 @@ class DocumentsService:
         self._version_retention_days = version_retention_days
         self._read_lease_ttl = read_lease_ttl
         self._max_upload_bytes = max_upload_bytes
+        self._max_files_per_request = max_files_per_request
+        self._max_request_bytes = max_request_bytes
         self._cleanup_max_attempts = cleanup_max_attempts
         self._malware_scanner = malware_scanner
 
@@ -374,10 +436,10 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        job: Mapping[str, Any],
-        publication: Mapping[str, Any],
-        document: Mapping[str, Any],
-        receipt: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        publication: Mapping[Any, Any],
+        document: Mapping[Any, Any],
+        receipt: Mapping[Any, Any],
         published_at: datetime,
     ) -> dict[str, Any] | None:
         if self._quota_service is None:
@@ -412,7 +474,7 @@ class DocumentsService:
             )
         from app.usage.ledger import OwnershipSnapshot
 
-        subject = str(job["created_by_user_id"])
+        subject = self._job_execution_actor(job)
         role = str(job["quota_role_snapshot"])
         cost_center_key, space_kind, space_owner_user_id = self._publication_space_ownership(
             space_id=document["space_id"], subject_user_id=subject
@@ -431,7 +493,9 @@ class DocumentsService:
         debit_id = recorder(
             connection,
             publication_status="succeeded",
-            quota_operation_id=processing_list_id,
+            # ingestion 额度操作身份是稳定的 job_id（设计 §2.4.2）；全部
+            # attempt 与 replay_generation 复用该标识。
+            quota_operation_id=str(job["id"]),
             publication_id=str(publication["id"]),
             quota_subject_user_id=subject,
             pages=pages,
@@ -469,9 +533,9 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        job: Mapping[str, Any],
-        publication: Mapping[str, Any],
-        receipt: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        publication: Mapping[Any, Any],
+        receipt: Mapping[Any, Any],
         occurred_at: datetime,
     ) -> list[str]:
         port = self._ingestion_notification_port
@@ -492,7 +556,7 @@ class DocumentsService:
         return [str(event_id) for event_id in event_ids]
 
     @staticmethod
-    def _index_request_from_attempt(attempt: Mapping[str, Any]):
+    def _index_request_from_attempt(attempt: Mapping[Any, Any]):
         from .indexing import IndexStagingRequest
 
         value = dict(attempt["staging_request_json"] or {})
@@ -525,11 +589,27 @@ class DocumentsService:
             self._indexing_handoff_port.discard(request, connection=connection)
 
     @staticmethod
+    def _job_execution_actor(job: Mapping[str, Any]) -> str:
+        """Direct-job execution and quota subject.
+
+        The initial execution sequence keeps the original uploader; a manual
+        replay sequence switches both to the ops replay operator while
+        ``created_by_user_id`` stays immutable for auditability.
+        """
+
+        if int(job["replay_generation"]) > 0 and job["replayed_by_user_id"]:
+            return str(job["replayed_by_user_id"])
+        return str(job["created_by_user_id"])
+
+    @staticmethod
     def _worker_authorization_fence(
-        connection: Connection, *, job: Mapping[str, Any], document: Mapping[str, Any]
+        connection: Connection, *, job: Mapping[Any, Any], document: Mapping[Any, Any]
     ) -> dict[str, str]:
         if job["quota_exempt_reason"] != "shared_library_submission":
-            return {"kind": "direct_ingest", "actor_id": str(job["created_by_user_id"])}
+            return {
+                "kind": "direct_ingest",
+                "actor_id": DocumentsService._job_execution_actor(job),
+            }
         grant = (
             connection.execute(
                 select(submission_execution_grants_table)
@@ -561,8 +641,8 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        job: Mapping[str, Any],
-        document: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        document: Mapping[Any, Any],
         principal: Any,
     ) -> None:
         self._authorize(principal, str(document["space_id"]), "manage")
@@ -613,7 +693,7 @@ class DocumentsService:
         # body is re-read only when replay actually stages a new processing attempt.
 
     def _can_replay_job(
-        self, connection: Connection, *, job: Mapping[str, Any], principal: Any
+        self, connection: Connection, *, job: Mapping[Any, Any], principal: Any
     ) -> bool:
         document = (
             connection.execute(
@@ -636,12 +716,41 @@ class DocumentsService:
         return True
 
     def _validate_direct_receipt_authorization(
-        self, *, principal: Any | None, job: Mapping[str, Any], document: Mapping[str, Any]
+        self,
+        *,
+        principal: Any | None,
+        job: Mapping[Any, Any],
+        document: Mapping[Any, Any],
+        connection: Connection | None = None,
+        internal_worker: bool = False,
     ) -> None:
+        if internal_worker:
+            if job["quota_exempt_reason"] == "shared_library_submission":
+                return
+            if self._identity_access is not None:
+                worker_authorize = getattr(
+                    self._identity_access, "authorize_space_for_worker", None
+                )
+                if callable(worker_authorize):
+                    try:
+                        worker_authorize(
+                            user_id=str(job["created_by_user_id"]),
+                            space_id=str(document["space_id"]),
+                            action="manage",
+                            connection=connection,
+                        )
+                    except PlatformError as exc:
+                        raise PlatformError(
+                            "authorization_changed",
+                            "The direct-ingest authorization is no longer current",
+                            {},
+                            409,
+                        ) from exc
+            return
         if job["quota_exempt_reason"] == "shared_library_submission":
             return
-        if principal is None or str(getattr(principal, "user_id", "")) != str(
-            job["created_by_user_id"]
+        if principal is None or str(getattr(principal, "user_id", "")) != self._job_execution_actor(
+            job
         ):
             raise PlatformError(
                 "authorization_changed",
@@ -802,6 +911,12 @@ class DocumentsService:
                 updated_at_utc=now,
             )
         )
+        # 目标版本进入 purged 的事务释放仍未释放的恢复持有引用（设计 §2.3.2）。
+        connection.execute(
+            delete(document_version_restore_holds_table).where(
+                document_version_restore_holds_table.c.document_version_id == version_id
+            )
+        )
         context = current_context()
         connection.execute(
             platform_audit_table.insert().values(
@@ -874,6 +989,112 @@ class DocumentsService:
         if backend_kind in {"publication", "staging"}:
             return 2
         return 3
+
+    def _stage_deletion_targets(
+        self,
+        connection: Connection,
+        *,
+        deletion_id: str,
+        document_id: str,
+        now: datetime,
+    ) -> int:
+        """在删除接受事务内构建不可变清理目标清单（设计 §2.3.3）。
+
+        覆盖全部版本的原始对象、publication、stage 资产与 manifest、投稿关联
+        与其他文档级业务记录，并枚举全部尚未 ``purged`` 的索引 generation；
+        返回本次派生的目标数，供封存前的对账扫描比对。
+        """
+
+        def add(backend_kind: str, resource_id: str) -> None:
+            _insert_do_nothing(
+                connection,
+                document_deletion_cleanup_targets_table,
+                {
+                    "deletion_id": deletion_id,
+                    "backend_kind": backend_kind,
+                    "resource_id": resource_id,
+                    "state": "pending",
+                    "attempt_count": 0,
+                    "last_error": None,
+                    "created_at_utc": now,
+                    "updated_at_utc": now,
+                },
+                index_elements=["deletion_id", "backend_kind", "resource_id"],
+            )
+
+        derived = 0
+        versions = (
+            connection.execute(
+                select(document_versions_table).where(
+                    document_versions_table.c.document_id == document_id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for version in versions:
+            for resource in self._cleanup_resources_for_version(connection, version=dict(version)):
+                add(str(resource["backend_kind"]), str(resource["resource_id"]))
+                derived += 1
+        for grant_id, submission_id in connection.execute(
+            select(
+                submission_execution_grants_table.c.id,
+                submission_execution_grants_table.c.submission_id,
+            ).where(submission_execution_grants_table.c.document_id == document_id)
+        ).all():
+            add("submission_grant", str(grant_id))
+            add("submission_record", str(submission_id))
+            derived += 2
+        generations: Sequence[str] = []
+        # 未 purged 索引 generation 枚举依赖 indexing 的 generation 登记表；
+        # 精简 schema（部分单元测试库）没有该登记表时退化为 revisions 全集。
+        from sqlalchemy import inspect as sa_inspect
+
+        inspector = sa_inspect(connection)
+        if inspector.has_table("index_generations") and inspector.has_table(
+            "index_generation_changes"
+        ):
+            generations = (
+                connection.execute(
+                    select(index_generations_table.c.id)
+                    .select_from(
+                        index_revisions_table.join(
+                            index_generation_changes_table,
+                            index_generation_changes_table.c.revision
+                            == index_revisions_table.c.revision,
+                        ).join(
+                            index_generations_table,
+                            index_generations_table.c.id
+                            == index_generation_changes_table.c.generation_id,
+                        )
+                    )
+                    .where(
+                        index_revisions_table.c.document_id == document_id,
+                        index_generations_table.c.status != "purged",
+                    )
+                    .distinct()
+                )
+                .scalars()
+                .all()
+            )
+        else:
+            # "delete" 是删除 index_change 的合成代际标记，不是真实索引代际。
+            generations = (
+                connection.execute(
+                    select(index_revisions_table.c.generation_id).where(
+                        index_revisions_table.c.document_id == document_id,
+                        index_revisions_table.c.generation_id != "delete",
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for generation_id in generations:
+            # 世代枚举沿用 index 后端走 handoff 全文档索引清理；resource_id
+            # 前缀保证排在既有 stage 索引资源之后（同一清理段内稳定顺序）。
+            add("index", f"index_generation:{generation_id}")
+            derived += 1
+        return derived
 
     def _cleanup_resources_for_version(
         self, connection: Connection, *, version: Mapping[str, Any]
@@ -996,6 +1217,7 @@ class DocumentsService:
         owner_id: str,
         *,
         resource_context: Mapping[str, Any],
+        retry_audit_resource_type: str | None = None,
     ) -> tuple[int, bool]:
         """Run one pass of staged cleanup deletions outside any caller transaction.
 
@@ -1109,6 +1331,16 @@ class DocumentsService:
                         )
                         .values(state="failed", last_error=error, updated_at_utc=now)
                     )
+                    if retry_audit_resource_type is not None:
+                        # §9.3 审计事实：清理重试（与失败标记同一事务边界）。
+                        self._audit(
+                            connection,
+                            actor_id="system_purge_worker",
+                            resource_type=retry_audit_resource_type,
+                            resource_id=str(owner_id),
+                            result="retried",
+                            occurred_at=now,
+                        )
                     return completed, True
         return completed, False
 
@@ -1120,14 +1352,15 @@ class DocumentsService:
         return normalized, normalized.casefold()
 
     @staticmethod
-    def _locked_document(connection: Connection, document_id: str) -> Mapping[str, Any] | None:
-        return (
+    def _locked_document(connection: Connection, document_id: str) -> Mapping[Any, Any] | None:
+        row = (
             connection.execute(
                 select(documents_table).where(documents_table.c.id == document_id).with_for_update()
             )
             .mappings()
             .one_or_none()
         )
+        return dict(row) if row is not None else None
 
     @staticmethod
     def _hash(content: bytes) -> str:
@@ -1166,7 +1399,13 @@ class DocumentsService:
             )
         return key
 
-    def _authorize(self, principal: Any, space_id: str, action: str) -> str:
+    def _authorize(
+        self,
+        principal: Any,
+        space_id: str,
+        action: str,
+        connection: Connection | None = None,
+    ) -> str:
         if self._identity_access is None:
             return "manage"
         return str(
@@ -1174,12 +1413,21 @@ class DocumentsService:
                 principal=principal,
                 space_id=space_id,
                 action=action,
+                connection=connection,
             )
         )
 
     @property
     def max_upload_bytes(self) -> int:
         return self._max_upload_bytes
+
+    @property
+    def max_files_per_request(self) -> int:
+        return self._max_files_per_request
+
+    @property
+    def max_request_bytes(self) -> int:
+        return self._max_request_bytes
 
     def _authorize_upload(self, principal: Any, space_id: str) -> str:
         try:
@@ -1194,7 +1442,7 @@ class DocumentsService:
         *,
         principal: Any,
         space_id: str,
-        files: Sequence[DocumentUpload],
+        files: Sequence[DocumentUpload | RejectedUpload],
         idempotency_key: str | None,
     ) -> dict[str, Any]:
         key = self._required_key(idempotency_key)
@@ -1203,20 +1451,28 @@ class DocumentsService:
         if self._authorize_upload(principal, space_id) == "contribute":
             items: list[dict[str, Any]] = []
             for index, file in enumerate(files):
+                if isinstance(file, RejectedUpload):
+                    items.append(_batch_rejected_item(file.filename, file.error))
+                    continue
                 submission_key = f"{key}:{index}"
                 item_index: int | None = None
                 if len(submission_key) > IDEMPOTENCY_KEY_MAX_LENGTH:
                     submission_key = key
                     item_index = index
-                items.append(
-                    self.create_submission(
-                        principal=principal,
-                        space_id=space_id,
-                        file=file,
-                        idempotency_key=submission_key,
-                        idempotency_item_index=item_index,
+                try:
+                    items.append(
+                        self.create_submission(
+                            principal=principal,
+                            space_id=space_id,
+                            file=file,
+                            idempotency_key=submission_key,
+                            idempotency_item_index=item_index,
+                        )
                     )
-                )
+                except PlatformError as error:
+                    if error.code not in _UPLOAD_SAFETY_ERROR_CODES:
+                        raise
+                    items.append(_batch_rejected_item(file.filename, error))
             return {"items": items}
         return self.create_initial_upload(
             principal=principal, space_id=space_id, files=files, idempotency_key=key
@@ -1263,7 +1519,7 @@ class DocumentsService:
             .one_or_none()
         )
         if row is not None:
-            return resolve(row)
+            return resolve(dict(row))
         inserted = _insert_do_nothing(
             connection,
             documents_idempotency_table,
@@ -1294,7 +1550,7 @@ class DocumentsService:
                 {},
                 409,
             )
-        return resolve(row)
+        return resolve(dict(row))
 
     def _complete_idempotency(
         self,
@@ -1366,7 +1622,7 @@ class DocumentsService:
         )
 
     def _validate_upload_media(self, filename: str, media_kind: str) -> None:
-        """Single-file upload contract: unsupported media -> 415, declared/content
+        """Single-file upload contract: unsupported media -> 415, declared/extension
         mismatch -> 422 (mirrors the frontend upload contract)."""
         declared = media_kind.strip()
         by_type = _UPLOAD_MEDIA_KINDS_BY_TYPE.get(declared.lower())
@@ -1374,8 +1630,8 @@ class DocumentsService:
         by_extension = _UPLOAD_MEDIA_KINDS_BY_EXTENSION.get(extension)
         if by_type is not None and by_extension is not None and by_type != by_extension:
             raise PlatformError(
-                "upload_content_type_mismatch",
-                "File content does not match the declared media type",
+                "upload_media_mismatch",
+                "File extension does not match the declared media type",
                 {"file": filename},
                 422,
             )
@@ -1472,8 +1728,8 @@ class DocumentsService:
         self,
         connection: Connection,
         *,
-        document: Mapping[str, Any],
-        version: Mapping[str, Any],
+        document: Mapping[Any, Any],
+        version: Mapping[Any, Any],
         now: datetime,
     ) -> None:
         space_id = str(document["space_id"])
@@ -1585,8 +1841,8 @@ class DocumentsService:
         *,
         batch_id: str,
         now: datetime,
-        info: Mapping[str, Any],
-        claim: Mapping[str, Any],
+        info: Mapping[Any, Any],
+        claim: Mapping[Any, Any],
     ) -> dict[str, Any]:
         existing = (
             connection.execute(
@@ -1621,11 +1877,13 @@ class DocumentsService:
             )
         )
         return {
+            "accepted": True,
+            "name": info["filename"],
+            "space_id": str(claim["space_id"]),
             "document_id": claim["document_id"],
             "document_version_id": version_id,
             "job_id": None,
             "publication_id": None,
-            "filename": info["filename"],
             "deduplicated": True,
             "status": "deduplicated",
         }
@@ -1635,17 +1893,33 @@ class DocumentsService:
         *,
         principal: Any,
         space_id: str,
-        files: Sequence[DocumentUpload],
+        files: Sequence[DocumentUpload | RejectedUpload],
         idempotency_key: str | None,
     ) -> dict[str, Any]:
         key = self._required_key(idempotency_key)
         if not files:
             raise PlatformError("validation_error", "At least one file is required", {}, 422)
-        self._authorize(principal, space_id, "manage")
-        normalized_files = [self._file_fingerprint(file) for file in files]
+        # Per-file isolation: only files that pass upload-safety validation are
+        # fingerprinted, so rejected files never enter the request fingerprint
+        # and take no part in idempotent replay.
+        file_states: list[RejectedUpload | tuple[DocumentUpload, dict[str, Any]]] = []
+        fingerprints: list[dict[str, Any]] = []
+        for file in files:
+            if isinstance(file, RejectedUpload):
+                file_states.append(file)
+                continue
+            try:
+                info = self._file_fingerprint(file)
+            except PlatformError as error:
+                if error.code not in _UPLOAD_SAFETY_ERROR_CODES:
+                    raise
+                file_states.append(RejectedUpload(filename=file.filename, error=error))
+                continue
+            fingerprints.append(info)
+            file_states.append((file, info))
         fingerprint = canonical_request_fingerprint(
             sorted(
-                normalized_files,
+                fingerprints,
                 key=lambda item: (
                     item["normalized_filename"],
                     item["content_hash_sha256"],
@@ -1656,6 +1930,10 @@ class DocumentsService:
         actor_id = str(principal.user_id)
         endpoint = "documents.initial_upload"
         with self._engine.begin() as connection:
+            # Same-transaction ACL (设计 §9.1.1): the grant and the department-row
+            # lock live in this write transaction, so a concurrent deactivation
+            # cannot interleave between the check and the new job.
+            self._authorize(principal, space_id, "manage", connection=connection)
             replay = self._idempotency_replay(
                 connection,
                 actor_id=actor_id,
@@ -1680,7 +1958,27 @@ class DocumentsService:
                 )
             )
             items: list[dict[str, Any]] = []
-            for file, info in zip(files, normalized_files, strict=True):
+            for state in file_states:
+                if isinstance(state, RejectedUpload):
+                    connection.execute(
+                        upload_batch_items_table.insert().values(
+                            id=_new_id("batch_item"),
+                            upload_batch_id=batch_id,
+                            document_id=None,
+                            submission_id=None,
+                            file_name=state.filename,
+                            content_hash_sha256="",
+                            result_state="rejected",
+                            deduplicated=False,
+                            job_id=None,
+                            rejection_reason=state.error.code,
+                            created_at_utc=now,
+                            updated_at_utc=now,
+                        )
+                    )
+                    items.append(_batch_rejected_item(state.filename, state.error))
+                    continue
+                file, info = state
                 claim = (
                     connection.execute(
                         select(upload_dedup_claims_table).where(
@@ -1874,11 +2172,13 @@ class DocumentsService:
                 )
                 items.append(
                     {
+                        "accepted": True,
+                        "name": info["filename"],
+                        "space_id": space_id,
                         "document_id": document_id,
                         "document_version_id": version_id,
                         "job_id": job_id,
                         "publication_id": publication_id,
-                        "filename": info["filename"],
                         "deduplicated": False,
                         "status": "pending",
                     }
@@ -2127,6 +2427,34 @@ class DocumentsService:
             )
         )
 
+    def _audit_best_effort(
+        self,
+        *,
+        actor_id: str,
+        resource_type: str,
+        resource_id: str,
+        result: str,
+    ) -> None:
+        """Persist a failure/observation audit outside the rolled-back transaction.
+
+        Failure facts must outlive the failing transaction's rollback (same
+        pattern as identity's archive-restore alert); losing one is logged, never
+        propagated to the caller.
+        """
+
+        try:
+            with self._engine.begin() as connection:
+                self._audit(
+                    connection,
+                    actor_id=actor_id,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    result=result,
+                    occurred_at=self._current_time(),
+                )
+        except Exception:  # noqa: BLE001 - audit must never mask the original failure
+            logger.warning("documents audit write failed for %s/%s", resource_type, resource_id)
+
     def list_documents(
         self,
         *,
@@ -2322,6 +2650,34 @@ class DocumentsService:
         expected_version: int,
         idempotency_key: str | None,
     ) -> dict[str, Any]:
+        try:
+            return self._restore_version_locked(
+                principal=principal,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+            )
+        except PlatformError as exc:
+            # §9.3 审计事实：版本恢复失败（失败事实必须越过回滚落库）。
+            if exc.code in {"document_version_not_restorable", "document_version_purged"}:
+                self._audit_best_effort(
+                    actor_id=str(principal.user_id),
+                    resource_type="documents.version_restore",
+                    resource_id=document_id,
+                    result="failed",
+                )
+            raise
+
+    def _restore_version_locked(
+        self,
+        *,
+        principal: Any,
+        document_id: str,
+        document_version_id: str,
+        expected_version: int,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
         key = self._required_key(idempotency_key)
         actor_id = str(principal.user_id)
         endpoint = "documents.restore_version"
@@ -2392,16 +2748,9 @@ class DocumentsService:
             version_id = _new_id("version")
             job_id = _new_id("job")
             publication_id = _new_id("publication")
+            # 复制发生在 worker 处理阶段（copy_restore_source），接受事务只
+            # 建记录并声明来自源版本记录的内容事实（设计 §2.3.2）。
             object_key = f"documents/{document_id}/{version_id}/original"
-            try:
-                self._object_store.copy(str(source["original_object_key"]), object_key)
-            except (StorageKeyError, KeyError) as exc:
-                raise PlatformError(
-                    "document_version_purged",
-                    "Document version content was purged",
-                    {"document_id": document_id, "document_version_id": document_version_id},
-                    409,
-                ) from exc
             content_hash = str(source["content_hash_sha256"])
             restored_size = int(source["size_bytes"])
             version_number = (
@@ -2530,20 +2879,249 @@ class DocumentsService:
             )
             return response
 
+    def copy_restore_source(
+        self,
+        *,
+        job_id: str,
+        attempt_id: str,
+        fencing_token: int,
+    ) -> dict[str, Any]:
+        """Worker-side restore object copy (设计 §2.3.2)。
+
+        在内容处理前将源版本原始对象复制到新对象标识，实测大小与 SHA-256 并
+        与源版本记录比对；校验通过后释放恢复持有引用。复制或校验失败走既有
+        失败事务并保留持有引用，人工重放重新复制；复制期间取消则继续持有。
+
+        由 ``DocumentsJobCoordinator.claim`` 在领取携带恢复持有的 job 时于
+        attempt 事务提交后、返回租约前自动调用；调用方必须把此处的异常视为
+        该 job 已进入失败/重试调度（无有效租约返回）。
+        """
+
+        with self._engine.begin() as connection:
+            job = (
+                connection.execute(
+                    select(ingestion_jobs_table)
+                    .where(ingestion_jobs_table.c.id == job_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if job is None:
+                raise PlatformError("job_not_found", "Ingestion job was not found", {}, 404)
+            if (
+                job["state"] != IngestionJobState.RUNNING.value
+                or str(job["active_attempt_id"] or "") != attempt_id
+            ):
+                raise PlatformError(
+                    "fence_conflict", "The restore job is no longer current", {}, 409
+                )
+            attempt = (
+                connection.execute(
+                    select(ingestion_attempts_table)
+                    .where(ingestion_attempts_table.c.id == attempt_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                attempt is None
+                or attempt["state"] != "running"
+                or int(fencing_token) != int(attempt["fencing_token"])
+            ):
+                raise PlatformError(
+                    "fence_conflict", "The processing attempt is no longer current", {}, 409
+                )
+            hold = (
+                connection.execute(
+                    select(document_version_restore_holds_table)
+                    .where(document_version_restore_holds_table.c.job_id == job_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if hold is None:
+                raise PlatformError(
+                    "restore_hold_missing", "The restore hold is no longer active", {}, 409
+                )
+            source = (
+                connection.execute(
+                    select(document_versions_table).where(
+                        document_versions_table.c.id == hold["document_version_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            new_version = (
+                connection.execute(
+                    select(document_versions_table).where(
+                        document_versions_table.c.id == job["document_version_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            source_key = str(source["original_object_key"] or "") if source is not None else ""
+            target_key = (
+                str(new_version["original_object_key"] or "") if new_version is not None else ""
+            )
+            if not source_key or not target_key:
+                raise PlatformError(
+                    "document_version_purged", "Document version content was purged", {}, 410
+                )
+        try:
+            self._object_store.copy(source_key, target_key)
+            content, _metadata = self._object_store.get(target_key)
+        except (StorageKeyError, KeyError) as exc:
+            self.fail_job(
+                job_id=job_id,
+                reason="restore_copy_source_unavailable",
+                retryable=False,
+                attempt_id=attempt_id,
+                fencing_token=int(fencing_token),
+            )
+            raise PlatformError(
+                "restore_copy_failed",
+                "The restore source object could not be copied",
+                {},
+                422,
+            ) from exc
+        except Exception:
+            self.fail_job(
+                job_id=job_id,
+                reason="restore_copy_failed",
+                retryable=True,
+                attempt_id=attempt_id,
+                fencing_token=int(fencing_token),
+            )
+            raise
+        measured_hash = hashlib.sha256(content).hexdigest()
+        if (
+            source is None
+            or len(content) != int(source["size_bytes"])
+            or measured_hash != str(source["content_hash_sha256"])
+        ):
+            self.fail_job(
+                job_id=job_id,
+                reason="restore_copy_mismatch",
+                retryable=False,
+                attempt_id=attempt_id,
+                fencing_token=int(fencing_token),
+            )
+            raise PlatformError(
+                "restore_copy_mismatch",
+                "The restored object does not match the source version record",
+                {},
+                422,
+            )
+        with self._engine.begin() as connection:
+            job = (
+                connection.execute(
+                    select(ingestion_jobs_table)
+                    .where(ingestion_jobs_table.c.id == job_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            attempt = (
+                connection.execute(
+                    select(ingestion_attempts_table)
+                    .where(ingestion_attempts_table.c.id == attempt_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                job is None
+                or job["state"] != IngestionJobState.RUNNING.value
+                or str(job["active_attempt_id"] or "") != attempt_id
+                or attempt is None
+                or int(attempt["fencing_token"]) != int(fencing_token)
+            ):
+                # 复制期间 job 被取消或失去 current 身份：继续持有源版本。
+                return {"state": "hold_kept", "job_state": str(job["state"]) if job else None}
+            connection.execute(
+                delete(document_version_restore_holds_table).where(
+                    document_version_restore_holds_table.c.job_id == job_id
+                )
+            )
+        return {
+            "state": "copied",
+            "size_bytes": len(content),
+            "content_hash_sha256": measured_hash,
+        }
+
     def accept_processing_receipt(
         self,
         *,
         principal: Any | None = None,
         job_id: str,
         receipt: IndexProcessingReceipt | Mapping[str, Any],
+        internal_worker: bool = False,
     ) -> dict[str, Any]:
         try:
             return self._accept_processing_receipt_transaction(
                 principal=principal,
                 job_id=job_id,
                 receipt=receipt,
+                internal_worker=internal_worker,
             )
         except PlatformError as exc:
+            # §9.3 审计事实：执行中授权失效（部门停用/调动导致），越过回滚落库。
+            if exc.code in {"authorization_changed", "submission_grant_invalid"}:
+                self._audit_best_effort(
+                    actor_id=(
+                        str(principal.user_id)
+                        if principal is not None
+                        else "system:documents-worker"
+                    ),
+                    resource_type="documents.job_authorization",
+                    resource_id=job_id,
+                    result=exc.code,
+                )
+            if exc.code == "generation_conflict":
+                # 07-4.9.21 代际冲突自动重暂存：废弃冲突 attempt 后按可重试失败
+                # 记账（预算沿用 4 次上限），下一 attempt 在 claim 时取当前活动
+                # 代际重走 stage→publish；不再向调用方止步于 409 拒绝。
+                attempt_id = (
+                    receipt.attempt_id
+                    if isinstance(receipt, IndexProcessingReceipt)
+                    else receipt.get("attempt_id") if isinstance(receipt, Mapping) else None
+                )
+                fencing_token = None
+                if isinstance(attempt_id, str):
+                    with self._engine.connect() as connection:
+                        fencing_token = connection.execute(
+                            select(ingestion_attempts_table.c.fencing_token).where(
+                                ingestion_attempts_table.c.id == attempt_id
+                            )
+                        ).scalar_one_or_none()
+                if isinstance(attempt_id, str) and fencing_token is not None:
+                    self.fail_job(
+                        job_id=job_id,
+                        reason="generation_conflict",
+                        retryable=True,
+                        attempt_id=attempt_id,
+                        fencing_token=int(fencing_token),
+                    )
+                    with self._engine.connect() as connection:
+                        job_row = (
+                            connection.execute(
+                                select(ingestion_jobs_table).where(
+                                    ingestion_jobs_table.c.id == job_id
+                                )
+                            )
+                            .mappings()
+                            .one_or_none()
+                        )
+                    if job_row is not None:
+                        return self._job_response(job_row)
+                raise
             details = dict(exc.details)
             if exc.code != "duplicate_document" or not details.get("publication_claim_conflict"):
                 raise
@@ -2574,6 +3152,7 @@ class DocumentsService:
         principal: Any | None = None,
         job_id: str,
         receipt: IndexProcessingReceipt | Mapping[str, Any],
+        internal_worker: bool = False,
     ) -> dict[str, Any]:
         with self._engine.begin() as connection:
             job_document_id = connection.execute(
@@ -2634,7 +3213,7 @@ class DocumentsService:
                 message: str,
                 status_code: int = 409,
                 retryable: bool = False,
-            ) -> None:
+            ) -> NoReturn:
                 self._discard_indexing_attempt(connection, active_attempt_id)
                 raise PlatformError(code, message, {}, status_code, retryable)
 
@@ -2689,6 +3268,8 @@ class DocumentsService:
                     principal=principal,
                     job=job,
                     document=document,
+                    connection=connection,
+                    internal_worker=internal_worker,
                 )
             except PlatformError as exc:
                 reject_receipt(exc.code, exc.message)
@@ -2730,6 +3311,17 @@ class DocumentsService:
                 reject_receipt(
                     "fence_conflict",
                     "The processing job is no longer the active document operation",
+                )
+            if job["operation"] in {"initial", "replace"}:
+                if document["pending_version_id"] != job["document_version_id"]:
+                    reject_receipt(
+                        "document_version_changed",
+                        "The document pending version no longer matches this job",
+                    )
+            elif document["pending_version_id"] is not None:
+                reject_receipt(
+                    "document_version_changed",
+                    "The document has a pending version during reindex",
                 )
             if job["document_version_id"]:
                 version_row = (
@@ -2819,12 +3411,25 @@ class DocumentsService:
                     "document_version_changed",
                     "The document active version has changed since this job was created",
                 )
+            if final_job["operation"] in {"initial", "replace"}:
+                if final_document["pending_version_id"] != final_job["document_version_id"]:
+                    reject_receipt(
+                        "document_version_changed",
+                        "The document pending version no longer matches this job",
+                    )
+            elif final_document["pending_version_id"] is not None:
+                reject_receipt(
+                    "document_version_changed",
+                    "The document has a pending version during reindex",
+                )
             try:
                 self._worker_authorization_fence(connection, job=final_job, document=final_document)
                 self._validate_direct_receipt_authorization(
                     principal=principal,
                     job=final_job,
                     document=final_document,
+                    connection=connection,
+                    internal_worker=internal_worker,
                 )
             except PlatformError as exc:
                 reject_receipt(exc.code, exc.message, exc.status_code, exc.retryable)
@@ -2950,6 +3555,7 @@ class DocumentsService:
                         active_version_id=version["id"],
                         pending_version_id=None,
                         active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
                         name=version["file_name"],
                         normalized_name=self._normalize_filename(str(version["file_name"]))[1],
                         media_kind=version["media_kind"],
@@ -2960,7 +3566,11 @@ class DocumentsService:
                 connection.execute(
                     update(documents_table)
                     .where(documents_table.c.id == job["document_id"])
-                    .values(active_operation_job_id=None, updated_at_utc=now)
+                    .values(
+                        active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
+                        updated_at_utc=now,
+                    )
                 )
             usage = self._record_publication_quota(
                 connection,
@@ -3240,7 +3850,7 @@ class DocumentsService:
                     updated_at_utc=now,
                 )
             )
-            connection.execute(
+            cancelled_jobs = connection.execute(
                 update(ingestion_jobs_table)
                 .where(
                     and_(
@@ -3256,6 +3866,16 @@ class DocumentsService:
                 )
                 .values(state=IngestionJobState.CANCELLED.value, stage=None, updated_at_utc=now)
             )
+            if active_attempts or (cancelled_jobs.rowcount or 0) > 0:
+                # §9.3 审计事实：在途 job 取消（确有取消时记录）。
+                self._audit(
+                    connection,
+                    actor_id=actor_id,
+                    resource_type="documents.deletion",
+                    resource_id=document_id,
+                    result="jobs_cancelled",
+                    occurred_at=now,
+                )
             connection.execute(
                 update(publications_table)
                 .where(
@@ -3311,6 +3931,10 @@ class DocumentsService:
                 upload_dedup_claims_table.delete().where(
                     upload_dedup_claims_table.c.document_id == document_id
                 )
+            )
+            # 删除接受事务提交前立即构建不可变清理目标清单（设计 §2.3.3）。
+            self._stage_deletion_targets(
+                connection, deletion_id=deletion_id, document_id=document_id, now=now
             )
             self._append_delete_index_change(connection, document, now)
             response = {
@@ -3502,6 +4126,48 @@ class DocumentsService:
                 .where(document_deletions_table.c.id == deletion_id)
                 .values(status="cleaning")
             )
+            scan = dict(deletion["physical_cleanup_json"] or {})
+            if not scan.get("sealed_at"):
+                # 清单封存：关联 job 终态、无读取租约、无恢复持有的前置校验已在
+                # 上方完成；此处按稳定命名空间完成一次对账扫描后封存。封存前
+                # 不执行任何破坏性清理（设计 §2.3.3）。
+                derived = self._stage_deletion_targets(
+                    connection, deletion_id=deletion_id, document_id=document_id, now=now
+                )
+                stored = int(
+                    connection.execute(
+                        select(func.count())
+                        .select_from(document_deletion_cleanup_targets_table)
+                        .where(document_deletion_cleanup_targets_table.c.deletion_id == deletion_id)
+                    ).scalar_one()
+                )
+                if stored != derived:
+                    raise PlatformError(
+                        "deletion_cleanup_blocked",
+                        "Deletion cleanup targets are not reconciled",
+                        {},
+                        409,
+                    )
+                connection.execute(
+                    update(document_deletions_table)
+                    .where(document_deletions_table.c.id == deletion_id)
+                    .values(
+                        physical_cleanup_json={
+                            "sealed_at": _timestamp(now),
+                            "target_count": stored,
+                        }
+                    )
+                )
+                if str(deletion["status"]) == "pending_delete":
+                    # §9.3 审计事实：删除目标清单封存（仅首个 finalize pass 记录一次）。
+                    self._audit(
+                        connection,
+                        actor_id="system_purge_worker",
+                        resource_type="documents.deletion",
+                        resource_id=document_id,
+                        result="cleanup_targets_sealed",
+                        occurred_at=now,
+                    )
             all_targets_done = True
             for version in versions:
                 if not self._stage_cleanup_targets(
@@ -3516,6 +4182,25 @@ class DocumentsService:
                     continue
                 self._tombstone_version(connection, str(version["id"]), now)
             if all_targets_done:
+                submission_ids = tuple(
+                    str(row[0])
+                    for row in connection.execute(
+                        select(submission_execution_grants_table.c.submission_id).where(
+                            submission_execution_grants_table.c.document_id == document_id
+                        )
+                    ).all()
+                )
+                connection.execute(
+                    delete(submission_execution_grants_table).where(
+                        submission_execution_grants_table.c.document_id == document_id
+                    )
+                )
+                if submission_ids:
+                    connection.execute(
+                        delete(knowledge_submissions_table).where(
+                            knowledge_submissions_table.c.id.in_(submission_ids)
+                        )
+                    )
                 connection.execute(
                     update(documents_table)
                     .where(documents_table.c.id == document_id)
@@ -3537,12 +4222,23 @@ class DocumentsService:
                     .where(document_deletions_table.c.id == deletion_id)
                     .values(status="completed", completed_at_utc=now)
                 )
+                for fact in ("cleanup_completed", "document_deleted"):
+                    # §9.3 审计事实：清理完成、逻辑文档进入 deleted。
+                    self._audit(
+                        connection,
+                        actor_id="system_purge_worker",
+                        resource_type="documents.deletion",
+                        resource_id=document_id,
+                        result=fact,
+                        occurred_at=now,
+                    )
                 return {"document_id": document_id, "state": "deleted"}
         newly_completed, had_failure = self._execute_cleanup_targets(
             document_deletion_cleanup_targets_table,
             "deletion_id",
             deletion_id,
             resource_context={"document_id": document_id},
+            retry_audit_resource_type="documents.deletion",
         )
         if newly_completed and not had_failure:
             return self.finalize_deletion(document_id=document_id, deletion_id=deletion_id)
@@ -3650,6 +4346,7 @@ class DocumentsService:
                     "document_id": document_id,
                     "document_version_id": version_id,
                 },
+                retry_audit_resource_type="documents.version_cleanup",
             )
             if not newly_completed or had_failure:
                 continue
@@ -3842,7 +4539,9 @@ class DocumentsService:
                 .values(
                     state=IngestionJobState.CANCELLED.value,
                     stage=None,
+                    active_attempt_id=None,
                     cancelled_by_user_id=str(principal.user_id),
+                    cancelled_at_utc=now,
                     updated_at_utc=now,
                 )
             )
@@ -3897,6 +4596,7 @@ class DocumentsService:
                     .values(
                         pending_version_id=None,
                         active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
                         updated_at_utc=now,
                     )
                 )
@@ -3913,7 +4613,11 @@ class DocumentsService:
                 connection.execute(
                     update(documents_table)
                     .where(documents_table.c.id == job["document_id"])
-                    .values(active_operation_job_id=None, updated_at_utc=now)
+                    .values(
+                        active_operation_job_id=None,
+                        version=int(document["version"]) + 1,
+                        updated_at_utc=now,
+                    )
                 )
             if job["upload_batch_id"]:
                 connection.execute(
@@ -4076,6 +4780,7 @@ class DocumentsService:
                         .values(
                             pending_version_id=None,
                             active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
                             updated_at_utc=now,
                         )
                     )
@@ -4092,7 +4797,11 @@ class DocumentsService:
                     connection.execute(
                         update(documents_table)
                         .where(documents_table.c.id == job["document_id"])
-                        .values(active_operation_job_id=None, updated_at_utc=now)
+                        .values(
+                            active_operation_job_id=None,
+                            version=int(document["version"]) + 1,
+                            updated_at_utc=now,
+                        )
                     )
             if job["upload_batch_id"]:
                 connection.execute(
@@ -4163,16 +4872,17 @@ class DocumentsService:
                 principal=principal,
             )
             now = self._current_time()
-            connection.execute(
-                update(document_versions_table)
-                .where(document_versions_table.c.id == job["document_version_id"])
-                .values(
-                    status=DocumentVersionState.PENDING.value,
-                    terminal_at_utc=None,
-                    purge_after_at_utc=None,
-                    updated_at_utc=now,
+            if job["operation"] in {"initial", "replace"}:
+                connection.execute(
+                    update(document_versions_table)
+                    .where(document_versions_table.c.id == job["document_version_id"])
+                    .values(
+                        status=DocumentVersionState.PENDING.value,
+                        terminal_at_utc=None,
+                        purge_after_at_utc=None,
+                        updated_at_utc=now,
+                    )
                 )
-            )
             publication_id = _new_id("publication")
             replay_generation = int(job["replay_generation"]) + 1
             connection.execute(
@@ -4214,9 +4924,9 @@ class DocumentsService:
                     replay_generation=replay_generation,
                     failure_reason=None,
                     next_attempt_at_utc=None,
+                    replayed_by_user_id=actor_id,
                     **(
                         {
-                            "created_by_user_id": actor_id,
                             "quota_role_snapshot": str(getattr(principal, "role", "ops")),
                             "quota_department_id_snapshot": getattr(
                                 principal, "department_id", None
@@ -4231,7 +4941,16 @@ class DocumentsService:
             connection.execute(
                 update(documents_table)
                 .where(documents_table.c.id == job["document_id"])
-                .values(active_operation_job_id=job_id, updated_at_utc=now)
+                .values(
+                    active_operation_job_id=job_id,
+                    version=int(document["version"]) + 1,
+                    **(
+                        {"pending_version_id": job["document_version_id"]}
+                        if job["operation"] in {"initial", "replace"}
+                        else {}
+                    ),
+                    updated_at_utc=now,
+                )
             )
             if job["upload_batch_id"]:
                 connection.execute(
@@ -4341,6 +5060,8 @@ class DocumentsService:
                             if isinstance(item, Mapping)
                         ],
                         "ocr_low_confidence": row["ocr_low_confidence"],
+                        # 契约字段补齐：数据源语义未定义，输出 null 占位。
+                        "progress_text_hint": None,
                         "publication_id": row["active_publication_id"],
                         "processing_summary": row["processing_summary_json"],
                         "usage": row["usage_json"] if row["state"] == "succeeded" else None,
@@ -4358,6 +5079,51 @@ class DocumentsService:
             "has_more": len(visible) > limit,
         }
 
+    def mark_job_indexing(self, *, job_id: str, attempt_id: str, fencing_token: int) -> bool:
+        """Worker 进入索引构建阶段时把 job 读模型标记为 ``stage="indexing"``。
+
+        使用 ``job_id + attempt_id + fencing_token`` 条件更新；失配时抛出
+        fence_conflict，worker 必须停止当前 attempt（设计 §2.3）。
+        """
+
+        with self._engine.begin() as connection:
+            attempt = (
+                connection.execute(
+                    select(
+                        ingestion_attempts_table.c.job_id,
+                        ingestion_attempts_table.c.fencing_token,
+                        ingestion_attempts_table.c.state,
+                    ).where(ingestion_attempts_table.c.id == attempt_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                attempt is None
+                or str(attempt["job_id"]) != job_id
+                or attempt["state"] != "running"
+                or int(attempt["fencing_token"]) != int(fencing_token)
+            ):
+                raise PlatformError(
+                    "fence_conflict", "The processing attempt is no longer current", {}, 409
+                )
+            updated = connection.execute(
+                update(ingestion_jobs_table)
+                .where(
+                    and_(
+                        ingestion_jobs_table.c.id == job_id,
+                        ingestion_jobs_table.c.state == IngestionJobState.RUNNING.value,
+                        ingestion_jobs_table.c.active_attempt_id == attempt_id,
+                    )
+                )
+                .values(stage="indexing", updated_at_utc=self._current_time())
+            )
+            if updated.rowcount != 1:
+                raise PlatformError(
+                    "fence_conflict", "The processing job is no longer current", {}, 409
+                )
+            return True
+
     def claim_job(
         self,
         *,
@@ -4370,6 +5136,21 @@ class DocumentsService:
         return DocumentsJobCoordinator(self, lease_ttl=lease_ttl).claim(
             worker_id=worker_id,
             job_id=job_id,
+        )
+
+    def renew_job_lease(
+        self,
+        lease: Any,
+        *,
+        worker_id: str | None = None,
+        lease_ttl: timedelta = timedelta(minutes=5),
+    ) -> Any | None:
+        from .jobs import DocumentsJobCoordinator
+
+        return DocumentsJobCoordinator(self, lease_ttl=lease_ttl).renew(
+            lease,
+            worker_id=worker_id,
+            lease_ttl=lease_ttl,
         )
 
     def create_submission(
@@ -4487,12 +5268,12 @@ class DocumentsService:
     def cleanup_scheduled_submissions(self, *, limit: int = 100) -> list[str]:
         from .submissions import SubmissionService
 
-        return SubmissionService(self).cleanup_scheduled(limit=limit)
+        return list(SubmissionService(self).cleanup_scheduled(limit=limit))
 
     def _allowed_job_actions(
         self,
         connection: Connection,
-        job: Mapping[str, Any],
+        job: Mapping[Any, Any],
         principal: Any,
         *,
         can_manage: bool,
@@ -4511,8 +5292,8 @@ class DocumentsService:
     def _append_index_change(
         self,
         connection: Connection,
-        job: Mapping[str, Any],
-        publication: Mapping[str, Any],
+        job: Mapping[Any, Any],
+        publication: Mapping[Any, Any],
         space_id: str,
         now: datetime,
     ) -> None:
@@ -4703,7 +5484,7 @@ class DocumentsService:
         return publications
 
     @staticmethod
-    def _job_response(job: Mapping[str, Any]) -> dict[str, Any]:
+    def _job_response(job: Mapping[Any, Any]) -> dict[str, Any]:
         return {
             "job_id": job["id"],
             "document_id": job["document_id"],

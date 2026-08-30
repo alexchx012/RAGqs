@@ -86,9 +86,9 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
         "status": str,
         "machine_low_confidence_fact": dict,
     },
-    "submission_approved": {"submission_id": str},
-    "submission_rejected": {"submission_id": str},
-    "submission_invalidated": {"submission_id": str},
+    "submission_approved": {"submission_id": str, "document_id": str, "job_id": str},
+    "submission_rejected": {"submission_id": str, "reason": (str, None)},
+    "submission_invalidated": {"submission_id": str, "reason": str},
     "quota_approved": {"request_id": str},
     "quota_rejected": {"request_id": str},
     "calibration_window_suggested": {"calibration_window_suggestion_id": str},
@@ -573,7 +573,11 @@ class SqlAlchemyOutboxPublisher:
             raise
         if recipients:
             connection.execute(outbox_recipient_table.insert().values(recipients))
-        if recipients and command.event_type not in OUTBOX_ONLY_EVENT_TYPES:
+        # Zero-recipient notification events (e.g. a role snapshot with no
+        # active ops) still own a pending delivery so the dispatcher completes
+        # the consumer and records the outcome; only outbox-only events have
+        # no delivery at all.
+        if command.event_type not in OUTBOX_ONLY_EVENT_TYPES:
             connection.execute(
                 outbox_delivery_table.insert().values(
                     event_id=command.event_id,
@@ -915,6 +919,24 @@ class SqlAlchemyQuotaOutboxEnqueueAdapter:
         )
 
 
+def _submission_payload(
+    event_type: str,
+    submission_id: str,
+    document_id: str | None,
+    job_id: str | None,
+    reason: str | None,
+) -> dict[str, object]:
+    """§13 投稿 payload 契约：approved 必带 document_id/job_id，invalidated
+    必带 reason，rejected reason 可选（缺省即不携带该键）。"""
+    payload: dict[str, object] = {"submission_id": submission_id}
+    if event_type == "submission_approved":
+        payload["document_id"] = str(document_id)
+        payload["job_id"] = str(job_id)
+    elif reason is not None:
+        payload["reason"] = str(reason)
+    return payload
+
+
 class SqlAlchemySubmissionOutboxAdapter:
     """Submission-scoped, no-token facade over the outbox publisher."""
 
@@ -938,6 +960,9 @@ class SqlAlchemySubmissionOutboxAdapter:
         recipient_user_id: str,
         occurred_at: datetime,
         connection: Connection,
+        document_id: str | None = None,
+        job_id: str | None = None,
+        reason: str | None = None,
     ) -> str:
         if event_type not in self._EVENT_TYPES:
             raise PlatformError(
@@ -960,7 +985,7 @@ class SqlAlchemySubmissionOutboxAdapter:
             aggregate_id=submission_id,
             transition_version=transition_version,
             occurred_at=occurred_at,
-            payload={"submission_id": submission_id},
+            payload=_submission_payload(event_type, submission_id, document_id, job_id, reason),
             recipients=(
                 RecipientSelection(
                     recipient_user_id=recipient_user_id,
@@ -1151,13 +1176,15 @@ class SqlAlchemyIngestionOutboxAdapter:
         ocr_low_confidence_fact: Mapping[str, object] | None,
         connection: Connection,
     ) -> tuple[str, ...]:
-        base_payload = {
+        base_payload: dict[str, object] = {
             "job_id": job_id,
             "document_id": document_id,
             "document_version_id": document_version_id,
             "publication_id": publication_id,
         }
-        events: list[tuple[str, dict[str, object]]] = [("ingestion_completed", base_payload)]
+        events: list[
+            tuple[Literal["ingestion_completed", "ocr_low_confidence"], dict[str, object]]
+        ] = [("ingestion_completed", base_payload)]
         if ocr_low_confidence:
             if not isinstance(ocr_low_confidence_fact, Mapping):
                 raise PlatformError(

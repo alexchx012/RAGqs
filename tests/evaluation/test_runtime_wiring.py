@@ -43,6 +43,7 @@ def test_table_missing_get_open_window_returns_none() -> None:
 
     from app.chat.schema import chat_metadata
     from app.identity.schema import identity_metadata
+    from app.outbox.schema import outbox_metadata
     from app.platform.database import core_metadata
 
     engine = create_engine(
@@ -52,6 +53,7 @@ def test_table_missing_get_open_window_returns_none() -> None:
     )
     core_metadata.create_all(engine)
     identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
     chat_metadata.create_all(engine)
     port = EvaluationCalibrationWindowPort(engine)
     with engine.connect() as connection:

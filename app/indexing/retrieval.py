@@ -127,18 +127,29 @@ _EFFORT_LIMITS = {
     "think": (8, 7),
     "deep": (10, 9),
 }
-_VECTOR_CANDIDATE_RATIO = 0.7
 SPARSE_EXACT_MATCH_ROUTE = "sparse_exact_match"
 
 
-def allocate_candidate_quotas(limit: int, kinds: Sequence[str]) -> tuple[int, ...]:
-    """Library baseline: vector 0.7 / BM25 0.3. A single provider keeps the full limit."""
+def allocate_candidate_quotas(
+    limit: int,
+    kinds: Sequence[str],
+    *,
+    dense_weight: float = 0.7,
+    sparse_weight: float = 0.3,
+) -> tuple[int, ...]:
+    """Allocate candidates by the resolved request's dense and sparse weights."""
 
     if limit < 1:
         raise PlatformError("validation_error", "candidate limit is invalid", {}, 422)
+    if (
+        not 0.0 < dense_weight < 1.0
+        or not 0.0 < sparse_weight < 1.0
+        or abs((dense_weight + sparse_weight) - 1.0) > 0.000001
+    ):
+        raise PlatformError("validation_error", "candidate weights are invalid", {}, 422)
     if len(kinds) <= 1:
         return (limit,)
-    vector = max(1, int(round(limit * _VECTOR_CANDIDATE_RATIO)))
+    vector = max(1, int(round(limit * dense_weight)))
     sparse = max(1, limit - vector)
     quotas: list[int] = []
     for kind in kinds:
@@ -211,11 +222,17 @@ def _budget_notice_payload(notice: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class RetrievalRequest:
-    """Keeps one generation reference lease for a request and its citations."""
+    """Keeps one generation reference lease for a request and its citations.
+
+    Document read leases acquired by the visibility gate during search and
+    citation resolution are tracked here and released when the request exits,
+    so retrieval never waits for the lease TTL to stop blocking purge.
+    """
 
     def __init__(self, service: RetrievalService, lease: GenerationReferenceLease) -> None:
         self._service = service
         self._lease = lease
+        self._document_leases: list[Mapping[str, Any]] = []
 
     @property
     def generation_id(self) -> str:
@@ -231,6 +248,13 @@ class RetrievalRequest:
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         del exc_type, exc, traceback
         self._service._generation.release_reference_lease(self._lease.lease_id)
+        self._release_document_leases()
+
+    def _release_document_leases(self) -> None:
+        leases, self._document_leases = self._document_leases, []
+        releaser = getattr(self._service._visibility, "release_read_leases", None)
+        if leases and callable(releaser):
+            releaser(leases)
 
     def search(
         self,
@@ -248,6 +272,7 @@ class RetrievalRequest:
             narrowing_scope=narrowing_scope,
             profile=profile,
             budget=budget,
+            document_leases=self._document_leases,
         )
 
     def resolve_citation(self, hit: RetrievalHit, *, principal: Any = None) -> Mapping[str, Any]:
@@ -255,7 +280,12 @@ class RetrievalRequest:
             self._service._visibility,
             self._service._generation,
             identity_access=self._service._identity,
-        ).resolve(hit, principal=principal, generation_lease=self._lease)
+        ).resolve(
+            hit,
+            principal=principal,
+            generation_lease=self._lease,
+            collect_leases=self._document_leases,
+        )
 
 
 class NoopReranker:
@@ -388,6 +418,7 @@ class RetrievalService:
         reranker: Reranker | None = None,
         environment: str = "test",
         profile_resolver: Callable[[RetrievalProfile, str], RetrievalProfile] | None = None,
+        library_profile_resolver: Callable[[RetrievalScope], str] | None = None,
         query_router: RuleQueryRouter | None = None,
         tree_router: TreeRouter | None = None,
         graph_router: GraphRouter | None = None,
@@ -409,6 +440,7 @@ class RetrievalService:
         self._visibility = visibility_facts
         self._reranker = reranker or NoopReranker(environment=environment)
         self._profile_resolver = profile_resolver
+        self._library_profile_resolver = library_profile_resolver
         self._query_router = query_router or RuleQueryRouter()
         self._tree_router = tree_router
         self._graph_router = graph_router
@@ -435,12 +467,25 @@ class RetrievalService:
         return RetrievalScope.from_value(getter(principal))
 
     def _visibility_fact(
-        self, candidate: IndexChunk, principal: Any
+        self,
+        candidate: IndexChunk,
+        principal: Any,
+        *,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> DocumentVisibilityFact | None:
         if self._visibility is None:
             return None
         if callable(self._visibility):
-            return _fact(self._visibility(candidate, principal), candidate)
+            raw = self._visibility(candidate, principal)
+        else:
+            raw = self._get_visibility_facts_port()(candidate)
+        if collect_leases is not None and isinstance(raw, Mapping):
+            lease = raw.get("read_lease")
+            if isinstance(lease, Mapping):
+                collect_leases.append(dict(lease))
+        return _fact(raw, candidate)
+
+    def _get_visibility_facts_port(self) -> Any:
         getter = getattr(self._visibility, "get_visibility_fact", None)
         if getter is None:
             getter = getattr(self._visibility, "visibility_fact", None)
@@ -448,25 +493,37 @@ class RetrievalService:
             raise PlatformError(
                 "visibility_unavailable", "Document visibility facts are unavailable", {}, 503
             )
-        return _fact(getter(candidate, principal), candidate)
+        return getter
 
     def _visibility_facts(
-        self, candidates: Sequence[IndexChunk], principal: Any
+        self,
+        candidates: Sequence[IndexChunk],
+        principal: Any,
+        *,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> Mapping[tuple[str, str], DocumentVisibilityFact | None]:
         if not candidates:
             return {}
         if self._visibility is None:
             return {}
         if callable(self._visibility):
-            return {
-                (candidate.space_id, candidate.document_id): _fact(
-                    self._visibility(candidate, principal), candidate
-                )
-                for candidate in candidates
-            }
+            facts: dict[tuple[str, str], DocumentVisibilityFact | None] = {}
+            for candidate in candidates:
+                raw = self._visibility(candidate, principal)
+                if collect_leases is not None and isinstance(raw, Mapping):
+                    lease = raw.get("read_lease")
+                    if isinstance(lease, Mapping):
+                        collect_leases.append(dict(lease))
+                facts[(candidate.space_id, candidate.document_id)] = _fact(raw, candidate)
+            return facts
         getter = getattr(self._visibility, "get_visibility_facts", None)
         if callable(getter):
             values = getter(candidates, principal)
+            for raw in values.values():
+                if collect_leases is not None and isinstance(raw, Mapping):
+                    lease = raw.get("read_lease")
+                    if isinstance(lease, Mapping):
+                        collect_leases.append(dict(lease))
             return {
                 (candidate.space_id, candidate.document_id): _fact(
                     values.get((candidate.space_id, candidate.document_id)), candidate
@@ -474,7 +531,9 @@ class RetrievalService:
                 for candidate in candidates
             }
         return {
-            (candidate.space_id, candidate.document_id): self._visibility_fact(candidate, principal)
+            (candidate.space_id, candidate.document_id): self._visibility_fact(
+                candidate, principal, collect_leases=collect_leases
+            )
             for candidate in candidates
         }
 
@@ -580,6 +639,7 @@ class RetrievalService:
         quota: int,
         principal: Any,
         metadata_prefilter: MetadataPrefilter | None = None,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> list[RetrievalHit]:
         hits: list[RetrievalHit] = []
         cursor: str | None = None
@@ -608,7 +668,9 @@ class RetrievalService:
                 break
             candidates = tuple(_provider_candidate(raw) for raw in page.items)
             facts = self._visibility_facts(
-                tuple(candidate for candidate, _ in candidates), principal
+                tuple(candidate for candidate, _ in candidates),
+                principal,
+                collect_leases=collect_leases,
             )
             rejected = 0
             for candidate, provider_score in candidates:
@@ -657,12 +719,20 @@ class RetrievalService:
         profile: RetrievalProfile,
         principal: Any,
         metadata_prefilter: MetadataPrefilter | None,
+        dense_weight: float,
+        sparse_weight: float,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> tuple[list[RetrievalHit], list[Mapping[str, Any]]]:
         kinds = tuple(
             _backend_kind(provider, fallback="dense" if index == 0 else "sparse")
             for index, provider in enumerate(self._providers)
         )
-        quotas = allocate_candidate_quotas(profile.candidate_limit, kinds)
+        quotas = allocate_candidate_quotas(
+            profile.candidate_limit,
+            kinds,
+            dense_weight=dense_weight,
+            sparse_weight=sparse_weight,
+        )
         degradations: list[Mapping[str, Any]] = []
         collected: list[tuple[str, list[RetrievalHit]]] = []
         failures: list[str] = []
@@ -681,6 +751,7 @@ class RetrievalService:
                     quota=quotas[index],
                     principal=principal,
                     metadata_prefilter=metadata_prefilter,
+                    collect_leases=collect_leases,
                 )
             except Exception as error:
                 payload = error
@@ -772,17 +843,41 @@ class RetrievalService:
         narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
         profile: RetrievalProfile | None = None,
         budget: RAGOperationBudgetPort | None = None,
+        document_leases: list[Mapping[str, Any]] | None = None,
     ) -> RetrievalResult:
         if not isinstance(query, str) or not query.strip():
             raise PlatformError("validation_error", "query is required", {}, 422)
-        route = self._query_router.route(query)
-        selected = profile or RetrievalProfile()
+        requested = profile or RetrievalProfile()
+        selected = requested
         if self._profile_resolver is not None:
             selected = self._profile_resolver(
-                RetrievalProfile(profile_id=selected.profile_id, version=selected.version),
+                RetrievalProfile(
+                    profile_id=requested.profile_id,
+                    version=requested.version,
+                ),
                 lease.generation_id,
             )
+            selected = replace(
+                selected,
+                effort=requested.effort,
+                route_tree=selected.route_tree or "tree" in requested.strategy_operations,
+                strategy_operations=requested.strategy_operations,
+            )
+        elif "tree" in requested.strategy_operations:
+            selected = replace(requested, route_tree=True)
+        selected = selected.with_effort_transform()
+        route = self._query_router.route(
+            query,
+            strategy_operations=selected.strategy_operations,
+        )
+        dense_weight = route.dense_weight or selected.dense_weight
+        sparse_weight = route.sparse_weight or selected.sparse_weight
         scope = intersect_scopes(self._allowed_scope(principal), narrowing_scope)
+        if self._library_profile_resolver is not None:
+            selected = replace(
+                selected,
+                library_profile_id=self._library_profile_resolver(scope),
+            )
         if scope.is_empty:
             return RetrievalResult(
                 (), lease.generation_id, selected, route_output=route.to_mapping()
@@ -790,46 +885,125 @@ class RetrievalService:
         hits: list[RetrievalHit] = []
         degradations: list[Mapping[str, Any]] = []
         seen_route_keys: set[tuple[str, str, str]] = set()
-        # One rewrite/HyDE route output is a single logical "rewrite" RAG
-        # operation under the shared budget gates (A64).
-        if budget is not None and route.kind in {"rewrite", "hyde"}:
-            now = _utc_now()
-            notice = budget.gate("rewrite", estimated_tokens=len(query), now=now)
+        blocked_strategies: set[str] = set()
+        strategy_rewrites: tuple[str, ...] = tuple(
+            dict.fromkeys(
+                operation
+                for operation, _strategy_query in route.strategy_queries
+                if operation in {"rewrite", "hyde"}
+            )
+        )
+        if not route.strategy_operations and route.kind in {"rewrite", "hyde"}:
+            strategy_rewrites = (route.kind,)
+        for rewrite_operation in strategy_rewrites:
+            if budget is None:
+                continue
+            notice = budget.gate("rewrite", estimated_tokens=len(query), now=_utc_now())
             if notice is not None:
                 degradations.append(_budget_notice_payload(notice))
-            else:
-                reserved = budget.reserve("rewrite", estimated_tokens=len(query), now=now)
-                budget.reconcile(reserved, actual_tokens=0)
-        # Every route output keeps the default hybrid retrieval running. Split
-        # questions are additive logical retrieval units, never exclusive routes,
-        # and each split subquestion is its own logical "retrieval" operation.
-        for search_query in route.search_queries():
-            if budget is not None:
-                gate_notice = budget.gate(
-                    "retrieval", estimated_tokens=len(search_query), now=_utc_now()
-                )
-                if gate_notice is not None:
-                    degradations.append(_budget_notice_payload(gate_notice))
-                    continue
-            query_hits, query_degradations = self._collect_hybrid_hits(
-                search_query,
-                lease.generation_id,
-                scope,
-                selected,
-                principal,
-                route.metadata_prefilter,
+                blocked_strategies.add(rewrite_operation)
+                continue
+            rewrite_reservation = budget.reserve(
+                "rewrite", estimated_tokens=len(query), now=_utc_now()
             )
-            degradations.extend(query_degradations)
+            budget.reconcile(rewrite_reservation, actual_tokens=0)
+
+        scheduled_queries: list[tuple[str, str, float | None]] = []
+        for route_operation, search_query in route.search_query_plan():
+            if route_operation in blocked_strategies:
+                continue
+            scheduled_reservation: float | None = None
             if budget is not None:
-                reserved = budget.reserve(
+                notice = budget.gate(
                     "retrieval", estimated_tokens=len(search_query), now=_utc_now()
                 )
-                budget.reconcile(reserved, actual_tokens=0)
-            for hit in query_hits:
+                if notice is not None:
+                    degradations.append(_budget_notice_payload(notice))
+                    continue
+                scheduled_reservation = budget.reserve(
+                    "retrieval", estimated_tokens=len(search_query), now=_utc_now()
+                )
+            scheduled_queries.append((route_operation, search_query, scheduled_reservation))
+
+        def collect_branch(
+            scheduled: tuple[str, str, float | None],
+        ) -> tuple[
+            str,
+            str,
+            float | None,
+            list[RetrievalHit] | Exception,
+            list[Mapping[str, Any]],
+            list[Mapping[str, Any]],
+        ]:
+            operation, search_query, reserved = scheduled
+            branch_leases: list[Mapping[str, Any]] = []
+            try:
+                branch_hits, branch_degradations = self._collect_hybrid_hits(
+                    search_query,
+                    lease.generation_id,
+                    scope,
+                    selected,
+                    principal,
+                    route.metadata_prefilter,
+                    dense_weight,
+                    sparse_weight,
+                    collect_leases=branch_leases if document_leases is not None else None,
+                )
+                return (
+                    operation,
+                    search_query,
+                    reserved,
+                    branch_hits,
+                    branch_degradations,
+                    branch_leases,
+                )
+            except Exception as error:
+                return operation, search_query, reserved, error, [], branch_leases
+
+        if route.strategy_operations and len(scheduled_queries) > 1:
+            with ThreadPoolExecutor(max_workers=len(scheduled_queries)) as pool:
+                branch_outcomes = list(pool.map(collect_branch, scheduled_queries))
+        else:
+            branch_outcomes = [collect_branch(scheduled) for scheduled in scheduled_queries]
+
+        successful_branches = 0
+        default_failure: Exception | None = None
+        for (
+            branch_operation,
+            _search_query,
+            branch_reservation,
+            branch_hits,
+            branch_degradations,
+            branch_leases,
+        ) in branch_outcomes:
+            if budget is not None and branch_reservation is not None:
+                budget.reconcile(branch_reservation, actual_tokens=0)
+            if document_leases is not None:
+                document_leases.extend(branch_leases)
+            if isinstance(branch_hits, Exception):
+                if not route.strategy_operations:
+                    raise branch_hits
+                if branch_operation == "default_hybrid":
+                    default_failure = branch_hits
+                else:
+                    degradations.append(
+                        {
+                            "code": "retrieval_degraded",
+                            "kind": "retrieval_degraded",
+                            "reason": "strategy_unavailable",
+                            "strategy": branch_operation,
+                        }
+                    )
+                continue
+            successful_branches += 1
+            degradations.extend(branch_degradations)
+            for hit in branch_hits:
                 if hit.chunk.dedupe_key in seen_route_keys:
                     continue
                 seen_route_keys.add(hit.chunk.dedupe_key)
                 hits.append(hit)
+        if route.strategy_operations and not successful_branches and default_failure is not None:
+            raise default_failure
         candidate_hits = tuple(hits)
         rerank_degraded = False
         try:
@@ -861,7 +1035,11 @@ class RetrievalService:
         # Re-read lifecycle/publication/ACL facts after reranking. A document can
         # be retired while an upstream provider or cross-encoder is running.
         if self._visibility is not None and reranked:
-            final_facts = self._visibility_facts(tuple(hit.chunk for hit in reranked), principal)
+            final_facts = self._visibility_facts(
+                tuple(hit.chunk for hit in reranked),
+                principal,
+                collect_leases=document_leases,
+            )
             reranked = tuple(
                 hit
                 for hit in reranked
@@ -901,6 +1079,7 @@ class RetrievalService:
             and has_final_scores
         ):
             searchable_candidates = tree_candidates
+            tree_reservations: list[float] = []
             # Each candidate document is its own logical "tree" RAG operation
             # (A64): gate before the provider call so a budget rejection never
             # produces an outbound side effect for that document.
@@ -911,22 +1090,22 @@ class RetrievalService:
                     if tree_notice is not None:
                         degradations.append(_budget_notice_payload(tree_notice))
                         continue
+                    tree_reservations.append(
+                        budget.reserve("tree", estimated_tokens=len(query), now=_utc_now())
+                    )
                     allowed.append(hit)
                 searchable_candidates = tuple(allowed)
             try:
-                tree_outcome = self._tree_router(
-                    query,
-                    searchable_candidates,
-                    max_documents=tree_document_limit,
-                    rag_call_limit=rag_call_limit,
+                tree_outcome = (
+                    self._tree_router(
+                        query,
+                        searchable_candidates,
+                        max_documents=tree_document_limit,
+                        rag_call_limit=rag_call_limit,
+                    )
+                    if searchable_candidates
+                    else None
                 )
-                if budget is not None and tree_outcome is not None:
-                    for _document in tuple(getattr(tree_outcome, "documents", ())):
-                        if str(getattr(_document, "status", "")) != "missing_document_identity":
-                            reserved = budget.reserve(
-                                "tree", estimated_tokens=len(query), now=_utc_now()
-                            )
-                            budget.reconcile(reserved, actual_tokens=0)
                 if tree_outcome is not None:
                     skipped = bool(getattr(tree_outcome, "skipped", False))
                     reason = getattr(tree_outcome, "reason", None)
@@ -992,7 +1171,9 @@ class RetrievalService:
                                 )
                                 if self._visible(
                                     tree_chunk,
-                                    self._visibility_fact(tree_chunk, principal),
+                                    self._visibility_fact(
+                                        tree_chunk, principal, collect_leases=document_leases
+                                    ),
                                     scope,
                                     lease.generation_id,
                                 ):
@@ -1006,6 +1187,10 @@ class RetrievalService:
                                     )
             except Exception as error:
                 degradations.append(self._routing_degradation("tree", error))
+            finally:
+                if budget is not None:
+                    for reserved in tree_reservations:
+                        budget.reconcile(reserved, actual_tokens=0)
         if selected.route_graph:
             graph_lease = None
             try:
@@ -1050,7 +1235,7 @@ class RetrievalService:
                             latency_ms=stale_duration_ms,
                         )
             finally:
-                if graph_lease is not None:
+                if graph_lease is not None and self._graph_reader is not None:
                     self._graph_reader.release_reader_lease(graph_lease)
         # A reranker fallback has no final score, so a profile threshold is not
         # applicable. Thresholding a fallback would silently turn a degraded
@@ -1186,7 +1371,7 @@ class CitationService:
 
     def __init__(
         self,
-        visibility_facts: VisibilityFactsPort | Callable[[IndexChunk, Any], Any],
+        visibility_facts: VisibilityFactsPort | Callable[[IndexChunk, Any], Any] | None,
         generation_manager: GenerationManager | None = None,
         *,
         identity_access: AllowedRetrievalScopePort | Any | None = None,
@@ -1215,6 +1400,7 @@ class CitationService:
         *,
         principal: Any = None,
         generation_lease: GenerationReferenceLease | None = None,
+        collect_leases: list[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         candidate = hit.chunk
         lease = (
@@ -1229,12 +1415,17 @@ class CitationService:
             if candidate.generation_id != generation_id:
                 return {"state": "unavailable"}
             if callable(self._visibility):
-                fact = _fact(self._visibility(candidate, principal), candidate)
+                raw_fact: Any = self._visibility(candidate, principal)
             else:
                 getter = getattr(self._visibility, "get_visibility_fact", None)
                 if getter is None:
                     getter = getattr(self._visibility, "visibility_fact", None)
-                fact = _fact(getter(candidate, principal), candidate) if getter else None
+                raw_fact = getter(candidate, principal) if getter else None
+            if collect_leases is not None and isinstance(raw_fact, Mapping):
+                lease_ref = raw_fact.get("read_lease")
+                if isinstance(lease_ref, Mapping):
+                    collect_leases.append(dict(lease_ref))
+            fact = _fact(raw_fact, candidate)
             if fact is None or not RetrievalService._visible(
                 candidate,
                 fact,
@@ -1253,7 +1444,7 @@ class CitationService:
                 "snippet": candidate.snippet,
             }
         finally:
-            if lease is not None and generation_lease is None:
+            if lease is not None and generation_lease is None and self._generation is not None:
                 self._generation.release_reference_lease(lease.lease_id)
 
 

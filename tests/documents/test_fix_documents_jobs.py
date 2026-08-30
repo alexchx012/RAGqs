@@ -146,7 +146,7 @@ def test_review_and_restore_paths_never_read_object_content(service, principal) 
     replacement = service.replace_version(
         principal=principal,
         document_id=original["document_id"],
-        expected_version=1,
+        expected_version=2,
         file=_upload(content=b"replacement"),
         idempotency_key="replace-restore-no-read-1",
     )
@@ -156,7 +156,7 @@ def test_review_and_restore_paths_never_read_object_content(service, principal) 
         principal=principal,
         document_id=original["document_id"],
         document_version_id=original["document_version_id"],
-        expected_version=2,
+        expected_version=4,
         idempotency_key="restore-no-read-1",
     )
     assert restored["status"] == "pending"
@@ -189,7 +189,7 @@ def test_cleanup_external_calls_run_without_database_transaction(service, princi
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-cleanup-txn-1",
     )
 
@@ -416,14 +416,14 @@ def test_public_space_with_corrupt_manifest_row_still_publishes_and_deletes() ->
     service.delete_document(
         principal=principal,
         document_id=good["document_id"],
-        expected_version=1,
+        expected_version=2,
         idempotency_key="delete-public-good-1",
     )
     with pytest.raises(PlatformError) as error:
         service.delete_document(
             principal=principal,
             document_id=bad["document_id"],
-            expected_version=1,
+            expected_version=2,
             idempotency_key="delete-public-bad-1",
         )
     assert error.value.code == "public_source_manifest_invalid"
@@ -440,7 +440,7 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
     documents_metadata.create_all(engine)
 
     class _PermissiveIdentity:
-        def authorize_space(self, *, principal, space_id: str, action: str) -> str:
+        def authorize_space(self, *, principal, space_id: str, action: str, connection=None) -> str:
             del principal, action
             return "manage"
 
@@ -473,16 +473,16 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         department_id=None,
     )
     admin_items = service.list_approval_submissions(principal=admin)["items"]
-    assert {item["space_id"] for item in admin_items} == {"public", "department:d1"}
+    assert {item["target_space_id"] for item in admin_items} == {"public", "department:d1"}
     # admin 不可见范围外的空间（如 personal/space_1）不会出现在审核列表。
     assert all(
-        item["space_id"] == "public" or item["space_id"].startswith("department:")
+        item["target_space_id"] == "public" or item["target_space_id"].startswith("department:")
         for item in admin_items
     )
-    kind_items = service.list_approval_submissions(
-        principal=admin, target_kind="department"
-    )["items"]
-    assert [item["space_id"] for item in kind_items] == ["department:d1"]
+    kind_items = service.list_approval_submissions(principal=admin, target_kind="department")[
+        "items"
+    ]
+    assert [item["target_space_id"] for item in kind_items] == ["department:d1"]
 
     ops = AuthPrincipal(
         user_id="ops_1",
@@ -492,7 +492,7 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         department_id=None,
     )
     ops_items = service.list_approval_submissions(principal=ops)["items"]
-    assert [item["space_id"] for item in ops_items] == ["public"]
+    assert [item["target_space_id"] for item in ops_items] == ["public"]
 
     minister = AuthPrincipal(
         user_id="minister_1",
@@ -502,7 +502,7 @@ def test_list_approvals_filters_spaces_in_sql() -> None:
         department_id="d1",
     )
     minister_items = service.list_approval_submissions(principal=minister)["items"]
-    assert [item["space_id"] for item in minister_items] == ["department:d1"]
+    assert [item["target_space_id"] for item in minister_items] == ["department:d1"]
 
     with pytest.raises(PlatformError) as error:
         service.list_approval_submissions(principal=submitter)

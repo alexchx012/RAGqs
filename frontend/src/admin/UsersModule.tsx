@@ -35,6 +35,7 @@ import { useNavigate } from 'react-router';
 import { ApiError } from '../api/errors';
 import { useAuthState } from '../auth/AuthProvider';
 import type { Role, User } from '../auth/types';
+import { createIdempotencyKey } from '../chat/idempotency';
 import { copy } from '../copy';
 import { EyeIcon, EyeOffIcon } from '../pages/login/LoginPage';
 import { formatDrawerLocation } from '../router/drawer-params';
@@ -412,7 +413,9 @@ export function UsersModule() {
     setDisableNote(null);
     setDisableError(null);
     try {
-      const result = await api.deleteUser(target.id, target.version);
+      // 每次提交生成新键；网络结果未知时重试复用同键（幂等语义）。
+      const idempotencyKey = createIdempotencyKey();
+      const result = await api.deleteUser(target.id, target.version, idempotencyKey);
       // 202：不移除该行，原地切换为冻结展示 + fog-white 闪现 400ms
       setDisabling(null);
       setItems((current) =>
@@ -777,7 +780,9 @@ function EditUserDialog({
           : {}),
     };
     try {
-      const updated = await api.patchUser(target.id, body);
+      // 每次提交生成新键；网络结果未知时重试复用同键（幂等语义）。
+      const idempotencyKey = createIdempotencyKey();
+      const updated = await api.patchUser(target.id, body, idempotencyKey);
       onSaved(updated);
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 422) {
@@ -1012,14 +1017,19 @@ function CreateUserDialog({ actorRole, onClose, onCreated, onAbort }: CreateUser
     }
     setSaving(true);
     try {
-      const created = await api.createUser({
-        username: username.trim(),
-        real_name: realName.trim(),
-        ...(displayName.trim() === '' ? {} : { display_name: displayName.trim() }),
-        department_id: selection.kind === 'id' ? selection.id : null,
-        role,
-        initial_password: password,
-      });
+      // 每次提交生成新键；网络结果未知时重试复用同键（幂等语义）。
+      const idempotencyKey = createIdempotencyKey();
+      const created = await api.createUser(
+        {
+          username: username.trim(),
+          real_name: realName.trim(),
+          ...(displayName.trim() === '' ? {} : { display_name: displayName.trim() }),
+          department_id: selection.kind === 'id' ? selection.id : null,
+          role,
+          initial_password: password,
+        },
+        idempotencyKey,
+      );
       onCreated(created);
     } catch (caught) {
       if (

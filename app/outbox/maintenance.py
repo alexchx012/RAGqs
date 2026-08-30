@@ -32,6 +32,71 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def retire_notification_by_id(
+    connection: Connection,
+    notification_id: str,
+    now: datetime,
+) -> bool:
+    """Atomically write/verify the receipt, then delete notification + ack.
+
+    Shared by the retention maintenance and the in-transaction materialization
+    trim: both paths retire through the same receipt-first sequence so no
+    terminal outcome is ever lost.
+    """
+    row = (
+        connection.execute(
+            select(
+                notification_table.c.event_id,
+                notification_table.c.recipient_user_id,
+                notification_table.c.notification_seq,
+                notification_table.c.event_occurred_at_utc,
+                notification_table.c.materialized_at_utc,
+            ).where(notification_table.c.id == notification_id)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        return False
+    event_id = str(row["event_id"])
+    user_id = str(row["recipient_user_id"])
+    seq = int(row["notification_seq"])
+    existing = connection.execute(
+        select(notification_delivery_receipt_table.c.event_id).where(
+            notification_delivery_receipt_table.c.event_id == event_id,
+            notification_delivery_receipt_table.c.recipient_user_id == user_id,
+        )
+    ).scalar_one_or_none()
+    # Receipt 唯一写入者就是本套代码；按 PK 存在即跳过（幂等重放）。
+    if existing is None:
+        connection.execute(
+            notification_delivery_receipt_table.insert().values(
+                event_id=event_id,
+                recipient_user_id=user_id,
+                outcome="materialized",
+                original_notification_seq=seq,
+                occurred_at_utc=row["event_occurred_at_utc"],
+                materialized_at_utc=row["materialized_at_utc"],
+                retired_at_utc=now,
+                fingerprint=canonical_receipt_fingerprint(
+                    event_id,
+                    user_id,
+                    "materialized",
+                    seq,
+                ),
+            )
+        )
+    # Delete the projection and its context ack; inbox watermark is untouched.
+    connection.execute(delete(notification_table).where(notification_table.c.id == notification_id))
+    connection.execute(
+        delete(notification_context_ack_table).where(
+            notification_context_ack_table.c.event_id == event_id,
+            notification_context_ack_table.c.recipient_user_id == user_id,
+        )
+    )
+    return True
+
+
 class NotificationRetentionMaintenance:
     """Scans and retires expired or over-cap notifications for all users."""
 
@@ -126,60 +191,4 @@ class NotificationRetentionMaintenance:
         notification_id: str,
         now: datetime,
     ) -> bool:
-        """Atomically write/verify the receipt, then delete notification + ack."""
-        row = (
-            connection.execute(
-                select(
-                    notification_table.c.event_id,
-                    notification_table.c.recipient_user_id,
-                    notification_table.c.notification_seq,
-                    notification_table.c.event_occurred_at_utc,
-                    notification_table.c.materialized_at_utc,
-                ).where(notification_table.c.id == notification_id)
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if row is None:
-            return False
-        event_id = str(row["event_id"])
-        user_id = str(row["recipient_user_id"])
-        seq = int(row["notification_seq"])
-        existing = (
-            connection.execute(
-                select(notification_delivery_receipt_table.c.event_id).where(
-                    notification_delivery_receipt_table.c.event_id == event_id,
-                    notification_delivery_receipt_table.c.recipient_user_id == user_id,
-                )
-            ).scalar_one_or_none()
-        )
-        # Receipt 唯一写入者就是本套代码；按 PK 存在即跳过（幂等重放）。
-        if existing is None:
-            connection.execute(
-                notification_delivery_receipt_table.insert().values(
-                    event_id=event_id,
-                    recipient_user_id=user_id,
-                    outcome="materialized",
-                    original_notification_seq=seq,
-                    occurred_at_utc=row["event_occurred_at_utc"],
-                    materialized_at_utc=row["materialized_at_utc"],
-                    retired_at_utc=now,
-                    fingerprint=canonical_receipt_fingerprint(
-                        event_id,
-                        user_id,
-                        "materialized",
-                        seq,
-                    ),
-                )
-            )
-        # Delete the projection and its context ack; inbox watermark is untouched.
-        connection.execute(
-            delete(notification_table).where(notification_table.c.id == notification_id)
-        )
-        connection.execute(
-            delete(notification_context_ack_table).where(
-                notification_context_ack_table.c.event_id == event_id,
-                notification_context_ack_table.c.recipient_user_id == user_id,
-            )
-        )
-        return True
+        return retire_notification_by_id(connection, notification_id, now)

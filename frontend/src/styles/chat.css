@@ -113,6 +113,12 @@
   animation: ui-fade-in var(--duration-slow) var(--ease-out) both;
 }
 
+/* 侧边栏底部头像区分界线（§3.1）：1px 发丝边之外叠一层常驻向上轻阴影，
+   会话列表从线下方掠过时保持前后分层；元素自带 fog-white 底，避免透明背景透出阴影。 */
+.chat-sidebar-footer-shadow {
+  box-shadow: 0 -8px 12px -12px rgb(23 25 28 / 0.24);
+}
+
 /* 空态问候语：Signifier 400 44px（§3.1）；首条消息后淡出并收拢高度（保持挂载使动画可达）。 */
 .chat-empty-greeting {
   max-height: 6rem;
@@ -410,10 +416,11 @@
   background: transparent;
   color: var(--color-ink-black);
   font: inherit;
-  font-size: 12px;
-  line-height: 18px;
+  /* 与侧边栏会话标题同字号（text-[15px]） */
+  font-size: 15px;
+  line-height: 22px;
   letter-spacing: -0.12px;
-  min-height: 18px;
+  min-height: 22px;
   max-height: 160px;
   overflow-y: auto;
   white-space: pre-wrap;
@@ -447,14 +454,14 @@
   display: inline-flex;
   align-items: center;
   gap: 1px;
-  /* 比字段 18px 行高矮，药丸不会撑大行盒（middle + 18px 会撑高字段、跳动操作行间距） */
-  height: 16px;
+  /* 比字段 22px 行高矮，药丸不会撑大行盒（middle + 22px 会撑高字段、跳动操作行间距） */
+  height: 18px;
   padding: 0 0 0 5px;
   margin: 0 2px;
   border-radius: 999px;
   background: rgba(43, 127, 255, 0.12);
   color: #1f6feb;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   line-height: 1;
   letter-spacing: -0.12px;
@@ -524,22 +531,22 @@
 }
 
 .chat-composer-slash-label {
-  padding: 3px 7px;
-  font-size: 11px;
+  padding: 4px 8px 2px;
+  font-size: 12px;
   font-weight: 425;
   color: var(--color-smoke-gray);
 }
 
 .chat-composer-slash-empty {
-  padding: 6px 7px;
-  font-size: 11px;
+  padding: 6px 8px;
+  font-size: 12px;
   color: var(--color-smoke-gray);
 }
 
 /* 增强中：当前文本 shimmer，模型正在改写 */
 .chat-composer-enhancing-text {
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 15px;
+  line-height: 22px;
   letter-spacing: -0.12px;
   word-break: break-word;
   color: transparent;
@@ -590,8 +597,8 @@
   border: 0.5px solid var(--color-hairline);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
   color: var(--color-ink-black);
-  font-size: 11px;
-  line-height: 14px;
+  font-size: 12px;
+  line-height: 16px;
   animation: chat-composer-chip-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -667,15 +674,15 @@
   gap: 6px;
 }
 
-/* 圆形软按钮 22px。
+/* 圆形软按钮 28px。
    填充承载在 ::before 上：按下只缩放容器（0.98），上面的图标不动。 */
 .chat-composer-icon-btn {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   flex: none;
   border: 0;
   background: transparent;
@@ -726,13 +733,13 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  height: 22px;
-  padding: 0 8px;
+  height: 24px;
+  padding: 0 10px;
   border: 0;
   background: transparent;
   color: var(--color-ink-black);
-  font-size: 11px;
-  line-height: 12px;
+  font-size: 12px;
+  line-height: 14px;
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
@@ -837,9 +844,9 @@
   bottom: calc(100% + 4px);
   left: 0;
   z-index: 20;
-  /* 232px：容纳努力档位分段开关与检索范围行（设计稿菜单 180px 仅放短行文本） */
-  width: 232px;
-  padding: 3px;
+  /* 248px：容纳努力档位分段开关与检索范围行（菜单行 14px 后较设计稿放宽） */
+  width: 248px;
+  padding: 4px;
   background: var(--color-paper-white);
   border: 0.5px solid var(--color-hairline);
   border-radius: 10px;
@@ -853,17 +860,18 @@
 .chat-composer-menu-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
-  height: 26px;
-  padding: 0 7px;
+  height: 32px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--color-ink-black);
-  font-size: 11px;
+  /* 与分段开关选项同字号：菜单内字号统一，不再 11/14 混排 */
+  font-size: 14px;
   font-weight: 425;
-  line-height: 12px;
+  line-height: 18px;
   text-align: left;
   cursor: pointer;
 }
@@ -921,10 +929,10 @@
 
 .chat-composer-menu-flyout {
   position: absolute;
-  top: -3px;
+  top: -4px;
   left: calc(100% + 6px);
   width: 168px;
-  padding: 3px;
+  padding: 4px;
   background: var(--color-paper-white);
   border: 0.5px solid var(--color-hairline);
   border-radius: 10px;
@@ -945,13 +953,13 @@
 
 .chat-composer-menu-divider {
   height: 0.5px;
-  margin: 4px -3px;
+  margin: 4px -4px;
   background: var(--color-hairline);
 }
 
 .chat-composer-menu-label {
-  padding: 3px 7px;
-  font-size: 11px;
+  padding: 5px 8px 3px;
+  font-size: 12px;
   font-weight: 425;
   color: var(--color-smoke-gray);
 }

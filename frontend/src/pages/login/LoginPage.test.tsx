@@ -12,7 +12,7 @@ import { createAuthApi } from '../../auth/api';
 import { createMemoryAuthHub } from '../../auth/channel';
 import { AuthSessionStore } from '../../auth/session';
 import { copy } from '../../copy';
-import { mockAuth, mockServer } from '../../mocks/testing';
+import { mockServer } from '../../mocks/testing';
 import { AppRoutes } from '../../router/AppRoutes';
 import { AUTO_OPEN_ADMIN_DRAWER_STATE_KEY } from '../../router/landing';
 import { renderWithAuth, renderWithShell } from '../../test/auth-fixtures';
@@ -113,14 +113,21 @@ describe('登录页（规格 §5）', () => {
   });
 
   it('429 too_many_attempts：按 retry_after_seconds 倒计时禁用登录键，期满恢复', async () => {
-    mockAuth.config.rateLimitSeconds = 2;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        mockAuth.login('zhangsan', 'wrong', 'test');
-      } catch {
-        // 预期连续失败以触发限流
-      }
-    }
+    mockServer.use(
+      http.post('/v1/auth/login', () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'too_many_attempts',
+              message: '',
+              details: { retry_after_seconds: 2 },
+              request_id: 'req_mock_throttled',
+            },
+          },
+          { status: 429 },
+        ),
+      ),
+    );
     const user = userEvent.setup();
     await renderLoginPage();
     await fillCredentials(user, 'zhangsan', 'password123');

@@ -45,11 +45,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev,postgres]"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked Python dependencies
+        run: uv sync --locked --extra dev --extra postgres
       - name: Create object bucket
         run: |
-          python - <<'PY'
+          uv run --locked --extra dev --extra postgres python - <<'PY'
           import boto3
           import time
           client = boto3.client(
@@ -68,12 +71,12 @@ jobs:
               raise RuntimeError("MinIO did not become ready")
           client.create_bucket(Bucket="ragqs-ci")
           PY
-      - run: python -m alembic upgrade head
-      - run: python -m ruff check app alembic tests
-      - run: python -m black --check app alembic tests
-      - run: python -m isort --check-only app alembic tests
-      - run: python -m mypy app
-      - run: python -m pytest -q
+      - run: uv run --locked --extra dev --extra postgres python -m alembic upgrade head
+      - run: uv run --locked --extra dev --extra postgres python -m ruff check app alembic tests
+      - run: uv run --locked --extra dev --extra postgres python -m black --check app alembic tests
+      - run: uv run --locked --extra dev --extra postgres python -m isort --check-only app alembic tests
+      - run: uv run --locked --extra dev --extra postgres python -m mypy app
+      - run: uv run --locked --extra dev --extra postgres python -m pytest -q
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -95,3 +98,24 @@ jobs:
             echo "::error::static/ is out of date. Run 'npm run build' in frontend/ and commit the result."
             exit 1
           fi
+
+  frontend-e2e:
+    name: Frontend Playwright (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Chromium browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright e2e tests
+        working-directory: frontend
+        run: npm run test:e2e

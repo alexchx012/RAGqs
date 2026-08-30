@@ -51,7 +51,7 @@ def _utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _policy_from_row(row: Mapping[str, Any]) -> EvaluationPolicySnapshot:
+def _policy_from_row(row: Mapping[Any, Any]) -> EvaluationPolicySnapshot:
     return EvaluationPolicySnapshot(
         policy_version=str(row["policy_version"]),
         faithfulness_min=float(row["faithfulness_min"]),
@@ -78,7 +78,7 @@ def _policy_from_row(row: Mapping[str, Any]) -> EvaluationPolicySnapshot:
     )
 
 
-def _run_from_row(row: Mapping[str, Any]) -> ShadowRunRecord:
+def _run_from_row(row: Mapping[Any, Any]) -> ShadowRunRecord:
     return ShadowRunRecord(
         run_id=str(row["run_id"]),
         space_id=str(row["space_id"]),
@@ -107,7 +107,7 @@ def _run_from_row(row: Mapping[str, Any]) -> ShadowRunRecord:
     )
 
 
-def _window_from_row(row: Mapping[str, Any]) -> WindowSnapshot:
+def _window_from_row(row: Mapping[Any, Any]) -> WindowSnapshot:
     return WindowSnapshot(
         window_id=str(row["window_id"]),
         status=str(row["status"]),

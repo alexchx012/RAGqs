@@ -20,6 +20,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
@@ -55,7 +56,7 @@ interface Rect {
 }
 
 interface DrillTransition {
-  /** drill/back 走五步动画；switch 为同层切换交叉淡变（150ms，无 FLIP/相位推进）。 */
+  /** drill/back 走五步动画；switch 为同层切换序列：旧内容原地淡出 150ms → 新内容自下而上淡入 250ms（无 FLIP）。 */
   kind: 'drill' | 'back' | 'switch';
   /** 离开 / 到达的 drill 路径。 */
   from: readonly string[];
@@ -64,7 +65,7 @@ interface DrillTransition {
   movingTitle: string;
   /** drill：from 内容里的下钻行 id；back：to 内容里的下钻行 id（switch 为 null）。 */
   rowId: string | null;
-  phase: 'exit' | 'flip' | 'back-in';
+  phase: 'exit' | 'switch-in' | 'flip' | 'back-in';
   clone: { from: Rect; to: Rect } | null;
 }
 
@@ -294,13 +295,14 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     const style = getComputedStyle(element);
     return {
       top: box.top - panelBox.top,
-      left: box.left - panelBox.left,
+      // left 计入行内边距：克隆文字落点对齐行文字（而非行盒左缘），落位时与目标文字重合不重影
+      left: box.left - panelBox.left + (parseFloat(style.paddingLeft) || 0),
       fontSize: style.fontSize,
       fontWeight: style.fontWeight,
     };
   }, []);
 
-  // URL 变化驱动动画：append → drill；pop → back；其余 → 同层切换交叉淡变。
+  // URL 变化驱动动画：append → drill；pop → back；其余 → 同层切换序列（先淡出后淡入）。
   // 派生必须在渲染期完成（React「渲染中调整 state」模式：同步重渲染，中间帧不提交 DOM）——
   // 若放在提交后的 effect 里，URL 提交会先落一帧「只有新层」的空闲树，旧层内容节点在该提交
   // 已被卸载，过渡开始时 from 侧只能新挂载（淡出的是骨架屏而非真实内容，且 idle/过渡结构差
@@ -314,10 +316,11 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     } else {
       const drillDown = to.length === from.length + 1 && isPrefix(from, to);
       const back = from.length === to.length + 1 && isPrefix(to, from);
-      // 桌面端顶层 ↔ 模块选中为同层切换（§5.2 左栏换选交叉淡变），不下钻动画
+      // 桌面端顶层 ↔ 模块选中为同层切换（§5.2 左栏换选），不下钻动画
       const desktopSwitch = !narrow && from.length <= 1 && to.length <= 1;
       if ((!drillDown && !back) || desktopSwitch || resolved.layers.length === 0) {
-        // 同层切换（§5.2）：左右栏不换，右栏内容 from 淡出 / to 淡入 150ms（--duration-fast）。
+        // 同层切换（§5.2）：左右栏不换，右栏先旧内容原地淡出 150ms（--duration-fast），
+        // 再接新内容自下而上淡入 250ms（--duration-base，drill-switch）。
         // 抽屉滑上/滑下期间（slide 非 open）不叠加，直出；无层可切（占位）同样直出。
         if (resolved.layers.length > 0 && slide === 'open') {
           setTransition({ kind: 'switch', from, to, movingTitle: '', rowId: null, phase: 'exit', clone: null });
@@ -375,11 +378,18 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     clearTimers();
     armedForRef.current = transition;
     if (transition.kind === 'switch') {
+      // 两相定时：exit（旧内容原地淡出）→ switch-in（新内容自下而上淡入）→ 复位；
+      // to 侧在 exit 期间以 drill-hidden 预挂载（摊薄重模块挂载成本），相位切换后才可见
       timersRef.current = [
+        window.setTimeout(() => {
+          setTransition((current) =>
+            current === null ? null : { ...current, phase: 'switch-in' },
+          );
+        }, EXIT_MS),
         window.setTimeout(() => {
           armedForRef.current = null;
           setTransition(null);
-        }, EXIT_MS),
+        }, EXIT_MS + SWITCH_MS),
       ];
       return;
     }
@@ -613,7 +623,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
             ? 'drill-switch'
             : enterKind === 'return'
               ? 'drill-content-return'
-              : 'drill-content-enter'
+              : 'drill-content-rise'
           : '';
     if (layer === undefined) {
       // 顶层 / 未注册层：抽屉首层占位（规格 §3）
@@ -668,29 +678,38 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       : registry.resolve(shownSegment, transition.from, role).layers;
   const transitioning = transition !== null && fromLayers !== null;
 
+  // 左栏区域：空闲/同层切换与过渡共用 relative 包裹 + 路径 key 的子节点——
+  // 过渡开始时 from 侧与空闲节点同 key 复用（drill-exit 从真实 opacity 淡出，而非重挂载瞬隐），
+  // 过渡结束时 to 侧与空闲节点同 key 复用（进入动画不被二次重挂截断）。
+  const navIdle = drilled && deepest !== undefined
+    ? renderDrilledNav(deepest, 'idle')
+    : renderModuleList('idle');
   const navArea = (() => {
-    if (!transitioning) {
-      // 空闲：drilled 显示 返回 + 层名；否则模块清单（窄屏 level 0 即全宽列表）。
-      // 认证未就绪的瞬态（role 回退 user）下深钻路径解析为空层：回退模块清单占位，待就绪后自然切回
-      return drilled && deepest !== undefined ? renderDrilledNav(deepest, 'idle') : renderModuleList('idle');
-    }
-    if (transition.kind === 'switch') {
-      // 同层切换：左栏不换层、不播进出动画，仅选中项变化（§5.2）
-      return drilled && deepest !== undefined ? renderDrilledNav(deepest, 'idle') : renderModuleList('idle');
+    if (!transitioning || transition.kind === 'switch') {
+      return (
+        <div className="relative h-full">
+          <div key={`nav:${shownDrill.join('/')}`}>{navIdle}</div>
+        </div>
+      );
     }
     const toDrilled = transition.to.length >= 2;
     const toLayer = shownLayers[shownLayers.length - 1];
     const fromDrilled = transition.from.length >= 2;
     const fromLayer = fromLayers[fromLayers.length - 1];
+    // 返回：左栏 to 侧自克隆起飞（flip）即淡入，途中加载、不等落位；
+    // 下钻：to 侧为克隆落点（返回按钮 + 标题槽），落位（back-in）后再出现，避免与克隆重影
+    const toVisible =
+      transition.kind === 'back' ? transition.phase !== 'exit' : transition.phase === 'back-in';
     return (
       <div className="relative h-full">
-        <div className="absolute inset-0">
+        <div key={`nav:${transition.from.join('/')}`} className="absolute inset-0">
           {fromDrilled && fromLayer !== undefined
             ? renderDrilledNav(fromLayer, 'exit')
             : renderModuleList('exit')}
         </div>
         <div
-          className={`absolute inset-0 ${transition.phase === 'back-in' ? '' : 'drill-hidden'}`}
+          key={`nav:${transition.to.join('/')}`}
+          className={`absolute inset-0 ${toVisible ? '' : 'drill-hidden'}`}
         >
           {toDrilled && toLayer !== undefined
             ? renderDrilledNav(toLayer, transition.kind === 'drill' ? 'enter' : 'idle')
@@ -726,6 +745,26 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     // from 与当前层同路径，双侧同 key 会撞键污染 React 树——此时 from 侧即当前内容，跳过一次即可
     // （layout effect 同步重渲染，该中间态不会上屏）。
     const fromIsCurrent = samePath(transition.from, shownDrill);
+    // 同层切换两相渲染：exit 相位 from 原地淡出（drill-exit）、to 以 drill-hidden 预挂载不可见；
+    // switch-in 相位 from 卸载，to 原位以 drill-switch 自下而上淡入（节点键控保留，结束过渡不重挂）。
+    if (transition.kind === 'switch') {
+      const entering = transition.phase === 'switch-in';
+      return (
+        <div className="relative h-full">
+          {!fromIsCurrent && !entering && (
+            <div key={contentKey(transition.from)} className="absolute inset-0">
+              {renderLayerContent(fromLayers, 'exit', enterKind)}
+            </div>
+          )}
+          <div
+            key={currentContentKey}
+            className={`absolute inset-0 ${entering ? 'drill-switch' : 'drill-hidden'}`}
+          >
+            {renderLayerContent(shownLayers, 'idle', enterKind)}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="relative h-full">
         {!fromIsCurrent && (
@@ -735,11 +774,9 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         )}
         <div
           key={currentContentKey}
-          className={`absolute inset-0 ${
-            transition.kind !== 'switch' && transition.phase === 'exit' ? 'drill-hidden' : ''
-          }`}
+          className={`absolute inset-0 ${transition.phase === 'exit' ? 'drill-hidden' : ''}`}
         >
-          {transition.kind !== 'switch' && transition.phase === 'exit'
+          {transition.phase === 'exit'
             ? renderLayerContent(shownLayers, 'idle', enterKind)
             : renderLayerContent(shownLayers, 'enter', enterKind)}
         </div>
@@ -809,32 +846,26 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
   );
 }
 
-/** 第 3 步：被点击项名称 FLIP 位移（400ms --ease-in-out），落位字级 Sohne 500 20px。 */
+/** 第 3 步：被点击项名称 FLIP 位移（400ms --ease-in-out）。元素静态定位在终点槽位（终点字级），
+ *  起点状态经 CSS 变量 --flip-from 交给 .drill-flip-clone 的 keyframes 动画——挂载即自动播放，
+ *  不依赖任何 JS 回调（rAF 在部分嵌入环境无输入时会停摆，transition+内联改写的旧方案因此卡住）。 */
 function FlipClone({ clone, title }: { clone: { from: Rect; to: Rect }; title: string }) {
-  const ref = useRef<HTMLParagraphElement | null>(null);
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (element === null) {
-      return;
-    }
-    const frame = requestAnimationFrame(() => {
-      element.style.top = `${clone.to.top}px`;
-      element.style.left = `${clone.to.left}px`;
-      element.style.fontSize = clone.to.fontSize;
-      element.style.fontWeight = clone.to.fontWeight;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [clone]);
+  const dx = clone.from.left - clone.to.left;
+  const dy = clone.from.top - clone.to.top;
+  const scale = parseFloat(clone.from.fontSize) / parseFloat(clone.to.fontSize);
+  const from = `translate(${dx}px, ${dy}px) scale(${Number.isFinite(scale) && scale > 0 ? scale : 1})`;
   return (
     <p
-      ref={ref}
       className="drill-flip-clone text-ink-black"
-      style={{
-        top: clone.from.top,
-        left: clone.from.left,
-        fontSize: clone.from.fontSize,
-        fontWeight: clone.from.fontWeight,
-      }}
+      style={
+        {
+          top: clone.to.top,
+          left: clone.to.left,
+          fontSize: clone.to.fontSize,
+          fontWeight: clone.to.fontWeight,
+          '--flip-from': from,
+        } as CSSProperties
+      }
     >
       {title}
     </p>

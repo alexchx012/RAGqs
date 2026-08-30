@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import secrets
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
-from sqlalchemy import Engine, and_, func, select
+from sqlalchemy import Engine, and_, delete, func, select
 
 from app.platform.errors import PlatformError
 from app.platform.storage import ObjectStorePort, StorageKeyError
@@ -107,7 +109,7 @@ class DocumentReadModels:
                 sheets=None,
             )
         )
-        hits = ()
+        hits: Sequence[Any] = ()
         if message_id is not None and self._service._message_citation_preview_port is not None:
             hits = self._service._message_citation_preview_port.get_hits(
                 principal, message_id, str(document["id"]), str(version["id"])
@@ -281,16 +283,16 @@ class DocumentReadModels:
                 .one_or_none()
             )
             if row is None:
-                document = (
+                document_row = (
                     connection.execute(
                         select(documents_table).where(documents_table.c.id == document_id)
                     )
                     .mappings()
                     .one_or_none()
                 )
-                if document is not None:
-                    if document["lifecycle_status"] == DocumentLifecycle.ACTIVE.value:
-                        self._service._authorize(principal, str(document["space_id"]), "read")
+                if document_row is not None:
+                    if document_row["lifecycle_status"] == DocumentLifecycle.ACTIVE.value:
+                        self._service._authorize(principal, str(document_row["space_id"]), "read")
                 raise PlatformError("document_unavailable", "Document is not available", {}, 404)
             self._service._authorize(principal, str(row["space_id"]), "read")
             if row["lifecycle_status"] != DocumentLifecycle.ACTIVE.value:
@@ -343,7 +345,11 @@ class DocumentsRetrievalVisibilityPort:
 
     Identity supplies the readable space scope.  This adapter supplies only
     current Documents facts and publication manifest identity, so an index
-    candidate cannot establish its own lifecycle or version state.
+    candidate cannot establish its own lifecycle or version state.  Reading a
+    version asset first creates a ``document_read_leases`` read lease under the
+    fixed lock order (logical document, then document version), mutually
+    exclusive with entering ``purging``; leases are handed back inside the fact
+    payloads and released by the retrieval request via ``release_read_leases``.
     """
 
     def __init__(self, engine: Engine, object_store: ObjectStorePort | None = None) -> None:
@@ -353,68 +359,174 @@ class DocumentsRetrievalVisibilityPort:
     def get_visibility_facts(
         self, candidates: Sequence[Any], principal: Any = None
     ) -> Mapping[tuple[str, str], Mapping[str, Any]]:
-        del principal
-        document_ids = {str(candidate.document_id) for candidate in candidates}
+        document_ids = sorted({str(candidate.document_id) for candidate in candidates})
         if not document_ids:
             return {}
-        with self._engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    select(
-                        documents_table.c.id.label("document_id"),
-                        documents_table.c.space_id,
-                        documents_table.c.lifecycle_status,
-                        document_versions_table.c.id.label("active_version_id"),
-                        document_versions_table.c.original_object_key,
-                        publications_table.c.id.label("active_publication_id"),
-                        publications_table.c.status.label("publication_status"),
-                        publications_table.c.resource_manifest_json,
+        principal_id = str(getattr(principal, "user_id", "") or "anonymous")
+        facts: dict[tuple[str, str], Mapping[str, Any]] = {}
+        with self._engine.begin() as connection:
+            for document_id in document_ids:
+                # 固定锁序：先锁逻辑文档，再锁版本记录，与进入 purging 的
+                # 清理事务同锁互斥（设计 §2.3.2）。
+                document = (
+                    connection.execute(
+                        select(documents_table)
+                        .where(documents_table.c.id == document_id)
+                        .with_for_update()
                     )
-                    .select_from(
-                        documents_table.join(
-                            document_versions_table,
-                            document_versions_table.c.id == documents_table.c.active_version_id,
-                        ).join(
-                            publications_table,
-                            and_(
-                                publications_table.c.document_id == documents_table.c.id,
-                                publications_table.c.document_version_id
-                                == document_versions_table.c.id,
-                                publications_table.c.status == PublicationState.ACTIVE.value,
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    document is None
+                    or document["lifecycle_status"] != DocumentLifecycle.ACTIVE.value
+                ):
+                    continue
+                row = (
+                    connection.execute(
+                        select(
+                            document_versions_table.c.id.label("active_version_id"),
+                            document_versions_table.c.original_object_key,
+                            publications_table.c.id.label("active_publication_id"),
+                            publications_table.c.status.label("publication_status"),
+                            publications_table.c.resource_manifest_json,
+                        )
+                        .select_from(
+                            document_versions_table.join(
+                                publications_table,
+                                and_(
+                                    publications_table.c.document_id == document_id,
+                                    publications_table.c.document_version_id
+                                    == document_versions_table.c.id,
+                                    publications_table.c.status == PublicationState.ACTIVE.value,
+                                ),
+                            )
+                        )
+                        .where(
+                            document_versions_table.c.id == document["active_version_id"],
+                            document_versions_table.c.status.not_in(
+                                (
+                                    DocumentVersionState.PURGING.value,
+                                    DocumentVersionState.PURGED.value,
+                                )
                             ),
                         )
+                        .order_by(publications_table.c.created_at_utc.desc())
+                        .limit(1)
+                        .with_for_update()
                     )
-                    .where(documents_table.c.id.in_(document_ids))
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .all()
-            )
-        facts: dict[tuple[str, str], Mapping[str, Any]] = {}
-        for row in rows:
-            object_key = row["original_object_key"]
-            if self._object_store is not None and (
-                not object_key or not self._object_store.exists(str(object_key))
-            ):
-                continue
-            manifest = row["resource_manifest_json"]
-            manifest = dict(manifest) if isinstance(manifest, Mapping) else {}
-            manifest_hash = str(
-                manifest.get("content_manifest_hash") or manifest.get("chunk_manifest_hash") or ""
-            ).strip()
-            if not manifest_hash:
-                continue
-            key = (str(row["space_id"]), str(row["document_id"]))
-            facts[key] = {
-                "document_id": str(row["document_id"]),
-                "space_id": str(row["space_id"]),
-                "lifecycle_status": str(row["lifecycle_status"]),
-                "active_version_id": str(row["active_version_id"]),
-                "active_publication_id": str(row["active_publication_id"]),
-                "publication_status": str(row["publication_status"]),
-                "manifest_hash": manifest_hash,
-                "readable": True,
-            }
+                if row is None:
+                    continue
+                object_key = row["original_object_key"]
+                if self._object_store is not None and (
+                    not object_key or not self._object_store.exists(str(object_key))
+                ):
+                    continue
+                manifest = row["resource_manifest_json"]
+                manifest = dict(manifest) if isinstance(manifest, Mapping) else {}
+                manifest_hash = str(
+                    manifest.get("content_manifest_hash")
+                    or manifest.get("chunk_manifest_hash")
+                    or ""
+                ).strip()
+                if not manifest_hash:
+                    continue
+                lease = self._acquire_read_lease(
+                    connection,
+                    document_id=document_id,
+                    document_version_id=str(row["active_version_id"]),
+                    principal_id=principal_id,
+                )
+                if lease is None:
+                    continue
+                key = (str(document["space_id"]), document_id)
+                facts[key] = {
+                    "document_id": document_id,
+                    "space_id": str(document["space_id"]),
+                    "lifecycle_status": str(document["lifecycle_status"]),
+                    "active_version_id": str(row["active_version_id"]),
+                    "active_publication_id": str(row["active_publication_id"]),
+                    "publication_status": str(row["publication_status"]),
+                    "manifest_hash": manifest_hash,
+                    "readable": True,
+                    "read_lease": dict(lease),
+                }
         return facts
+
+    def _acquire_read_lease(
+        self,
+        connection: Any,
+        *,
+        document_id: str,
+        document_version_id: str,
+        principal_id: str,
+        ttl_seconds: int = 300,
+    ) -> Mapping[str, Any] | None:
+        """Acquire a read lease on an already-locked document/version pair.
+
+        The caller's transaction holds the fixed-order locks, so lease creation
+        is mutually exclusive with entering ``purging``.  The lease reference is
+        returned for request-scoped release.
+        """
+
+        from .schema import document_read_leases_table
+
+        now = datetime.now(UTC)
+        expires = now + timedelta(seconds=ttl_seconds)
+        reference_id = f"read_lease_{secrets.token_urlsafe(15)}"
+        connection.execute(
+            delete(document_read_leases_table).where(
+                and_(
+                    document_read_leases_table.c.document_version_id == document_version_id,
+                    document_read_leases_table.c.principal_id == principal_id,
+                )
+            )
+        )
+        connection.execute(
+            document_read_leases_table.insert().values(
+                id=reference_id,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                principal_id=principal_id,
+                lease_token=secrets.token_hex(16),
+                expires_at_utc=expires,
+                created_at_utc=now,
+                updated_at_utc=now,
+            )
+        )
+        return {
+            "reference_id": reference_id,
+            "owner_id": principal_id,
+            "document_id": document_id,
+            "document_version_id": document_version_id,
+        }
+
+    def release_read_leases(self, leases: Sequence[Mapping[str, Any]]) -> None:
+        """Release the document read leases held by one retrieval request.
+
+        Deletes are conditional on ``(reference_id, owner_id, lease_token)`` so
+        a superseding acquisition by the same principal is never revoked.
+        """
+
+        if not leases:
+            return
+        from .schema import document_read_leases_table
+
+        with self._engine.begin() as connection:
+            for lease in leases:
+                connection.execute(
+                    delete(document_read_leases_table).where(
+                        and_(
+                            document_read_leases_table.c.id == str(lease.get("reference_id")),
+                            document_read_leases_table.c.principal_id == str(lease.get("owner_id")),
+                            document_read_leases_table.c.lease_token
+                            == str(lease.get("lease_token")),
+                        )
+                    )
+                )
 
     def get_visibility_fact(
         self, candidate: Any, principal: Any = None

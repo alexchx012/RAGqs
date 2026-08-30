@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import Connection
@@ -12,6 +13,8 @@ from app.documents.schema import (
     documents_metadata,
     documents_table,
     ingestion_jobs_table,
+    knowledge_submissions_table,
+    upload_batch_items_table,
 )
 from app.documents.service import DocumentUpload
 from app.graph.schema import graph_metadata
@@ -21,6 +24,7 @@ from app.outbox.schema import outbox_metadata
 from app.platform.app_factory import create_platform_app
 from app.platform.config import load_platform_settings
 from app.platform.database import core_metadata
+from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
 from app.platform.storage import MemoryObjectStore
 from app.usage.schema import usage_metadata
@@ -74,7 +78,7 @@ def _make_client() -> tuple[TestClient, object, MemoryObjectStore]:
     return TestClient(app), runtime, object_store
 
 
-def _make_app() -> tuple[object, object, MemoryObjectStore]:
+def _make_app(**extra_env: str) -> tuple[object, object, MemoryObjectStore]:
     settings = load_platform_settings(
         {
             "RAG_PLATFORM_PROFILE": "development",
@@ -82,6 +86,7 @@ def _make_app() -> tuple[object, object, MemoryObjectStore]:
             "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
             "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
             "RAG_PROVIDER_NAME": "fake",
+            **extra_env,
         }
     )
     engine = create_engine(
@@ -162,9 +167,30 @@ def test_upload_and_replacement_reject_oversized_files_before_persistence() -> N
             headers={"Authorization": token, "Idempotency-Key": "oversized-initial"},
         )
 
-        assert initial.status_code == 413
-        assert initial.json()["error"]["code"] == "upload_too_large"
+        # Per-file contract: an oversized file is a rejected item, not a
+        # request-level failure.
+        assert initial.status_code == 202
+        item = initial.json()["items"][0]
+        assert item["accepted"] is False
+        assert item["name"] == "too-large.txt"
+        assert item["error"]["code"] == "upload_too_large"
+        assert item["document_id"] is None
+        assert item["job_id"] is None
+        assert item["submission_id"] is None
         assert _document_state(runtime, object_store) == (0, 0, 0, 0)
+
+        batch = client.get(
+            f"/v1/upload-batches/{initial.json()['upload_batch_id']}",
+            headers={"Authorization": token},
+        )
+        assert batch.status_code == 200
+        assert batch.json()["summary"]["rejected"] == 1
+        engine = runtime.resolve("database_engine")  # type: ignore[attr-defined]
+        with engine.connect() as connection:
+            reason = connection.execute(
+                select(upload_batch_items_table.c.rejection_reason)
+            ).scalar_one()
+        assert reason == "upload_too_large"
 
         created = client.post(
             f"/v1/spaces/{space_id}/documents",
@@ -175,6 +201,7 @@ def test_upload_and_replacement_reject_oversized_files_before_persistence() -> N
         document_id = created.json()["items"][0]["document_id"]
         before_replace = _document_state(runtime, object_store)
 
+        # Single-file replacement keeps the request-level 413 contract.
         replacement = client.post(
             f"/v1/documents/{document_id}/versions",
             files={"file": ("too-large.txt", oversized, "text/plain")},
@@ -189,6 +216,111 @@ def test_upload_and_replacement_reject_oversized_files_before_persistence() -> N
         client.close()
 
 
+def test_mixed_batch_accepts_valid_file_and_rejects_oversized_per_item() -> None:
+    client, runtime, object_store = _make_client()
+    token, space_id = _seed_user(runtime)
+    oversized = b"x" * (_MAX_UPLOAD_BYTES + 1)
+    try:
+        response = client.post(
+            f"/v1/spaces/{space_id}/documents",
+            files=[
+                ("files", ("guide.txt", b"payload", "text/plain")),
+                ("files", ("too-large.txt", oversized, "text/plain")),
+            ],
+            headers={"Authorization": token, "Idempotency-Key": "mixed-initial"},
+        )
+        assert response.status_code == 202
+        items = response.json()["items"]
+        assert [item["accepted"] for item in items] == [True, False]
+        accepted = items[0]
+        assert accepted["name"] == "guide.txt"
+        assert accepted["space_id"] == space_id
+        assert accepted["document_id"] and accepted["document_version_id"]
+        assert accepted["job_id"] and accepted["publication_id"]
+        assert accepted["deduplicated"] is False
+        rejected = items[1]
+        assert rejected["accepted"] is False
+        assert rejected["name"] == "too-large.txt"
+        assert rejected["error"]["code"] == "upload_too_large"
+        assert rejected["document_id"] is None
+        assert rejected["submission_id"] is None
+        documents, versions, jobs, objects = _document_state(runtime, object_store)
+        assert (documents, versions, jobs) == (1, 1, 1)
+        assert objects == 1
+    finally:
+        client.close()
+
+
+def test_mixed_batch_replay_is_idempotent_and_rejected_file_stays_side_effect_free() -> None:
+    client, runtime, object_store = _make_client()
+    token, space_id = _seed_user(runtime)
+    oversized = b"x" * (_MAX_UPLOAD_BYTES + 1)
+    payload = {
+        "files": [
+            ("files", ("guide.txt", b"payload", "text/plain")),
+            ("files", ("too-large.txt", oversized, "text/plain")),
+        ],
+    }
+    headers = {"Authorization": token, "Idempotency-Key": "mixed-replay"}
+    try:
+        first = client.post(f"/v1/spaces/{space_id}/documents", **payload, headers=headers)
+        assert first.status_code == 202
+        second = client.post(f"/v1/spaces/{space_id}/documents", **payload, headers=headers)
+        assert second.status_code == 202
+        assert second.json() == first.json()
+        documents, versions, jobs, objects = _document_state(runtime, object_store)
+        assert (documents, versions, jobs, objects) == (1, 1, 1, 1)
+        engine = runtime.resolve("database_engine")  # type: ignore[attr-defined]
+        with engine.connect() as connection:
+            rejected_rows = connection.execute(
+                select(func.count())
+                .select_from(upload_batch_items_table)
+                .where(upload_batch_items_table.c.result_state == "rejected")
+            ).scalar_one()
+        assert int(rejected_rows) == 1
+    finally:
+        client.close()
+
+
+def test_contribute_mixed_batch_creates_submissions_per_item() -> None:
+    client, runtime, object_store = _make_client()
+    token, _ = _seed_user(runtime)
+    oversized = b"x" * (_MAX_UPLOAD_BYTES + 1)
+    try:
+        response = client.post(
+            "/v1/spaces/public/documents",
+            files=[
+                ("files", ("note.txt", b"submission", "text/plain")),
+                ("files", ("too-large.txt", oversized, "text/plain")),
+            ],
+            headers={"Authorization": token, "Idempotency-Key": "mixed-contribute"},
+        )
+        assert response.status_code == 202
+        items = response.json()["items"]
+        assert [item["accepted"] for item in items] == [True, False]
+        accepted = items[0]
+        assert accepted["name"] == "note.txt"
+        assert accepted["submission_id"]
+        assert accepted["status"] == "pending"
+        assert accepted["space_id"] == "public"
+        assert accepted["quota_exempt"] is True
+        assert accepted["document_id"] is None
+        rejected = items[1]
+        assert rejected["accepted"] is False
+        assert rejected["name"] == "too-large.txt"
+        assert rejected["error"]["code"] == "upload_too_large"
+        assert rejected["submission_id"] is None
+        engine = runtime.resolve("database_engine")  # type: ignore[attr-defined]
+        with engine.connect() as connection:
+            submissions = connection.execute(
+                select(func.count()).select_from(knowledge_submissions_table)
+            ).scalar_one()
+        assert int(submissions) == 1
+        assert _document_state(runtime, object_store) == (0, 0, 0, 1)
+    finally:
+        client.close()
+
+
 def test_malware_upload_rejected_at_http_layer_without_persistence() -> None:
     client, runtime, object_store = _make_client()
     token, space_id = _seed_user(runtime)
@@ -199,15 +331,114 @@ def test_malware_upload_rejected_at_http_layer_without_persistence() -> None:
             files=[("files", ("eicar.txt", eicar, "text/plain"))],
             headers={"Authorization": token, "Idempotency-Key": "malware-initial"},
         )
-        assert rejected.status_code == 422
-        body = rejected.json()["error"]
-        assert body["code"] == "malware_detected"
+        assert rejected.status_code == 202
+        item = rejected.json()["items"][0]
+        assert item["accepted"] is False
+        error = item["error"]
+        assert error["code"] == "malware_detected"
         # No scan detail, object key or storage location in the error object.
-        serialized = str(body)
+        serialized = str(error)
         assert "documents/" not in serialized and "object" not in serialized
         assert _document_state(runtime, object_store) == (0, 0, 0, 0)
     finally:
         client.close()
+
+
+def test_upload_rejects_too_many_files_before_reading_any_bytes() -> None:
+    app, runtime, object_store = _make_app(RAG_UPLOAD_MAX_FILES_PER_REQUEST="2")
+    client = TestClient(app)
+    token, space_id = _seed_user(runtime)
+    try:
+        response = client.post(
+            f"/v1/spaces/{space_id}/documents",
+            files=[
+                ("files", ("a.txt", b"a", "text/plain")),
+                ("files", ("b.txt", b"b", "text/plain")),
+                ("files", ("c.txt", b"c", "text/plain")),
+            ],
+            headers={"Authorization": token, "Idempotency-Key": "too-many-files"},
+        )
+        assert response.status_code == 422
+        error = response.json()["error"]
+        assert error["code"] == "validation_error"
+        assert error["details"]["max_files_per_request"] == 2
+        assert _document_state(runtime, object_store) == (0, 0, 0, 0)
+    finally:
+        client.close()
+
+
+def test_upload_rejects_aggregate_bytes_over_budget() -> None:
+    app, runtime, object_store = _make_app(RAG_UPLOAD_MAX_REQUEST_BYTES="16")
+    client = TestClient(app)
+    token, space_id = _seed_user(runtime)
+    try:
+        response = client.post(
+            f"/v1/spaces/{space_id}/documents",
+            files=[
+                ("files", ("a.txt", b"a" * 8, "text/plain")),
+                ("files", ("b.txt", b"b" * 9, "text/plain")),
+            ],
+            headers={"Authorization": token, "Idempotency-Key": "aggregate-over-budget"},
+        )
+        assert response.status_code == 413
+        error = response.json()["error"]
+        assert error["code"] == "upload_too_large"
+        assert error["details"]["max_request_bytes"] == 16
+        assert _document_state(runtime, object_store) == (0, 0, 0, 0)
+    finally:
+        client.close()
+
+
+def test_direct_upload_quota_exhaustion_fails_whole_batch() -> None:
+    from app.documents.indexing import NoopIndexingHandoff
+
+    class _RejectingQuota:
+        def check(self, connection: object, **values: object) -> None:
+            del connection, values
+            raise PlatformError("quota_exceeded", "Quota is exhausted", {}, 409)
+
+    class _ManageIdentity:
+        def authorize_space(
+            self, *, principal: object, space_id: str, action: str, connection: object = None
+        ) -> str:
+            del principal, space_id, action, connection
+            return "manage"
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    documents_metadata.create_all(engine)
+    from app.documents.service import DocumentsService
+
+    service = DocumentsService(
+        engine,
+        now=lambda: datetime(2026, 8, 15, tzinfo=UTC),
+        object_store=MemoryObjectStore(),
+        identity_access=_ManageIdentity(),
+        indexing_handoff_port=NoopIndexingHandoff(),
+        quota_service=_RejectingQuota(),
+    )
+    from app.identity.service import AuthPrincipal
+
+    principal = AuthPrincipal(
+        user_id="user_1",
+        auth_session_id="session_1",
+        username="alice",
+        role="user",
+        department_id=None,
+    )
+    with pytest.raises(PlatformError) as exc_info:
+        service.create_initial_upload(
+            principal=principal,
+            space_id="space_1",
+            files=[DocumentUpload(filename="a.txt", content=b"x", media_kind="text/plain")],
+            idempotency_key="quota-key",
+        )
+    assert exc_info.value.code == "quota_exceeded"
+    assert exc_info.value.status_code == 409
 
 
 def test_delete_document_uses_query_parameter_without_body() -> None:
@@ -271,7 +502,7 @@ def test_delete_submission_uses_query_parameter_without_body() -> None:
             headers={"Authorization": token, "Idempotency-Key": "submission-delete"},
         )
         assert pending.status_code == 409
-        assert pending.json()["error"]["code"] == "submission_not_deletable"
+        assert pending.json()["error"]["code"] == "submission_state_conflict"
     finally:
         client.close()
 

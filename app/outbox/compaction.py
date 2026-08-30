@@ -76,14 +76,12 @@ def _write_suppression_receipts(connection: Connection, event_id: str, now: date
             else "recipient_unauthorized"
         )
         fingerprint = canonical_receipt_fingerprint(event_id, user_id, outcome, None)
-        existing = (
-            connection.execute(
-                select(notification_delivery_receipt_table.c.event_id).where(
-                    notification_delivery_receipt_table.c.event_id == event_id,
-                    notification_delivery_receipt_table.c.recipient_user_id == user_id,
-                )
-            ).scalar_one_or_none()
-        )
+        existing = connection.execute(
+            select(notification_delivery_receipt_table.c.event_id).where(
+                notification_delivery_receipt_table.c.event_id == event_id,
+                notification_delivery_receipt_table.c.recipient_user_id == user_id,
+            )
+        ).scalar_one_or_none()
         # Receipt 唯一写入者就是本套代码；按 PK 存在即跳过（幂等重放）。
         if existing is not None:
             continue
@@ -132,6 +130,8 @@ def compact_event(
         connection.execute(
             select(
                 outbox_delivery_table.c.consumer_name,
+                outbox_delivery_table.c.status,
+                outbox_delivery_table.c.version,
                 outbox_delivery_table.c.delivered_at_utc,
                 outbox_delivery_table.c.attempt_number,
                 outbox_delivery_table.c.replay_generation,
@@ -143,6 +143,8 @@ def compact_event(
     summary = [
         {
             "consumer_name": row["consumer_name"],
+            "status": row["status"],
+            "version": int(row["version"]),
             "delivered_at": (
                 row["delivered_at_utc"].isoformat() if row["delivered_at_utc"] is not None else None
             ),
@@ -165,6 +167,7 @@ def compact_event(
             payload_json=None,
             trace_id=None,
             schema_version=None,
+            compact_after_at_utc=None,
             compacted_delivery_summary_json=summary,
             compacted_at_utc=now,
         )

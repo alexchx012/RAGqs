@@ -88,9 +88,31 @@ export interface DocumentListResponse {
   readonly page_size: number;
 }
 
-/** §6.3 管理上传响应。 */
+/** §6.3 批量上传 per-item 错误对象（batch_item_error 形状）。 */
+export interface UploadItemError {
+  readonly code: string;
+  readonly message: string;
+  readonly details: Record<string, unknown>;
+}
+
+/** §6.3 拒绝项：不创建投稿/文档/job/私有对象，仅携带服务端错误对象。 */
+export interface RejectedUploadItem {
+  readonly accepted: false;
+  readonly name: string;
+  readonly document_id: null;
+  readonly document_version_id: null;
+  readonly job_id: null;
+  readonly publication_id: null;
+  readonly submission_id: null;
+  readonly space_id: null;
+  readonly error: UploadItemError;
+}
+
+/** §6.3 管理上传接受项（直接入库；name/accepted/error 契约）。 */
 export interface ManageUploadItem {
-  readonly filename: string;
+  readonly accepted: true;
+  readonly name: string;
+  readonly space_id: string;
   readonly document_id: string;
   readonly document_version_id: string | null;
   readonly job_id: string | null;
@@ -101,6 +123,8 @@ export interface ManageUploadItem {
 
 /** §6.10 投稿创建响应（contribute 空间上传）。 */
 export interface SubmissionUploadItem {
+  readonly accepted: true;
+  readonly name: string;
   readonly submission_id: string;
   readonly version: number;
   readonly status: SubmissionStatus;
@@ -111,7 +135,7 @@ export interface SubmissionUploadItem {
   readonly job_id: null;
 }
 
-export type UploadItem = ManageUploadItem | SubmissionUploadItem;
+export type UploadItem = ManageUploadItem | SubmissionUploadItem | RejectedUploadItem;
 
 export interface UploadResponse {
   readonly upload_batch_id?: string | null;
@@ -246,21 +270,19 @@ export interface WithdrawSubmissionResponse {
 
 export interface Submission {
   readonly submission_id: string;
-  readonly space_id: string;
   readonly version: number;
-  readonly status: SubmissionStatus;
-  readonly file_name: string;
+  readonly target_space_id: string;
+  readonly target_space_name: string;
+  readonly name: string;
   readonly media_kind: string;
-  /** 审核列表列：投稿人显示名（接口需求 §8.4）。 */
-  readonly submitter_name: string;
-  /** 审核列表列：投稿人部门（接口需求 §8.4；无部门为 null）。 */
-  readonly submitter_department: { readonly id: string; readonly name: string } | null;
-  /** 审核列表列：文件字节数（接口需求 §8.4）。 */
-  readonly file_size: number;
-  /** 目标空间名（我的投稿/审核列表的目标空间展示）。 */
-  readonly space_name: string;
+  readonly size_bytes: number;
+  readonly status: SubmissionStatus;
   readonly created_at: string;
   readonly reviewed_at: string | null;
+  readonly reject_reason: string | null;
+  readonly invalidated_reason: string | null;
+  readonly document_id: string | null;
+  readonly job_id: string | null;
 }
 
 export interface SubmissionListResponse {
@@ -295,21 +317,18 @@ export interface ApprovalSummary {
 
 export interface ApprovalListItem {
   readonly submission_id: string;
-  readonly space_id: string;
   readonly version: number;
-  readonly status: SubmissionStatus;
-  readonly file_name: string;
+  readonly submitter: {
+    readonly id: string;
+    readonly display_name: string;
+    readonly department: { readonly id: string; readonly name: string } | null;
+  };
+  readonly name: string;
   readonly media_kind: string;
-  /** 审核列表列：投稿人显示名（接口需求 §8.4）。 */
-  readonly submitter_name: string;
-  /** 审核列表列：投稿人部门（接口需求 §8.4；无部门为 null）。 */
-  readonly submitter_department: { readonly id: string; readonly name: string } | null;
-  /** 审核列表列：文件字节数（接口需求 §8.4）。 */
-  readonly file_size: number;
-  /** 审核列表列：目标空间名（超管端 §7.3 行列与筛选）。 */
-  readonly space_name: string;
+  readonly size_bytes: number;
+  readonly target_space_id: string;
+  readonly target_space_name: string;
   readonly created_at: string;
-  readonly reviewed_at: string | null;
 }
 
 export interface ApprovalListResponse {

@@ -12,6 +12,7 @@ import pytest
 from openpyxl import Workbook
 from sqlalchemy import create_engine, select, update
 
+import app.indexing.profiles as retrieval_profiles
 from app.documents.indexing import IndexProcessingReceipt, IndexStagingRequest
 from app.documents.preview import ProcessingReceiptPreviewRenderer
 from app.documents.public_graph import PublicGraphSourceService
@@ -217,6 +218,7 @@ def _insert_active_publication(
     publication_id: str = "publication_1",
     space_id: str = "space_1",
     object_key: str = "documents/document_1/version_1/original",
+    media_kind: str = "text/markdown",
 ) -> str:
     now = datetime(2026, 1, 1, tzinfo=UTC)
     content_hash = sha256(content).hexdigest()
@@ -232,7 +234,7 @@ def _insert_active_publication(
             version=1,
             name="document.md",
             normalized_name="document.md",
-            media_kind="text/markdown",
+            media_kind=media_kind,
             uploaded_at_utc=now,
             created_by_user_id="user_1",
             created_at_utc=now,
@@ -249,7 +251,7 @@ def _insert_active_publication(
             object_manifest_json={"object_key": object_key, "size_bytes": len(content)},
             original_object_key=object_key,
             file_name="document.md",
-            media_kind="text/markdown",
+            media_kind=media_kind,
             size_bytes=len(content),
             created_by_user_id="user_1",
             activated_at_utc=now,
@@ -389,7 +391,14 @@ def test_retrieval_resolver_ignores_caller_profile_overrides() -> None:
     result = service.search("text", profile=requested)
 
     assert seen == [RetrievalProfile(profile_id="released", version="7")]
-    assert result.profile == released
+    assert result.profile == RetrievalProfile(
+        profile_id="released",
+        version="7",
+        top_k=12,
+        candidate_limit=36,
+        effort="deep",
+        release_id="release_7",
+    )
 
 
 def test_retrieval_keeps_hybrid_before_rerank_and_routes_tree_afterwards() -> None:
@@ -1492,7 +1501,8 @@ def test_process_stages_claimed_document_usage_context() -> None:
     assert dense.stage_kwargs is not None
     context = dense.stage_kwargs["usage_context"]
     assert context.execution_kind == "ingestion"
-    assert context.execution_id == request.job_id
+    # C8：异步文档处理的 execution_id 使用 attempt_id。
+    assert context.execution_id == request.attempt_id
     assert context.attempt_id == request.attempt_id
     assert context.generation_id == request.expected_generation_id
     assert context.replay_generation == 2
@@ -1616,6 +1626,71 @@ def test_processing_receipt_carries_identity_and_table_facts() -> None:
     assert output.receipt.model_versions["primary"] == "none"
     assert output.receipt.prompt_versions["primary"] == "none"
     output.receipt.validate_against(_request())
+
+
+def test_processing_uses_a_document_profile_before_collecting_result_facts() -> None:
+    output = ContentProcessor().process(
+        _request(),
+        "name,amount\na,1\nb,2\n",
+        media_kind="text/csv",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+
+    assert output.receipt.processing_config_version == "document-profile:structured-table-csv:v1"
+    assert output.receipt.processing_summary["document_profile"] == {
+        "id": "structured-table-csv",
+        "media_category": "structured_table",
+        "processing_route": "csv-chunking",
+        "config_version": "document-profile:structured-table-csv:v1",
+    }
+    assert output.receipt.processing_summary["ocr"] == {}
+
+
+def test_library_profile_uses_the_dominant_document_profile_or_cold_start_on_a_tie() -> None:
+    csv_profile = retrieval_profiles.document_profile_for_media_kind("text/csv")
+    text_profile = retrieval_profiles.document_profile_for_media_kind("text/plain")
+
+    assert (
+        retrieval_profiles.library_profile_id((csv_profile, csv_profile, text_profile))
+        == "structured-table-csv"
+    )
+    assert retrieval_profiles.library_profile_id((csv_profile, text_profile)) == "cold-start"
+
+
+def test_library_profile_resolver_counts_only_active_published_documents_in_scope() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    documents_metadata.create_all(engine)
+    with engine.begin() as connection:
+        _insert_active_publication(
+            connection,
+            content=b"one",
+            document_id="csv_1",
+            document_version_id="csv_1_v1",
+            publication_id="csv_1_p1",
+            media_kind="text/csv",
+        )
+        _insert_active_publication(
+            connection,
+            content=b"two",
+            document_id="csv_2",
+            document_version_id="csv_2_v1",
+            publication_id="csv_2_p1",
+            media_kind="text/csv",
+        )
+        _insert_active_publication(
+            connection,
+            content=b"three",
+            document_id="text_1",
+            document_version_id="text_1_v1",
+            publication_id="text_1_p1",
+            media_kind="text/plain",
+        )
+
+    resolver = retrieval_profiles.SqlAlchemyLibraryProfileResolver(engine)
+
+    assert resolver(RetrievalScope(frozenset({"space_1"}))) == "structured-table-csv"
+    assert resolver(RetrievalScope(frozenset({"space_2"}))) == "cold-start"
 
 
 @pytest.mark.parametrize("field", ("input_manifest_hash", "processing_profile_version"))

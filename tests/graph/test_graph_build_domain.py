@@ -34,6 +34,7 @@ from app.graph.schema import (
 )
 from app.graph.service import CANCEL_OP_PREFIX, CREATE_OP_PREFIX
 from app.indexing import GenerationManager, GraphComponentCoordinator
+from app.platform.database import core_metadata, platform_audit_table
 from app.platform.errors import PlatformError
 
 
@@ -343,6 +344,26 @@ def test_create_rejects_wrong_revision() -> None:
     with pytest.raises(PlatformError) as error:
         _create(service, revision=99)
     assert error.value.code == "graph_source_changed"
+
+
+def test_source_revision_conflict_writes_platform_audit() -> None:
+    """§9.3 审计事实：graph_source_changed 冲突落 platform_audit（best-effort 事务）。"""
+
+    engine, source, _, _, _, service, _, _ = _build_env()
+    core_metadata.create_all(engine)
+    _publish(source)
+    with pytest.raises(PlatformError) as error:
+        _create(service, key="k-conflict", revision=99)
+    assert error.value.code == "graph_source_changed"
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                platform_audit_table.c.actor_id,
+                platform_audit_table.c.resource_type,
+                platform_audit_table.c.result,
+            ).where(platform_audit_table.c.resource_type == "graph.build_source")
+        ).all()
+    assert rows == [("user_ops_1", "graph.build_source", "graph_source_changed")]
 
 
 def test_create_rejects_empty_source() -> None:
