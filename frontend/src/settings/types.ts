@@ -88,9 +88,31 @@ export interface DocumentListResponse {
   readonly page_size: number;
 }
 
-/** §6.3 管理上传响应。 */
+/** §6.3 批量上传 per-item 错误对象（batch_item_error 形状）。 */
+export interface UploadItemError {
+  readonly code: string;
+  readonly message: string;
+  readonly details: Record<string, unknown>;
+}
+
+/** §6.3 拒绝项：不创建投稿/文档/job/私有对象，仅携带服务端错误对象。 */
+export interface RejectedUploadItem {
+  readonly accepted: false;
+  readonly name: string;
+  readonly document_id: null;
+  readonly document_version_id: null;
+  readonly job_id: null;
+  readonly publication_id: null;
+  readonly submission_id: null;
+  readonly space_id: null;
+  readonly error: UploadItemError;
+}
+
+/** §6.3 管理上传接受项（直接入库；name/accepted/error 契约）。 */
 export interface ManageUploadItem {
-  readonly filename: string;
+  readonly accepted: true;
+  readonly name: string;
+  readonly space_id: string;
   readonly document_id: string;
   readonly document_version_id: string | null;
   readonly job_id: string | null;
@@ -101,6 +123,8 @@ export interface ManageUploadItem {
 
 /** §6.10 投稿创建响应（contribute 空间上传）。 */
 export interface SubmissionUploadItem {
+  readonly accepted: true;
+  readonly name: string;
   readonly submission_id: string;
   readonly version: number;
   readonly status: SubmissionStatus;
@@ -111,7 +135,7 @@ export interface SubmissionUploadItem {
   readonly job_id: null;
 }
 
-export type UploadItem = ManageUploadItem | SubmissionUploadItem;
+export type UploadItem = ManageUploadItem | SubmissionUploadItem | RejectedUploadItem;
 
 export interface UploadResponse {
   readonly upload_batch_id?: string | null;

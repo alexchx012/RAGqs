@@ -130,22 +130,32 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     expect(screen.queryByText(/内容重复，未新增任务/)).not.toBeInTheDocument();
   });
 
-  it('上传校验失败显示请求级错误', async () => {
+  it('混合批次逐文件呈现成败：失败项走错误对象，failedCount 正确', async () => {
     const api = createContractApi();
     mockKnowledge.setNextUploadFailure('bad', 'malware_detected');
     const user = userEvent.setup();
     await renderUpload(api);
 
-    const file = new File(['x'], 'bad-name.pdf', { type: 'application/pdf' });
+    const good = new File(['%PDF-1.4'], 'good-doc.pdf', { type: 'application/pdf' });
+    const bad = new File(['%PDF-1.4'], 'bad-name.pdf', { type: 'application/pdf' });
     const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
       selector: 'input',
     }) as HTMLInputElement;
-    await user.upload(input, [file]);
+    await user.upload(input, [good, bad]);
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
 
+    // 逐文件结果：成功项与失败项（服务端错误对象按 code 映射文案）各占一行
     await waitFor(() =>
-      expect(screen.getByText(copy.settings.knowledge.upload.itemError('upload_error'))).toBeInTheDocument(),
+      expect(screen.getByText(`${'good-doc.pdf'} · ${copy.settings.knowledge.upload.accepted}`)).toBeInTheDocument(),
     );
+    expect(
+      screen.getByText(`${'bad-name.pdf'} · ${copy.settings.knowledge.upload.itemError('malware_detected')}`),
+    ).toBeInTheDocument();
+    // 汇总行 failedCount 正确（成功 1 项，失败 1 项）；请求级错误段落不出现
+    expect(
+      screen.getByText(copy.settings.knowledge.upload.resultSummary(1, 1)),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
