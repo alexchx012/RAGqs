@@ -192,6 +192,7 @@ def _production_settings(archive_dir: str):
             "RAG_AUTH_ADMIN_ROSTER": "admin",
             "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
             "RAG_EVALUATION_JUDGE_API_KEY": "judge-api-secret",
+            "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
             "USER_DELETION_ARCHIVE_DIR": archive_dir,
         }
     )

@@ -6,8 +6,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0040_ab_candidate_config_mapping"
-down_revision: str | None = "0039_merge_chat_recovery_and_release_gate"
+revision: str = "0044_ab_candidate_config_mapping"
+down_revision: str | None = "0043_doc_lifecycle_invariants"
 branch_labels: tuple[str, ...] | None = None
 depends_on: str | None = None
 

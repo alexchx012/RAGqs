@@ -1691,10 +1691,6 @@ class ChatGenerationWorker:
                     **provider_meta,
                 }
             )
-                    "answer_mode": answer_mode,
-                    **provider_meta,
-                }
-            )
         return results
 
     def _budget_reserve(
