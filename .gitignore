@@ -31,4 +31,4 @@ data/user-deletion-archives/
 /.opencode/
 # >>> Comet managed project state >>>
 !/.comet/
-.comet/*
+.comet/
