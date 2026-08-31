@@ -1,19 +1,12 @@
-"""Production lifespan publishes bounded missing-judge configuration alerts."""
+"""Production startup rejects missing judge configuration before lifespan work."""
 
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 
 from app.platform.app_factory import create_platform_app
-from app.platform.config import load_platform_settings
+from app.platform.config import PlatformConfigurationError, load_platform_settings
 from app.platform.runtime import PlatformRuntime
-
-
-class _Calendar:
-    def lock_or_verify(self, connection):
-        del connection
 
 
 class _StartupAlertFacade:
@@ -39,6 +32,7 @@ def _production_settings(**overrides: str | None):
         "RAG_OBJECT_STORAGE_ENDPOINT": "http://objects.example.test",
         "RAG_OBJECT_STORAGE_BUCKET": "rag-test",
         "RAG_PROVIDER_NAME": "fake",
+        "RAG_BUSINESS_TIMEZONE": "UTC",
         "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
         "RAG_EVALUATION_JUDGE_API_KEY": "judge-api-secret",
     }
@@ -51,40 +45,34 @@ def _production_settings(**overrides: str | None):
 
 
 @pytest.mark.parametrize(
-    ("overrides", "expected_missing"),
+    "overrides",
     [
-        ({"RAG_EVALUATION_JUDGE_BASE_URL": ""}, ("RAG_EVALUATION_JUDGE_BASE_URL",)),
-        ({"RAG_EVALUATION_JUDGE_BASE_URL": "   "}, ("RAG_EVALUATION_JUDGE_BASE_URL",)),
-        ({"RAG_EVALUATION_JUDGE_API_KEY": None}, ("RAG_EVALUATION_JUDGE_API_KEY",)),
-        ({"RAG_EVALUATION_JUDGE_API_KEY": "   "}, ("RAG_EVALUATION_JUDGE_API_KEY",)),
-        (
-            {
-                "RAG_EVALUATION_JUDGE_BASE_URL": "",
-                "RAG_EVALUATION_JUDGE_API_KEY": None,
-            },
-            ("RAG_EVALUATION_JUDGE_BASE_URL", "RAG_EVALUATION_JUDGE_API_KEY"),
-        ),
+        {"RAG_EVALUATION_JUDGE_BASE_URL": ""},
+        {"RAG_EVALUATION_JUDGE_BASE_URL": "   "},
+        {"RAG_EVALUATION_JUDGE_API_KEY": None},
+        {"RAG_EVALUATION_JUDGE_API_KEY": "   "},
+        {
+            "RAG_EVALUATION_JUDGE_BASE_URL": "",
+            "RAG_EVALUATION_JUDGE_API_KEY": None,
+        },
     ],
 )
-def test_production_lifespan_alerts_only_missing_evaluation_judge_variable_names(
-    overrides: dict[str, str | None], expected_missing: tuple[str, ...]
+def test_production_startup_rejects_missing_evaluation_judge_configuration(
+    overrides: dict[str, str | None],
 ) -> None:
     settings = _production_settings(**overrides)
-    engine = create_engine("sqlite+pysqlite:///:memory:")
     facade = _StartupAlertFacade()
     runtime = PlatformRuntime(
         settings,
         adapters={
-            "database_engine": engine,
-            "business_calendar": _Calendar(),
             "startup_configuration_alert_port": facade,
         },
     )
 
-    with TestClient(create_platform_app(settings, runtime=runtime)):
-        pass
+    with pytest.raises(
+        PlatformConfigurationError,
+        match="production evaluation judge configuration is incomplete",
+    ):
+        create_platform_app(settings, runtime=runtime)
 
-    assert facade.calls == [expected_missing]
-    assert all("secret" not in variable.casefold() for variable in facade.calls[0])
-    assert all("https" not in variable.casefold() for variable in facade.calls[0])
-    engine.dispose()
+    assert facade.calls == []

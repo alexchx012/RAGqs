@@ -769,6 +769,23 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
         raise ValueError("business timezone is not a valid IANA timezone") from None
 
     if settings.profile == "production":
+        judge = settings.evaluation
+        judge_api_key = judge.judge_api_key
+        if (
+            not judge.judge_base_url
+            or not judge.judge_base_url.strip()
+            or judge_api_key is None
+            or not judge_api_key.get_secret_value().strip()
+            or not judge.judge_credential_ref.strip()
+            or not judge.judge_model.strip()
+        ):
+            raise PlatformConfigurationError(
+                "production evaluation judge configuration is incomplete"
+            )
+        if judge.judge_credential_ref == settings.index.image_vlm_credential_ref:
+            raise PlatformConfigurationError(
+                "production judge and image VLM credential references must differ"
+            )
         if not settings.database.url.startswith(("postgresql://", "postgresql+")):
             raise ValueError("production requires a PostgreSQL database")
         if not settings.object_storage.endpoint.startswith("https://"):

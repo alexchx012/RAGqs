@@ -310,6 +310,8 @@ chat_ab_candidate_table = Table(
         primary_key=True,
     ),
     Column("candidate", Integer, primary_key=True),
+    # Persist the deployment configuration assigned to this blind side.
+    Column("candidate_config_version", String(64), nullable=True),
     Column("status", String(16), nullable=False),
     Column("content", Text, nullable=False),
     Column("citations_json", JSON, nullable=False),

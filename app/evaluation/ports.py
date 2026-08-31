@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from sqlalchemy.engine import Connection
 
+from app.chat.models import ChatProviderResponse
+from app.chat.ports import ChatProviderPort, ChatProviderRequest, source_conflict_contract
 from app.platform.errors import PlatformError
 
 from .judge import JudgeProviderPort, JudgeRequest, JudgeScores
@@ -82,7 +84,7 @@ class RetrievalReplayPort(Protocol):
 
 
 class AnswerReplayPort(Protocol):
-    """Reads an already completed answer for one shadow-evaluation sample."""
+    """Produces one answer through the online generation provider boundary."""
 
     def replay(
         self,
@@ -93,7 +95,69 @@ class AnswerReplayPort(Protocol):
         space_id: str,
         candidate_config_version: str,
         session_id: str,
+        context_items: tuple[Mapping[str, Any], ...] = (),
     ) -> str: ...
+
+
+class OnlineAnswerReplayAdapter:
+    """Run one evaluation answer through the normal chat provider pipeline.
+
+    Evaluation owns the retrieval replay and supplies its immutable context;
+    this adapter deliberately skips chat persistence, SSE and A/B publication.
+    The provider still receives the canonical ``ChatProviderRequest`` so prompt
+    assembly and source-conflict instructions remain identical to online chat.
+    """
+
+    def __init__(self, provider: ChatProviderPort, *, effort_level: str = "think") -> None:
+        self._provider = provider
+        self._effort_level = effort_level
+
+    def replay(
+        self,
+        *,
+        question: str,
+        source_ref: str,
+        principal: Any,
+        space_id: str,
+        candidate_config_version: str,
+        session_id: str,
+        context_items: tuple[Mapping[str, Any], ...] = (),
+    ) -> str:
+        del source_ref, space_id, candidate_config_version
+        owner_user_id = str(getattr(principal, "user_id", "") or "system:evaluation")
+        context = tuple(dict(item) for item in context_items if isinstance(item, Mapping))
+        request = ChatProviderRequest(
+            generation_id=session_id,
+            owner_user_id=owner_user_id,
+            content=str(question),
+            effort_level=self._effort_level,
+            # Evaluation answers remain blind to the deployment configuration.
+            candidate=None,
+            context_items=context,
+            source_conflict_contract=source_conflict_contract(),
+        )
+        try:
+            response: ChatProviderResponse = self._provider.generate(request)
+            content = getattr(response, "content", None)
+        except Exception:
+            # Do not expose provider-specific diagnostics through evaluation
+            # run state, logs or the HTTP API.
+            raise PlatformError(
+                "evaluation_generation_unavailable",
+                "The evaluation answer replay is unavailable",
+                {"retryable": True},
+                503,
+                True,
+            ) from None
+        if not isinstance(content, str) or not content.strip():
+            raise PlatformError(
+                "evaluation_generation_unavailable",
+                "The evaluation answer replay returned no answer",
+                {"retryable": True},
+                503,
+                True,
+            )
+        return content.strip()
 
 
 class IndexingReplayAdapter:
@@ -258,8 +322,17 @@ class UnavailableAnswerReplayPort:
         space_id: str,
         candidate_config_version: str,
         session_id: str,
+        context_items: tuple[Mapping[str, Any], ...] = (),
     ) -> str:
-        del question, source_ref, principal, space_id, candidate_config_version, session_id
+        del (
+            question,
+            source_ref,
+            principal,
+            space_id,
+            candidate_config_version,
+            session_id,
+            context_items,
+        )
         raise PlatformError(
             "evaluation_generation_unavailable",
             "Answer replay is not configured",
@@ -278,6 +351,7 @@ __all__ = [
     "IndexGenerationSourcePort",
     "IndexingGenerationSourceAdapter",
     "IndexingReplayAdapter",
+    "OnlineAnswerReplayAdapter",
     "JudgeProviderPort",
     "JudgeRequest",
     "JudgeScores",

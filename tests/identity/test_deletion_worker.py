@@ -22,6 +22,7 @@ from app.platform.errors import PlatformError
 from app.platform.runtime import build_runtime
 from app.platform.storage import MemoryObjectStore, StorageKeyError
 from app.platform.worker import create_worker_runtime
+from app.usage.schema import usage_metadata
 
 
 def _stored_avatar_url(engine, user_id: str) -> str:
@@ -80,6 +81,7 @@ def test_default_runtime_worker_finalizes_due_deletions_and_cleans_avatar() -> N
     chat_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     service.provision_user(
         username="admin",
@@ -155,6 +157,7 @@ def test_deletion_worker_processes_pending_avatar_cleanup() -> None:
     chat_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     user = service.provision_user(
         username="alice",
@@ -205,6 +208,7 @@ def test_account_finalization_waits_for_replaced_avatar_cleanup() -> None:
     chat_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     service.provision_user(
         username="admin",
@@ -279,6 +283,7 @@ def test_deletion_worker_retries_cleanup_after_a_fenced_transaction_rolls_back()
     chat_metadata.create_all(engine)
     documents_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
     service = runtime.resolve("identity_access")
     service.provision_user(
         username="admin",

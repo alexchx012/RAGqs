@@ -539,6 +539,8 @@ def test_production_bailian_vlm_requires_base_url_and_api_key(tmp_path) -> None:
         "RAG_OBJECT_STORAGE_BUCKET": "rag",
         "RAG_PROVIDER_NAME": "dashscope",
         "RAG_PROVIDER_API_KEY": "secret",
+        "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
+        "RAG_EVALUATION_JUDGE_API_KEY": "judge-secret",
         "RAG_AUTH_SECRET_KEY": "secret-key-long-enough",
         "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.com",
         "RAG_AUTH_ADMIN_ROSTER": "root",

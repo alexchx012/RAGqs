@@ -224,6 +224,7 @@ class ShadowEvaluationWorker:
                                 space_id=run.space_id,
                                 candidate_config_version=candidate,
                                 session_id=session_id,
+                                context_items=tuple(dict(hit) for hit in hits),
                             )
                         except PlatformError as error:
                             raise _JudgeFailure(error) from error

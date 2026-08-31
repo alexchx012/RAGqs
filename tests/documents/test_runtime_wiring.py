@@ -5,6 +5,7 @@ import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import create_engine, select
 
 import app.evaluation as evaluation_module
@@ -12,14 +13,14 @@ from app.documents.preview import ProcessingReceiptPreviewRenderer
 from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.schema import documents_metadata
 from app.documents.service import DocumentsDepartmentWorkCheckPort, DocumentsService
-from app.evaluation import HttpJudgeProvider, UnavailableJudgeProvider
+from app.evaluation import HttpJudgeProvider
 from app.identity.schema import identity_metadata
 from app.indexing import (
     IndexingService,
 )
 from app.outbox.ports import DocumentNotificationRedactionCommand
 from app.outbox.schema import outbox_metadata, outbox_redaction_receipt_table
-from app.platform.config import load_platform_settings
+from app.platform.config import PlatformConfigurationError, load_platform_settings
 from app.platform.database import core_metadata
 from app.platform.runtime import build_runtime
 from app.usage.budget import BudgetEffortPolicy, BudgetMeterPolicy, BudgetMeterService
@@ -277,6 +278,8 @@ def test_production_runtime_requires_explicit_retrieval_backends() -> None:
             "RAG_OBJECT_STORAGE_BUCKET": "rag-prod",
             "RAG_PROVIDER_NAME": "openai-compatible",
             "RAG_PROVIDER_API_KEY": "provider-secret",
+            "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
+            "RAG_EVALUATION_JUDGE_API_KEY": "judge-secret",
             "RAG_BUSINESS_TIMEZONE": "UTC",
             "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
             "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
@@ -367,20 +370,14 @@ def test_production_runtime_closes_auto_assembled_judge_when_preflight_fails(mon
     assert preflight_providers[0]._client.is_closed
 
 
-def test_production_runtime_degrades_when_judge_configuration_is_missing(monkeypatch) -> None:
-    settings = _production_settings(judge_base_url=None, judge_api_key=None)
-    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-
-    def fail_preflight(self) -> None:
-        del self
-        raise AssertionError("degraded judge must not preflight during startup")
-
-    monkeypatch.setattr(evaluation_module.JudgePreflight, "verify_startup", fail_preflight)
-    runtime = build_runtime(settings, adapters=_production_adapters(engine))
-    try:
-        assert isinstance(runtime.resolve("judge_provider"), UnavailableJudgeProvider)
-    finally:
-        runtime.close()
+def test_production_settings_reject_missing_judge_configuration() -> None:
+    # A1 fail-closed: missing judge configuration rejects startup at load time
+    # instead of degrading to an unavailable judge provider.
+    with pytest.raises(
+        PlatformConfigurationError,
+        match="production evaluation judge configuration is incomplete",
+    ):
+        load_platform_settings(_production_settings(judge_base_url=None, judge_api_key=None))
 
 
 def test_runtime_injects_document_lifecycle_port_into_service() -> None:
