@@ -24,11 +24,10 @@ data/*.sqlite3-*
 .worktrees/
 node_modules/
 frontend/test-results/
-CLAUDE.md
-.kimi-code/
-AGENTS.md.bak
 data/user-deletion-archives/
-/.opencode/
+
 # >>> Comet managed project state >>>
 !/.comet/
-.comet/
+/.comet/*
+# !/.comet/config.yaml
+# <<< Comet managed project state <<<
