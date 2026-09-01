@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -185,7 +187,7 @@ def test_openai_compatible_embedding_batches_large_inputs_in_order() -> None:
     )
     vectors = provider.embed([f"t{index}" for index in range(25)])
     assert [vector[0] for vector in vectors] == [float(index) for index in range(25)]
-    assert [len(batch) for batch in requests] == [10, 10, 5]
+    assert sorted(len(batch) for batch in requests) == [5, 10, 10]
 
 
 @pytest.mark.parametrize(
@@ -500,3 +502,41 @@ def test_document_embedding_refuses_to_send_without_usage_submission() -> None:
 
     assert error.value.code == "embedding_usage_unavailable"
     assert requests == []
+
+
+def test_openai_compatible_embedding_shares_one_client_and_bounds_batch_concurrency() -> None:
+    lock = threading.Lock()
+    state = {"in_flight": 0, "peak": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        input_list = [str(item) for item in body["input"]]
+        with lock:
+            state["in_flight"] += 1
+            state["peak"] = max(state["peak"], state["in_flight"])
+        time.sleep(0.1)
+        with lock:
+            state["in_flight"] -= 1
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": index, "embedding": [float(text[1:]), 0.0, 0.0, 0.0]}
+                    for index, text in enumerate(input_list)
+                ]
+            },
+        )
+
+    provider = OpenAICompatibleEmbedding(_config(), transport=httpx.MockTransport(handler))
+    client = provider._client
+    single = provider.embed(["t1"])
+    assert len(single) == 1
+    assert provider._client is client
+
+    vectors = provider.embed([f"t{index}" for index in range(25)])
+    assert [vector[0] for vector in vectors] == [float(index) for index in range(25)]
+    assert provider._client is client
+    assert 2 <= state["peak"] <= 4
+
+    provider.dispose()
+    assert provider._client.is_closed
