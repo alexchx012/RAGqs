@@ -998,6 +998,7 @@ class IdentityAccessService:
                     user_id=user_id,
                     requested_at=now,
                     purge_after=purge_after,
+                    archive_dir_snapshot=self._effective_archive_dir(),
                 )
                 self._revoke_account_sessions_in_transaction(
                     connection,
@@ -1381,7 +1382,10 @@ class IdentityAccessService:
                 raise PlatformError("department_inactive", "Department is inactive", {}, 409)
             if int(department["version"]) != expected_version:
                 raise PlatformError(
-                    "version_conflict", "Department version is no longer current", {}, 409
+                    "version_conflict",
+                    "Department version is no longer current",
+                    {"current_version": int(department["version"])},
+                    409,
                 )
             member_id = connection.execute(
                 select(identity_user_table.c.id).where(
@@ -1472,7 +1476,14 @@ class IdentityAccessService:
                 ).rowcount
                 if updated != 1:
                     raise PlatformError(
-                        "version_conflict", "Department version is no longer current", {}, 409
+                        "version_conflict",
+                        "Department version is no longer current",
+                        {
+                            "current_version": self._department_current_version(
+                                connection, department_id
+                            )
+                        },
+                        409,
                     )
                 result = {
                     "id": department_id,
@@ -2369,6 +2380,12 @@ class IdentityAccessService:
                     password_hash="!deleted",
                     real_name="Deleted account",
                     display_name="Deleted account",
+                    directory_search_text=_directory_search_text(
+                        username=str(user["username"]),
+                        real_name="Deleted account",
+                        display_name="Deleted account",
+                        role="user",
+                    ),
                     department_id=None,
                     role="user",
                     lifecycle_status="deleted",
@@ -2403,7 +2420,19 @@ class IdentityAccessService:
     @staticmethod
     def _require_directory_reader(actor: AuthPrincipal) -> None:
         if actor.role not in {"admin", "ops"}:
-            raise PlatformError("forbidden_target", "Directory access is not allowed", {}, 403)
+            raise PlatformError(
+                "department_action_forbidden", "Directory access is not allowed", {}, 403
+            )
+
+    @staticmethod
+    def _department_current_version(connection: Connection, department_id: str) -> int:
+        return int(
+            connection.execute(
+                select(identity_department_table.c.version).where(
+                    identity_department_table.c.id == department_id
+                )
+            ).scalar_one()
+        )
 
     def backfill_directory_search_text(self) -> int:
         """One-shot maintenance backfill for rows written before the search column existed."""
@@ -2666,7 +2695,10 @@ class IdentityAccessService:
                 raise PlatformError("department_inactive", "Department is inactive", {}, 409)
             if int(department["version"]) != expected_version:
                 raise PlatformError(
-                    "version_conflict", "Department version is no longer current", {}, 409
+                    "version_conflict",
+                    "Department version is no longer current",
+                    {"current_version": int(department["version"])},
+                    409,
                 )
             duplicate = connection.execute(
                 select(identity_department_table.c.id).where(
@@ -2697,7 +2729,14 @@ class IdentityAccessService:
             ).rowcount
             if updated != 1:
                 raise PlatformError(
-                    "version_conflict", "Department version is no longer current", {}, 409
+                    "version_conflict",
+                    "Department version is no longer current",
+                    {
+                        "current_version": self._department_current_version(
+                            connection, department_id
+                        )
+                    },
+                    409,
                 )
             connection.execute(
                 update(identity_space_table)
@@ -3156,13 +3195,22 @@ class IdentityAccessService:
             ).rowcount
             if updated != 1:
                 raise PlatformError("session_revoked", "The session has been revoked", {}, 401)
-            return self._revoke_account_sessions_in_transaction(
+            revoked_count = self._revoke_account_sessions_in_transaction(
                 connection,
                 user_id=str(user_id),
                 reason=reason,
                 revoked_at=now,
                 transition_version=transition_version,
             )
+            self._audit(
+                connection,
+                actor_id=str(user_id),
+                resource_type="user",
+                resource_id=str(user_id),
+                result="user_sessions_revoked",
+                occurred_at=now,
+            )
+            return revoked_count
 
     def update_profile(self, *, user_id: object, display_name: str) -> dict[str, object]:
         normalized = display_name.strip()
@@ -3523,6 +3571,14 @@ class IdentityAccessService:
                 revoked_at=now,
                 transition_version=next_transition,
             )
+            self._audit(
+                connection,
+                actor_id=str(user_id),
+                resource_type="user",
+                resource_id=str(user_id),
+                result="password_changed",
+                occurred_at=now,
+            )
 
     @staticmethod
     def _login_throttle_record(
@@ -3792,6 +3848,49 @@ class IdentityAccessService:
             or int(session["identity_transition_version"]) != int(user["transition_version"]),
         )
 
+    def authenticate_refresh_session(self, refresh_token: str | None) -> AuthPrincipal:
+        """Authenticate the browser refresh cookie for read-only same-origin fetches.
+
+        Browser <img> loads cannot attach an Authorization header, so the
+        session-bound refresh cookie stands in for the access token; the
+        session and account checks mirror ``authenticate_access_token``.
+        """
+        if not refresh_token:
+            raise PlatformError("authentication_required", "Access token is required", {}, 401)
+        token_hash = hash_refresh_token(refresh_token)
+        with self._engine.connect() as connection:
+            record = (
+                connection.execute(
+                    select(auth_session_table, identity_user_table)
+                    .join(
+                        identity_user_table,
+                        auth_session_table.c.user_id == identity_user_table.c.id,
+                    )
+                    .join(
+                        auth_refresh_token_table,
+                        auth_refresh_token_table.c.auth_session_id == auth_session_table.c.id,
+                    )
+                    .where(auth_refresh_token_table.c.token_hash == token_hash)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if record is None:
+                raise PlatformError("authentication_required", "Access token is required", {}, 401)
+            if record[auth_session_table.c.revoked_at_utc] is not None or int(
+                record[auth_session_table.c.identity_transition_version]
+            ) != int(record[identity_user_table.c.transition_version]):
+                raise PlatformError("session_revoked", "The session has been revoked", {}, 401)
+            if record[identity_user_table.c.lifecycle_status] != "active":
+                raise PlatformError("authentication_required", "The account is not active", {}, 401)
+            return AuthPrincipal(
+                user_id=str(record[identity_user_table.c.id]),
+                auth_session_id=str(record[auth_session_table.c.id]),
+                username=str(record[identity_user_table.c.username]),
+                role=record[identity_user_table.c.role],
+                department_id=record[identity_user_table.c.department_id],
+            )
+
     def revoke_session_for_action(
         self,
         *,
@@ -3972,12 +4071,22 @@ class IdentityAccessService:
             )
             if session is None or str(session["user_id"]) != str(user_id):
                 return False
-            return self._revoke_session_in_transaction(
+            revoked = self._revoke_session_in_transaction(
                 connection,
                 session=dict(session),
                 reason=reason,
                 revoked_at=now,
             )
+            if revoked:
+                self._audit(
+                    connection,
+                    actor_id=str(user_id),
+                    resource_type="user",
+                    resource_id=str(user_id),
+                    result="session_revoked",
+                    occurred_at=now,
+                )
+            return revoked
 
     def refresh(
         self,

@@ -16,6 +16,7 @@ from app.identity.ports import NoopDepartmentWorkCheckPort
 from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationRevocationPort
 from app.identity.schema import (
     auth_refresh_token_table,
+    identity_deletion_workflow_table,
     identity_idempotency_table,
     identity_login_throttle_table,
     identity_metadata,
@@ -1747,3 +1748,119 @@ def test_configured_refresh_origin_allowlist_rejects_missing_and_foreign_origins
                 origin=origin,
             )
         assert exc_info.value.code == "csrf_failed"
+
+
+def test_self_service_password_and_session_revocation_write_audit_facts() -> None:
+    service = make_service()
+    user = service.provision_user(
+        username="alice",
+        password=_TEST_PASSWORD,
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    service.login(username="alice", password=_TEST_PASSWORD, device="Desktop")
+    other = service.login(username="alice", password=_TEST_PASSWORD, device="Phone")
+
+    assert service.revoke_session(
+        user_id=user["id"], session_id=other.session_id, reason="device_revoked"
+    )
+    assert service.revoke_all_sessions(user_id=user["id"], reason="all_devices_revoked") == 1
+    service.change_password(
+        user_id=user["id"], old_password=_TEST_PASSWORD, new_password="Different2"
+    )
+    # 改密已撤销全部会话：再次全量撤销是无操作，不产生审计事实。
+    assert service.revoke_all_sessions(user_id=user["id"], reason="all_devices_revoked") == 0
+
+    with service._engine.connect() as connection:
+        audits = connection.execute(
+            select(
+                platform_audit_table.c.actor_id,
+                platform_audit_table.c.resource_type,
+                platform_audit_table.c.result,
+            ).where(platform_audit_table.c.resource_id == user["id"])
+        ).all()
+
+    assert audits == [
+        (user["id"], "user", "session_revoked"),
+        (user["id"], "user", "user_sessions_revoked"),
+        (user["id"], "user", "password_changed"),
+    ]
+
+
+def test_repeated_session_revocation_does_not_duplicate_audit_facts() -> None:
+    service = make_service()
+    user = service.provision_user(
+        username="alice",
+        password=_TEST_PASSWORD,
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    login = service.login(username="alice", password=_TEST_PASSWORD)
+
+    assert service.revoke_session(
+        user_id=user["id"], session_id=login.session_id, reason="user_logout"
+    )
+    assert not service.revoke_session(
+        user_id=user["id"], session_id=login.session_id, reason="user_logout"
+    )
+
+    with service._engine.connect() as connection:
+        results = connection.execute(
+            select(platform_audit_table.c.result).where(
+                platform_audit_table.c.resource_id == user["id"]
+            )
+        ).scalars()
+        assert list(results) == ["session_revoked"]
+
+
+def test_roster_reconciliation_freezes_the_archive_dir_snapshot() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    secret = "test-secret-that-is-long-enough"
+    first_deployment = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key=secret),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    retained = first_deployment.provision_user(
+        username="retained",
+        password="Password1",
+        real_name="Retained",
+        display_name="Retained",
+        role="admin",
+        department_id=None,
+    )
+    removed = first_deployment.provision_user(
+        username="removed",
+        password="Password1",
+        real_name="Removed",
+        display_name="Removed",
+        role="admin",
+        department_id=None,
+    )
+    after_deployment_change = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key=secret, admin_roster=(str(retained["id"]),)),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+
+    assert after_deployment_change.reconcile_admin_roster() == [removed["id"]]
+    with engine.connect() as connection:
+        snapshot = connection.execute(
+            select(identity_deletion_workflow_table.c.archive_dir_snapshot).where(
+                identity_deletion_workflow_table.c.user_id == removed["id"]
+            )
+        ).scalar_one()
+
+    # 工作流创建时即固化归档目录，运行时配置变化不再回退影响该工作流。
+    assert snapshot == after_deployment_change._effective_archive_dir()

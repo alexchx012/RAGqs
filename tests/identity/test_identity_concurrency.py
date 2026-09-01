@@ -389,3 +389,48 @@ def test_failed_login_count_retries_after_an_interleaved_increment(
             .where(identity_login_throttle_table.c.normalized_username == "alice")
         ).scalar_one()
     assert attempts == 3
+
+
+def test_department_write_race_reports_the_reloaded_current_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service()
+    admin = create_admin(service)
+    department = service.create_department(
+        actor=admin, name="Finance", idempotency_key="department-create"
+    )
+    original_execute = Connection.execute
+    injected = False
+
+    def execute_with_competing_version_bump(
+        connection: Connection,
+        statement: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        nonlocal injected
+        # 初始版本检查之后、最终乐观更新执行前，竞争事务先推进了部门版本。
+        if not injected and getattr(statement, "table", None) is identity_department_table:
+            injected = True
+            original_execute(
+                connection,
+                update(identity_department_table)
+                .where(identity_department_table.c.id == department["id"])
+                .values(version=2),
+            )
+        return original_execute(connection, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Connection, "execute", execute_with_competing_version_bump)
+
+    with pytest.raises(PlatformError) as exc_info:
+        service.rename_department(
+            actor=admin,
+            department_id=str(department["id"]),
+            expected_version=1,
+            name="Finance Renamed",
+            idempotency_key="department-rename-raced",
+        )
+
+    assert injected
+    assert exc_info.value.code == "version_conflict"
+    assert exc_info.value.details == {"current_version": 2}

@@ -72,6 +72,23 @@ def current_principal(
     return identity_access_service(request).authenticate_access_token(token)
 
 
+def avatar_principal(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> AuthPrincipal:
+    """Avatar GET auth: Bearer token first, session-cookie fallback for <img>.
+
+    Browser <img> loads send the same-origin refresh cookie but cannot attach
+    an Authorization header, so only when the header is absent do we fall back
+    to the cookie session; any Authorization header keeps the Bearer behavior.
+    """
+    if authorization is None:
+        return identity_access_service(request).authenticate_refresh_session(
+            request.cookies.get("refresh_token")
+        )
+    return current_principal(request, authorization)
+
+
 def session_action_principal(
     request: Request,
     authorization: Annotated[str | None, Header()] = None,

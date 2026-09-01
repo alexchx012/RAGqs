@@ -15,7 +15,12 @@ from app.identity.service import (
 )
 from app.platform.config import PlatformSettings
 
-from .dependencies import current_principal, identity_access_service, session_action_principal
+from .dependencies import (
+    avatar_principal,
+    current_principal,
+    identity_access_service,
+    session_action_principal,
+)
 
 router = APIRouter(tags=["auth"])
 
@@ -214,7 +219,9 @@ async def replace_avatar(
 
 @router.get("/users/me/avatar")
 def get_avatar(
-    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+    # <img src="/v1/users/me/avatar"> 无法携带 Authorization 头：该 GET 端点在
+    # 无 Authorization 头时回退到同源 Cookie 会话认证；其余端点保持仅 Bearer。
+    principal: Annotated[AuthPrincipal, Depends(avatar_principal)],
     service: Annotated[IdentityAccessService, Depends(identity_access_service)],
 ) -> Response:
     content, media_type = service.avatar_content(user_id=principal.user_id)
