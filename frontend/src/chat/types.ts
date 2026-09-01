@@ -260,7 +260,7 @@ export interface SseStartEventData {
   readonly attempt_number: number;
 }
 
-export type SseStagePhase = 'retrieving' | 'retrieving_again' | 'generating';
+export type SseStagePhase = 'retrieving' | 'retrieval_routed' | 'retrieving_again' | 'rewriting' | 'generating';
 
 export interface SseStageEventData {
   readonly phase: SseStagePhase;

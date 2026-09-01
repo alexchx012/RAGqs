@@ -47,7 +47,9 @@ function noticeText(notice: Notice): string {
 
 const STAGE_TEXT: Record<SseStagePhase, string> = {
   retrieving: copy.chat.stage.retrieving,
+  retrieval_routed: copy.chat.stage.retrievalRouted,
   retrieving_again: copy.chat.stage.retrievingAgain,
+  rewriting: copy.chat.stage.rewriting,
   generating: copy.chat.stage.generating,
 };
 

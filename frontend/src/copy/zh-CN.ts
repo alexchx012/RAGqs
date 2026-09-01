@@ -911,7 +911,9 @@ export const zhCN = {
     // 思考档阶段状态行（spec §4：只显示预定义状态，展示措辞前端定）
     stage: {
       retrieving: '正在检索', // 措辞后定
+      retrievalRouted: '正在整理检索结果', // 措辞后定
       retrievingAgain: '正在重新检索', // 措辞后定
+      rewriting: '正在改写问题', // 措辞后定
       generating: '正在生成', // 措辞后定
     },
     // 深度研究步骤行展示措辞（spec §4：label 为机读名，展示措辞前端定；M10：已知 label 映射，
