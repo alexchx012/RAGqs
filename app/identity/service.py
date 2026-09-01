@@ -2379,6 +2379,12 @@ class IdentityAccessService:
                     password_hash="!deleted",
                     real_name="Deleted account",
                     display_name="Deleted account",
+                    directory_search_text=_directory_search_text(
+                        username=str(user["username"]),
+                        real_name="Deleted account",
+                        display_name="Deleted account",
+                        role="user",
+                    ),
                     department_id=None,
                     role="user",
                     lifecycle_status="deleted",

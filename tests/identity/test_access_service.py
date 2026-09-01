@@ -1056,3 +1056,52 @@ def test_directory_reads_for_regular_users_use_the_department_forbidden_code() -
     with pytest.raises(PlatformError) as users_error:
         service.list_managed_users(actor=reader)
     assert users_error.value.code == "department_action_forbidden"
+
+
+def test_deletion_tombstone_redacts_directory_search_text() -> None:
+    current = datetime(2026, 8, 6, tzinfo=UTC)
+    service = make_service(now=lambda: current)
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    user = service.provision_user(
+        username="bob",
+        password="Password1",
+        real_name="Secret Realname",
+        display_name="Secret Display",
+        role="user",
+        department_id=None,
+    )
+    service.delete_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=1,
+        idempotency_key="user-delete-redact",
+    )
+
+    current += timedelta(days=30)
+    _prepare_account_deletion(service, user_id=user["id"])
+    finalized = service.finalize_pending_deletion(user_id=user["id"])
+
+    assert finalized["lifecycle_status"] == "deleted"
+    with service._engine.connect() as connection:
+        row = connection.execute(
+            select(
+                identity_user_table.c.real_name,
+                identity_user_table.c.display_name,
+                identity_user_table.c.directory_search_text,
+            ).where(identity_user_table.c.id == user["id"])
+        ).one()
+    assert row.real_name == "Deleted account"
+    assert row.display_name == "Deleted account"
+    # 墓碑化的搜索文本与脱敏后的列一致：不再残留原 real_name/display_name 明文。
+    assert "secret" not in row.directory_search_text
+    assert row.directory_search_text == "bob deleted account deleted account user"
