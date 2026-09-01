@@ -431,3 +431,91 @@ def test_cookie_secure_defaults_to_profile_in_development() -> None:
         assert login.status_code == 200
         cookies = "; ".join(login.headers.get_list("set-cookie"))
         assert "Secure" not in cookies
+
+
+def _avatar_client():
+    configured = settings()
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    object_store = MemoryObjectStore()
+    service = IdentityAccessService(
+        engine,
+        configured.auth,
+        object_store=object_store,
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    runtime = build_runtime(
+        configured,
+        adapters={"database_engine": engine, "identity_access": service},
+    )
+    app = create_platform_app(configured, runtime=runtime)
+    return service, app
+
+
+def test_avatar_route_accepts_the_session_cookie_without_an_authorization_header() -> None:
+    service, app = _avatar_client()
+
+    with TestClient(app) as client:
+        login = client.post("/v1/auth/login", json={"username": "alice", "password": "Password1"})
+        token = login.json()["token"]
+        assert login.cookies.get("refresh_token")
+        client.post(
+            "/v1/users/me/avatar",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("avatar.png", b"fake-png", "image/png")},
+        )
+        # 同源 <img src="/v1/users/me/avatar"> 无法携带 Authorization 头：
+        # 仅凭会话 Cookie 即可取回自己的头像。
+        cookie_only = client.get("/v1/users/me/avatar")
+        bearer = client.get("/v1/users/me/avatar", headers={"Authorization": f"Bearer {token}"})
+        invalid_bearer = client.get(
+            "/v1/users/me/avatar", headers={"Authorization": "Bearer not-a-token"}
+        )
+        # 撤销该会话后，同一 Cookie 不再是有效凭据。
+        principal = service.authenticate_access_token(token)
+        service.revoke_session(
+            user_id=principal.user_id,
+            session_id=principal.auth_session_id,
+            reason="user_logout",
+        )
+        revoked_cookie = client.get("/v1/users/me/avatar")
+        client.cookies.clear()
+        anonymous = client.get("/v1/users/me/avatar")
+
+    assert cookie_only.status_code == 200
+    assert cookie_only.headers["content-type"] == "image/png"
+    assert cookie_only.content == b"fake-png"
+    assert bearer.status_code == 200
+    assert bearer.content == b"fake-png"
+    assert invalid_bearer.status_code == 401
+    assert invalid_bearer.json()["error"]["code"] == "authentication_required"
+    assert revoked_cookie.status_code == 401
+    assert revoked_cookie.json()["error"]["code"] == "session_revoked"
+    assert anonymous.status_code == 401
+    assert anonymous.json()["error"]["code"] == "authentication_required"
+
+
+def test_avatar_route_cookie_auth_without_an_avatar_still_returns_404() -> None:
+    _, app = _avatar_client()
+
+    with TestClient(app) as client:
+        client.post("/v1/auth/login", json={"username": "alice", "password": "Password1"})
+        response = client.get("/v1/users/me/avatar")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "avatar_not_found"

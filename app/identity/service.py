@@ -3792,6 +3792,49 @@ class IdentityAccessService:
             or int(session["identity_transition_version"]) != int(user["transition_version"]),
         )
 
+    def authenticate_refresh_session(self, refresh_token: str | None) -> AuthPrincipal:
+        """Authenticate the browser refresh cookie for read-only same-origin fetches.
+
+        Browser <img> loads cannot attach an Authorization header, so the
+        session-bound refresh cookie stands in for the access token; the
+        session and account checks mirror ``authenticate_access_token``.
+        """
+        if not refresh_token:
+            raise PlatformError("authentication_required", "Access token is required", {}, 401)
+        token_hash = hash_refresh_token(refresh_token)
+        with self._engine.connect() as connection:
+            record = (
+                connection.execute(
+                    select(auth_session_table, identity_user_table)
+                    .join(
+                        identity_user_table,
+                        auth_session_table.c.user_id == identity_user_table.c.id,
+                    )
+                    .join(
+                        auth_refresh_token_table,
+                        auth_refresh_token_table.c.auth_session_id == auth_session_table.c.id,
+                    )
+                    .where(auth_refresh_token_table.c.token_hash == token_hash)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if record is None:
+                raise PlatformError("authentication_required", "Access token is required", {}, 401)
+            if record[auth_session_table.c.revoked_at_utc] is not None or int(
+                record[auth_session_table.c.identity_transition_version]
+            ) != int(record[identity_user_table.c.transition_version]):
+                raise PlatformError("session_revoked", "The session has been revoked", {}, 401)
+            if record[identity_user_table.c.lifecycle_status] != "active":
+                raise PlatformError("authentication_required", "The account is not active", {}, 401)
+            return AuthPrincipal(
+                user_id=str(record[identity_user_table.c.id]),
+                auth_session_id=str(record[auth_session_table.c.id]),
+                username=str(record[identity_user_table.c.username]),
+                role=record[identity_user_table.c.role],
+                department_id=record[identity_user_table.c.department_id],
+            )
+
     def revoke_session_for_action(
         self,
         *,
