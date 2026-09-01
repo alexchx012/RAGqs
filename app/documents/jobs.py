@@ -223,6 +223,19 @@ class DocumentsJobCoordinator:
                     subject_user_id=subject_user_id,
                 )
             )
+            # §2.3 L129：人工重放序列沿用重放事务固化的处理配置快照，同代
+            # attempt 共用；初始序列仍由处理端按媒体画像解析（快照留空）。
+            replay_snapshot: Mapping[str, Any] = {}
+            if int(job["replay_generation"]) > 0 and isinstance(
+                job["replay_config_snapshot_json"], Mapping
+            ):
+                replay_snapshot = dict(job["replay_config_snapshot_json"])
+            processing_profile_version = (
+                str(replay_snapshot["config_version"])
+                if isinstance(replay_snapshot.get("config_version"), str)
+                and replay_snapshot["config_version"].strip()
+                else "default"
+            )
             staging_request = {
                 "job_id": str(job["id"]),
                 "attempt_id": attempt_id,
@@ -240,12 +253,12 @@ class DocumentsJobCoordinator:
                     if version is not None
                     else ""
                 ),
-                "processing_config_snapshot": {},
+                "processing_config_snapshot": replay_snapshot,
                 "authorization_fence": authorization_fence,
                 "input_manifest_hash": (
                     str(version["content_hash_sha256"]) if version is not None else None
                 ),
-                "processing_profile_version": "default",
+                "processing_profile_version": processing_profile_version,
                 "usage_ownership": {
                     "actor_user_id": subject_user_id,
                     "actor_role_snapshot": str(job["quota_role_snapshot"]),
@@ -299,6 +312,9 @@ class DocumentsJobCoordinator:
                     state=IngestionJobState.RUNNING.value,
                     stage="parsing",
                     active_attempt_id=attempt_id,
+                    # retry_wait 被认领转 running 后清空调度时刻：读模型仅对
+                    # retry_wait 暴露 next_attempt_at，running 不再携带旧值。
+                    next_attempt_at_utc=None,
                     updated_at_utc=now,
                 )
             )
@@ -419,21 +435,17 @@ class DocumentsJobCoordinator:
             )
 
     def _reclaim_expired_attempts(self, connection, now: datetime) -> None:
-        running_job_ids = (
+        running_jobs = (
             connection.execute(
-                select(ingestion_jobs_table.c.id).where(
+                select(ingestion_jobs_table.c.id, ingestion_jobs_table.c.document_id).where(
                     ingestion_jobs_table.c.state == IngestionJobState.RUNNING.value
                 )
             )
-            .scalars()
+            .mappings()
             .all()
         )
-        for expired_job_id in running_job_ids:
-            job_document_id = connection.execute(
-                select(ingestion_jobs_table.c.document_id).where(
-                    ingestion_jobs_table.c.id == expired_job_id
-                )
-            ).scalar_one_or_none()
+        for expired_job in running_jobs:
+            job_document_id = expired_job["document_id"]
             if job_document_id is None:
                 continue
             document = self._service._locked_document(connection, str(job_document_id))
@@ -442,7 +454,7 @@ class DocumentsJobCoordinator:
             job = (
                 connection.execute(
                     select(ingestion_jobs_table)
-                    .where(ingestion_jobs_table.c.id == expired_job_id)
+                    .where(ingestion_jobs_table.c.id == expired_job["id"])
                     .with_for_update()
                 )
                 .mappings()
@@ -473,7 +485,7 @@ class DocumentsJobCoordinator:
                     .select_from(ingestion_attempts_table)
                     .where(
                         and_(
-                            ingestion_attempts_table.c.job_id == expired_job_id,
+                            ingestion_attempts_table.c.job_id == expired_job["id"],
                             ingestion_attempts_table.c.replay_generation
                             == job["replay_generation"],
                         )
@@ -515,7 +527,7 @@ class DocumentsJobCoordinator:
                 update(publications_table)
                 .where(
                     and_(
-                        publications_table.c.job_id == expired_job_id,
+                        publications_table.c.job_id == expired_job["id"],
                         publications_table.c.status == PublicationState.STAGED.value,
                     )
                 )
@@ -525,7 +537,7 @@ class DocumentsJobCoordinator:
                 update(ingestion_jobs_table)
                 .where(
                     and_(
-                        ingestion_jobs_table.c.id == expired_job_id,
+                        ingestion_jobs_table.c.id == expired_job["id"],
                         ingestion_jobs_table.c.state == IngestionJobState.RUNNING.value,
                         ingestion_jobs_table.c.active_attempt_id == attempt["id"],
                     )
@@ -557,7 +569,7 @@ class DocumentsJobCoordinator:
                         .where(
                             and_(
                                 documents_table.c.id == job["document_id"],
-                                documents_table.c.active_operation_job_id == expired_job_id,
+                                documents_table.c.active_operation_job_id == expired_job["id"],
                             )
                         )
                         .values(
@@ -573,7 +585,7 @@ class DocumentsJobCoordinator:
                         .where(
                             and_(
                                 documents_table.c.id == job["document_id"],
-                                documents_table.c.active_operation_job_id == expired_job_id,
+                                documents_table.c.active_operation_job_id == expired_job["id"],
                             )
                         )
                         .values(
@@ -585,7 +597,7 @@ class DocumentsJobCoordinator:
             if job["upload_batch_id"]:
                 connection.execute(
                     update(upload_batch_items_table)
-                    .where(upload_batch_items_table.c.job_id == expired_job_id)
+                    .where(upload_batch_items_table.c.job_id == expired_job["id"])
                     .values(
                         result_state="retry_wait" if will_retry else next_state,
                         updated_at_utc=now,

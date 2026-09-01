@@ -439,7 +439,9 @@ class SubmissionService:
         department_names = self._department_names(principal)
         return {"items": [self._public_row(row, department_names) for row in rows]}
 
-    _APPROVAL_TARGET_KINDS = {"public", "department", "personal"}
+    # 个人库不设投稿审核：待审投稿只会指向公共/部门空间，personal 取值经
+    # 支持用法不可达，从参数契约中移除（传入直接 422）。
+    _APPROVAL_TARGET_KINDS = {"public", "department"}
 
     def list_approvals(
         self,
@@ -452,7 +454,7 @@ class SubmissionService:
         if target_kind is not None and target_kind not in self._APPROVAL_TARGET_KINDS:
             raise PlatformError(
                 "validation_error",
-                "target_kind must be public, department or personal",
+                "target_kind must be public or department",
                 {},
                 422,
             )

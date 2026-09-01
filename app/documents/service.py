@@ -19,6 +19,7 @@ from app.documents.upload_security import (
     validate_upload_security,
 )
 from app.identity.ports import DepartmentWorkState
+from app.indexing.profiles import document_profile_for_media_kind
 from app.indexing.schema import (
     index_generation_changes_table,
     index_generations_table,
@@ -468,6 +469,9 @@ class DocumentsService:
             image_count=summary.get("image_count", summary.get("images", 0)),
             summary=summary,
         )
+        images = summary.get("image_count", summary.get("images", 0))
+        if isinstance(images, bool) or not isinstance(images, int) or images < 0:
+            images = 0
         if pages < 1 and not isinstance(summary.get("metering"), Mapping):
             raise PlatformError(
                 "validation_error", "Processing receipt page count is invalid", {}, 422
@@ -523,6 +527,7 @@ class DocumentsService:
             charge_reason = "quota_debit_not_recorded"
         return {
             "pages": pages,
+            "images": images,
             "processing_list_id": processing_list_id,
             "quota_debit_id": debit_id,
             "quota_charge_status": charge_status,
@@ -1473,7 +1478,9 @@ class DocumentsService:
                     if error.code not in _UPLOAD_SAFETY_ERROR_CODES:
                         raise
                     items.append(_batch_rejected_item(file.filename, error))
-            return {"items": items}
+            # 纯投稿分支没有 upload batch：顶层补 "upload_batch_id": null 占位，
+            # 与直传分支的响应形状对齐（§6.3）。
+            return {"upload_batch_id": None, "items": items}
         return self.create_initial_upload(
             principal=principal, space_id=space_id, files=files, idempotency_key=key
         )
@@ -4491,6 +4498,44 @@ class DocumentsService:
             )
             return response
 
+    def _job_cancellation_allowed(
+        self,
+        connection: Connection,
+        *,
+        job: Mapping[Any, Any],
+        space_id: str,
+        principal: Any,
+        manage_allowed: bool | None = None,
+    ) -> bool:
+        """§2.3 L118 取消 ACL 角色矩阵。
+
+        投稿 job（存在 submission execution grant）仅当前空间 manage 角色可
+        取消；非投稿 job 的原请求操作者（``created_by``）可取消自己发起的
+        job，即使已失去空间 manage；admin 同样仅限自己发起的 job，即使对公
+        共/部门空间持有 manage；其余（ops 全部、部门 minister 本部门）沿用
+        空间 manage 推导。
+        """
+
+        submission_job = (
+            connection.execute(
+                select(submission_execution_grants_table.c.id).where(
+                    submission_execution_grants_table.c.job_id == job["id"]
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+        if not submission_job and str(job["created_by_user_id"]) == str(principal.user_id):
+            return True
+        if not submission_job and str(getattr(principal, "role", "")) == "admin":
+            return False
+        if manage_allowed is not None:
+            return manage_allowed
+        try:
+            self._authorize(principal, space_id, "manage")
+        except PlatformError:
+            return False
+        return True
+
     def cancel_job(self, *, principal: Any, job_id: str) -> dict[str, Any]:
         with self._engine.begin() as connection:
             job_document_id = connection.execute(
@@ -4514,7 +4559,15 @@ class DocumentsService:
             )
             if job is None:
                 raise PlatformError("job_not_found", "Ingestion job was not found", {}, 404)
-            self._authorize(principal, str(document["space_id"]), "manage")
+            if not self._job_cancellation_allowed(
+                connection,
+                job=job,
+                space_id=str(document["space_id"]),
+                principal=principal,
+            ):
+                raise PlatformError(
+                    "space_action_forbidden", "Space action is not allowed", {}, 403
+                )
             state = str(job["state"])
             if state == IngestionJobState.CANCELLED.value:
                 return self._job_response(job)
@@ -4872,6 +4925,19 @@ class DocumentsService:
                 principal=principal,
             )
             now = self._current_time()
+            # §2.3 L129：重放事务固化当时生效的处理配置快照，同代 attempt 的
+            # staging request 共用该快照（claim 侧只读不再重解析）。
+            replay_media_kind = str(document["media_kind"] or "")
+            if job["document_version_id"]:
+                replay_media_kind = (
+                    connection.execute(
+                        select(document_versions_table.c.media_kind).where(
+                            document_versions_table.c.id == job["document_version_id"]
+                        )
+                    ).scalar_one_or_none()
+                    or replay_media_kind
+                )
+            replay_config_snapshot = document_profile_for_media_kind(replay_media_kind).to_mapping()
             if job["operation"] in {"initial", "replace"}:
                 connection.execute(
                     update(document_versions_table)
@@ -4922,6 +4988,7 @@ class DocumentsService:
                     active_attempt_id=None,
                     active_publication_id=publication_id,
                     replay_generation=replay_generation,
+                    replay_config_snapshot_json=_json(replay_config_snapshot),
                     failure_reason=None,
                     next_attempt_at_utc=None,
                     replayed_by_user_id=actor_id,
@@ -5032,6 +5099,12 @@ class DocumentsService:
                     and str(row["created_by_user_id"]) == str(principal.user_id)
                 ):
                     notification_event_ids = list(row["notification_event_ids_json"] or [])
+                # A72：job 读模型只暴露处理 summary，不再透出完整处理回执
+                # （authorization_fence、stage_resources、模型/提示词版本等内部
+                # 细节仍保留在写侧 processing_summary_json）。
+                processing_summary = (row["processing_summary_json"] or {}).get(
+                    "processing_summary"
+                )
                 visible.append(
                     {
                         **self._job_response(row),
@@ -5046,6 +5119,7 @@ class DocumentsService:
                         "next_attempt_at": (
                             _timestamp(row["next_attempt_at_utc"])
                             if row["next_attempt_at_utc"]
+                            and row["state"] == IngestionJobState.RETRY_WAIT.value
                             else None
                         ),
                         "failure_reason": (
@@ -5063,7 +5137,11 @@ class DocumentsService:
                         # 契约字段补齐：数据源语义未定义，输出 null 占位。
                         "progress_text_hint": None,
                         "publication_id": row["active_publication_id"],
-                        "processing_summary": row["processing_summary_json"],
+                        "processing_summary": (
+                            dict(processing_summary)
+                            if isinstance(processing_summary, Mapping)
+                            else {}
+                        ),
                         "usage": row["usage_json"] if row["state"] == "succeeded" else None,
                         "allowed_actions": self._allowed_job_actions(
                             connection, row, principal, can_manage=can_manage
@@ -5279,7 +5357,15 @@ class DocumentsService:
         can_manage: bool,
     ) -> list[str]:
         if job["state"] in {"pending", "running", "retry_wait"}:
-            return ["cancel"] if can_manage else []
+            if self._job_cancellation_allowed(
+                connection,
+                job=job,
+                space_id=str(job["space_id"]),
+                principal=principal,
+                manage_allowed=can_manage,
+            ):
+                return ["cancel"]
+            return []
         if (
             job["state"] in {"failed", "cancelled", "dead_letter"}
             and can_manage

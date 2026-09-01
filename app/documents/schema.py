@@ -283,6 +283,9 @@ ingestion_jobs_table = Table(
     Column("replayed_by_user_id", String(64), nullable=True),
     Column("degradations_json", JSON, nullable=False),
     Column("processing_summary_json", JSON, nullable=False),
+    # 人工重放事务固化的当时生效处理配置快照（§2.3 L129）；重放各 attempt
+    # 的 staging request 共用该快照，不再逐 attempt 重新解析。
+    Column("replay_config_snapshot_json", JSON, nullable=True),
     Column("usage_json", JSON, nullable=True),
     Column("ocr_low_confidence", Boolean, nullable=False),
     Column("notification_event_ids_json", JSON, nullable=False),
