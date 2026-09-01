@@ -998,6 +998,7 @@ class IdentityAccessService:
                     user_id=user_id,
                     requested_at=now,
                     purge_after=purge_after,
+                    archive_dir_snapshot=self._effective_archive_dir(),
                 )
                 self._revoke_account_sessions_in_transaction(
                     connection,

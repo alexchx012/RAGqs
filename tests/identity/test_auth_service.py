@@ -16,6 +16,7 @@ from app.identity.ports import NoopDepartmentWorkCheckPort
 from app.identity.revocation import GenerationRevocationReceipt, NoopGenerationRevocationPort
 from app.identity.schema import (
     auth_refresh_token_table,
+    identity_deletion_workflow_table,
     identity_idempotency_table,
     identity_login_throttle_table,
     identity_metadata,
@@ -1814,3 +1815,52 @@ def test_repeated_session_revocation_does_not_duplicate_audit_facts() -> None:
             )
         ).scalars()
         assert list(results) == ["session_revoked"]
+
+
+def test_roster_reconciliation_freezes_the_archive_dir_snapshot() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    secret = "test-secret-that-is-long-enough"
+    first_deployment = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key=secret),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+    retained = first_deployment.provision_user(
+        username="retained",
+        password="Password1",
+        real_name="Retained",
+        display_name="Retained",
+        role="admin",
+        department_id=None,
+    )
+    removed = first_deployment.provision_user(
+        username="removed",
+        password="Password1",
+        real_name="Removed",
+        display_name="Removed",
+        role="admin",
+        department_id=None,
+    )
+    after_deployment_change = IdentityAccessService(
+        engine,
+        AuthSettings(secret_key=secret, admin_roster=(str(retained["id"]),)),
+        revocation_port=NoopGenerationRevocationPort(),
+    )
+
+    assert after_deployment_change.reconcile_admin_roster() == [removed["id"]]
+    with engine.connect() as connection:
+        snapshot = connection.execute(
+            select(identity_deletion_workflow_table.c.archive_dir_snapshot).where(
+                identity_deletion_workflow_table.c.user_id == removed["id"]
+            )
+        ).scalar_one()
+
+    # 工作流创建时即固化归档目录，运行时配置变化不再回退影响该工作流。
+    assert snapshot == after_deployment_change._effective_archive_dir()
