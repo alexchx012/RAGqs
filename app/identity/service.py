@@ -1381,7 +1381,10 @@ class IdentityAccessService:
                 raise PlatformError("department_inactive", "Department is inactive", {}, 409)
             if int(department["version"]) != expected_version:
                 raise PlatformError(
-                    "version_conflict", "Department version is no longer current", {}, 409
+                    "version_conflict",
+                    "Department version is no longer current",
+                    {"current_version": int(department["version"])},
+                    409,
                 )
             member_id = connection.execute(
                 select(identity_user_table.c.id).where(
@@ -1472,7 +1475,14 @@ class IdentityAccessService:
                 ).rowcount
                 if updated != 1:
                     raise PlatformError(
-                        "version_conflict", "Department version is no longer current", {}, 409
+                        "version_conflict",
+                        "Department version is no longer current",
+                        {
+                            "current_version": self._department_current_version(
+                                connection, department_id
+                            )
+                        },
+                        409,
                     )
                 result = {
                     "id": department_id,
@@ -2403,7 +2413,19 @@ class IdentityAccessService:
     @staticmethod
     def _require_directory_reader(actor: AuthPrincipal) -> None:
         if actor.role not in {"admin", "ops"}:
-            raise PlatformError("forbidden_target", "Directory access is not allowed", {}, 403)
+            raise PlatformError(
+                "department_action_forbidden", "Directory access is not allowed", {}, 403
+            )
+
+    @staticmethod
+    def _department_current_version(connection: Connection, department_id: str) -> int:
+        return int(
+            connection.execute(
+                select(identity_department_table.c.version).where(
+                    identity_department_table.c.id == department_id
+                )
+            ).scalar_one()
+        )
 
     def backfill_directory_search_text(self) -> int:
         """One-shot maintenance backfill for rows written before the search column existed."""
@@ -2666,7 +2688,10 @@ class IdentityAccessService:
                 raise PlatformError("department_inactive", "Department is inactive", {}, 409)
             if int(department["version"]) != expected_version:
                 raise PlatformError(
-                    "version_conflict", "Department version is no longer current", {}, 409
+                    "version_conflict",
+                    "Department version is no longer current",
+                    {"current_version": int(department["version"])},
+                    409,
                 )
             duplicate = connection.execute(
                 select(identity_department_table.c.id).where(
@@ -2697,7 +2722,14 @@ class IdentityAccessService:
             ).rowcount
             if updated != 1:
                 raise PlatformError(
-                    "version_conflict", "Department version is no longer current", {}, 409
+                    "version_conflict",
+                    "Department version is no longer current",
+                    {
+                        "current_version": self._department_current_version(
+                            connection, department_id
+                        )
+                    },
+                    409,
                 )
             connection.execute(
                 update(identity_space_table)

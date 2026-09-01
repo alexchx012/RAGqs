@@ -984,3 +984,75 @@ def test_managed_user_department_move_writes_a_dedicated_audit_code() -> None:
             ).all()
         ]
     assert results == ["user_department_changed", "user_updated"]
+
+
+def test_department_write_conflicts_report_the_current_server_version() -> None:
+    service = make_service()
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    department = service.create_department(
+        actor=admin, name="Finance", idempotency_key="department-create-conflict"
+    )
+    department_id = str(department["id"])
+    renamed = service.rename_department(
+        actor=admin,
+        department_id=department_id,
+        expected_version=1,
+        name="Finance Renamed",
+        idempotency_key="department-rename-1",
+    )
+    assert renamed["version"] == 2
+
+    with pytest.raises(PlatformError) as rename_conflict:
+        service.rename_department(
+            actor=admin,
+            department_id=department_id,
+            expected_version=1,
+            name="Finance Renamed Again",
+            idempotency_key="department-rename-stale",
+        )
+    assert rename_conflict.value.code == "version_conflict"
+    assert rename_conflict.value.details == {"current_version": 2}
+
+    with pytest.raises(PlatformError) as deactivate_conflict:
+        service.deactivate_department(
+            actor=admin,
+            department_id=department_id,
+            expected_version=1,
+            idempotency_key="department-deactivate-stale",
+        )
+    assert deactivate_conflict.value.code == "version_conflict"
+    assert deactivate_conflict.value.details == {"current_version": 2}
+
+
+def test_directory_reads_for_regular_users_use_the_department_forbidden_code() -> None:
+    service = make_service()
+    service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    reader = service.authenticate_access_token(
+        service.login(username="alice", password="Password1").access_token
+    )
+
+    with pytest.raises(PlatformError) as departments_error:
+        service.list_departments(actor=reader)
+    assert departments_error.value.code == "department_action_forbidden"
+    assert departments_error.value.status_code == 403
+
+    with pytest.raises(PlatformError) as users_error:
+        service.list_managed_users(actor=reader)
+    assert users_error.value.code == "department_action_forbidden"
