@@ -70,6 +70,10 @@ def generation_events(
     accept: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
     require_streaming(accept)
+    # Authorization and existence are checked before the streaming response
+    # starts so 401/404 use standard HTTP status codes instead of breaking an
+    # already-committed 200 stream (A13).
+    _stream_service(request).authorize(principal=principal, generation_id=generation_id)
     return StreamingResponse(
         _stream_service(request).stream(
             principal=principal,

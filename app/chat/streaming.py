@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from sqlalchemy.engine import Engine
@@ -33,17 +33,41 @@ class GenerationStreamService:
         clock: Any,
         authorization: ChatAuthorizationPort,
         poll_seconds: float = 0.2,
+        idle_backoff_seconds: float = 0.5,
+        empty_polls_before_backoff: int = 5,
         lease_seconds: int = 90,
         heartbeat_seconds: int = 30,
         disconnect_grace_seconds: int = DEFAULT_DISCONNECT_GRACE_SECONDS,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._engine = engine
         self._clock = clock
         self._authorization = authorization
         self._poll_seconds = poll_seconds
+        self._idle_backoff_seconds = idle_backoff_seconds
+        self._empty_polls_before_backoff = empty_polls_before_backoff
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
         self._disconnect_grace_seconds = disconnect_grace_seconds
+        self._sleep = sleep
+
+    def authorize(self, *, principal: Any, generation_id: str) -> None:
+        """Pre-flight authorization for SSE subscription routes.
+
+        Running the same checks that ``_open`` performs before the streaming
+        response starts keeps 401/404 failures in the standard error-envelope
+        contract instead of breaking an already-committed 200 stream (A13).
+        """
+
+        with self._engine.connect() as connection:
+            self._authorization.verify_active(connection, principal)
+            generation = (
+                connection.execute(select_generation_statement(generation_id))
+                .mappings()
+                .one_or_none()
+            )
+            if generation is None or str(generation["owner_user_id"]) != str(principal.user_id):
+                raise PlatformError("generation_not_found", "Generation was not found", {}, 404)
 
     async def stream(
         self,
@@ -55,6 +79,7 @@ class GenerationStreamService:
         lease_token = ""
         last_seq = last_event_id
         last_heartbeat = time.monotonic()
+        empty_polls = 0
         try:
             replay, lease_token = await asyncio.to_thread(
                 self._open, principal, generation_id, last_seq
@@ -65,13 +90,21 @@ class GenerationStreamService:
             if replay and terminal_event_type(replay[-1].event_type):
                 return
             while True:
-                await asyncio.sleep(self._poll_seconds)
+                # Consecutive empty polls back off to the idle interval to keep
+                # long quiet streams off the fast polling cadence; any new
+                # event restores it (A36).
+                await self._sleep(
+                    self._idle_backoff_seconds
+                    if empty_polls >= self._empty_polls_before_backoff
+                    else self._poll_seconds
+                )
                 events = await asyncio.to_thread(self._read_events, generation_id, last_seq)
                 for event in events:
                     last_seq = max(last_seq, event.seq)
                     yield sse_frame(event.event_type, event.data, event.seq)
                 if events and terminal_event_type(events[-1].event_type):
                     return
+                empty_polls = 0 if events else empty_polls + 1
                 if time.monotonic() - last_heartbeat >= self._heartbeat_seconds:
                     if not await asyncio.to_thread(self._renew_lease, lease_token):
                         return

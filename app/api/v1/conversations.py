@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -52,12 +52,20 @@ class ChatBody(AskBody):
     conversation_id: str | None = None
 
 
-def _ask_request(body: AskBody) -> AskRequest:
+def _ask_request(body: AskBody, request: Request) -> AskRequest:
     if body.effort_level not in {"quick", "think", "deep"}:
         raise PlatformError(
             "validation_error",
             "effort_level must be quick, think or deep",
             {"field": "effort_level"},
+            422,
+        )
+    max_chars = request.app.state.platform_runtime.settings.chat.max_content_chars
+    if len(body.content) > max_chars:
+        raise PlatformError(
+            "validation_error",
+            "content is too long",
+            {"field": "content", "max_length": max_chars},
             422,
         )
     scope = None
@@ -107,7 +115,7 @@ def _idempotency_key(request: Request) -> str:
 def list_conversations(
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
-    q: str | None = None,
+    q: Annotated[str | None, Query(max_length=256)] = None,
 ) -> dict[str, Any]:
     return _conversation_service(request).list_conversations(
         user_id=str(principal.user_id), query=q
@@ -175,7 +183,7 @@ def create_message(
 ) -> StreamingResponse:
     require_streaming(accept)
     key = _idempotency_key(request)
-    ask = _ask_request(body)
+    ask = _ask_request(body, request)
     result = _service(request).ask(
         principal=principal,
         conversation_id=conversation_id,
@@ -201,22 +209,20 @@ def post_chat(
 ) -> ApiEnvelope:
     """非流式兼容出口：复用会话 + 生成服务，返回创建信封（答案经既有 SSE/读模型获取）。"""
     key = _idempotency_key(request)
-    conversation_id = body.conversation_id
-    if conversation_id is None:
-        conversation_id = str(
-            _conversation_service(request).create_conversation(user_id=str(principal.user_id))["id"]
-        )
+    ask = _ask_request(body, request)
+    # 省略 conversation_id 时由服务在 ask 幂等作用域内自动新建会话，同键重试
+    # 重放原响应，不重复建会话/消息/generation（A3）。
     result = _service(request).ask(
         principal=principal,
-        conversation_id=conversation_id,
-        request=_ask_request(body),
+        conversation_id=body.conversation_id,
+        request=ask,
         idempotency_key=key,
     )
     return ApiEnvelope(
         code=202,
         message="accepted",
         data={
-            "conversation_id": conversation_id,
+            "conversation_id": result.conversation_id,
             "generation_id": result.generation_id,
             "message_id": result.message_id,
             "user_message_id": result.user_message_id,

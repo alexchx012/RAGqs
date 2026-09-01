@@ -44,7 +44,12 @@ class NullObjectStore:
 
 
 class FakeChatProvider:
-    """Deterministic provider transport for tests."""
+    """Deterministic provider transport for tests.
+
+    Mirrors the generation-prompt citation contract: the answer annotates the
+    source of the first context item with its ``document_id@version_id``
+    marker, so default runs exercise the grounded citation subset.
+    """
 
     def __init__(self, *, candidate_bias: bool = False) -> None:
         self.calls: list[ChatProviderRequest] = []
@@ -61,9 +66,15 @@ class FakeChatProvider:
         suffix = ""
         if request.candidate == 1:
             suffix = " [variant B]" if self.candidate_bias else ""
-        context = f" using {request.context_items[0]['snippet']}" if request.context_items else ""
+        context = ""
+        source = ""
+        if request.context_items:
+            first = request.context_items[0]
+            context = f" using {first['snippet']}"
+            if first.get("document_id"):
+                source = f" [{first['document_id']}@{first['document_version_id']}]"
         return ChatProviderResponse(
-            content=f"answer for {request.content[:24]}{context}{suffix}",
+            content=f"answer for {request.content[:24]}{context}{source}{suffix}",
             input_tokens=10,
             output_tokens=20,
         )

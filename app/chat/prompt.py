@@ -16,6 +16,12 @@ from .ports import (
     source_conflict_contract,
 )
 
+CITATION_MARKER_INSTRUCTION = (
+    "引用检索内容时，必须在对应结论的句末标注该来源的文档标识"
+    "（与上下文块头中的 document_id@version_id 完全一致，如 doc_x@ver_y）；"
+    "未引用任何检索内容的结论不得标注标识。"
+)
+
 
 def _context_block(item: Mapping[str, Any]) -> str:
     library = str(item.get("library") or "unknown")
@@ -48,9 +54,11 @@ def assemble_generation_prompt(request: ChatProviderRequest) -> str:
                 request.content,
             )
         )
-    blocks = [
-        instruction,
-        *(_context_block(item) for item in request.context_items),
-        request.content,
-    ]
+    blocks = [instruction]
+    if request.context_items:
+        # The marker instruction only applies when there is something to cite;
+        # the worker parses these markers back into the published citations.
+        blocks.append(CITATION_MARKER_INSTRUCTION)
+    blocks.extend(_context_block(item) for item in request.context_items)
+    blocks.append(request.content)
     return "\n\n".join(blocks)

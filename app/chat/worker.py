@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -541,10 +542,20 @@ class ChatGenerationWorker:
                     started_at_utc=decision.started_at_utc,
                 )
                 if isinstance(pending, Mapping):
-                    pending = {**dict(pending), "content": str(decision.content)}
+                    pending = dict(pending)
+                    pending["content"] = str(decision.content)
+                    # The recovered content is now known, so narrow the
+                    # checkpoint citations to the actually referenced subset
+                    # (A4) exactly like the in-process publication path.
+                    visible = tuple(pending.get("citations") or ())
+                    referenced = _referenced_citations(pending["content"], visible)
+                    pending["citations"] = [dict(item) for item in referenced]
+                    pending["answer_mode"] = (
+                        "no_context" if not visible else ("grounded" if referenced else "direct")
+                    )
                     next_checkpoint = {
                         "phase": "provider_reconciled",
-                        "candidates": [dict(pending)],
+                        "candidates": [pending],
                     }
                 else:
                     next_checkpoint = None
@@ -1682,11 +1693,16 @@ class ChatGenerationWorker:
                 }
             else:
                 provider_response = response
+            content = str(provider_response.content)
+            # Citations carry only the hits the model actually referenced in
+            # its content (A4); the answer mode follows the referenced subset.
+            referenced_citations = _referenced_citations(content, candidate_citations)
+            answer_mode = _answer_mode(candidate_hits, candidate_citations, referenced_citations)
             results.append(
                 {
                     "candidate": candidate,
-                    "content": provider_response.content,
-                    "citations": candidate_citations,
+                    "content": content,
+                    "citations": referenced_citations,
                     "answer_mode": answer_mode,
                     **provider_meta,
                 }
@@ -2793,12 +2809,44 @@ def _hit_mapping(hit: RetrievalHitOutcome) -> Mapping[str, Any]:
     }
 
 
-def _answer_mode(hits: tuple[RetrievalHitOutcome, ...], citations: list[Mapping[str, Any]]) -> str:
-    if not hits:
+def _referenced_citations(
+    content: str, citations: Sequence[Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    """Citations the model content actually references by source marker.
+
+    The generation prompt presents each context block with its opaque
+    ``document_id@version_id`` identifier and instructs the model to annotate
+    cited claims with it, so an identifier match is the reference signal. Hits
+    the model never referenced are not published as citations (A4).
+    """
+
+    referenced: list[Mapping[str, Any]] = []
+    for citation in citations:
+        document_id = str(citation.get("document_id") or "")
+        if not document_id:
+            continue
+        pattern = re.compile(rf"(?<![0-9A-Za-z_]){re.escape(document_id)}(?![0-9A-Za-z_])")
+        if pattern.search(content) is not None:
+            referenced.append(citation)
+    return referenced
+
+
+def _answer_mode(
+    hits: tuple[RetrievalHitOutcome, ...],
+    citations: Sequence[Mapping[str, Any]],
+    referenced: Sequence[Mapping[str, Any]] | None = None,
+) -> str:
+    """Design §2.5.2: ``no_context`` on zero hits or fully ACL-filtered hits;
+    ``direct`` when hits survived ACL filtering but the model referenced none;
+    ``grounded`` when at least one reference survived."""
+
+    if not hits or not citations:
         return "no_context"
-    if not citations:
-        return "direct"
-    return "grounded"
+    if referenced is None:
+        # Provisional pre-provider checkpoint value: the content does not
+        # exist yet, so the referenced subset cannot be derived.
+        return "grounded"
+    return "grounded" if referenced else "direct"
 
 
 def _rouge_l(left: str, right: str) -> float:

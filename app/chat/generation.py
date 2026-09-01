@@ -9,13 +9,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection, Engine
 
 from app.platform.context import current_context
 from app.platform.errors import PlatformError
 
 from .budget import RAG_BUDGET_POLICY_VERSION
+from .conversations import create_conversation_row
 from .events import append_event
 from .models import (
     AB_PAIR_OPEN_SECONDS,
@@ -44,6 +45,23 @@ GENERATION_ABSOLUTE_DEADLINE_SECONDS = 1800
 DEFAULT_MAX_RUNNING_GENERATIONS_PER_USER = 8
 DEFAULT_ASK_RATE_LIMIT_PER_MINUTE = 20
 IDEMPOTENCY_KINDS = ("ask", "retry", "feedback", "ab_vote")
+# POST /chat without conversation_id: the conversation does not exist at
+# idempotency-check time, so the ask bucket uses this stable sentinel target
+# instead of a fresh conversation id per retry (A3).
+AUTO_CONVERSATION_IDEMPOTENCY_TARGET = "__auto_conversation__"
+
+# A/B sampling cost reduction (design §8.6「采样加筛选降成本」). Strategy one
+# (skip when both candidate configs retrieve identical sources) runs in the
+# ab_source_filter after the draw; the two factors below shape the draw itself:
+# - low-confidence priority: self-evaluation only exists for think/deep (quick
+#   skips it), so those tiers are the questions whose self-eval can reveal low
+#   confidence and get a higher sampling probability;
+# - user stratification: in multi-user shared spaces (department/public), the
+#   sampling probability decays with the pairs this user already contributed to
+#   the window, spreading samples across users; personal libraries never stratify.
+LOW_CONFIDENCE_SAMPLE_RATE_MULTIPLIER = 2.0
+STRATIFIED_SAMPLE_DECAY_PER_PAIR = 0.5
+STRATIFIED_SAMPLE_MAX_DECAY_STEPS = 4
 
 
 def _new_id(prefix: str) -> str:
@@ -86,6 +104,7 @@ class GenerationCreationResult:
     message_id: str
     user_message_id: str
     replay: bool
+    conversation_id: str = ""
 
 
 class GenerationService:
@@ -132,11 +151,23 @@ class GenerationService:
         self,
         *,
         principal: Any,
-        conversation_id: str,
+        conversation_id: str | None,
         request: AskRequest,
         idempotency_key: str,
     ) -> GenerationCreationResult:
+        """Create (or idempotently replay) one ask generation.
+
+        ``conversation_id=None`` is the ``POST /chat`` auto-conversation path:
+        the conversation is created inside this idempotency scope, keyed by the
+        stable auto-conversation sentinel, so a same-key retry replays the
+        original generation instead of creating a second conversation, user
+        message and generation (A3).
+        """
+
         user_id = str(principal.user_id)
+        idempotency_target = (
+            AUTO_CONVERSATION_IDEMPOTENCY_TARGET if conversation_id is None else conversation_id
+        )
         fingerprint = canonical_request_fingerprint(
             "ask",
             {
@@ -148,14 +179,16 @@ class GenerationService:
         )
         with self._engine.begin() as connection:
             self._authorization.verify_active(connection, principal)
-            conversation = _require_owned_conversation(
-                connection, conversation_id=conversation_id, user_id=user_id
-            )
+            conversation: Mapping[str, Any]
+            if conversation_id is not None:
+                conversation = _require_owned_conversation(
+                    connection, conversation_id=conversation_id, user_id=user_id
+                )
             replay = self._find_idempotency(
                 connection,
                 user_id=user_id,
                 kind="ask",
-                target_id=conversation_id,
+                target_id=idempotency_target,
                 idempotency_key=idempotency_key,
                 fingerprint=fingerprint,
             )
@@ -164,6 +197,12 @@ class GenerationService:
             now = self._now(connection)
             self._enforce_rate_limit(connection, user_id=user_id, now=now)
             self._enforce_concurrency(connection, user_id=user_id)
+            if conversation_id is None:
+                conversation = _require_owned_conversation(
+                    connection,
+                    conversation_id=create_conversation_row(connection, user_id=user_id, now=now),
+                    user_id=user_id,
+                )
             scope_json = request.scope.to_json() if request.scope is not None else {}
             context = current_context()
             result = self._create_generation(
@@ -181,7 +220,7 @@ class GenerationService:
                 connection,
                 user_id=user_id,
                 kind="ask",
-                target_id=conversation_id,
+                target_id=idempotency_target,
                 idempotency_key=idempotency_key,
                 fingerprint=fingerprint,
                 response_target=result.generation_id,
@@ -197,6 +236,7 @@ class GenerationService:
                 select(
                     chat_generation_table.c.message_id,
                     chat_generation_table.c.user_message_id,
+                    chat_generation_table.c.conversation_id,
                 ).where(chat_generation_table.c.id == generation_id)
             )
             .mappings()
@@ -206,6 +246,7 @@ class GenerationService:
             generation_id=generation_id,
             message_id=str(row["message_id"]),
             user_message_id=str(row["user_message_id"]),
+            conversation_id=str(row["conversation_id"]),
             replay=True,
         )
 
@@ -286,12 +327,20 @@ class GenerationService:
         user_message_id = _new_id("msg")
         message_id = _new_id("msg")
         window = self._calibration.get_open_window(connection, now=now, user_id=user_id)
-        create_ab = bool(
+        create_ab = False
+        if (
             window is not None
             and window.status == "open"
             and not self._calibration.user_ab_opt_out(connection, user_id=user_id)
-            and self._sampler() < window.sample_rate
-        )
+        ):
+            sample_rate = self._effective_sample_rate(
+                connection,
+                window=window,
+                user_id=user_id,
+                effort_level=effort_level,
+                scope_json=scope_json,
+            )
+            create_ab = self._sampler() < sample_rate
         pair_space_id = ""
         if isinstance(scope_json, Mapping):
             scope_space_ids = scope_json.get("space_ids")
@@ -498,8 +547,43 @@ class GenerationService:
             generation_id=generation_id,
             message_id=message_id,
             user_message_id=user_message_id_to_keep,
+            conversation_id=str(conversation["id"]),
             replay=False,
         )
+
+    def _effective_sample_rate(
+        self,
+        connection: Connection,
+        *,
+        window: CalibrationWindowSnapshot,
+        user_id: str,
+        effort_level: str,
+        scope_json: Mapping[str, Any],
+    ) -> float:
+        """Window base rate after the two draw-shaping cost reductions (§8.6).
+
+        Candidate 0 always runs the default retrieval profile, so the boost
+        targets exactly the questions whose default-config answer carries a
+        self-eval confidence signal (think/deep tiers).
+        """
+
+        rate = float(window.sample_rate)
+        if effort_level in {"think", "deep"}:
+            rate = min(1.0, rate * LOW_CONFIDENCE_SAMPLE_RATE_MULTIPLIER)
+        if _scope_has_shared_space(scope_json):
+            contributed = int(
+                connection.execute(
+                    select(func.count())
+                    .select_from(chat_ab_pair_table)
+                    .where(
+                        chat_ab_pair_table.c.window_id == window.window_id,
+                        chat_ab_pair_table.c.owner_user_id == user_id,
+                    )
+                ).scalar_one()
+            )
+            steps = min(contributed, STRATIFIED_SAMPLE_MAX_DECAY_STEPS)
+            rate *= STRATIFIED_SAMPLE_DECAY_PER_PAIR**steps
+        return rate
 
     def _ab_candidate_config_pair(self, space_id: str) -> tuple[str, str] | None:
         source = self._candidate_config_versions
@@ -1216,6 +1300,22 @@ def _default_sampler() -> float:
     import random
 
     return random.random()
+
+
+def _scope_has_shared_space(scope_json: Mapping[str, Any]) -> bool:
+    """True when the request narrows to at least one multi-user shared space.
+
+    Space identifiers use ``personal:<user_id>`` for private libraries;
+    department (``department:*``) and public libraries are the multi-user
+    spaces where user stratification applies. Personal libraries never stratify.
+    """
+
+    space_ids = scope_json.get("space_ids") if isinstance(scope_json, Mapping) else None
+    if not isinstance(space_ids, (list, tuple)):
+        return False
+    return any(
+        isinstance(item, str) and item and not item.startswith("personal:") for item in space_ids
+    )
 
 
 __all__ = [
