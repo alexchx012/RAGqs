@@ -124,6 +124,18 @@ class HttpOpenSearchClient:
         self._timeout = timeout
         self._transport = transport
         self._verify = context
+        self._client = httpx.Client(
+            timeout=self._timeout,
+            transport=self._transport,
+            verify=self._verify,
+            auth=(self._username, self._password),
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        self.close()
 
     def _request(
         self,
@@ -140,15 +152,9 @@ class HttpOpenSearchClient:
             headers["Content-Type"] = "application/x-ndjson"
             content = ndjson
         try:
-            with httpx.Client(
-                timeout=self._timeout,
-                transport=self._transport,
-                verify=self._verify,
-                auth=(self._username, self._password),
-            ) as client:
-                response = client.request(
-                    method, url, headers=headers, json=payload, content=content
-                )
+            response = self._client.request(
+                method, url, headers=headers, json=payload, content=content
+            )
         except ssl.SSLError as exc:
             raise PlatformError(
                 "opensearch_tls_failed", "OpenSearch TLS verification failed", {}, 503
