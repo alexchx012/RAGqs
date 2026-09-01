@@ -648,7 +648,7 @@ def test_expired_ab_pair_displays_candidate_zero_after_two_candidates_published(
     detail = env["client"].get(f"/v1/conversations/{conversation_id}", headers=headers).json()
     assistant = detail["messages"][1]
     assert assistant["ab"] is None
-    assert assistant["content"] == "answer for hello using the answer is 42"
+    assert assistant["content"] == "answer for hello using the answer is 42 [doc_1@ver_1]"
     assert assistant["answer_mode"] == "grounded"
 
 

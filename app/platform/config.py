@@ -185,6 +185,8 @@ class ChatSettings(_StrictModel):
     enhance_model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
     enhance_timeout_seconds: int = Field(default=30, ge=1, le=600)
     enhance_max_prompt_chars: int = Field(default=4000, ge=1)
+    # 聊天 content 入口上限：超过返回 422（与 enhance 输入上限同一部署模式）。
+    max_content_chars: int = Field(default=4000, ge=1)
 
     @property
     def effort_rag_call_limits(self) -> dict[str, int]:
@@ -373,6 +375,7 @@ _ENV_KEYS = {
     "RAG_CHAT_ENHANCE_MODEL",
     "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS",
     "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS",
+    "RAG_CHAT_MAX_CONTENT_CHARS",
     "RAG_INDEX_XLSX_MERGED_CELLS_MAX",
     "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD",
     "RAG_INDEX_MINERU_PROVIDER",
@@ -683,6 +686,7 @@ def load_platform_settings(
                 "enhance_model": _optional(env, "RAG_CHAT_ENHANCE_MODEL"),
                 "enhance_timeout_seconds": _int(env, "RAG_CHAT_ENHANCE_TIMEOUT_SECONDS"),
                 "enhance_max_prompt_chars": _int(env, "RAG_CHAT_ENHANCE_MAX_PROMPT_CHARS"),
+                "max_content_chars": _int(env, "RAG_CHAT_MAX_CONTENT_CHARS"),
             }.items()
             if value is not None
         },

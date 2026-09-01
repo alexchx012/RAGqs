@@ -14,17 +14,10 @@ from app.platform.errors import PlatformError
 
 from .read_models import conversation_detail
 from .schema import (
-    chat_ab_candidate_table,
-    chat_ab_pair_table,
-    chat_ab_vote_table,
     chat_conversation_group_table,
     chat_conversation_table,
-    chat_generation_event_table,
-    chat_generation_execution_table,
     chat_generation_table,
-    chat_message_feedback_table,
     chat_message_table,
-    chat_subscription_lease_table,
 )
 
 
@@ -34,6 +27,26 @@ def _conversation_id() -> str:
 
 def _group_id() -> str:
     return f"grp_{uuid.uuid4().hex}"
+
+
+def create_conversation_row(connection: Connection, *, user_id: str, now: datetime) -> str:
+    """Insert one owned conversation row inside the caller's transaction."""
+    conversation_id = _conversation_id()
+    connection.execute(
+        chat_conversation_table.insert().values(
+            id=conversation_id,
+            owner_user_id=user_id,
+            title="",
+            pinned=False,
+            group_id=None,
+            effort_level="quick",
+            scope_json={},
+            last_active_at_utc=now,
+            created_at_utc=now,
+            updated_at_utc=now,
+        )
+    )
+    return conversation_id
 
 
 # group_id 形参的「未提供」哨兵：路由层以 exclude_unset 过滤未提交字段，
@@ -102,7 +115,12 @@ class ConversationService:
                 chat_conversation_table.c.owner_user_id == user_id
             )
             if query:
-                statement = statement.where(chat_conversation_table.c.title.ilike(f"%{query}%"))
+                # ilike without escaping would treat % and _ as wildcards; the
+                # same escaping convention as the identity user search applies.
+                escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                statement = statement.where(
+                    chat_conversation_table.c.title.ilike(f"%{escaped_query}%", escape="\\")
+                )
             rows = (
                 connection.execute(
                     statement.order_by(chat_conversation_table.c.last_active_at_utc.desc())
@@ -127,20 +145,16 @@ class ConversationService:
     def create_conversation(self, *, user_id: str) -> dict[str, Any]:
         with self._engine.begin() as connection:
             now = self._current_time(connection)
-            row = {
-                "id": _conversation_id(),
-                "owner_user_id": user_id,
+            conversation_id = create_conversation_row(connection, user_id=user_id, now=now)
+            from .models import datetime_to_rfc3339
+
+            return {
+                "id": conversation_id,
                 "title": "",
                 "pinned": False,
                 "group_id": None,
-                "effort_level": "quick",
-                "scope_json": {},
-                "last_active_at_utc": now,
-                "created_at_utc": now,
-                "updated_at_utc": now,
+                "last_active_at": datetime_to_rfc3339(now),
             }
-            connection.execute(chat_conversation_table.insert().values(**row))
-            return self._summary(row)
 
     def patch_conversation(
         self,
@@ -234,64 +248,10 @@ class ConversationService:
             self._require_owned_conversation(
                 connection, conversation_id=conversation_id, user_id=user_id
             )
-            generation_ids = [
-                str(row["id"])
-                for row in connection.execute(
-                    select(chat_generation_table.c.id).where(
-                        chat_generation_table.c.conversation_id == conversation_id
-                    )
-                ).mappings()
-            ]
-            for generation_id in generation_ids:
-                connection.execute(
-                    chat_subscription_lease_table.delete().where(
-                        chat_subscription_lease_table.c.generation_id == generation_id
-                    )
-                )
-                connection.execute(
-                    chat_generation_event_table.delete().where(
-                        chat_generation_event_table.c.generation_id == generation_id
-                    )
-                )
-                connection.execute(
-                    chat_generation_execution_table.delete().where(
-                        chat_generation_execution_table.c.generation_id == generation_id
-                    )
-                )
-            message_ids = [
-                str(row["id"])
-                for row in connection.execute(
-                    select(chat_message_table.c.id).where(
-                        chat_message_table.c.conversation_id == conversation_id
-                    )
-                ).mappings()
-            ]
-            for message_id in message_ids:
-                connection.execute(
-                    chat_message_feedback_table.delete().where(
-                        chat_message_feedback_table.c.message_id == message_id
-                    )
-                )
-                pair_ids = [
-                    str(row["pair_id"])
-                    for row in connection.execute(
-                        select(chat_ab_pair_table.c.pair_id).where(
-                            chat_ab_pair_table.c.message_id == message_id
-                        )
-                    ).mappings()
-                ]
-                for pair_id in pair_ids:
-                    connection.execute(
-                        chat_ab_vote_table.delete().where(chat_ab_vote_table.c.pair_id == pair_id)
-                    )
-                    connection.execute(
-                        chat_ab_candidate_table.delete().where(
-                            chat_ab_candidate_table.c.pair_id == pair_id
-                        )
-                    )
-                    connection.execute(
-                        chat_ab_pair_table.delete().where(chat_ab_pair_table.c.pair_id == pair_id)
-                    )
+            # Executions, events, subscription leases, feedback and A/B pairs
+            # (with their votes and candidates) are removed by the schema's
+            # ON DELETE CASCADE foreign keys; only the per-conversation roots
+            # are deleted explicitly here.
             connection.execute(
                 chat_generation_table.delete().where(
                     chat_generation_table.c.conversation_id == conversation_id
