@@ -3188,13 +3188,22 @@ class IdentityAccessService:
             ).rowcount
             if updated != 1:
                 raise PlatformError("session_revoked", "The session has been revoked", {}, 401)
-            return self._revoke_account_sessions_in_transaction(
+            revoked_count = self._revoke_account_sessions_in_transaction(
                 connection,
                 user_id=str(user_id),
                 reason=reason,
                 revoked_at=now,
                 transition_version=transition_version,
             )
+            self._audit(
+                connection,
+                actor_id=str(user_id),
+                resource_type="user",
+                resource_id=str(user_id),
+                result="user_sessions_revoked",
+                occurred_at=now,
+            )
+            return revoked_count
 
     def update_profile(self, *, user_id: object, display_name: str) -> dict[str, object]:
         normalized = display_name.strip()
@@ -3554,6 +3563,14 @@ class IdentityAccessService:
                 reason="password_changed",
                 revoked_at=now,
                 transition_version=next_transition,
+            )
+            self._audit(
+                connection,
+                actor_id=str(user_id),
+                resource_type="user",
+                resource_id=str(user_id),
+                result="password_changed",
+                occurred_at=now,
             )
 
     @staticmethod
@@ -4047,12 +4064,22 @@ class IdentityAccessService:
             )
             if session is None or str(session["user_id"]) != str(user_id):
                 return False
-            return self._revoke_session_in_transaction(
+            revoked = self._revoke_session_in_transaction(
                 connection,
                 session=dict(session),
                 reason=reason,
                 revoked_at=now,
             )
+            if revoked:
+                self._audit(
+                    connection,
+                    actor_id=str(user_id),
+                    resource_type="user",
+                    resource_id=str(user_id),
+                    result="session_revoked",
+                    occurred_at=now,
+                )
+            return revoked
 
     def refresh(
         self,
