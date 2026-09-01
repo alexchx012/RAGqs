@@ -609,7 +609,11 @@ def test_cli_main_runs_and_does_not_leak_key(tmp_path, monkeypatch, capsys) -> N
     identity_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
-    clock = MutableClock([NOW])
+    # Seed with the real database clock so the pending request always
+    # lands in the CLI run's current business month; a fixed 2026-08
+    # clock flips the deterministic cancel reason to period_closed
+    # once that business month closes (observed after 2026-09-01).
+    clock = SqlAlchemyDatabaseClock(engine)
     calendar = BusinessCalendarService(engine, SqlAlchemyDatabaseClock(engine), "Asia/Shanghai")
     quota = QuotaService(engine, clock, calendar)
     requests = QuotaRequestService(engine, clock, calendar, quota, NoopOutboxEnqueuePort())
@@ -992,3 +996,28 @@ def test_standalone_maintenance_fails_without_usage_migration(tmp_path, monkeypa
             assert connection.execute(select(platform_lease_table)).all() == []
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("seed_at", "run_at"),
+    [
+        (datetime(2026, 8, 31, 15, 59, tzinfo=UTC), datetime(2026, 9, 30, 16, 1, tzinfo=UTC)),
+        (datetime(2026, 9, 30, 15, 59, tzinfo=UTC), datetime(2026, 10, 31, 16, 1, tzinfo=UTC)),
+    ],
+)
+def test_period_closed_cancellation_follows_business_month_boundary(seed_at, run_at) -> None:
+    """Boundary guard for A12: a request seeded in one business month is
+    cancelled as period_closed once the calendar (Asia/Shanghai, UTC+8) rolls
+    into a later month — the same flip the CLI run's real clock performs."""
+    engine, _requests, runtime, times = make_env(now=seed_at)
+    seed_identity(engine)
+    pending_id = seed_pending(engine, _requests)
+
+    times[0] = run_at
+    UsageMaintenanceWorker(create_worker_runtime(runtime.settings, runtime=runtime)).run_once(
+        owner="worker-1"
+    )
+
+    row = assert_row(engine, pending_id)
+    assert row["status"] == "cancelled"
+    assert row["cancel_reason"] == "period_closed"
