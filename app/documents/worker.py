@@ -24,7 +24,12 @@ from app.platform.worker import WorkerRuntime, create_worker_runtime
 
 from .indexing import IndexProcessingReceipt
 from .jobs import JobLease
-from .schema import document_versions_table, ingestion_attempts_table
+from .schema import (
+    document_versions_table,
+    documents_table,
+    ingestion_attempts_table,
+    ingestion_jobs_table,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -266,6 +271,41 @@ class IngestionWorker:
             )
         return request, content, media_kind, manifest_id, manifest_hash
 
+    def _inactive_personal_owner_reason(self, claim: JobLease) -> str | None:
+        """A50：个人库 job 执行前重查账号状态。
+
+        提交者已 pending_delete/deleted 的个人库 job 不再产生新的处理副作
+        用，直接以可观测终态（failed + failure_reason）终止；共享库 job
+        （公共/部门空间，投稿路径已有闸门）不受影响。先例：
+        submissions._review_preconditions 的 lifecycle 检查。
+        """
+
+        identity_access = getattr(self._documents_service, "_identity_access", None)
+        lifecycle_reader = getattr(identity_access, "account_lifecycle_status", None)
+        if not callable(lifecycle_reader):
+            return None
+        engine = self._documents_service._engine
+        with engine.connect() as connection:
+            space_id = connection.execute(
+                select(documents_table.c.space_id)
+                .join(
+                    ingestion_jobs_table,
+                    ingestion_jobs_table.c.document_id == documents_table.c.id,
+                )
+                .where(ingestion_jobs_table.c.id == claim.job_id)
+            ).scalar_one_or_none()
+        if space_id is None or not str(space_id).startswith("personal:"):
+            return None
+        owner_user_id = str(space_id).split(":", 1)[1].strip()
+        if not owner_user_id:
+            return None
+        lifecycle_status = str(lifecycle_reader(owner_user_id))
+        if lifecycle_status == "pending_delete":
+            return "account_pending_delete"
+        if lifecycle_status == "deleted":
+            return "account_deleted"
+        return None
+
     def _process_and_publish(self, claim: JobLease, owner: str) -> dict[str, Any]:
         heartbeat = LeaseHeartbeat(
             self._documents_service,
@@ -338,6 +378,24 @@ class IngestionWorker:
                 break
             claimed += 1
             try:
+                inactive_reason = self._inactive_personal_owner_reason(claim)
+                if inactive_reason is not None:
+                    # 执行点终止：账号已 pending_delete/deleted，个人库 job
+                    # 不进入处理管道，避免新的索引/用量副作用。
+                    self._documents_service.fail_job(
+                        job_id=claim.job_id,
+                        reason=inactive_reason,
+                        retryable=False,
+                        attempt_id=claim.attempt_id,
+                        fencing_token=claim.fencing_token,
+                    )
+                    failed += 1
+                    _logger.info(
+                        "ingestion job terminated for account state attempt_id=%s reason=%s",
+                        claim.attempt_id,
+                        inactive_reason,
+                    )
+                    continue
                 self._process_and_publish(claim, normalized_owner)
             except FenceViolation:
                 deferred += 1

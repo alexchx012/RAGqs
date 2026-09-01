@@ -46,6 +46,36 @@ def test_head_upgrade_creates_documents_tables(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_replay_config_snapshot_migration_round_trips(tmp_path: Path) -> None:
+    # documents_metadata.create_all 建的新库在 0012 就带全量列；0045 的补列
+    # 只对旧版本升级库生效。这里用 downgrade 先摘除该列，再验证 0045 能为
+    # 既有库补回可空列。
+    database_url = f"sqlite:///{tmp_path / 'replay-config-snapshot.sqlite3'}"
+    config = _config(database_url)
+    command.upgrade(config, "head")
+    command.downgrade(config, "0044_ab_candidate_config_mapping")
+
+    engine = create_engine(database_url)
+    try:
+        columns = {
+            column["name"]: column for column in inspect(engine).get_columns("ingestion_jobs")
+        }
+        assert "replay_config_snapshot_json" not in columns
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    try:
+        columns = {
+            column["name"]: column for column in inspect(engine).get_columns("ingestion_jobs")
+        }
+        assert columns["replay_config_snapshot_json"]["nullable"] is True
+    finally:
+        engine.dispose()
+
+
 def test_submission_contract_migration_adds_nullable_columns_to_legacy_rows(tmp_path: Path) -> None:
     database_url = f"sqlite:///{tmp_path / 'submission-contract.sqlite3'}"
     config = _config(database_url)
