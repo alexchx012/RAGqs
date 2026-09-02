@@ -37,7 +37,12 @@ from app.platform.context import current_context
 from app.platform.database import platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.persistence import FenceViolation, LeaseUnavailable
-from app.platform.worker import WorkerRuntime, create_worker_runtime
+from app.platform.worker import (
+    WorkerRuntime,
+    create_worker_runtime,
+    install_stop_signal_handlers,
+    restore_signal_handlers,
+)
 
 from .ops_service import BackupOpsService
 from .ports import ObjectManifestPort, ObjectSnapshotPort, PostgresBackupPort
@@ -1044,6 +1049,7 @@ def main() -> None:
     """Resident entry point: run the backup maintenance loop."""
     settings = load_platform_settings_for_main()
     worker_runtime = create_worker_runtime(settings)
+    stop_event, previous_handlers = install_stop_signal_handlers()
     try:
         worker = worker_runtime.runtime.resolve("backup_maintenance_worker")
         if not isinstance(worker, BackupMaintenanceWorker):
@@ -1051,8 +1057,10 @@ def main() -> None:
         worker.run_forever(
             owner=f"backup-worker:{_hostname()}",
             interval_seconds=settings.backup.schedule_interval_seconds,
+            stop=stop_event.is_set,
         )
     finally:
+        restore_signal_handlers(previous_handlers)
         worker_runtime.close()
 
 
