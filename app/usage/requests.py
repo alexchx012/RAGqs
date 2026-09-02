@@ -56,7 +56,8 @@
     cancel_reason/reviewed_at），持久化同一幂等 409 结果后提交；其余可审批路径复用
     lock/now 进行 append_credit 的 calendar_lock+now / reviewed_at / updated_at / audit
     occurred_at，再 append_credit（namespace=quota_request/source=request_id，同一 TxManager
-    connection）→ UPDATE request（version+1/approved/approver 快照/approved_pages/
+    connection）→ UPDATE request（version+1/approved/approver 快照（role+部门，
+    与 role snapshot 同源：AuthPrincipal，A58）/approved_pages/
     credit_entry_id/reviewed_at/updated_at）→ platform_audit INSERT（details_json={}，
     request_id=current_context().request_id or "req_system"）→
     outbox.enqueue(connection=tx.connection, ...) → commit_idempotency → 200。
@@ -76,7 +77,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import Engine, and_, func, select, update
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.documents.schema import knowledge_submissions_table
@@ -583,6 +584,7 @@ class QuotaRequestService:
                             status="approved",
                             approver_user_id=actor.user_id,
                             approver_role_snapshot=actor.role,
+                            approver_department_id=actor.department_id,
                             approved_pages=pages,
                             credit_entry_id=credit_id,
                             reviewed_at_utc=now,
@@ -629,6 +631,20 @@ class QuotaRequestService:
                     "Idempotency key was reused with a different request",
                     {},
                     409,
+                ) from exc
+            except IntegrityError:
+                # 契约保留：outbox 投递等写入冲突的 IntegrityError 原样上抛
+                # （投递插入失败回滚测试钉住该行为），不属于依赖读取失败。
+                raise
+            except SQLAlchemyError as exc:
+                # A58：审批依赖的 quota 投影/日历事实读取失败（连接、锁、
+                # 基础设施层错误）时整个事务已回滚；映射为可重试 503 而非 500。
+                raise PlatformError(
+                    "quota_approval_unavailable",
+                    "Quota approval dependencies cannot be read reliably right now",
+                    {},
+                    503,
+                    True,
                 ) from exc
         if cancelled_error is not None:
             raise cancelled_error
@@ -706,6 +722,7 @@ class QuotaRequestService:
                             status="rejected",
                             approver_user_id=actor.user_id,
                             approver_role_snapshot=actor.role,
+                            approver_department_id=actor.department_id,
                             reviewed_at_utc=now,
                             updated_at_utc=now,
                         )
@@ -743,6 +760,20 @@ class QuotaRequestService:
                     "Idempotency key was reused with a different request",
                     {},
                     409,
+                ) from exc
+            except IntegrityError:
+                # 契约保留：outbox 投递等写入冲突的 IntegrityError 原样上抛
+                # （投递插入失败回滚测试钉住该行为），不属于依赖读取失败。
+                raise
+            except SQLAlchemyError as exc:
+                # A58：审批依赖的 quota 投影/日历事实读取失败（连接、锁、
+                # 基础设施层错误）时整个事务已回滚；映射为可重试 503 而非 500。
+                raise PlatformError(
+                    "quota_approval_unavailable",
+                    "Quota approval dependencies cannot be read reliably right now",
+                    {},
+                    503,
+                    True,
                 ) from exc
         if cancelled_error is not None:
             raise cancelled_error

@@ -91,7 +91,7 @@ REGISTERED_ERROR_CODES = frozenset("""
     provider_unavailable public_graph_source_manifest_invalid
     public_graph_source_revision_not_found
     public_graph_source_unavailable public_source_manifest_invalid public_source_outbox_unavailable
-    quota_debit_not_found quota_event_outbox_unavailable quota_exceeded quota_request_not_approvable
+    quota_approval_unavailable quota_debit_not_found quota_event_outbox_unavailable quota_exceeded quota_request_not_approvable
     rate_limit_exceeded read_lease_unavailable reader_unavailable recipient_account_inactive
     recipient_role_mismatch refresh_reuse_detected release_gate_failed repair_target_not_found
     reranker_invalid_output reranker_rate_limited reranker_timeout reranker_unavailable restore_copy_failed restore_copy_mismatch restore_hold_missing
