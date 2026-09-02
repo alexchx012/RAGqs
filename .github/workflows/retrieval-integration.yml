@@ -1,0 +1,119 @@
+name: Retrieval Backend Integration
+
+# D10 scoping: the live retrieval backends are exercised only when a change can
+# affect them (backend code/tests, migrations, dependency or compose contract,
+# or this workflow). Frontend-only changes skip this workflow entirely; the
+# main core-platform.yml verify job keeps running for every change.
+"on":
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "tests/**"
+      - "alembic/**"
+      - "pyproject.toml"
+      - "docker-compose.yml"
+      - ".github/workflows/retrieval-integration.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "tests/**"
+      - "alembic/**"
+      - "pyproject.toml"
+      - "docker-compose.yml"
+      - ".github/workflows/retrieval-integration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  retrieval-integration:
+    name: Meilisearch + Milvus live backends
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Same endpoints and credentials the docker-compose.yml development stack
+    # and the tests' own defaults use.
+    env:
+      RAG_INDEX_SPARSE_URL: http://127.0.0.1:7700
+      RAG_INDEX_SPARSE_API_KEY: ragqs-dev-meili-key
+      RAG_INDEX_VECTOR_URI: http://127.0.0.1:19530
+    services:
+      meilisearch:
+        image: getmeili/meilisearch:v1.11
+        env:
+          MEILI_MASTER_KEY: ragqs-dev-meili-key
+          MEILI_ENV: development
+        ports:
+          - 7700:7700
+        options: >-
+          --health-cmd "curl -f http://localhost:7700/health"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 12
+      etcd:
+        image: quay.io/coreos/etcd:v3.5.16
+        env:
+          ETCD_AUTO_COMPACTION_MODE: revision
+          ETCD_AUTO_COMPACTION_RETENTION: "1000"
+          ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+          ETCD_SNAPSHOT_COUNT: "50000"
+        command: >-
+          etcd -advertise-client-urls=http://etcd:2379
+          -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+      milvus-minio:
+        image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+        env:
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin
+        command: minio server /minio_data
+      milvus:
+        image: milvusdb/milvus:v2.5.4
+        command: ["milvus", "run", "standalone"]
+        env:
+          ETCD_ENDPOINTS: etcd:2379
+          MINIO_ADDRESS: milvus-minio:9000
+        ports:
+          - 19530:19530
+          - 9091:9091
+        options: >-
+          --security-opt seccomp=unconfined
+          --health-cmd "curl -f http://localhost:9091/healthz"
+          --health-interval 15s
+          --health-timeout 20s
+          --health-retries 30
+          --health-start-period 90s
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked Python dependencies
+        run: uv sync --locked --extra dev --extra postgres
+      - name: Wait for retrieval backends
+        # The live tests skip themselves when a backend is unreachable; fail the
+        # job here instead so an infrastructure outage is never a silent pass.
+        run: |
+          set -eu
+          for _ in $(seq 1 60); do
+            if curl -fsS "$RAG_INDEX_SPARSE_URL/health" >/dev/null 2>&1 \
+              && curl -fsS "http://127.0.0.1:9091/healthz" >/dev/null 2>&1; then
+              echo "Meilisearch and Milvus are ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::retrieval backends did not become ready"
+          exit 1
+      - name: Run live sparse/vector backend tests
+        run: |
+          uv run --locked --extra dev --extra postgres python -m pytest \
+            tests/indexing/test_index_backends.py \
+            -k "real_meilisearch or real_milvus" \
+            -q -ra 2>&1 | tee pytest-retrieval.log
+          if grep -Eq "[0-9]+ skipped" pytest-retrieval.log; then
+            echo "::error::live backend test skipped; backends must be exercised"
+            exit 1
+          fi

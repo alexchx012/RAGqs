@@ -17,6 +17,11 @@ from app.outbox.schema import (
     outbox_delivery_table,
 )
 
+# Migration guard tests: the PostgreSQL trigger legs skip themselves when
+# RAGQS_TEST_POSTGRES_URL is unset; the marker keeps `-m "not integration"`
+# runs from paying for them at all.
+pytestmark = pytest.mark.integration
+
 
 def test_check_rejects_invalid_delivery_status() -> None:
     engine = build_engine()

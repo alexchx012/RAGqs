@@ -122,6 +122,8 @@ Every backup set has a stable `backup_id` that links:
 
 The customer backup profile must declare and audit PostgreSQL PITR/WAL use, base-backup cadence, object snapshot/versioning method, encryption/off-site policy, retention period, RPO, RTO, and restore-drill cadence. The reference profile proposes a daily base backup, 35-day retention, RPO no worse than 15 minutes, RTO no worse than four hours, and a quarterly restore drill; those values are deployment decisions rather than V1 business-contract constants.
 
+Boundary of the V1 application-side backup: the `ragqs-backup-maintenance` worker produces a logical snapshot — it exports every business table inside a single PostgreSQL `REPEATABLE READ` transaction and streams per-table JSONL archives into the backup namespace next to the per-key object snapshot. That is a consistent point-in-time logical copy, not a physical base backup: WAL archiving, PITR, and any LSN-anchored recovery position are responsibilities of the platform/database service, and the PostgreSQL side of a `backup_id` records the position the platform exposes. The reference RPO of no more than 15 minutes is guaranteed by that platform-side mechanism; the application-side logical snapshot is layered on top as the deployment-controlled recovery artifact and does not by itself bound the RPO.
+
 Recovery is always performed in this order:
 
 1. PostgreSQL.
@@ -253,7 +255,7 @@ operations:
 | Change | Action |
 | --- | --- |
 | Provider, model, model revision, tokenizer, quantization, hardware, endpoint, credential reference, sparse provider, analyzer, or schema | Create a new profile/release and, where an index is affected, a new staging index generation. Run capability and acceptance gates before activation. |
-| `BUSINESS_TIMEZONE` | Set before the first ledger entry. After a business calendar has facts, a different timezone rejects startup; there is no runtime edit. |
+| `RAG_BUSINESS_TIMEZONE` | Set before the first ledger entry. After a business calendar has facts, a different timezone rejects startup; there is no runtime edit. |
 | Document, user, notification, outbox, or index rollback retention | New values affect only newly materialized lifecycle records. Existing `purge_after_at`, `retire_after_at`, `compact_after_at`, and `rollback_until` values are not recomputed. |
 | Auth TTLs, lease values, heartbeat values, or ingress timeouts | Treat as a coordinated release with frontend, worker, and ingress validation. Do not hot-edit a running deployment. |
 | Resource replicas or capacity | Roll out through the platform after confirming the profile still satisfies isolation and rate-lane limits. |
@@ -261,16 +263,14 @@ operations:
 
 ### 4.2 Environment profiles
 
-The repository supports four environment profiles. They share contracts and configuration names, but they do not share production credentials or data namespaces.
+`RAG_PLATFORM_PROFILE` has exactly two values, `development` and `production`. Any further environment distinction (CI, staging, drill, or canary) is a deployment namespace decision made outside the platform profile, not a third profile value.
 
-| Environment | Purpose | Allowed provider/storage exceptions | Promotion rule |
-| --- | --- | --- | --- |
-| `dev` | Local functional work | SQLite and deterministic provider stubs are allowed; `IMAGE_VLM_PROVIDER=none` and `RERANKER_PROVIDER=none` are allowed only here and in CI/test. | Never promoted as production evidence. |
-| `ci` | Deterministic contract, migration, and compatibility gates | No live customer provider credential or customer object/data namespace. Stubs/fakes validate state machines and serialization. | Must prove migration/head, contract, and baseline validation gates. |
-| `staging` | Production-like acceptance and recovery rehearsal | Uses isolated non-production PostgreSQL/object/index namespaces. Real provider probes are permitted only with dedicated non-customer credentials. | Must pass provider, SSE, backup/restore, and index acceptance checks before production. |
-| `prod` | Customer-serving deployment | PostgreSQL and object storage are required fact sources; all production provider gates apply; `none` providers are rejected. | Uses immutable image/profile, release evidence, and an approved rollback/restore plan. |
+| Profile | Purpose | Consequences |
+| --- | --- | --- |
+| `development` | Local functional work and CI/test | SQLite and deterministic/memory provider stubs are allowed; `RAG_INDEX_IMAGE_VLM_PROVIDER=none` and `RAG_INDEX_RERANKER_PROVIDER=none` are allowed only here and in CI/test. |
+| `production` | Customer-serving deployment | PostgreSQL and an HTTPS object-storage endpoint are required; explicit business timezone, auth secret, allowed origins, administrator roster, and backup target namespace are required; fake or memory providers and `none` image-VLM/reranker providers are rejected; debug logging is rejected; cookies derive `Secure` from the profile. |
 
-Production and staging have different namespaces, secrets, backup sets, administrator manifests, and index generations. A staging success does not authorize reuse of its credentials or data-residency settings in production.
+Staging is a production-profile deployment in an isolated namespace: a staging environment runs `RAG_PLATFORM_PROFILE=production` with its own namespace, secrets, administrator manifest, backup sets, and index generations. Staging acceptance evidence (provider probes, SSE, backup/restore, index acceptance) is a promotion input for the production deployment; a staging success never authorizes reuse of its credentials or data-residency settings in production.
 
 ## 5. Production configuration registry
 
@@ -278,22 +278,22 @@ The deployment system must render a resolved value for every required field befo
 
 | Configuration | Production value or rule | Startup/change behavior |
 | --- | --- | --- |
-| `BUSINESS_TIMEZONE` | Valid IANA timezone from the customer profile | Missing/invalid rejects startup; immutable after the first ledger fact. |
-| `AUTH_ACCESS_TTL_SECONDS` | `900` | Fixed; changing requires an auth-compatible release. |
-| `AUTH_REFRESH_TTL_SECONDS` | `604800` | Fixed absolute family TTL; `AUTH_SESSION_TTL_SECONDS` is not accepted. |
-| `AUTH_REFRESH_REUSE_GRACE_SECONDS` | `5` | Fixed; applies only to the immediately consumed predecessor. |
+| `RAG_BUSINESS_TIMEZONE` | Valid IANA timezone from the customer profile | Missing/invalid rejects startup; immutable after the first ledger fact. |
+| `RAG_AUTH_ACCESS_TTL_SECONDS` | `900` | Fixed; changing requires an auth-compatible release. |
+| `RAG_AUTH_REFRESH_TTL_SECONDS` | `604800` | Fixed absolute family TTL; `AUTH_SESSION_TTL_SECONDS` is not accepted. |
+| `RAG_AUTH_REFRESH_REUSE_GRACE_SECONDS` | `5` | Fixed; applies only to the immediately consumed predecessor. |
 | `DOCUMENT_VERSION_RETENTION_DAYS` | `30` by reference profile | Positive integer; snapshotted when a version enters retention. |
 | `USER_DELETION_RETENTION_DAYS` | `30` by reference profile | Positive integer; snapshotted when deletion is accepted. |
 | `USER_DELETION_ARCHIVE_DIR` | Dedicated absolute writable encrypted path outside static/upload/direct-read roots | Missing, relative, inaccessible, or unsafe path rejects startup. |
-| `NOTIFICATION_RETENTION_DAYS` | `90` by reference profile | Positive integer; snapshotted at notification materialization. |
-| `OUTBOX_DELIVERED_RETENTION_DAYS` | `30` by reference profile | Positive integer; applies only after all deliveries are delivered. |
-| `INDEX_GENERATION_ROLLBACK_DAYS` | `7` by reference profile | Fixed into `rollback_until` when a generation is retired. |
-| `GENERATION_DISCONNECT_GRACE_SECONDS` | `60` by reference profile | Coordinated with the SSE lease and ingress timeout. |
-| `SPARSE_INDEX_PROVIDER` | `meilisearch` in the reference profile; `opensearch` is explicit alternative | Startup-only. A change requires a new generation and full acceptance. |
-| `IMAGE_VLM_PROVIDER` | `bailian` in the reference profile; `internvl` is explicit alternative | `none` is allowed only in development, CI, and test; production rejects it. |
-| `RERANKER_PROVIDER` | Registered vLLM implementation with both Qwen3 reranker stages | `none` is allowed only outside production; release must lock revision, checksum, quantization, tokenizer, and hardware. |
-| `JUDGE_PROVIDER`, `JUDGE_MODEL`, `JUDGE_MODE` | `bailian`, `qwen3.7-plus`, `non_thinking` | Production capability probe is mandatory; no fallback to another model or credential. |
-| `JUDGE_CREDENTIAL_REF` and `IMAGE_VLM_CREDENTIAL_REF` | Two distinct secret references | Missing, equal, or failed probes reject production startup. |
+| `RAG_OUTBOX_NOTIFICATION_RETENTION_DAYS` | `90` by reference profile | Positive integer; snapshotted at notification materialization. |
+| `RAG_OUTBOX_DELIVERED_RETENTION_DAYS` | `30` by reference profile | Positive integer; applies only after all deliveries are delivered. |
+| `RAG_INDEX_GENERATION_ROLLBACK_DAYS` | `7` by reference profile | Fixed into `rollback_until` when a generation is retired. |
+| `RAG_GENERATION_DISCONNECT_GRACE_SECONDS` | `60` by reference profile | Coordinated with the SSE lease and ingress timeout. |
+| `RAG_INDEX_SPARSE_PROVIDER` | `meilisearch` in the reference profile; `opensearch` is explicit alternative | Startup-only. A change requires a new generation and full acceptance. |
+| `RAG_INDEX_IMAGE_VLM_PROVIDER` | `bailian` in the reference profile; `internvl` is explicit alternative | `none` is allowed only in development, CI, and test; production rejects it. |
+| `RAG_INDEX_RERANKER_PROVIDER` | Registered vLLM implementation with both Qwen3 reranker stages | `none` is allowed only outside production; release must lock revision, checksum, quantization, tokenizer, and hardware. |
+| Judge provider, model, and mode | `bailian`, `qwen3.7-plus`, `non_thinking` — fixed platform values, not configuration keys | Production capability probe is mandatory; no fallback to another model or credential. |
+| `RAG_EVALUATION_JUDGE_CREDENTIAL_REF` and `RAG_INDEX_IMAGE_VLM_CREDENTIAL_REF` | Two distinct secret references | Missing, equal, or failed probes reject production startup. |
 | Provider resilience policy | Profile reference for absolute deadlines; fixed bounded attempts, waits, and circuit-breaker rules below | Missing deadlines, hidden retries, or a mismatched circuit scope reject the release. |
 | Worker policy references | Versioned ingestion/graph lease policy, generation policy, evaluation policy, and fixed outbox policy | Missing policy ownership, attempt budget, or reconcile/alert behavior rejects the release. |
 
