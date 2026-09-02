@@ -20,7 +20,13 @@ router = APIRouter(tags=["evaluation"])
 def evaluation_service(request: Request):
     service = request.app.state.platform_runtime.resolve("evaluation_service")
     if service is None:
-        raise RuntimeError("evaluation service is not configured")
+        raise PlatformError(
+            "evaluation_unavailable",
+            "The evaluation service is not configured",
+            {"retryable": True},
+            503,
+            True,
+        )
     return service
 
 

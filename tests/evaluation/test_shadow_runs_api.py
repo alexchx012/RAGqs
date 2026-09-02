@@ -173,3 +173,34 @@ def test_admin_can_read_run() -> None:
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
+
+
+def test_missing_evaluation_service_returns_retryable_503() -> None:
+    """A missing evaluation dependency is a 503, not an opaque 500."""
+
+    class _RuntimeWithoutEvaluation:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def resolve(self, name: str):
+            if name == "evaluation_service":
+                return None
+            return self._inner.resolve(name)
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+    env = build_test_env()
+    token, _, _ = _ops(env)
+    env["client"].app.state.platform_runtime = _RuntimeWithoutEvaluation(
+        env["client"].app.state.platform_runtime
+    )
+    response = _post_run(env, token, space_id="personal:user_1", key="k1")
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "evaluation_unavailable"
+    leaderboard = env["client"].get(
+        "/v1/evaluation/leaderboard",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert leaderboard.status_code == 503
+    assert leaderboard.json()["error"]["code"] == "evaluation_unavailable"

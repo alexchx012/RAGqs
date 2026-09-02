@@ -47,7 +47,7 @@ REGISTERED_ERROR_CODES = frozenset("""
     evaluation_judge_transport_error evaluation_judge_unavailable evaluation_leaderboard_forbidden
     evaluation_lease_lost evaluation_not_eligible evaluation_pair_expiry_unavailable
     evaluation_policy_invalid evaluation_retrieval_unavailable evaluation_run_forbidden
-    evaluation_space_unavailable event_id_conflict execution_recovery_exhausted
+    evaluation_space_unavailable evaluation_unavailable event_id_conflict execution_recovery_exhausted
     feedback_already_submitted feedback_not_available
     fence_conflict forbidden forbidden_target gc_blocked gc_operation_not_found
     generation_already_terminal generation_conflict generation_deadline_exceeded
