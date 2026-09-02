@@ -11,6 +11,11 @@ from sqlalchemy import create_engine, inspect, select, text
 from alembic import command
 from app.outbox.schema import OUTBOX_TABLE_NAMES
 
+# Migration/trigger contract tests: the PostgreSQL legs skip themselves when
+# RAGQS_TEST_POSTGRES_URL is unset; the marker keeps `-m "not integration"`
+# runs from paying for them at all.
+pytestmark = pytest.mark.integration
+
 
 def test_alembic_config_round_trips_percent_encoded_scoped_postgres_url() -> None:
     """Config.set_main_option must accept a percent-encoded, schema-scoped
