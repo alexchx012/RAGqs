@@ -565,7 +565,7 @@ function SubmissionRow({ submission, error, statusChanged, onView, onWithdraw, o
           )}
           {status === 'invalidated' && (
             <p className="mt-2 text-caption text-warning">
-              {copy.settings.knowledge.submissions.invalidatedReason}
+              {copy.settings.knowledge.submissions.invalidatedReason(submission.invalidated_reason)}
             </p>
           )}
           {error !== null && (

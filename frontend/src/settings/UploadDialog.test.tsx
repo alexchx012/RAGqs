@@ -157,6 +157,28 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
+
+  it('成功路径保留结果态：上传 Pill 复位可点、结果汇总常驻（A37）', async () => {
+    const api = createContractApi();
+    const user = userEvent.setup();
+    await renderUpload(api);
+
+    const file = new File(['%PDF-1.4'], '完成文档.pdf', { type: 'application/pdf' });
+    const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
+      selector: 'input',
+    }) as HTMLInputElement;
+    await user.upload(input, [file]);
+    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
+
+    // 成功后：Pill 回到「上传」可点（phase 不再被 finally 覆盖；done 持续至文件变更/重开），
+    // 逐文件结果与汇总常驻展示
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload })).toBeEnabled(),
+    );
+    expect(screen.getByText(copy.settings.knowledge.upload.resultSummary(1, 0))).toBeInTheDocument();
+    expect(screen.getByText(/已接收/)).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });
 
 describe('UploadDialog operation token（review A2：A 迟到 completion 不污染 B）', () => {

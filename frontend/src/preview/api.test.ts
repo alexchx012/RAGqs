@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ApiClient } from '../api/client';
+import type { ApiClient, BlobApiRequestOptions, JsonApiRequestOptions } from '../api/client';
 import { createPreviewApi } from './api';
+
+/** request double 签名：显式带 options 形参，便于对调用参数断言（对齐 settings/api.test.ts 先例）。 */
+type ApiRequestDouble = (
+  path: string,
+  options?: JsonApiRequestOptions | BlobApiRequestOptions,
+) => Promise<unknown>;
 
 function clientStub(): ApiClient {
   return {
@@ -8,6 +14,20 @@ function clientStub(): ApiClient {
     request: vi.fn(),
   } as unknown as ApiClient;
 }
+
+describe('原件 blob 下载显式大超时（A17）', () => {
+  it('getTextContent / getImageContent：timeoutMs 显式 120s（不走基座默认 10s）', async () => {
+    const request = vi.fn<ApiRequestDouble>(async () => new Blob(['x']));
+    const api = createPreviewApi({
+      captureAuthSessionGuard: vi.fn(),
+      request,
+    } as unknown as ApiClient);
+    await api.getTextContent('doc_1');
+    await api.getImageContent('doc_2');
+    expect(request.mock.calls[0]?.[1]).toMatchObject({ responseType: 'blob', timeoutMs: 120_000 });
+    expect(request.mock.calls[1]?.[1]).toMatchObject({ responseType: 'blob', timeoutMs: 120_000 });
+  });
+});
 
 describe('预览内容 URL', () => {
   const api = createPreviewApi(clientStub());

@@ -8,6 +8,7 @@ import { createNotificationsApi } from './notifications/api';
 import { NotificationsProvider } from './notifications/NotificationsProvider';
 import { NotificationsStore } from './notifications/store';
 import { AppRoutes } from './router/AppRoutes';
+import { AppErrorBoundary } from './shell/AppErrorBoundary';
 import { createDrawerRegistry, DrawerRegistryProvider } from './shell/drawer/DrawerRegistryProvider';
 import { createSettingsApi } from './settings/api';
 import { SettingsProvider } from './settings/SettingsProvider';
@@ -26,28 +27,31 @@ const drawerRegistry = createDrawerRegistry();
 
 export function App() {
   return (
-    // useTransitions=false：location 更新同步提交（RR 默认包 startTransition）。
-    // 否则快速连切模块/下钻时，模块挂载数据加载等 urgent 更新反复抢占 transition 渲染，
-    // URL（pushState 同步）与抽屉 UI（高亮/页头/内容）错位 100–300ms（fix-drawer-nav-highlight-race）。
-    <BrowserRouter useTransitions={false}>
-      <AuthProvider store={auth.store}>
-        <SettingsProvider
-          api={settingsApi}
-          authStore={auth.store}
-          theme={theme}
-          notifications={notifications}
-        >
-          <AdminProvider api={adminApi}>
-            <EscStackProvider>
-              <DrawerRegistryProvider registry={drawerRegistry}>
-                <NotificationsProvider store={notifications}>
-                  <AppRoutes />
-                </NotificationsProvider>
-              </DrawerRegistryProvider>
-            </EscStackProvider>
-          </AdminProvider>
-        </SettingsProvider>
-      </AuthProvider>
-    </BrowserRouter>
+    // 顶层 ErrorBoundary（A18）：任一子树渲染异常显示可恢复提示而非白屏（AppRoutes 及各 provider 外层）
+    <AppErrorBoundary>
+      {/* useTransitions=false：location 更新同步提交（RR 默认包 startTransition）。
+          否则快速连切模块/下钻时，模块挂载数据加载等 urgent 更新反复抢占 transition 渲染，
+          URL（pushState 同步）与抽屉 UI（高亮/页头/内容）错位 100–300ms（fix-drawer-nav-highlight-race）。 */}
+      <BrowserRouter useTransitions={false}>
+        <AuthProvider store={auth.store}>
+          <SettingsProvider
+            api={settingsApi}
+            authStore={auth.store}
+            theme={theme}
+            notifications={notifications}
+          >
+            <AdminProvider api={adminApi}>
+              <EscStackProvider>
+                <DrawerRegistryProvider registry={drawerRegistry}>
+                  <NotificationsProvider store={notifications}>
+                    <AppRoutes />
+                  </NotificationsProvider>
+                </DrawerRegistryProvider>
+              </EscStackProvider>
+            </AdminProvider>
+          </SettingsProvider>
+        </AuthProvider>
+      </BrowserRouter>
+    </AppErrorBoundary>
   );
 }

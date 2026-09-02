@@ -320,27 +320,30 @@ export class ChatStore {
     return this.createConversation();
   }
 
-  async patchConversation(id: string, patch: { title?: string; pinned?: boolean; group_id?: string | null }): Promise<void> {
+  async patchConversation(id: string, patch: { title?: string; pinned?: boolean; group_id?: string | null }): Promise<boolean> {
     try {
       await this.deps.api.patchConversation(id, patch);
       await this.loadConversationList();
       if (this.state.conversationId === id && (patch.title !== undefined || patch.pinned !== undefined)) {
         await this.refreshConversation();
       }
+      return true;
     } catch {
-      // 列表操作失败静默：下次 load 收敛
+      // 失败不再静默：返回 false，由侧栏调用方轻提示（A38），列表待下次 load 收敛
+      return false;
     }
   }
 
-  async deleteConversation(id: string): Promise<void> {
+  async deleteConversation(id: string): Promise<boolean> {
     try {
       await this.deps.api.deleteConversation(id);
       if (this.state.conversationId === id) {
         this.setState({ conversation: null, conversationId: null, messages: [], session: null });
       }
       await this.loadConversationList();
+      return true;
     } catch {
-      // 静默
+      return false;
     }
   }
 
@@ -355,21 +358,23 @@ export class ChatStore {
     }
   }
 
-  async patchGroup(id: string, name: string): Promise<void> {
+  async patchGroup(id: string, name: string): Promise<boolean> {
     try {
       await this.deps.api.patchConversationGroup(id, name);
       await this.loadConversationList();
+      return true;
     } catch {
-      // 静默
+      return false;
     }
   }
 
-  async deleteGroup(id: string): Promise<void> {
+  async deleteGroup(id: string): Promise<boolean> {
     try {
       await this.deps.api.deleteConversationGroup(id);
       await this.loadConversationList();
+      return true;
     } catch {
-      // 静默
+      return false;
     }
   }
 

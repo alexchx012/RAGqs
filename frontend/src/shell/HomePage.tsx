@@ -9,6 +9,7 @@
  * ChatStore 在此以惰性 useState 装配（复用 auth 会话层 single-flight refresh 与 token）。
  * 优化输入（prompt-enhance §3.2）：无条件注入真实端点（createPromptEnhanceHandler），
  * 失败经 HeaderNotice 轻提示 + composer 还原原文，用户中止静默。
+ * 侧栏会话/分组 patch·delete 失败经 HeaderNotice 轻提示（A38）：store 返回 false，不再静默吞错。
  */
 
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
@@ -149,9 +150,17 @@ function ChatHomeInner({
   const [spaces, setSpaces] = useState<readonly import('../chat/types').SpaceItem[]>([]);
   // 优化输入失败轻提示（HeaderNotice 3s 自动淡出；seq 递增加 key 重挂载，连续失败重新计时）
   const [enhanceFailedSeq, setEnhanceFailedSeq] = useState(0);
+  // 侧栏会话/分组 patch·delete 失败轻提示（A38：store 返回 false 时，不再静默吞错）
+  const [sidebarActionFailedSeq, setSidebarActionFailedSeq] = useState(0);
   // 优化输入（prompt-enhance §3.2）：无条件真实端点；失败弹提示后 rethrow（composer 还原原文），
   // 用户中止（还原/卸载）静默。setState 函数引用稳定，handler 每渲染新建无妨
   const onEnhance = createPromptEnhanceHandler(chatApi, () => setEnhanceFailedSeq((seq) => seq + 1));
+  /** 侧栏列表操作（重命名/置顶/移组/删除）：失败（false）弹 HeaderNotice 轻提示。 */
+  const runSidebarAction = async (action: () => Promise<boolean>): Promise<void> => {
+    if (!(await action())) {
+      setSidebarActionFailedSeq((seq) => seq + 1);
+    }
+  };
 
   // 首次挂载：拉会话列表 + 检索空间；随后自动打开最近会话（登录落地恢复）
   useEffect(() => {
@@ -271,12 +280,12 @@ function ChatHomeInner({
         onSearchChange={(query) => store.setSearchQuery(query)}
         onNewConversation={() => void newConversation()}
         onOpen={openConversation}
-        onRename={(id, title) => void store.patchConversation(id, { title })}
-        onTogglePin={(id, pinned) => void store.patchConversation(id, { pinned })}
-        onMoveToGroup={(id, groupId) => void store.patchConversation(id, { group_id: groupId })}
-        onDelete={(id) => void store.deleteConversation(id)}
-        onRenameGroup={(groupId, name) => void store.patchGroup(groupId, name)}
-        onDeleteGroup={(groupId) => void store.deleteGroup(groupId)}
+        onRename={(id, title) => void runSidebarAction(() => store.patchConversation(id, { title }))}
+        onTogglePin={(id, pinned) => void runSidebarAction(() => store.patchConversation(id, { pinned }))}
+        onMoveToGroup={(id, groupId) => void runSidebarAction(() => store.patchConversation(id, { group_id: groupId }))}
+        onDelete={(id) => void runSidebarAction(() => store.deleteConversation(id))}
+        onRenameGroup={(groupId, name) => void runSidebarAction(() => store.patchGroup(groupId, name))}
+        onDeleteGroup={(groupId) => void runSidebarAction(() => store.deleteGroup(groupId))}
         onCreateGroup={(name) => store.createGroup(name)}
         onRetryLoad={() => void store.loadConversationList()}
         onOpenDrawer={onOpenDrawer}
@@ -297,17 +306,27 @@ function ChatHomeInner({
                 </p>
               </div>
             )}
-            {/* 优化输入失败轻提示：悬浮覆盖在对话上层（不推挤布局），w-fit 居中，3s 后淡出 */}
-            {enhanceFailedSeq > 0 && (
+            {/* 轻提示层（悬浮于对话上层，不推挤布局；各自 3s 后淡出）：
+                优化输入失败 + 侧栏会话/分组操作失败（A38） */}
+            {(enhanceFailedSeq > 0 || sidebarActionFailedSeq > 0) && (
               <div
-                key={enhanceFailedSeq}
-                className="chat-notice-enter pointer-events-none absolute inset-x-0 top-4 z-20 flex justify-center"
+                key={`${enhanceFailedSeq}:${sidebarActionFailedSeq}`}
+                className="chat-notice-enter pointer-events-none absolute inset-x-0 top-4 z-20 flex flex-col items-center gap-2"
               >
-                <HeaderNotice
-                  intent="danger"
-                  message={copy.chat.composer.enhanceFailed}
-                  onDismiss={() => setEnhanceFailedSeq(0)}
-                />
+                {enhanceFailedSeq > 0 && (
+                  <HeaderNotice
+                    intent="danger"
+                    message={copy.chat.composer.enhanceFailed}
+                    onDismiss={() => setEnhanceFailedSeq(0)}
+                  />
+                )}
+                {sidebarActionFailedSeq > 0 && (
+                  <HeaderNotice
+                    intent="danger"
+                    message={copy.chat.sidebar.actionFailed}
+                    onDismiss={() => setSidebarActionFailedSeq(0)}
+                  />
+                )}
               </div>
             )}
             <MessageList

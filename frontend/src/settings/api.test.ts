@@ -260,6 +260,21 @@ describe('设置域 API 封装（账户基座）', () => {
   });
 });
 
+describe('大文件传输显式超时（A17）', () => {
+  it('uploadDocuments / uploadNewVersion / getSubmissionContent：timeoutMs 显式 120s（不走基座默认 10s）', async () => {
+    const { client, request } = createClientDouble();
+    const api = createSettingsApi(client);
+
+    await api.uploadDocuments('personal:u_1', [new File(['a'], 'a.pdf', { type: 'application/pdf' })], 'idem-t-1');
+    await api.uploadNewVersion('doc_1', new File(['b'], 'b.pdf', { type: 'application/pdf' }), 1, 'idem-t-2');
+    await api.getSubmissionContent('sub_1');
+
+    expect(request.mock.calls[0]?.[1]).toMatchObject({ timeoutMs: 120_000 });
+    expect(request.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 120_000 });
+    expect(request.mock.calls[2]?.[1]).toMatchObject({ timeoutMs: 120_000 });
+  });
+});
+
 describe('设置域 API 敏感 mutation 的 authSessionGuard', () => {
   it('createSettingsApi 工厂创建时不调用 captureAuthSessionGuard', () => {
     const { client, captureAuthSessionGuard } = createClientDouble();

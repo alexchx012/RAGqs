@@ -404,4 +404,35 @@ describe('优化输入（真实端点接线）', () => {
       await screen.findByRole('button', { name: copy.chat.composer.enhancePrompt }),
     ).toBeInTheDocument();
   });
+
+  it('侧栏会话重命名失败：HeaderNotice 轻提示，不再静默吞错（A38）', async () => {
+    mockServer.use(
+      http.patch('/v1/conversations/:id', () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'internal_error',
+              message: 'internal_error',
+              details: {},
+              request_id: 'req_mock_sidebar',
+            },
+          },
+          { status: 500 },
+        ),
+      ),
+    );
+    const store = await createAuthedChatStore();
+    renderWithShell(<AppRoutes />, store, ['/']);
+    const user = userEvent.setup();
+    await landingComposer();
+    // c_1（年假怎么休）条目 ⋯ 菜单 → 重命名 → 提交新标题 → PATCH 500
+    screen.getByRole('button', { name: copy.chat.sidebar.itemMenuAria('年假怎么休') }).focus();
+    await user.keyboard('{Enter}');
+    await user.click(await screen.findByText(copy.chat.sidebar.menuRename));
+    const input = screen.getByPlaceholderText(copy.chat.sidebar.renamePlaceholder);
+    await user.clear(input);
+    await user.type(input, '改名失败');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText(copy.chat.sidebar.actionFailed)).toBeInTheDocument();
+  });
 });

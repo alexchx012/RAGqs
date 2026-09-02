@@ -628,7 +628,8 @@ export class MockKnowledgeController {
       }
       return { upload_batch_id: uploadBatchId, items };
     }
-    return { items };
+    // 纯投稿分支：后端契约（A55）顶层显式补 upload_batch_id: null 占位，与真实后端一致
+    return { upload_batch_id: null, items };
   }
 
   /* ---------- §6.4 上传新版本 ---------- */
@@ -1189,7 +1190,7 @@ export class MockKnowledgeController {
     }
     // 投稿人部门归属或贡献资格已变化：后端已置 invalidated，details 带最新 version。
     if (submission.scopeChanged) {
-      this.markSubmissionInvalidated(submission, 'scope_changed');
+      this.markSubmissionInvalidated(submission, 'submitter_contribution_revoked');
       throw new MockHttpError(409, 'submission_scope_changed', { version: submission.version });
     }
     // 投稿人账号已冻结：投稿进入 invalidated，审核侧刷新列表。
@@ -1339,7 +1340,7 @@ export class MockKnowledgeController {
     this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '入职指引图文版.pdf', 'pdf', 2560, '2026-07-20T01:00:00Z', { submitterDepartment: finance, status: 'approved' });
     this.seedSubmission('u_user', 'zhangsan', 'public', '公共库', '部门团建方案.docx', 'word', 900, '2026-07-18T02:00:00Z', { submitterDepartment: finance, status: 'rejected', rejectReason: '内容与公共库现有文档重复' });
     this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '废弃的预算草稿.xlsx', 'excel', 700, '2026-07-15T03:00:00Z', { submitterDepartment: finance, status: 'withdrawn' });
-    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '过期报销模板.docx', 'word', 600, '2026-07-10T04:00:00Z', { submitterDepartment: finance, status: 'invalidated', invalidatedReason: 'submission_scope_changed' });
+    this.seedSubmission('u_user', 'zhangsan', 'department:d_finance', '财务部', '过期报销模板.docx', 'word', 600, '2026-07-10T04:00:00Z', { submitterDepartment: finance, status: 'invalidated', invalidatedReason: 'identity_authorization_changed' });
 
     // 上传结果层任务卡种子（u_user 个人库）：解析中 / 已入库（含低置信标记）/ 失败，覆盖卡状态呈现
     this.seedUploadJob({ name: '扫描合同副本.pdf', spaceId: 'personal:u_user', state: 'running', stage: 'parsing', minutesAgo: 12 });

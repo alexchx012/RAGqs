@@ -473,6 +473,40 @@ describe('会话状态机（ChatStore）', () => {
       inGroup = store.getState().conversations.find((item) => item.id === 'c_1');
       expect(inGroup?.group_id).toBeNull();
     });
+
+    it('会话/分组 patch·delete 返回布尔结果：成功 true，失败 false（A38：失败可被调用方感知）', async () => {
+      const { store: okStore } = makeStore();
+      expect(await okStore.patchConversation('c_1', { title: '改名' })).toBe(true);
+      expect(await okStore.deleteConversation('c_ab')).toBe(true);
+      const api = createChatApi(
+        createApiClient({ getAccessToken: () => 'tok_1', refresh: async () => 'tok_1' }),
+      );
+      const failing = {
+        ...api,
+        patchConversation: vi.fn(async () => {
+          throw new ApiError({ status: 500, code: 'internal_error', message: '', details: {}, requestId: null });
+        }),
+        deleteConversation: vi.fn(async () => {
+          throw new Error('network down');
+        }),
+        patchConversationGroup: vi.fn(async () => {
+          throw new Error('network down');
+        }),
+        deleteConversationGroup: vi.fn(async () => {
+          throw new Error('network down');
+        }),
+      } as unknown as ChatApi;
+      const failingStore = new ChatStore({
+        api: failing,
+        getToken: () => 'tok_1',
+        refresh: async () => 'tok_1',
+        getReducedMotion: () => true,
+      });
+      expect(await failingStore.patchConversation('c_1', { title: '改名' })).toBe(false);
+      expect(await failingStore.deleteConversation('c_1')).toBe(false);
+      expect(await failingStore.patchGroup('g_1', '改名')).toBe(false);
+      expect(await failingStore.deleteGroup('g_1')).toBe(false);
+    });
   });
 
   describe('openOrCreateNewConversation：新会话全局限一', () => {
