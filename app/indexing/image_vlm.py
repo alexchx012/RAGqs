@@ -15,8 +15,9 @@ import json
 import re
 import struct
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from threading import BoundedSemaphore
 from typing import Any
 
 from app.platform.errors import PlatformError
@@ -252,7 +253,14 @@ class BailianImageDescriber:
 
 
 class InternVLImageDescriber:
-    """Deployed InternVL endpoint profile: local usage only, no product quota."""
+    """Deployed InternVL endpoint profile: local usage only, no product quota.
+
+    Deployment profile constraints (A69): ``concurrency`` caps in-flight requests
+    with a semaphore (additional callers wait up to the timeout, then fail 503);
+    ``max_input_bytes`` rejects oversized payloads before any transport call;
+    devices / VRAM travel as profile facts on every transport call so an injected
+    transport can verify the deployment shape.
+    """
 
     provider = "internvl"
 
@@ -264,23 +272,75 @@ class InternVLImageDescriber:
         model: str,
         revision: str = "",
         timeout_seconds: int = 120,
+        devices: Sequence[str] = (),
+        vram_gb: float | None = None,
+        concurrency: int = 4,
+        max_input_bytes: int | None = None,
         usage_sink: _UsageSink | None = None,
         transport: _Transport | None = None,
     ) -> None:
+        if concurrency < 1:
+            raise ValueError("internvl concurrency must be positive")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
         self._revision = revision
         self._timeout_seconds = float(timeout_seconds)
+        self._devices = tuple(str(device) for device in devices)
+        self._vram_gb = float(vram_gb) if vram_gb is not None else None
+        self._concurrency = int(concurrency)
+        self._max_input_bytes = int(max_input_bytes) if max_input_bytes is not None else None
         self._usage_sink = usage_sink
-        self._transport = (
+        self._concurrency_slots = BoundedSemaphore(self._concurrency)
+        self._transport = self._with_profile_facts(
             transport
             or BailianImageDescriber(
                 base_url=base_url, api_key=api_key or "", model=model
             )._http_transport
         )
 
+    @property
+    def profile(self) -> dict[str, Any]:
+        """Deployment profile facts carried by this describer."""
+
+        return {
+            "devices": list(self._devices),
+            "vram_gb": self._vram_gb,
+            "concurrency": self._concurrency,
+            "max_input_bytes": self._max_input_bytes,
+        }
+
+    def _with_profile_facts(self, transport: _Transport) -> _Transport:
+        def transport_with_profile(
+            url: str, payload: str, headers: Mapping[str, str], options: Mapping[str, Any]
+        ) -> Mapping[str, Any]:
+            return transport(
+                url, payload, headers, {**options, "internvl_profile": dict(self.profile)}
+            )
+
+        return transport_with_profile
+
     def __call__(self, content: bytes, context: Mapping[str, Any]) -> ImageDescriptionResult:
+        if self._max_input_bytes is not None and len(content) > self._max_input_bytes:
+            raise PlatformError(
+                "image_input_too_large",
+                "InternVL image input exceeds the configured maximum",
+                {"max_input_bytes": self._max_input_bytes, "actual_bytes": len(content)},
+                422,
+            )
+        if not self._concurrency_slots.acquire(timeout=self._timeout_seconds):
+            raise PlatformError(
+                "image_provider_unavailable",
+                "InternVL endpoint concurrency limit is saturated",
+                {"concurrency": self._concurrency},
+                503,
+            )
+        try:
+            return self._describe(content, context)
+        finally:
+            self._concurrency_slots.release()
+
+    def _describe(self, content: bytes, context: Mapping[str, Any]) -> ImageDescriptionResult:
         def local_usage_sink(fact: Mapping[str, Any]) -> None:
             if self._usage_sink is not None:
                 self._usage_sink(

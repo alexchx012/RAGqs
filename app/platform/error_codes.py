@@ -62,8 +62,9 @@ REGISTERED_ERROR_CODES = frozenset("""
     graph_provider_dispatch_failed graph_provider_schema_invalid graph_receipt_not_activated
     graph_receipt_verification_unavailable graph_release_not_activated graph_source_changed
     graph_source_empty graph_stage_grant_expired graph_stage_grant_invalid graph_stale
-    graph_unavailable idempotency_in_progress idempotency_key_conflict image_provider_schema_error
-    image_provider_timeout image_provider_unavailable inbox_version_conflict index_release_blocked
+    graph_unavailable idempotency_in_progress idempotency_key_conflict image_input_too_large
+    image_provider_schema_error image_provider_timeout image_provider_unavailable
+    inbox_version_conflict index_release_blocked
     index_stage_failed index_stage_not_found indexing_publish_failed indexing_usage_context_invalid
     invalid_aggregate_type invalid_credentials invalid_event_payload invalid_password_rule
     invalid_processing_receipt invalid_quota_outbox_event invalid_recipient_kind

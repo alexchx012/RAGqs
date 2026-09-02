@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -552,3 +554,165 @@ def test_production_bailian_vlm_requires_base_url_and_api_key(tmp_path) -> None:
         load_platform_settings(dict(base))
     with pytest.raises(ValueError, match="API key"):
         load_platform_settings({**base, "RAG_INDEX_IMAGE_VLM_BASE_URL": "https://b.example"})
+
+
+# ---------------------------------------------------------------------------
+# A69: InternVL deployment profile (devices / VRAM / concurrency / max input)
+# ---------------------------------------------------------------------------
+
+
+def _internvl_environment(**overrides: str) -> dict[str, str]:
+    values: dict[str, str] = {
+        "RAG_PLATFORM_PROFILE": "development",
+        "RAG_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+        "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+        "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+        "RAG_PROVIDER_NAME": "fake",
+        "RAG_INDEX_IMAGE_VLM_PROVIDER": "internvl",
+        "RAG_INDEX_IMAGE_VLM_BASE_URL": "https://internvl.example/v1",
+        "RAG_INDEX_IMAGE_VLM_MODEL": "InternVL-3",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_internvl_profile_keys_parse_from_environment() -> None:
+    settings = load_platform_settings(
+        _internvl_environment(
+            RAG_INDEX_IMAGE_VLM_DEVICES="cuda:0,cuda:1",
+            RAG_INDEX_IMAGE_VLM_VRAM_GB="48",
+            RAG_INDEX_IMAGE_VLM_CONCURRENCY="8",
+            RAG_INDEX_IMAGE_VLM_MAX_INPUT_BYTES="10485760",
+        )
+    )
+    assert settings.index.image_vlm_devices == ("cuda:0", "cuda:1")
+    assert settings.index.image_vlm_vram_gb == 48.0
+    assert settings.index.image_vlm_concurrency == 8
+    assert settings.index.image_vlm_max_input_bytes == 10485760
+
+    defaults = load_platform_settings(_internvl_environment())
+    assert defaults.index.image_vlm_devices == ()
+    assert defaults.index.image_vlm_vram_gb is None
+    assert defaults.index.image_vlm_concurrency == 4
+    assert defaults.index.image_vlm_max_input_bytes is None
+
+
+def _internvl_capture_transport(
+    captured: list[dict[str, Any]], response: dict[str, Any] | None = None
+):
+    payload = response or {
+        "choices": [{"message": {"content": "A chart"}}],
+        "usage": {"input_tokens": 10},
+    }
+
+    def transport(url, payload_body, headers, options):
+        captured.append(
+            {
+                "url": url,
+                "payload": json.loads(payload_body),
+                "headers": headers,
+                "options": dict(options),
+            }
+        )
+        return payload
+
+    return transport
+
+
+def test_internvl_profile_facts_reach_transport() -> None:
+    captured: list[dict[str, Any]] = []
+    describer = InternVLImageDescriber(
+        base_url="https://internvl.example",
+        model="InternVL-3",
+        revision="r1",
+        devices=("cuda:0", "cuda:1"),
+        vram_gb=48.0,
+        concurrency=8,
+        transport=_internvl_capture_transport(captured),
+    )
+
+    result = describer(b"image-bytes", {"caption": "Chart"})
+
+    assert result.provider == "internvl"
+    # 设备/显存作为 profile 事实随每次 transport 调用传递（mock 可注入验证）。
+    assert captured[0]["options"]["internvl_profile"] == {
+        "devices": ["cuda:0", "cuda:1"],
+        "vram_gb": 48.0,
+        "concurrency": 8,
+        "max_input_bytes": None,
+    }
+    assert describer.profile["devices"] == ["cuda:0", "cuda:1"]
+
+
+def test_internvl_max_input_bytes_rejects_before_transport() -> None:
+    captured: list[dict[str, Any]] = []
+    describer = InternVLImageDescriber(
+        base_url="https://internvl.example",
+        model="InternVL-3",
+        max_input_bytes=8,
+        transport=_internvl_capture_transport(captured),
+    )
+
+    with pytest.raises(PlatformError) as error:
+        describer(b"123456789", {})
+
+    assert error.value.code == "image_input_too_large"
+    assert error.value.details == {"max_input_bytes": 8, "actual_bytes": 9}
+    assert captured == []
+
+
+def test_internvl_concurrency_caps_inflight_transports() -> None:
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
+    response = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    def transport(url, payload_body, headers, options):
+        del url, payload_body, headers, options
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        time.sleep(0.05)
+        with lock:
+            state["active"] -= 1
+        return response
+
+    describer = InternVLImageDescriber(
+        base_url="https://internvl.example",
+        model="InternVL-3",
+        concurrency=2,
+        timeout_seconds=10,
+        transport=transport,
+    )
+    threads = [threading.Thread(target=describer, args=(b"image-bytes", {})) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert all(not thread.is_alive() for thread in threads)
+
+    assert state["peak"] <= 2
+
+
+def test_runtime_wires_internvl_profile_into_describer() -> None:
+    from app.platform.runtime import build_runtime
+
+    settings = load_platform_settings(
+        _internvl_environment(
+            RAG_INDEX_IMAGE_VLM_DEVICES="cuda:0,cuda:1",
+            RAG_INDEX_IMAGE_VLM_VRAM_GB="48",
+            RAG_INDEX_IMAGE_VLM_CONCURRENCY="8",
+            RAG_INDEX_IMAGE_VLM_MAX_INPUT_BYTES="10485760",
+        )
+    )
+    runtime = build_runtime(settings)
+    try:
+        describer = runtime.resolve("indexing_image_describer")
+        assert isinstance(describer, InternVLImageDescriber)
+        assert describer.profile == {
+            "devices": ["cuda:0", "cuda:1"],
+            "vram_gb": 48.0,
+            "concurrency": 8,
+            "max_input_bytes": 10485760,
+        }
+    finally:
+        runtime.close()

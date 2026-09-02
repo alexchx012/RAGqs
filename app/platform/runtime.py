@@ -531,6 +531,10 @@ def build_runtime(
                 model=settings.index.image_vlm_model,
                 revision=settings.index.image_vlm_revision,
                 timeout_seconds=settings.index.image_vlm_timeout_seconds,
+                devices=settings.index.image_vlm_devices,
+                vram_gb=settings.index.image_vlm_vram_gb,
+                concurrency=settings.index.image_vlm_concurrency,
+                max_input_bytes=settings.index.image_vlm_max_input_bytes,
             )
         elif vlm_provider == "none":
             image_describer = NoneImageDescriber(environment=settings.profile)
