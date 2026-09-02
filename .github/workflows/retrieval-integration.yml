@@ -108,6 +108,10 @@ jobs:
           echo "::error::retrieval backends did not become ready"
           exit 1
       - name: Run live sparse/vector backend tests
+        # Explicit bash: GitHub Actions runs it with -eo pipefail, so the step
+        # fails on a real pytest failure/collect error even though the pipeline
+        # ends in tee (M-11: a masked failure would otherwise stay green).
+        shell: bash
         run: |
           uv run --locked --extra dev --extra postgres python -m pytest \
             tests/indexing/test_index_backends.py \
