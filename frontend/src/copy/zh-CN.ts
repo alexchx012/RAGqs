@@ -328,7 +328,27 @@ export const zhCN = {
           invalidated: '已失效', // 措辞后定：警告琥珀
         },
         rejectReason: (reason: string) => `驳回原因：${reason}`, // 措辞后定：tag 下方
-        invalidatedReason: '因规则变更或内容问题已失效，如需重新提交请删除后重新上传', // 措辞后定：机器原因固定提示
+        // 失效机器原因映射（契约 §6.10 invalidated_reason；后端实际字符串集，逐个固定文案；
+        // 未知/缺失原因回退通用文案，不回显机读原串）
+        invalidatedReason: (reason: string | null): string => {
+          switch (reason) {
+            case 'submitter_pending_delete':
+            case 'account_pending_delete':
+              return '提交者账号正在注销，该投稿已失效'; // 措辞后定
+            case 'submitter_deleted':
+              return '提交者账号已删除，该投稿已失效'; // 措辞后定
+            case 'submitter_contribution_revoked':
+              return '提交者已失去目标空间的投稿权限，该投稿已失效'; // 措辞后定
+            case 'space_not_writable':
+              return '目标空间不再接受投稿，该投稿已失效'; // 措辞后定
+            case 'private_object_unavailable':
+              return '投稿文件暂不可用，该投稿已失效'; // 措辞后定
+            case 'identity_authorization_changed':
+              return '提交者的身份或权限已变更，该投稿已失效'; // 措辞后定
+            default:
+              return '因规则变更或内容问题已失效，如需重新提交请删除后重新上传'; // 措辞后定：未知原因通用兜底
+          }
+        },
         targetSpace: (name: string) => `目标：${name}`, // 措辞后定
         submittedAt: (value: string) => `投稿于 ${value}`, // 措辞后定
         viewContent: '查看内容', // 措辞后定

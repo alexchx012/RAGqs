@@ -95,7 +95,7 @@ afterEach(() => {
 });
 
 describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', () => {
-  it('显示投稿目标空间与失效原因', async () => {
+  it('显示投稿目标空间与失效原因（机器原因映射固定文案）', async () => {
     const api = createContractApi();
 
     await renderLayer(api);
@@ -103,7 +103,32 @@ describe('SubmissionsLayer 我的投稿层（经契约 mock 真实运行）', ()
     expect(
       (await screen.findAllByText(copy.settings.knowledge.submissions.targetSpace('财务部'))).length,
     ).toBeGreaterThan(0);
-    expect(screen.getByText(copy.settings.knowledge.submissions.invalidatedReason)).toBeInTheDocument();
+    // 种子失效原因 identity_authorization_changed → 身份/权限变更固定文案（A11）
+    expect(
+      screen.getByText(copy.settings.knowledge.submissions.invalidatedReason('identity_authorization_changed')),
+    ).toBeInTheDocument();
+  });
+
+  it('未知失效机器原因回退通用文案（A11 兜底，不回显机读原串）', async () => {
+    const api = createContractApi();
+    const { accessToken } = mockAuth.login('zhangsan', 'password123', 'direct');
+    const upload = await mockKnowledge.uploadDocuments(
+      `Bearer ${accessToken}`,
+      'public',
+      [{ name: '未知原因稿.md', size: 5, type: 'text/markdown' }],
+      'idem-invalidate-1',
+    );
+    const uploaded = upload.items[0];
+    if (uploaded?.accepted === true && 'submission_id' in uploaded) {
+      mockKnowledge.invalidateSubmission(`Bearer ${accessToken}`, uploaded.submission_id, 'future_unknown_reason');
+    }
+
+    await renderLayer(api);
+
+    expect(
+      await screen.findByText(copy.settings.knowledge.submissions.invalidatedReason('future_unknown_reason')),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('future_unknown_reason')).not.toBeInTheDocument();
   });
 
   it('筛选切换重新请求；撤回固定两点确认后行原地保留转已撤回', async () => {
