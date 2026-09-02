@@ -1,6 +1,6 @@
 """Freeze the replay-time processing config snapshot on ingestion jobs.
 
-Revision ID: 0045_ingestion_replay_config_snapshot
+Revision ID: 0045_replay_config_snapshot
 Revises: 0044_ab_candidate_config_mapping
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0045_ingestion_replay_config_snapshot"
+revision: str = "0045_replay_config_snapshot"
 down_revision: str | None = "0044_ab_candidate_config_mapping"
 branch_labels: tuple[str, ...] | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
