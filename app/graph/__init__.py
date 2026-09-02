@@ -2,6 +2,7 @@
 
 from .availability import GenerationGraphAvailability
 from .extraction import DbGraphExtractionSession, DeterministicPublicGraphExtractor
+from .llm_extraction import LlmPublicGraphExtractor
 from .models import (
     ActiveGraphComponent,
     GraphRunRecord,
@@ -28,6 +29,7 @@ __all__ = [
     "GraphRunRecord",
     "GraphRunView",
     "GraphUsageRecorder",
+    "LlmPublicGraphExtractor",
     "RepositoryActivatedReceiptVerifier",
     "SqlAlchemyGraphBuildOutboxAdapter",
     "SqlAlchemyGraphRepository",

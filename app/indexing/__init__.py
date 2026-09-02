@@ -56,6 +56,7 @@ from .rerank import (
     StubRerankerModel,
     TwoStageReranker,
 )
+from .rerank_provider import HttpCrossEncoderReranker
 from .retrieval import (
     CitationService,
     NoopReranker,
@@ -67,6 +68,7 @@ from .routing import MetadataPrefilter, RouteOutput, RuleQueryRouter, Subquestio
 from .schema import INDEXING_TABLE_NAMES, indexing_metadata
 from .service import IndexingService
 from .tree_search import PageIndexTreeRouter, TreeDocumentOutcome, TreeSearchOutcome
+from .tree_search_provider import DashScopeTreeSearchProvider
 
 OpenSearchSparseIndexProvider = RealOpenSearchSparseIndexProvider
 
@@ -78,6 +80,7 @@ __all__ = [
     "ContextualDocument",
     "ContextualRetrievalService",
     "DashScopeContextualRetriever",
+    "DashScopeTreeSearchProvider",
     "DocumentVisibilityFact",
     "EmbeddingConfig",
     "EmbeddingProvider",
@@ -90,6 +93,7 @@ __all__ = [
     "GraphComponentReleaseReceipt",
     "GraphComponentStageGrant",
     "GraphComponentStageReceipt",
+    "HttpCrossEncoderReranker",
     "HttpOpenSearchClient",
     "IdentityCompression",
     "INDEXING_TABLE_NAMES",
