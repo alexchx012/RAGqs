@@ -1,5 +1,9 @@
 # vite 模板与构建产物钉死 LF：Windows autocrlf 会把模板工作副本污染成 CRLF，
 # 构建继承该换行符且 index.html 因混合换行被 git 跳过规范化，导致 CI 上
 # 构建出的 LF 产物与已提交 CRLF blob 不一致，"static/ is up to date" 检查误报。
+# JS chunk 同理：rolldown 对 CRLF/LF 源码产出不同字节（2026-09 实测），所以
+# frontend 源码与 static 全部产物都钉 LF，保证本地与 CI 构建逐字节一致。
+frontend/** text=auto eol=lf
+static/** text=auto eol=lf
 frontend/index.html text eol=lf
 static/index.html text eol=lf
