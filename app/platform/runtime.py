@@ -59,6 +59,7 @@ from app.graph import (
     GraphBuildConfiguration,
     GraphBuildService,
     GraphBuildWorker,
+    LlmPublicGraphExtractor,
     RepositoryActivatedReceiptVerifier,
     SqlAlchemyGraphBuildOutboxAdapter,
     SqlAlchemyGraphRepository,
@@ -77,13 +78,18 @@ from app.identity.ports import (
 from app.identity.service import IdentityAccessService
 from app.indexing import (
     ContentProcessor,
+    DashScopeTreeSearchProvider,
     GenerationManager,
+    HttpCrossEncoderReranker,
     IndexingService,
     NoopReranker,
+    PageIndexTreeRouter,
+    RerankerRelease,
     RetrievalReleaseService,
     ScoreReranker,
     SqlAlchemyGenerationManager,
     SqlAlchemyIndexingRepository,
+    TwoStageReranker,
 )
 from app.indexing.backends import (
     build_configured_sparse_provider,
@@ -103,6 +109,7 @@ from app.indexing.mineru import MinerUAdapter, MinerUImageOCR
 from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.prefix_cache import PrefixCacheManager
 from app.indexing.profiles import SqlAlchemyLibraryProfileResolver
+from app.indexing.rerank import DEFAULT_COARSE_KEEP_PER_LIBRARY, DEFAULT_LIBRARY_CANDIDATE_LIMIT
 from app.outbox.dispatcher import OutboxDispatcher
 from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.maintenance import NotificationRetentionMaintenance
@@ -489,6 +496,43 @@ def build_runtime(
     configured.setdefault("library_profile_resolver", library_profile_resolver)
     generation_repository.set_retrieval_release_gate(retrieval_releases.is_released_for_generation)
     reranker = configured.get("indexing_reranker")
+    if reranker is None and settings.index.reranker_base_url:
+        # 配置提供端点时装配两阶段远程 cross-encoder（单端点两模型：0.6B 粗筛
+        # + 8B 精排）；生产守卫语义不变（该装配即为显式 reranker）。
+        reranker_api_key = (
+            settings.index.reranker_api_key.get_secret_value()
+            if settings.index.reranker_api_key is not None
+            else ""
+        )
+        reranker_coarse = HttpCrossEncoderReranker(
+            base_url=settings.index.reranker_base_url,
+            model=settings.index.reranker_coarse_model,
+            api_key=reranker_api_key,
+            timeout_seconds=settings.index.reranker_timeout_seconds,
+        )
+        reranker_final = HttpCrossEncoderReranker(
+            base_url=settings.index.reranker_base_url,
+            model=settings.index.reranker_final_model,
+            api_key=reranker_api_key,
+            timeout_seconds=settings.index.reranker_timeout_seconds,
+        )
+        configured.setdefault("indexing_reranker_coarse_model", reranker_coarse)
+        configured.setdefault("indexing_reranker_final_model", reranker_final)
+        reranker = TwoStageReranker(
+            release=RerankerRelease(
+                provider=settings.index.reranker_provider,
+                coarse_model=settings.index.reranker_coarse_model,
+                coarse_revision=settings.index.reranker_coarse_revision,
+                final_model=settings.index.reranker_final_model,
+                final_revision=settings.index.reranker_final_revision,
+                quantization=settings.index.reranker_quantization,
+                tokenizer_version=settings.index.reranker_tokenizer_version,
+                candidate_limit=DEFAULT_LIBRARY_CANDIDATE_LIMIT,
+                coarse_keep_per_library=DEFAULT_COARSE_KEEP_PER_LIBRARY,
+            ),
+            coarse_model=reranker_coarse,
+            final_model=reranker_final,
+        )
     if reranker is None:
         if settings.profile == "production":
             raise RuntimeError("production requires an explicit indexing reranker")
@@ -626,6 +670,23 @@ def build_runtime(
         if not callable(getattr(reranker, "rerank", None)):
             raise RuntimeError("production reranker does not implement the rerank port")
     probe_configured_backends(dense_writer, sparse_provider, metrics=observability_metrics)
+    tree_router = configured.get("indexing_tree_router")
+    if tree_router is None and settings.index.tree_search_provider == "dashscope":
+        # 配置提供端点时装配远程树搜索 provider（仅 ds-v4-flash）与 tree router；
+        # 传输失败经 provider 错误分类进入既有降级 notice 路径。
+        tree_search_provider = DashScopeTreeSearchProvider(
+            base_url=settings.index.tree_search_base_url or "",
+            api_key=(
+                settings.index.tree_search_api_key.get_secret_value()
+                if settings.index.tree_search_api_key is not None
+                else ""
+            ),
+            model=settings.index.tree_search_model,
+            timeout_seconds=settings.index.tree_search_timeout_seconds,
+        )
+        configured.setdefault("indexing_tree_search_provider", tree_search_provider)
+        tree_router = PageIndexTreeRouter(tree_search_provider)
+        configured.setdefault("indexing_tree_router", tree_router)
     indexing_service = configured.get("indexing_service") or IndexingService(
         processor=processor,
         dense_writer=dense_writer,
@@ -639,7 +700,7 @@ def build_runtime(
         identity_access=identity_access,
         visibility_facts=visibility_facts,
         source_service=public_graph_source_service,
-        tree_router=configured.get("indexing_tree_router"),
+        tree_router=tree_router,
         graph_router=configured.get("indexing_graph_router") or public_graph_store.route,
         graph_store=public_graph_store,
         token_counter=token_counter,
@@ -763,10 +824,30 @@ def build_runtime(
     )
     graph_build_configuration = configured.get("graph_build_configuration")
     if graph_build_configuration is None:
-        graph_build_configuration = GraphBuildConfiguration()
+        # 抽取模型身份与装配的 extractor 同步（graph worker 的计量 identity 从
+        # config_snapshot 读取）；默认值与 GraphBuildConfiguration() 一致。
+        graph_build_configuration = GraphBuildConfiguration(
+            model=settings.graph.extraction_model,
+            prompt_version=settings.graph.extraction_prompt_version,
+        )
     elif isinstance(graph_build_configuration, dict):
         graph_build_configuration = GraphBuildConfiguration(**graph_build_configuration)
     graph_build_extractor = configured.get("graph_build_extractor")
+    if graph_build_extractor is None and settings.graph.extraction_provider == "llm":
+        # 路由开关：配置提供端点时用远程 LLM 抽取传输实现替换确定性开发实现；
+        # 计量（session.primary_call）与失败终态管道复用，不在此重写。
+        graph_build_extractor = LlmPublicGraphExtractor(
+            base_url=settings.graph.extraction_base_url or "",
+            model=settings.graph.extraction_model,
+            prompt_version=settings.graph.extraction_prompt_version,
+            api_key=(
+                settings.graph.extraction_api_key.get_secret_value()
+                if settings.graph.extraction_api_key is not None
+                else ""
+            ),
+            timeout_seconds=settings.graph.extraction_timeout_seconds,
+        )
+        configured.setdefault("graph_build_extractor", graph_build_extractor)
     if graph_build_extractor is None:
         if settings.profile == "production":
             raise RuntimeError("production requires an explicit graph build extractor")

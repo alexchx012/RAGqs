@@ -104,6 +104,8 @@ def _quote(value: str) -> str:
 class MilvusClient(Protocol):
     def health(self) -> None: ...
 
+    def close(self) -> None: ...
+
     def has_collection(self, name: str) -> bool: ...
 
     def describe_collection(self, name: str) -> Mapping[str, Any]: ...
@@ -384,6 +386,12 @@ class MilvusIndexWriter:
         self.collection_name = milvus_collection_name(
             collection_prefix, embedding.config.revision, embedding.config.dimension
         )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        self.close()
 
     @property
     def embedding_config(self) -> EmbeddingConfig:

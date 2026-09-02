@@ -38,6 +38,7 @@ ragqs-identity-bootstrap-admin = "app.identity.bootstrap:main"
 ragqs-identity-deletion-worker = "app.identity.worker:main"
 ragqs-ingestion-worker = "app.documents.worker:main"
 ragqs-outbox-worker = "app.outbox.worker:main"
+ragqs-outbox-delivery = "app.outbox.ops_cli:main"
 ragqs-outbox-retirement-worker = "app.outbox.retirement_worker:main"
 ragqs-outbox-compaction-worker = "app.outbox.compaction_worker:main"
 ragqs-usage-maintenance = "app.usage.maintenance:main"
@@ -47,6 +48,7 @@ ragqs-retention-maintenance = "app.retention.worker:main"
 ragqs-backup-maintenance = "app.backup.worker:main"
 ragqs-chat-maintenance = "app.chat.maintenance:main"
 ragqs-documents-maintenance = "app.documents.maintenance:main"
+ragqs-retrieval-acceptance = "app.indexing.release_runner:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

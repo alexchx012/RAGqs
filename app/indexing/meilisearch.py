@@ -82,6 +82,8 @@ def _quote(value: str) -> str:
 class MeilisearchClient(Protocol):
     def health(self) -> None: ...
 
+    def close(self) -> None: ...
+
     def authorized(self) -> None: ...
 
     def version(self) -> Mapping[str, Any]: ...
@@ -338,6 +340,12 @@ class MeilisearchSparseIndexProvider:
         self._allow_create = allow_create_index
         self._tokenize = tokenize
         self._index_ready = False
+
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        self.close()
 
     def probe(self) -> None:
         probe_meilisearch_volume(self._data_path)

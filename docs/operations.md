@@ -188,6 +188,12 @@ When correctness is uncertain, preserve PostgreSQL and object storage, stop deri
 4. Submit `POST /ops/outbox-deliveries/{event_id}/replay` with `consumer_name=in_app_notification`, the current `expected_version`, and an idempotency key.
 5. Poll the protected read endpoint until delivered or a new dead letter is recorded. Do not expose a frontend queue item or create a second outbox event.
 
+Where HTTP access is unavailable (shell-only break-glass, or automation that must not ride the API surface), the protected CLI `ragqs-outbox-delivery` performs the same operations against the dispatcher service layer directly, without an HTTP self-call:
+
+- Inspect: `ragqs-outbox-delivery list --event-id <id> [--consumer-name in_app_notification]` — the `GET /ops/outbox-deliveries/{event_id}` equivalent; prints the same view fields as JSON and exits `1` with `not_found` when the delivery does not exist.
+- Replay: `ragqs-outbox-delivery replay --event-id <id> --expected-version <version> [--idempotency-key <key>]` — the `POST .../replay` equivalent. The request hash uses the same canonical formula as the HTTP endpoint, so a CLI key and an HTTP key share one idempotency namespace and can never double-replay the same delivery. Omit `--idempotency-key` to let the CLI mint a fresh one.
+- The entry point requires `RAG_MAINTENANCE_KEY` (exit `2` without it), never takes secrets as arguments, and never logs them. Gate failures and state conflicts print the platform error code as JSON on stderr and exit `1`.
+
 **Verify:** the original event, recipient snapshot, and old attempts remain immutable; the replay uses a new replay generation but the same event and business unique key; audit contains acceptance, rejection, and completion.
 
 ### 6.8 Index generation build, publish, rollback, or GC
@@ -283,8 +289,9 @@ When correctness is uncertain, preserve PostgreSQL and object storage, stop deri
 1. Confirm release image digest, profile version, migration plan, acceptance suites, backup `backup_id`, and on-call owner.
 2. Apply additive Alembic changes first, verify the head, then roll out compatible API/query and worker versions. Do not roll out workers that can write a schema the API cannot read.
 3. For provider/model/analyzer/reranker changes, create a new release record and, where applicable, a new index generation. A failed gate leaves the current active generation and query configuration unchanged.
-4. For application rollback, use only an image compatible with the current schema. For index rollback, use the eligible generation procedure. For data recovery, use the restore runbook. Do not conflate the three.
-5. After rollout, run authentication, upload/publication, query/SSE reconnect, non-stream `/chat`, job cancel/replay, metrics, notification, calibration, A/B, and provider-probe smoke checks. Assert that non-stream `/chat` returns the persisted `answer_mode` value, including `no_context`, and never derives it from `sources`; assert that `POST /messages/{id}/ab-vote` and `GET/POST /calibration/window` round-trip their PostgreSQL facts.
+4. Judge a staged retrieval release from externally produced metrics with the protected CLI `ragqs-retrieval-acceptance --release-id <id> --metrics-file <metrics.json>`. The metrics file carries one JSON object: the run's `hardware_profile` (must equal the frozen suite profile) and the required acceptance metrics (`p50_ms`, `p95_ms`, `p99_ms`, `error_rate`, `vram_mb`, `hit_at_k`, `mrr`, `ndcg`, `refusal`). Judgment reuses the staged release's gate version: pass flips the release to `released` and prints the run record (exit `0`); a gate violation prints a failed run record with the violated metric (exit `1`) and leaves the release staged. The entry point requires `RAG_MAINTENANCE_KEY`.
+5. For application rollback, use only an image compatible with the current schema. For index rollback, use the eligible generation procedure. For data recovery, use the restore runbook. Do not conflate the three.
+6. After rollout, run authentication, upload/publication, query/SSE reconnect, non-stream `/chat`, job cancel/replay, metrics, notification, calibration, A/B, and provider-probe smoke checks. Assert that non-stream `/chat` returns the persisted `answer_mode` value, including `no_context`, and never derives it from `sources`; assert that `POST /messages/{id}/ab-vote` and `GET/POST /calibration/window` round-trip their PostgreSQL facts.
 
 **Verify:** all workloads report the same release/profile, no old worker retains a valid fencing token, dashboards are healthy, and the release record has test and migration evidence.
 
@@ -339,6 +346,8 @@ For a rejected action, record the server error code and preserve the original st
 | Job cancel/replay | `POST /ingestion-jobs/{job_id}/cancel`, `POST /ingestion-jobs/{job_id}/replay` | Backend ACL and `allowed_actions`; an `admin` may operate only an eligible self-initiated direct upload, replace, restore, or reindex job |
 | Generation stop/recovery | `POST /generations/{generation_id}/stop`, `GET /generations/{generation_id}/events` | Authenticated owner and persisted worker state |
 | Outbox inspection/replay | `GET/POST /ops/outbox-deliveries/...` | `ops` only |
+| Outbox inspection/replay (CLI) | `ragqs-outbox-delivery list/replay` | `ops` equivalent; requires `RAG_MAINTENANCE_KEY` |
+| Retrieval release acceptance (CLI) | `ragqs-retrieval-acceptance --release-id ... --metrics-file ...` | Deployment gate judgment; requires `RAG_MAINTENANCE_KEY` |
 | Graph build | `GET /ops/graph-builds/current`, `POST /ops/graph-builds`, protected cancel | `ops` only |
 | Shadow evaluation | `POST /admin/evaluations/shadow-runs`, `GET .../{run_id}` | Run creation `ops`; read `ops`/`admin` |
 | Calibration | `GET/POST /calibration/window` | Read per contract; mutations `ops` only |

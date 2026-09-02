@@ -175,6 +175,41 @@ class IndexSettings(_StrictModel):
     contextual_retrieval_concurrency: int = Field(default=4, ge=1, le=32)
     contextual_retrieval_prefix_token_limit: int = Field(default=30_000, ge=1_000, le=100_000)
     contextual_prefix_cache_provider: Literal["memory", "disabled"] = "memory"
+    # 第二阶段树搜索（PageIndex）：仅远程 ds-v4-flash；disabled 时不装配 tree
+    # router，检索保持既有混合检索路径。
+    tree_search_provider: Literal["disabled", "dashscope"] = "disabled"
+    tree_search_base_url: str | None = None
+    tree_search_api_key: SecretStr | None = None
+    tree_search_model: Literal["ds-v4-flash"] = "ds-v4-flash"
+    tree_search_timeout_seconds: int = Field(default=30, ge=1, le=600)
+    # 两阶段远程 cross-encoder reranker：单端点两模型参数（vLLM /rerank）。
+    # base_url 未配置时沿用既有装配（生产要求显式注入 reranker）。
+    reranker_base_url: str | None = None
+    reranker_api_key: SecretStr | None = None
+    reranker_coarse_model: str = Field(default="qwen3-reranker-0.6b", min_length=1, max_length=128)
+    reranker_final_model: str = Field(default="qwen3-reranker-8b", min_length=1, max_length=128)
+    reranker_coarse_revision: str = Field(default="", max_length=128)
+    reranker_final_revision: str = Field(default="", max_length=128)
+    reranker_quantization: str = Field(default="int8", min_length=1, max_length=64)
+    reranker_tokenizer_version: str = Field(default="unspecified", min_length=1, max_length=128)
+    reranker_timeout_seconds: int = Field(default=10, ge=1, le=600)
+
+
+class GraphSettings(_StrictModel):
+    """公共图谱抽取 provider 装配开关。
+
+    ``deterministic`` 保持开发/测试确定性实现；``llm`` 在配置提供端点时由
+    runtime 装配远程 LLM 抽取传输实现（替换确定性实现的路由开关）。
+    """
+
+    extraction_provider: Literal["deterministic", "llm"] = "deterministic"
+    extraction_base_url: str | None = None
+    extraction_api_key: SecretStr | None = None
+    extraction_model: str = Field(
+        default="public-graph-extraction-v1", min_length=1, max_length=128
+    )
+    extraction_prompt_version: str = Field(default="public-graph-v1", min_length=1, max_length=128)
+    extraction_timeout_seconds: int = Field(default=60, ge=1, le=600)
 
 
 class ChatSettings(_StrictModel):
@@ -292,6 +327,7 @@ class PlatformSettings(BaseSettings):
     backup: BackupSettings = Field(default_factory=BackupSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
+    graph: GraphSettings = Field(default_factory=GraphSettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
     documents: DocumentsSettings = Field(default_factory=DocumentsSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
@@ -398,6 +434,26 @@ _ENV_KEYS = {
     "RAG_INDEX_CONTEXTUAL_RETRIEVAL_CONCURRENCY",
     "RAG_INDEX_CONTEXTUAL_RETRIEVAL_PREFIX_TOKEN_LIMIT",
     "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER",
+    "RAG_INDEX_TREE_SEARCH_PROVIDER",
+    "RAG_INDEX_TREE_SEARCH_BASE_URL",
+    "RAG_INDEX_TREE_SEARCH_API_KEY",
+    "RAG_INDEX_TREE_SEARCH_MODEL",
+    "RAG_INDEX_TREE_SEARCH_TIMEOUT_SECONDS",
+    "RAG_INDEX_RERANKER_BASE_URL",
+    "RAG_INDEX_RERANKER_API_KEY",
+    "RAG_INDEX_RERANKER_COARSE_MODEL",
+    "RAG_INDEX_RERANKER_FINAL_MODEL",
+    "RAG_INDEX_RERANKER_COARSE_REVISION",
+    "RAG_INDEX_RERANKER_FINAL_REVISION",
+    "RAG_INDEX_RERANKER_QUANTIZATION",
+    "RAG_INDEX_RERANKER_TOKENIZER_VERSION",
+    "RAG_INDEX_RERANKER_TIMEOUT_SECONDS",
+    "RAG_GRAPH_EXTRACTION_PROVIDER",
+    "RAG_GRAPH_EXTRACTION_BASE_URL",
+    "RAG_GRAPH_EXTRACTION_API_KEY",
+    "RAG_GRAPH_EXTRACTION_MODEL",
+    "RAG_GRAPH_EXTRACTION_PROMPT_VERSION",
+    "RAG_GRAPH_EXTRACTION_TIMEOUT_SECONDS",
     "RAG_DOCUMENTS_UPLOAD_MAX_BYTES",
     "RAG_UPLOAD_MAX_FILES_PER_REQUEST",
     "RAG_UPLOAD_MAX_REQUEST_BYTES",
@@ -661,6 +717,50 @@ def load_platform_settings(
                 "contextual_prefix_cache_provider": (
                     _optional(env, "RAG_INDEX_CONTEXTUAL_PREFIX_CACHE_PROVIDER") or "memory"
                 ),
+                "tree_search_provider": (
+                    _optional(env, "RAG_INDEX_TREE_SEARCH_PROVIDER") or "disabled"
+                ),
+                "tree_search_base_url": _optional(env, "RAG_INDEX_TREE_SEARCH_BASE_URL"),
+                "tree_search_api_key": _optional_secret(env, "RAG_INDEX_TREE_SEARCH_API_KEY"),
+                "tree_search_model": _optional(env, "RAG_INDEX_TREE_SEARCH_MODEL") or "ds-v4-flash",
+                "tree_search_timeout_seconds": _int(env, "RAG_INDEX_TREE_SEARCH_TIMEOUT_SECONDS"),
+                "reranker_base_url": _optional(env, "RAG_INDEX_RERANKER_BASE_URL"),
+                "reranker_api_key": _optional_secret(env, "RAG_INDEX_RERANKER_API_KEY"),
+                "reranker_coarse_model": (
+                    _optional(env, "RAG_INDEX_RERANKER_COARSE_MODEL") or "qwen3-reranker-0.6b"
+                ),
+                "reranker_final_model": (
+                    _optional(env, "RAG_INDEX_RERANKER_FINAL_MODEL") or "qwen3-reranker-8b"
+                ),
+                "reranker_coarse_revision": (
+                    _optional(env, "RAG_INDEX_RERANKER_COARSE_REVISION") or ""
+                ),
+                "reranker_final_revision": _optional(env, "RAG_INDEX_RERANKER_FINAL_REVISION")
+                or "",
+                "reranker_quantization": (
+                    _optional(env, "RAG_INDEX_RERANKER_QUANTIZATION") or "int8"
+                ),
+                "reranker_tokenizer_version": (
+                    _optional(env, "RAG_INDEX_RERANKER_TOKENIZER_VERSION") or "unspecified"
+                ),
+                "reranker_timeout_seconds": _int(env, "RAG_INDEX_RERANKER_TIMEOUT_SECONDS"),
+            }.items()
+            if value is not None
+        },
+        "graph": {
+            key: value
+            for key, value in {
+                "extraction_provider": (
+                    _optional(env, "RAG_GRAPH_EXTRACTION_PROVIDER") or "deterministic"
+                ),
+                "extraction_base_url": _optional(env, "RAG_GRAPH_EXTRACTION_BASE_URL"),
+                "extraction_api_key": _optional_secret(env, "RAG_GRAPH_EXTRACTION_API_KEY"),
+                "extraction_model": _optional(env, "RAG_GRAPH_EXTRACTION_MODEL")
+                or "public-graph-extraction-v1",
+                "extraction_prompt_version": (
+                    _optional(env, "RAG_GRAPH_EXTRACTION_PROMPT_VERSION") or "public-graph-v1"
+                ),
+                "extraction_timeout_seconds": _int(env, "RAG_GRAPH_EXTRACTION_TIMEOUT_SECONDS"),
             }.items()
             if value is not None
         },
@@ -872,6 +972,21 @@ def validate_startup_settings(settings: PlatformSettings) -> None:
         contextual_key = settings.index.contextual_retrieval_api_key
         if contextual_key is None or not contextual_key.get_secret_value():
             raise ValueError("contextual retrieval provider requires an API key")
+    if settings.index.tree_search_provider == "dashscope":
+        if not settings.index.tree_search_base_url:
+            raise ValueError("tree search provider requires a base URL")
+        tree_key = settings.index.tree_search_api_key
+        if tree_key is None or not tree_key.get_secret_value():
+            raise ValueError("tree search provider requires an API key")
+    if settings.index.reranker_base_url:
+        # RerankerRelease 身份字段缺省即拒绝装配（发布身份必须锁 revision）。
+        if not settings.index.reranker_coarse_revision.strip():
+            raise ValueError("configured reranker requires a coarse stage revision")
+        if not settings.index.reranker_final_revision.strip():
+            raise ValueError("configured reranker requires a final stage revision")
+    if settings.graph.extraction_provider == "llm":
+        if not settings.graph.extraction_base_url:
+            raise ValueError("graph LLM extraction provider requires a base URL")
 
 
 # 归档目录不得落入 Web 静态资源、上传目录或其他业务接口可直接读取的目录。

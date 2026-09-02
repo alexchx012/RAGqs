@@ -52,6 +52,8 @@ def _invalidates_index_cache(method):
 class OpenSearchClient(Protocol):
     def health(self) -> Mapping[str, Any]: ...
 
+    def close(self) -> None: ...
+
     def version(self) -> Mapping[str, Any]: ...
 
     def authentication(self) -> Mapping[str, Any]: ...
@@ -398,6 +400,12 @@ class OpenSearchSparseIndexProvider:
         self._allow_create = allow_create_index
         self._heap_min = jvm_heap_min_bytes
         self._index_ready = False
+
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        self.close()
 
     def manifest_facts(self) -> dict[str, str]:
         return {
