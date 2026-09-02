@@ -18,6 +18,13 @@ branch_labels: tuple[str, ...] | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _table_exists(bind, table: str) -> bool:
+    # partial legacy 库（如 backup 域的 0033 快照升级）不含 usage 域表：
+    # 表不存在时跳过本迁移，inspect.get_columns 对缺失表会直接抛
+    # NoSuchTableError，因此必须先查表。
+    return sa.inspect(bind).has_table(table)
+
+
 def _column_exists(bind, table: str, column: str) -> bool:
     # usage_metadata.create_all 的新装库已含该列，只有从旧版本升级的库
     # 需要补列，因此本迁移必须幂等。
@@ -27,6 +34,8 @@ def _column_exists(bind, table: str, column: str) -> bool:
 
 def upgrade() -> None:
     bind = op.get_bind()
+    if not _table_exists(bind, "quota_request"):
+        return
     if not _column_exists(bind, "quota_request", "approver_department_id"):
         with op.batch_alter_table("quota_request") as batch:
             batch.add_column(sa.Column("approver_department_id", sa.String(length=64)))
@@ -34,6 +43,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    if not _table_exists(bind, "quota_request"):
+        return
     if _column_exists(bind, "quota_request", "approver_department_id"):
         with op.batch_alter_table("quota_request") as batch:
             batch.drop_column("approver_department_id")
