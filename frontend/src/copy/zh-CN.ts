@@ -988,6 +988,7 @@ export const zhCN = {
       emptyList: '暂无会话', // 措辞后定：无任何会话
       emptySearch: '没有匹配的会话', // 措辞后定：搜索过滤无结果（与 emptyList 独立，§3.2）
       listError: '会话加载失败', // 措辞后定
+      actionFailed: '操作失败，请稍后重试', // 措辞后定：会话/分组 patch·delete 失败轻提示（store 返回 false 时）
       untitledConversation: '新会话', // 措辞后定：新会话首条消息生成标题前的默认列表标题
       sectionPinned: '置顶', // 措辞后定
       sectionToday: '今天', // 措辞后定
