@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 
 from app.documents.schema import documents_metadata
 from app.indexing import (
@@ -10,7 +11,7 @@ from app.indexing import (
     SqlAlchemyIndexingRepository,
     indexing_metadata,
 )
-from app.indexing.schema import index_operations_table
+from app.indexing.schema import index_generations_table, index_operations_table
 
 _REQUIRED_MANIFEST_KEYS = {
     "generation_id",
@@ -142,3 +143,55 @@ def test_generation_gc_retries_only_the_failed_component() -> None:
     assert completed.state == "already_purged"
     assert {value["state"] for value in final_progress.values()} == {"completed"}
     assert calls == Counter({"sparse": 2, "vector": 1, "cache": 1})
+
+
+# ---------------------------------------------------------------------------
+# A62: 回滚窗口过窗后 GC 不再被回滚候选身份阻塞
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_candidate_blocks_gc_only_inside_window() -> None:
+    clock = {"now": datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
+    manager = GenerationManager(now=lambda: clock["now"])
+    staging = manager.create_staging([])
+    manager.release(staging.generation_id)
+
+    in_window = manager.request_index_generation_gc(
+        "generation_initial", reconciliation_run_id="run_1", operation_id="gc_in_window"
+    )
+    assert in_window.state == "blocked"
+    assert in_window.blocking_reasons == ("rollback_candidate",)
+
+    clock["now"] = clock["now"] + timedelta(days=8)
+    after_window = manager.request_index_generation_gc(
+        "generation_initial", reconciliation_run_id="run_1", operation_id="gc_after_window"
+    )
+    assert after_window.state == "accepted"
+
+
+def test_sql_gc_blocking_respects_rollback_window() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    documents_metadata.create_all(engine)
+    indexing_metadata.create_all(engine)
+    repository = SqlAlchemyIndexingRepository(engine)
+    first = repository.create_staging([], generation_id="generation_first")
+    repository.release(first.generation_id)
+
+    in_window = repository.request_index_generation_gc(
+        "generation_initial", reconciliation_run_id="run_1", operation_id="gc_in_window"
+    )
+    assert in_window.state == "blocked"
+    assert "rollback_candidate" in in_window.blocking_reasons
+
+    expired = datetime.now(UTC) - timedelta(days=1)
+    with engine.begin() as connection:
+        connection.execute(
+            update(index_generations_table)
+            .where(index_generations_table.c.id == "generation_initial")
+            .values(rollback_until_utc=expired)
+        )
+
+    after_window = repository.request_index_generation_gc(
+        "generation_initial", reconciliation_run_id="run_1", operation_id="gc_after_window"
+    )
+    assert after_window.state == "accepted"

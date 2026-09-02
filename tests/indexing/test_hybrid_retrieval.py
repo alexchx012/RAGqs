@@ -648,3 +648,111 @@ def test_library_latency_and_tree_order_observability_routes() -> None:
     routes = {sample.route_template for sample in metrics.samples}
     assert "index_library_search_latency" in routes
     assert "index_tree_candidate_order" in routes
+
+
+# ------------------------------------- A63 per-space quota bucketing
+
+
+def _space_chunk(chunk_id: str, *, space_id: str) -> IndexChunk:
+    return IndexChunk(
+        chunk_id=chunk_id,
+        generation_id="generation_initial",
+        publication_id="publication_1",
+        document_id="document_1",
+        document_version_id="version_1",
+        space_id=space_id,
+        text=f"text {chunk_id}",
+        embedding_text=f"text {chunk_id}",
+        locator={},
+        snippet=chunk_id,
+        media_kind="text/plain",
+        manifest_hash="manifest_1",
+    )
+
+
+def test_tree_hits_share_the_owning_document_space_bucket() -> None:
+    """A63: 树命中归入所属文档的知识空间桶，不因来源不同获得额外名额。"""
+
+    from types import SimpleNamespace
+
+    provider = InMemorySparseIndexProvider(provider_name="sparse")
+    for chunk_id in ("chunk_1", "chunk_2", "chunk_3"):
+        _publish(provider, _space_chunk(chunk_id, space_id="space_1"), f"a_{chunk_id}")
+
+    def tree_router(query, candidates, *, max_documents, rag_call_limit):
+        del query, max_documents, rag_call_limit
+        documents = tuple(
+            SimpleNamespace(
+                document_id=hit.chunk.document_id,
+                chunk_id=hit.chunk.chunk_id,
+                status="ok",
+                result={"text": f"tree evidence for {hit.chunk.chunk_id}"},
+            )
+            for hit in candidates
+        )
+        return SimpleNamespace(skipped=False, reason=None, documents=documents)
+
+    service = RetrievalService(
+        GenerationManager(),
+        [provider],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1"})),
+        visibility_facts=_facts,
+        reranker=_ScoredReranker(),
+        tree_router=tree_router,
+    )
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=10,
+            candidate_limit=10,
+            retrieval_context_items_per_space=2,
+            effort="think",
+            route_tree=True,
+        ),
+    )
+
+    # 树命中与普通命中共用 space_1 桶：配额 2 已满时不因来源不同获得额外名额。
+    assert len(result.hits) == 2
+    assert {hit.source for hit in result.hits} == {"sparse"}
+    assert all("tree evidence" not in hit.chunk.text for hit in result.hits)
+
+
+def test_per_space_item_quota_applies_across_sources_with_backfill() -> None:
+    """A63: 条数配额按 space 分桶对多来源生效；可空位补位回填至 top_k 保持。"""
+
+    dense = InMemoryIndexWriter(provider_name="dense")
+    sparse = InMemorySparseIndexProvider(provider_name="sparse")
+    for chunk_id in ("dense_1", "dense_2"):
+        _publish(dense, _space_chunk(chunk_id, space_id="space_1"), f"a_{chunk_id}")
+    _publish(dense, _space_chunk("dense_3", space_id="space_2"), "a_dense_3")
+    for chunk_id in ("sparse_1", "sparse_2", "sparse_3"):
+        _publish(sparse, _space_chunk(chunk_id, space_id="space_1"), f"a_{chunk_id}")
+
+    service = RetrievalService(
+        GenerationManager(),
+        [dense, sparse],
+        identity_access=lambda principal: RetrievalScope(frozenset({"space_1", "space_2"})),
+        visibility_facts=_facts,
+        reranker=_ScoredReranker(),
+    )
+    result = service.search(
+        "text",
+        principal="user_1",
+        profile=RetrievalProfile(
+            top_k=4,
+            candidate_limit=10,
+            retrieval_context_items_per_space=2,
+        ),
+    )
+
+    hits = {hit.chunk.chunk_id for hit in result.hits}
+    # 主轮按 space 分桶：space_1 拿满 2 个后 sparse 命中被顺延，space_2 的
+    # dense_3 不再因 dense 桶满而被挤出（多来源合并计数）。
+    assert {"dense_1", "dense_2", "dense_3"} <= hits
+    # 可空位补位：space_2 未达下限，被顺延的 space_1 命中回填至 top_k。
+    assert len(result.hits) == 4
+    counts: dict[str, int] = {}
+    for hit in result.hits:
+        counts[hit.chunk.space_id] = counts.get(hit.chunk.space_id, 0) + 1
+    assert counts == {"space_1": 3, "space_2": 1}

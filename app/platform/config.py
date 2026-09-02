@@ -130,6 +130,12 @@ class IndexSettings(_StrictModel):
     image_vlm_model: str = Field(default="qwen-vl-plus", min_length=1, max_length=128)
     image_vlm_revision: str = Field(default="", max_length=128)
     image_vlm_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    # InternVL 部署 profile（A69）：设备分配、显存上限、并发上限与单图输入上限。
+    # 设备/显存作为 profile 事实透传；并发/输入上限在 describer 实现内生效。
+    image_vlm_devices: tuple[str, ...] = ()
+    image_vlm_vram_gb: float | None = Field(default=None, gt=0.0, le=1024.0)
+    image_vlm_concurrency: int = Field(default=4, ge=1, le=32)
+    image_vlm_max_input_bytes: int | None = Field(default=None, ge=1)
     generation_rollback_days: int = Field(default=7, ge=1, le=365)
     embedding_provider: Literal["openai-compatible", "memory"] = "memory"
     embedding_base_url: str | None = None
@@ -342,6 +348,10 @@ _ENV_KEYS = {
     "RAG_INDEX_IMAGE_VLM_MODEL",
     "RAG_INDEX_IMAGE_VLM_REVISION",
     "RAG_INDEX_IMAGE_VLM_TIMEOUT_SECONDS",
+    "RAG_INDEX_IMAGE_VLM_DEVICES",
+    "RAG_INDEX_IMAGE_VLM_VRAM_GB",
+    "RAG_INDEX_IMAGE_VLM_CONCURRENCY",
+    "RAG_INDEX_IMAGE_VLM_MAX_INPUT_BYTES",
     "RAG_INDEX_GENERATION_ROLLBACK_DAYS",
     "RAG_INDEX_EMBEDDING_PROVIDER",
     "RAG_INDEX_EMBEDDING_BASE_URL",
@@ -585,6 +595,10 @@ def load_platform_settings(
                 "image_vlm_model": _optional(env, "RAG_INDEX_IMAGE_VLM_MODEL") or "qwen-vl-plus",
                 "image_vlm_revision": _optional(env, "RAG_INDEX_IMAGE_VLM_REVISION") or "",
                 "image_vlm_timeout_seconds": _int(env, "RAG_INDEX_IMAGE_VLM_TIMEOUT_SECONDS"),
+                "image_vlm_devices": _csv(env, "RAG_INDEX_IMAGE_VLM_DEVICES"),
+                "image_vlm_vram_gb": _float(env, "RAG_INDEX_IMAGE_VLM_VRAM_GB"),
+                "image_vlm_concurrency": _int(env, "RAG_INDEX_IMAGE_VLM_CONCURRENCY"),
+                "image_vlm_max_input_bytes": _int(env, "RAG_INDEX_IMAGE_VLM_MAX_INPUT_BYTES"),
                 "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS") or 7,
                 "embedding_provider": _optional(env, "RAG_INDEX_EMBEDDING_PROVIDER") or "memory",
                 "embedding_base_url": _optional(env, "RAG_INDEX_EMBEDDING_BASE_URL"),
