@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -19,7 +20,8 @@ CONTEXTUAL_PROMPT_SCHEMA_VERSION = "contextual-prefix-v1"
 CONTEXTUAL_TOKENIZATION_VERSION = "unicode-approx-v1"
 CONTEXTUAL_PREFIX_TOKEN_LIMIT = 30_000
 CONTEXTUAL_WARMUP_CALLS = 2
-CONTEXTUAL_PROVIDER_ATTEMPTS = 5
+CONTEXTUAL_PROVIDER_ATTEMPTS = 2
+CONTEXTUAL_PROVIDER_RETRY_BACKOFF_SECONDS = (1.0, 4.0)
 
 CONTEXTUAL_SYSTEM_INSTRUCTION = (
     "You contextualize one retrievable chunk for a knowledge-base index. Use the "
@@ -604,6 +606,15 @@ class ContextualRetrievalService:
                     )
                 )
                 del exc
+                if attempts < self._max_attempts:
+                    time.sleep(
+                        CONTEXTUAL_PROVIDER_RETRY_BACKOFF_SECONDS[
+                            min(
+                                attempts - 1,
+                                len(CONTEXTUAL_PROVIDER_RETRY_BACKOFF_SECONDS) - 1,
+                            )
+                        ]
+                    )
             except ContextualProviderRejected as exc:
                 reason = "provider_rejected"
                 self._record_usage(
@@ -664,6 +675,7 @@ __all__ = [
     "CONTEXTUAL_PREFIX_TOKEN_LIMIT",
     "CONTEXTUAL_PROMPT_SCHEMA_VERSION",
     "CONTEXTUAL_PROVIDER_ATTEMPTS",
+    "CONTEXTUAL_PROVIDER_RETRY_BACKOFF_SECONDS",
     "CONTEXTUAL_SYSTEM_INSTRUCTION",
     "CONTEXTUAL_TOKENIZATION_VERSION",
     "CONTEXTUAL_WARMUP_CALLS",

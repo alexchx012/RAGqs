@@ -180,8 +180,8 @@ def test_provider_short_retry_exhaustion_falls_back_to_raw_chunk_with_one_degrad
     output = service.enhance(_document(), [_chunk(1), _chunk(2)])
 
     assert output.contexts == {}
-    assert [item.attempts for item in output.chunk_results.values()] == [5, 0]
-    assert len(usage) == 5
+    assert [item.attempts for item in output.chunk_results.values()] == [2, 0]
+    assert len(usage) == 2
     assert {fact.result for fact in usage} == {"failed"}
     assert output.degradations == (
         {
