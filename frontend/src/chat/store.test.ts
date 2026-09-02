@@ -894,9 +894,12 @@ describe('A/B 模拟器时序（N1/N3）', () => {
       event: 'ab_start',
       data: { pair_id: 'pair_n1b', message_id: 'm_ab2', candidates: [0, 1] },
     });
-    // 候选 0 短、候选 1 很长 → 0 先 isDone，1 仍在播
+    // 候选 0 短、候选 1 很长 → 0 先 isDone，1 仍在播。
+    // 候选 1 播放时长须远大于下方 80ms 观察窗（10 chunk × 40ms = 400ms），
+    // 否则慢机器上两侧在观察前就播完收敛，中间态断言失效。
+    const longAnswer = '长候选正文。'.repeat(200);
     stream?.push(3, answerEvt(0, '短'));
-    stream?.push(4, answerEvt(1, '长候选正文。'.repeat(40)));
+    stream?.push(4, answerEvt(1, longAnswer));
     stream?.push(5, {
       event: 'done',
       data: { generation_id: 'g_ab2', message_id: 'm_ab2', status: 'completed' },
@@ -913,7 +916,7 @@ describe('A/B 模拟器时序（N1/N3）', () => {
       // 若错误按 abSimulators.size>=2 会在此 complete
       // 允许 complete 仍为 false（一侧未播完）
       const c1 = mid.generation.abContents?.find((entry) => entry.candidate === 1);
-      const stillStreaming = c1 !== undefined && c1.content.length < '长候选正文。'.repeat(40).length;
+      const stillStreaming = c1 !== undefined && c1.content.length < longAnswer.length;
       if (stillStreaming) {
         expect(mid.generation.complete).toBe(false);
       }
