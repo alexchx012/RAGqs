@@ -47,6 +47,18 @@ from .profiles import document_profile_for_media_kind
 OCR_LOW_CONFIDENCE_THRESHOLD = 0.9
 CONTINUATION_HEADER_SIMILARITY = 0.7
 MINERU_PROVIDER_ATTEMPTS = 5
+# 结构化分流判据（A61）：schema 特征组合（单独的顶层 "type" 不再判 schema）；
+# 深嵌套阈值（容器嵌套层数）——达到阈值的无 schema 键对象改走代码/配置路径，
+# 不再做键值对扁平化。
+_STRUCTURED_SCHEMA_KEYS: tuple[str, ...] = (
+    "$schema",
+    "schema",
+    "properties",
+    "required",
+    "definitions",
+    "$defs",
+)
+STRUCTURED_NESTING_DEPTH_THRESHOLD = 3
 
 
 class CompressionPort(Protocol):
@@ -276,6 +288,26 @@ def _column_name(number: int) -> str:
 
 def _split_text(value: str, *, maximum: int) -> list[str]:
     return [value[start : start + maximum] for start in range(0, len(value), maximum)]
+
+
+def _split_lines_preserving_rows(lines: Sequence[str], *, maximum: int) -> list[list[str]]:
+    """按整行分组切段（A60）：单行超过上限时整行自成一个块，不切断行内容。"""
+
+    parts: list[list[str]] = []
+    current: list[str] = []
+    used = 0
+    for line in lines:
+        step = len(line) + (1 if current else 0)
+        if current and used + step > maximum:
+            parts.append(current)
+            current = [line]
+            used = len(line)
+        else:
+            current.append(line)
+            used += step
+    if current:
+        parts.append(current)
+    return parts
 
 
 def _split_blocks_preserving_tables(value: str, *, maximum: int) -> list[str]:
@@ -538,6 +570,136 @@ def _flatten(value: Any, prefix: str = "") -> list[tuple[str, str]]:
             for index, item in enumerate(value)
         ]
     return [(prefix, str(value))]
+
+
+def _nesting_depth(value: Any) -> int:
+    """Mapping nesting depth of a parsed payload (scalar = 0).
+
+    列表不额外计层——它承载最深子项的深度（同名兄弟折叠出的列表、重复元素
+    不构成用户可感知的嵌套层级）；纯映射链每层 +1。
+    """
+
+    if isinstance(value, Mapping):
+        return 1 + max((_nesting_depth(child) for child in value.values()), default=0)
+    if isinstance(value, list):
+        return max((_nesting_depth(child) for child in value), default=0)
+    return 0
+
+
+def _element_to_value(element: ElementTree.Element) -> Any:
+    """XML → nested mapping/list value (A61)：保留层级，同名兄弟折叠为列表。"""
+
+    children = list(element)
+    if not children:
+        return (element.text or "").strip()
+    result: dict[str, Any] = {}
+    for child in children:
+        value = _element_to_value(child)
+        existing = result.get(child.tag)
+        if isinstance(existing, list):
+            existing.append(value)
+        elif existing is not None:
+            result[child.tag] = [existing, value]
+        else:
+            result[child.tag] = value
+    return result
+
+
+def _yaml_scalar(raw: str) -> Any:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        return [item.strip().strip("'\"") for item in inner.split(",")] if inner else []
+    return value
+
+
+def _yaml_key_split(content: str) -> tuple[str, str] | None:
+    """Split ``key: value`` / ``key:`` outside of quotes; None when not a key line."""
+
+    for position, character in enumerate(content):
+        if character == ":" and (position + 1 == len(content) or content[position + 1] in " \t"):
+            key = content[:position].strip().strip("'\"")
+            if not key:
+                return None
+            return key, content[position + 1 :].strip()
+    return None
+
+
+def _parse_yaml_block(lines: list[tuple[int, str]], index: int, indent: int) -> tuple[Any, int]:
+    if index >= len(lines):
+        return "", index
+    if lines[index][1] == "-" or lines[index][1].startswith("- "):
+        items: list[Any] = []
+        while index < len(lines):
+            line_indent, content = lines[index]
+            if line_indent != indent or not (content == "-" or content.startswith("- ")):
+                break
+            rest = content[2:].strip() if content.startswith("- ") else ""
+            if not rest:
+                if index + 1 < len(lines) and lines[index + 1][0] > indent:
+                    value, index = _parse_yaml_block(lines, index + 1, lines[index + 1][0])
+                    items.append(value)
+                else:
+                    items.append("")
+                index += 1
+            elif _yaml_key_split(rest) is not None:
+                # "- key: value"：按 key 的真实列改写为映射行后按映射块解析。
+                key_offset = len(content[2:]) - len(content[2:].lstrip(" "))
+                key_indent = indent + 2 + key_offset
+                spliced = list(lines)
+                spliced[index] = (key_indent, rest)
+                value, index = _parse_yaml_block(spliced, index, key_indent)
+                items.append(value)
+            else:
+                items.append(_yaml_scalar(rest))
+                index += 1
+        return items, index
+    mapping: dict[str, Any] = {}
+    while index < len(lines):
+        line_indent, content = lines[index]
+        if line_indent != indent:
+            break
+        split = _yaml_key_split(content)
+        if split is None:
+            raise ValueError(f"yaml mapping line is invalid: {content}")
+        key, rest = split
+        if rest:
+            mapping[key] = _yaml_scalar(rest)
+            index += 1
+        elif index + 1 < len(lines) and lines[index + 1][0] > indent:
+            value, index = _parse_yaml_block(lines, index + 1, lines[index + 1][0])
+            mapping[key] = value
+        else:
+            mapping[key] = ""
+            index += 1
+    return mapping, index
+
+
+def _parse_yaml_subset(text: str) -> Any:
+    """无第三方依赖的 YAML 子集解析（A61）：嵌套映射、块列表与流式标量列表。
+
+    覆盖配置文件的常用形态（缩进映射、``- `` 列表、``- key: value`` 列表项、
+    引号标量、``[a, b]`` 流式列表、``#`` 注释与 ``---`` 分隔符）；结构不一致时
+    抛出 ValueError（由结构化入口统一映射为 ``structured_parse_failed``）。
+    """
+
+    lines: list[tuple[int, str]] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or stripped in {"---", "..."}:
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if raw_line[indent : indent + 1] == "\t":
+            raise ValueError("yaml indentation must use spaces")
+        lines.append((indent, stripped))
+    if not lines:
+        return {}
+    value, consumed = _parse_yaml_block(lines, 0, lines[0][0])
+    if consumed != len(lines):
+        raise ValueError("yaml structure is inconsistent")
+    return value
 
 
 class ContentProcessor:
@@ -1492,8 +1654,15 @@ class ContentProcessor:
                 )
                 for row in values
             ]
-            body = "\n".join(lines)
-            for part in _split_text(body, maximum=self._text_chunk_max_chars) or [""]:
+            # 行组超长按整行分组再切（A60）：单行内容不再被按字符截断；每个
+            # chunk 的行号区间跟随该部分实际包含的行。
+            line_index = 0
+            for part in _split_lines_preserving_rows(lines, maximum=self._text_chunk_max_chars):
+                part_first = line_index
+                part_last = line_index + len(part) - 1
+                line_index += len(part)
+                row_start = start + part_first + 2
+                row_end = start + part_last + 2
                 index = len(chunks) + 1
                 chunks.append(
                     IndexChunk(
@@ -1503,25 +1672,33 @@ class ContentProcessor:
                         document_id=request.document_id,
                         document_version_id=request.document_version_id,
                         space_id=request.space_id,
-                        text=part,
-                        embedding_text=part,
-                        sparse_text=part,
+                        text="\n".join(part),
+                        embedding_text="\n".join(part),
+                        sparse_text="\n".join(part),
                         locator={
                             "sheet": "CSV",
-                            "a1_range": f"A{start + 2}:{_column_name(len(headers))}{end + 1}",
+                            "a1_range": (f"A{row_start}:{_column_name(len(headers))}{row_end}"),
                         },
                         snippet=None,
                         media_kind="text/csv",
                         manifest_hash=manifest_hash,
                         metadata={
                             "headers": headers,
-                            "row_start": start + 2,
-                            "row_end": end + 1,
+                            "row_start": row_start,
+                            "row_end": row_end,
                             "table": True,
+                            "block": index,
                         },
                     )
                 )
-                row_groups.append({"sheet": "CSV", "start": start + 2, "end": end + 1})
+                row_groups.append(
+                    {"sheet": "CSV", "start": row_start, "end": row_end, "block": index}
+                )
+        total_blocks = len(chunks)
+        chunks = [
+            replace(chunk, metadata={**chunk.metadata, "total_blocks": total_blocks})
+            for chunk in chunks
+        ]
         return (
             chunks,
             {
@@ -1723,12 +1900,13 @@ class ContentProcessor:
                     if not body.strip():
                         continue
                     table_count += 1
+                    block_number = len(row_groups) + 1
                     row_groups.append(
                         {
                             "sheet": worksheet.title,
                             "start": start_row,
                             "end": end_row,
-                            "block": len(row_groups) + 1,
+                            "block": block_number,
                             "total_rows": total_rows,
                         }
                     )
@@ -1757,11 +1935,17 @@ class ContentProcessor:
                                 "table": True,
                                 "merged_ranges": merged_ranges,
                                 "total_rows": total_rows,
+                                "block": block_number,
                             },
                         )
                     )
         finally:
             workbook.close()
+        total_blocks = len(row_groups)
+        chunks = [
+            replace(chunk, metadata={**chunk.metadata, "total_blocks": total_blocks})
+            for chunk in chunks
+        ]
         return (
             chunks,
             {
@@ -1800,9 +1984,11 @@ class ContentProcessor:
                         422,
                     )
                 root = ElementTree.fromstring(text)
-                value = {root.tag: {child.tag: child.text or "" for child in root}}
+                # 保留层级（A61）：子树递归转嵌套映射/列表，同名兄弟折叠为列表，
+                # 由统一的深嵌套/扁平化判据分流。
+                value = {root.tag: _element_to_value(root)}
             else:
-                value = self._simple_yaml(text)
+                value = _parse_yaml_subset(text)
         except (
             ValueError,
             TypeError,
@@ -1828,9 +2014,17 @@ class ContentProcessor:
             summary["metering"] = {"class": "table"}
             return chunks, summary, degradations
         token_count = approximate_token_count(text)
-        if isinstance(value, Mapping) and any(
-            key in value for key in ("$schema", "schema", "type", "properties")
-        ):
+        # A61 分流判据：schema 特征组合（$schema/schema/properties/required 等）或
+        # 深嵌套（无 schema 键）走代码/配置路径——单独的顶层 "type" 不再误入，
+        # 深嵌套对象不再键值对扁平化。
+        schema_like = isinstance(value, Mapping) and any(
+            key in value for key in _STRUCTURED_SCHEMA_KEYS
+        )
+        deeply_nested = (
+            isinstance(value, Mapping)
+            and _nesting_depth(value) >= STRUCTURED_NESTING_DEPTH_THRESHOLD
+        )
+        if schema_like or deeply_nested:
             chunks, summary, degradations = self._code_chunks(
                 request,
                 text,
@@ -1942,16 +2136,6 @@ class ContentProcessor:
             (),
         )
 
-    @staticmethod
-    def _simple_yaml(text: str) -> Mapping[str, Any]:
-        result: dict[str, Any] = {}
-        for line in text.splitlines():
-            if not line.strip() or line.lstrip().startswith("#") or ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            result[key.strip()] = value.strip().strip("'\"")
-        return result
-
     def _code_chunks(
         self,
         request: IndexStagingRequest,
@@ -1961,15 +2145,26 @@ class ContentProcessor:
         metering_class: str = "code",
     ) -> tuple[list[IndexChunk], Mapping[str, Any], tuple[Mapping[str, Any], ...]]:
         symbols: list[tuple[str, str]] = []
+        module_level: list[str] = []
+        python_tree: ast.Module | None = None
         try:
-            tree = ast.parse(text)
-            for node in tree.body:
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    lines = text.splitlines()[node.lineno - 1 : node.end_lineno]
-                    symbols.append((node.name, "\n".join(lines)))
+            python_tree = ast.parse(text)
         except SyntaxError:
-            symbols = []
-        if not symbols and ("function " in text or "class " in text):
+            python_tree = None
+        if python_tree is not None:
+            lines = text.splitlines()
+            for node in python_tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    # 装饰器行属于符号本身（lineno 指向 def/class）。
+                    start_line = node.lineno
+                    for decorator in getattr(node, "decorator_list", ()):
+                        start_line = min(start_line, decorator.lineno)
+                    symbols.append((node.name, "\n".join(lines[start_line - 1 : node.end_lineno])))
+                else:
+                    # import/模块级赋值等非符号语句落入模块级 chunk（A61），
+                    # 不随符号切分丢弃。
+                    module_level.extend(lines[node.lineno - 1 : node.end_lineno])
+        if python_tree is None and not symbols and ("function " in text or "class " in text):
             matches = list(
                 re.finditer(
                     r"^(?:export\s+)?(?:async\s+)?(?:function|class)\s+([A-Za-z_$][\w$]*)",
@@ -1980,10 +2175,15 @@ class ContentProcessor:
             for index, match in enumerate(matches):
                 end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
                 symbols.append((match.group(1), text[match.start() : end].strip()))
-        if not symbols:
-            symbols = [("module", text.strip())]
+        module_text = "\n".join(module_level).strip()
+        # 模块级 chunk 在前（import/常量通常位于文件头），符号 chunk 保持顺序。
+        ordered: list[tuple[str, str]] = (
+            [("module", module_text)] if module_text else []
+        ) + symbols
+        if not ordered:
+            ordered = [("module", text.strip())]
         chunks: list[IndexChunk] = []
-        for name, symbol in symbols:
+        for name, symbol in ordered:
             if not symbol.strip():
                 continue
             for body in _split_text(symbol, maximum=self._text_chunk_max_chars):

@@ -1859,7 +1859,8 @@ def test_unheaded_text_is_split_into_bounded_chunks() -> None:
 @pytest.mark.parametrize(
     ("content", "media_kind"),
     (
-        ("value\n" + "x" * 9, "text/csv"),
+        # CSV 切分按整行分组（A60）：单行不超上限的行组仍受字符上限约束。
+        ("n\na\nb\nc", "text/csv"),
         ("x" * 9, "text/x-python"),
     ),
 )

@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -356,6 +357,151 @@ def _page_facts(middle: Mapping[str, Any]) -> tuple[dict[int, str], dict[int, in
     return texts, figures
 
 
+class _HtmlTableParser(HTMLParser):
+    """Outer-table text extraction for MinerU table-body html payloads."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._table_depth = 0
+        self._cells: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def _flush_cell(self) -> None:
+        if self._cell is not None and self._cells is not None:
+            self._cells.append(" ".join("".join(self._cell).split()))
+        self._cell = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "table":
+            self._table_depth += 1
+        elif self._table_depth == 1 and tag == "tr":
+            if self._cells is not None and self._cells:
+                self.rows.append(self._cells)  # tolerate a missing </tr>
+            self._cells = []
+        elif self._table_depth == 1 and tag in {"td", "th"} and self._cells is not None:
+            self._flush_cell()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "table" and self._table_depth:
+            self._table_depth -= 1
+        elif self._table_depth == 1 and tag in {"td", "th"}:
+            self._flush_cell()
+        elif self._table_depth == 1 and tag == "tr" and self._cells is not None:
+            if self._cells:
+                self.rows.append(self._cells)
+            self._cells = None
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is None and self._cells is not None and self._table_depth == 1:
+            self._cell = []  # tolerate a missing opening cell tag
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _html_table_rows(html: str) -> tuple[list[str], list[list[str]]] | None:
+    """Parse an html table body into (headers, rows); first row becomes headers."""
+
+    parser = _HtmlTableParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        return None
+    if not parser.rows:
+        return None
+    return parser.rows[0], parser.rows[1:]
+
+
+def _table_htmls(node: Any) -> list[str]:
+    """Html payloads of table-typed spans anywhere below ``node``.
+
+    middle.json 携带 html 的位置随版本漂移（L1 表块 lines 直接挂 span、L2
+    ``table_body`` 块内 span、或 content_list 风格的 ``table_body`` 字符串）；
+    统一按「type=table 且携带 <table> 的 span/字符串」递归收集。
+    """
+
+    htmls: list[str] = []
+    if isinstance(node, Mapping):
+        node_type = str(node.get("type", "")).strip().casefold()
+        content = node.get("html") or node.get("content") or node.get("table_body")
+        if node_type == "table" and isinstance(content, str) and "<table" in content.casefold():
+            return [content]
+        for child in node.values():
+            htmls.extend(_table_htmls(child))
+    elif isinstance(node, list):
+        for child in node:
+            htmls.extend(_table_htmls(child))
+    return htmls
+
+
+def _table_caption(node: Any) -> str:
+    if isinstance(node, Mapping):
+        raw = node.get("table_caption")
+        if isinstance(raw, list):
+            parts = [
+                str(item).strip() for item in raw if isinstance(item, str) and str(item).strip()
+            ]
+            if parts:
+                return " ".join(parts)
+        if str(node.get("type", "")).strip().casefold() == "table_caption":
+            texts = _block_texts(node)
+            if texts:
+                return " ".join(texts)
+        for child in node.values():
+            nested = _table_caption(child)
+            if nested:
+                return nested
+        return ""
+    if isinstance(node, list):
+        for child in node:
+            nested = _table_caption(child)
+            if nested:
+                return nested
+    return ""
+
+
+def _page_tables(middle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Structured tables from middle.json table blocks, in document order.
+
+    middle.json 在页级 ``tables`` 便捷列表与 ``para_blocks``/``preproc_blocks``
+    中重复携带同一表块；按 html 表体去重。表体不可解析或无行时跳过——不产出
+    部分成功的事实。
+    """
+
+    tables: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    pages = middle.get("pdf_info")
+    if not isinstance(pages, list):
+        return tables
+    for page_index, page in enumerate(pages, start=1):
+        if not isinstance(page, Mapping):
+            continue
+        for block in _walk_blocks(page):
+            if str(block.get("type", "")).strip().casefold() != "table":
+                continue
+            htmls = _table_htmls(block)
+            if not htmls or htmls[0] in seen:
+                continue
+            seen.add(htmls[0])
+            parsed = _html_table_rows(htmls[0])
+            if parsed is None:
+                continue
+            headers, rows = parsed
+            tables.append(
+                {
+                    "page": page_index,
+                    "page_start": page_index,
+                    "page_end": page_index,
+                    "title": _table_caption(block),
+                    "headers": headers,
+                    "rows": rows,
+                }
+            )
+    return tables
+
+
 class MinerURun:
     """Parsed facts from one MinerU output directory."""
 
@@ -498,6 +644,7 @@ class MinerUAdapter:
         page_scores = run.ocr_confidence_by_page
         scores = sorted(page_scores.values())
         page_texts, page_figures = _page_facts(run.middle)
+        page_table_facts = _page_tables(run.middle)
         # B9 真字符偏移：span 为页内字符范围（页文本重建坐标系）；页文本缺失
         # （扫描页/无文本层）不合成假偏移——span=None 由消费端省略。
         chunks = [
@@ -527,6 +674,9 @@ class MinerUAdapter:
             "image_count": sum(page_figures.values()),
             # B9 消费端精化：页重建文本供 snippet 定位（同页重复消歧）。
             "page_texts": {str(page): text for page, text in page_texts.items()},
+            # 结构化表格事实（A60）：middle.json 表块 → headers/rows，供内嵌表格
+            # 转 markdown 分支消费；无表块或表体不可解析时为空，行为与现状一致。
+            "tables": page_table_facts,
         }
 
     def __call__(self, content: bytes) -> dict[str, Any]:
