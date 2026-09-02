@@ -101,6 +101,10 @@ class RetentionMaintenanceWorker:
                 "retention:identity-history-prune",
                 partial(self._prune_identity_history, limit=100),
             ),
+            (
+                "retention:observability-metrics-prune",
+                partial(self._prune_observability_metrics),
+            ),
         ]
 
     def _purge_versions(
@@ -144,6 +148,24 @@ class RetentionMaintenanceWorker:
     ) -> dict[str, object]:
         del _context, _connection
         return dict(self._retention.prune_identity_history(limit=limit))
+
+    def _prune_observability_metrics(
+        self, _context: object, _connection: object
+    ) -> dict[str, object]:
+        """Apply the observability retention policy (A20) under the resident lease.
+
+        The prune opens its own transaction (it only touches observability
+        tables), so the lease-store connection passed by ``run_task`` is not
+        reused, mirroring the other owner-domain task callbacks.
+        """
+
+        del _context, _connection
+        metrics: Any = self._worker_runtime.runtime.resolve("observability_metrics")
+        prune = getattr(metrics, "prune", None)
+        if not callable(prune):
+            raise RuntimeError("observability adapter does not support retention maintenance")
+        prune()
+        return {"pruned": True}
 
     def run_forever(
         self,

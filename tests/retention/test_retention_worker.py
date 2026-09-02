@@ -92,6 +92,7 @@ def _service_and_runtime(engine, service):
             "database_engine": engine,
         },
     )
+    _register_metrics(runtime)
     clock = SqlAlchemyDatabaseClock(engine)
     leases = SqlAlchemyLeaseStore(engine, clock)
     worker_runtime = WorkerRuntime(
@@ -128,19 +129,39 @@ def _create_tables(engine):
         metadata.create_all(engine)
 
 
-def test_worker_runs_all_seven_steps_under_leases() -> None:
+def test_worker_runs_all_eight_steps_under_leases() -> None:
     engine = build_engine()
     _create_tables(engine)
     service = _service(engine)
     runtime, worker_runtime = _service_and_runtime(engine, service)
     worker = RetentionMaintenanceWorker(worker_runtime)
     stats = worker.run_once(owner="worker-1")
-    assert stats.completed == 7
+    assert stats.completed == 8
     assert stats.deferred == 0
     with engine.connect() as connection:
         rows = connection.execute(platform_lease_table.select()).mappings()
         leases = [dict(row) for row in rows]
-    assert len(leases) == 7
+    assert len(leases) == 8
+    worker_runtime.close()
+    runtime.close()
+
+
+def test_worker_prunes_observability_metrics_under_a_lease() -> None:
+    engine = build_engine()
+    _create_tables(engine)
+    service = _service(engine)
+    runtime, worker_runtime = _service_and_runtime(engine, service)
+    metrics = runtime.resolve("observability_metrics")
+    worker = RetentionMaintenanceWorker(worker_runtime)
+
+    stats = worker.run_once(owner="worker-1")
+
+    assert stats.completed == 8
+    assert stats.deferred == 0
+    assert metrics.prunes == [True]
+    with engine.connect() as connection:
+        leases = list(connection.execute(platform_lease_table.select()).mappings())
+    assert {lease["resource"] for lease in leases} >= {"retention:observability-metrics-prune"}
     worker_runtime.close()
     runtime.close()
 
@@ -157,7 +178,7 @@ def test_worker_runs_identity_history_prune_under_a_lease() -> None:
 
     stats = worker.run_once(owner="worker-1")
 
-    assert stats.completed == 7
+    assert stats.completed == 8
     assert stats.deferred == 0
     assert history.calls == [100]
     with engine.connect() as connection:
@@ -165,6 +186,20 @@ def test_worker_runs_identity_history_prune_under_a_lease() -> None:
     assert {lease["resource"] for lease in leases} >= {"retention:identity-history-prune"}
     worker_runtime.close()
     runtime.close()
+
+
+class FakeObservabilityMetrics:
+    def __init__(self) -> None:
+        self.prunes: list[bool] = []
+
+    def prune(self) -> None:
+        self.prunes.append(True)
+
+
+def _register_metrics(runtime: PlatformRuntime) -> FakeObservabilityMetrics:
+    metrics = FakeObservabilityMetrics()
+    runtime.adapters["observability_metrics"] = metrics
+    return metrics
 
 
 class _FailingService(RetentionOpsService):
@@ -195,7 +230,7 @@ def test_failing_step_defers_without_aborting_other_steps() -> None:
     runtime, worker_runtime = _service_and_runtime(engine, service)
     worker = RetentionMaintenanceWorker(worker_runtime)
     stats = worker.run_once(owner="worker-1")
-    assert stats.completed == 6
+    assert stats.completed == 7
     assert stats.deferred == 1
     worker_runtime.close()
     runtime.close()
