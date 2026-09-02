@@ -44,6 +44,12 @@ def bounded_backoff_seconds(attempt: int) -> float:
     return min(delay, JUDGE_RETRY_MAX_DELAY_SECONDS)
 
 
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class JudgeConfiguration:
     provider: str = JUDGE_PROVIDER
@@ -393,18 +399,44 @@ class HttpJudgeProvider:
         def measurement_extractor(
             value: Any, ctx: ProviderCallContext, failure: ProviderFailure | None
         ) -> ProviderMeasurement:
-            del value, ctx, failure
+            del ctx
+            # Failed sends report no fabricated usage (A19); only a successful
+            # response's provider-reported ``usage`` block becomes a meter.
+            input_tokens = output_tokens = reasoning_tokens = None
+            if failure is None:
+                usage = HttpJudgeProvider._reported_usage(value)
+                if usage is not None:
+                    # OpenAI-compatible keys first; DashScope-native responses
+                    # name the same meters input_tokens/output_tokens.
+                    input_tokens = _int_or_none(
+                        usage.get("prompt_tokens", usage.get("input_tokens"))
+                    )
+                    output_tokens = _int_or_none(
+                        usage.get("completion_tokens", usage.get("output_tokens"))
+                    )
+                    details = usage.get("completion_tokens_details")
+                    if not isinstance(details, Mapping):
+                        details = usage.get("output_tokens_details")
+                    if isinstance(details, Mapping):
+                        reasoning_tokens = _int_or_none(details.get("reasoning_tokens"))
+            sources: dict[str, str] = {}
+            if input_tokens is not None:
+                sources["input_tokens"] = "provider_reported"
+            if output_tokens is not None:
+                sources["output_tokens"] = "provider_reported"
+            if reasoning_tokens is not None:
+                sources["reasoning_tokens"] = "provider_reported"
             return ProviderMeasurement(
-                input_tokens=None,
+                input_tokens=input_tokens,
                 prompt_cache_hit_tokens=None,
                 prompt_cache_miss_tokens=None,
-                output_tokens=None,
-                reasoning_tokens=None,
+                output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
                 image_count=None,
                 visual_input_tokens=None,
                 embedding_input_tokens=None,
                 vector_count=None,
-                measurement_sources={},
+                measurement_sources=sources,
             )
 
         def ownership_provider(ctx: ProviderCallContext) -> OwnershipSnapshot:
@@ -513,6 +545,22 @@ class HttpJudgeProvider:
                 f"{name} must be a finite number between 0 and 1"
             )
         return float(value)
+
+    @staticmethod
+    def _reported_usage(response: Any) -> Mapping[str, Any] | None:
+        """The provider-reported ``usage`` block of a raw response, or ``None``.
+
+        Meter extraction must never mask a scoring failure: an unparsable or
+        malformed body simply yields no meters.
+        """
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001 - meter extraction is best-effort
+            return None
+        if not isinstance(body, Mapping):
+            return None
+        usage = body.get("usage")
+        return usage if isinstance(usage, Mapping) else None
 
     @staticmethod
     def _parse_json(response: Any) -> Mapping[str, Any]:

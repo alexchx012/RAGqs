@@ -209,30 +209,92 @@ def build_comparator_key(
     return hashlib.sha256(b"evaluation-comparator-v1\0" + encoded.encode("utf-8")).hexdigest()
 
 
-def threshold_eligibility(metrics: Mapping[str, float], policy: EvaluationPolicySnapshot) -> bool:
-    """Every dimension must pass independently; no cross-dimension compensation (A22)."""
-    faithfulness = metrics.get("faithfulness", 0.0)
-    refusal_rate = metrics.get("refusal_rate", 0.0)
-    hit_at_k_final = metrics.get("hit_at_k_final", 0.0)
-    mrr = metrics.get("mrr", 0.0)
-    p95_latency_ms = metrics.get("p95_latency_ms", inf)
-    cost_per_query = metrics.get("cost_per_query", inf)
-    return bool(
+def aggregate_weak_signals(results: list[Mapping[str, Any]]) -> dict[str, float]:
+    """Mean weak-signal rates over one candidate config's result rows.
+
+    §8.4: without golden labels the retrieval layer is judged through weak
+    signals (answered-with-citation share, 👍👎, A/B votes) instead of hit@k.
+    The citation share is the only weak signal the eligibility ladder consumes;
+    feedback and vote counts stay visible facts, never retrieval metrics.
+    """
+    rows = [result.get("weak_signals_json") or {} for result in results]
+    citations = [signals.get("weak_has_citation") for signals in rows if signals is not None]
+    values = [1.0 if citation else 0.0 for citation in citations if citation is not None]
+    return {
+        "weak_citation_rate": (sum(values) / len(values)) if values else 0.0,
+        "weak_sampled_items": float(len(values)),
+    }
+
+
+def threshold_eligibility(
+    metrics: Mapping[str, float | None],
+    policy: EvaluationPolicySnapshot,
+    *,
+    has_golden: bool = True,
+    weak_signal_rate: float | None = None,
+) -> bool:
+    """Every dimension must pass independently; no cross-dimension compensation (A22).
+
+    ``has_golden=False`` switches the §8.4 replacement ladder: retrieval gates
+    (hit@k/MRR) are unmeasurable without golden labels, so the weak-signal
+    citation share takes the ``hit_at_k_final_min`` bar and the refusal gate
+    (which needs golden ``expects_refusal`` labels) is skipped; generation,
+    latency and cost gates keep applying. Without any weak-signal data the
+    candidate stays ineligible — missing retrieval evidence is not judged as
+    zero-hit, but it is never judged as passing either. A ``None`` cost means
+    metering was unavailable, not zero cost: the metric reports null instead of
+    fabricating a pass or fail value.
+    """
+    faithfulness = metrics.get("faithfulness") or 0.0
+    p95_latency_ms = metrics.get("p95_latency_ms")
+    if p95_latency_ms is None:
+        p95_latency_ms = inf
+    cost_per_query = metrics.get("cost_per_query")
+    generation_ok = (
         faithfulness >= policy.faithfulness_min
-        and refusal_rate >= policy.refusal_rate_min
+        and p95_latency_ms <= float(policy.p95_latency_max_ms)
+        and (cost_per_query is None or cost_per_query <= policy.cost_per_query_max)
+    )
+    if not generation_ok:
+        return False
+    if not has_golden:
+        return weak_signal_rate is not None and weak_signal_rate >= policy.hit_at_k_final_min
+    refusal_rate = metrics.get("refusal_rate") or 0.0
+    hit_at_k_final = metrics.get("hit_at_k_final") or 0.0
+    mrr = metrics.get("mrr") or 0.0
+    return bool(
+        refusal_rate >= policy.refusal_rate_min
         and hit_at_k_final >= policy.hit_at_k_final_min
         and mrr >= policy.mrr_min
-        and p95_latency_ms <= float(policy.p95_latency_max_ms)
-        and cost_per_query <= policy.cost_per_query_max
     )
 
 
-def weighted_score(metrics: Mapping[str, float]) -> float:
+def config_threshold_eligibility(
+    config_results: list[Mapping[str, Any]],
+    metrics: Mapping[str, float | None],
+    policy: EvaluationPolicySnapshot,
+    *,
+    has_golden: bool,
+) -> bool:
+    """Threshold eligibility for one candidate config's aggregated metrics.
+
+    With golden labels every gate applies (A22); the §8.4 golden-less path
+    swaps the retrieval gates for the weak-signal citation bar.
+    """
+    if has_golden:
+        return threshold_eligibility(metrics, policy)
+    weak = aggregate_weak_signals(config_results)
+    return threshold_eligibility(
+        metrics, policy, has_golden=False, weak_signal_rate=weak["weak_citation_rate"]
+    )
+
+
+def weighted_score(metrics: Mapping[str, float | None]) -> float:
     """Composite score only meaningful after all thresholds pass (A22)."""
-    faithfulness = float(metrics.get("faithfulness", 0.0))
-    answer_relevancy = float(metrics.get("answer_relevancy", 0.0))
-    hit_at_k_final = float(metrics.get("hit_at_k_final", 0.0))
-    mrr = float(metrics.get("mrr", 0.0))
+    faithfulness = metrics.get("faithfulness") or 0.0
+    answer_relevancy = metrics.get("answer_relevancy") or 0.0
+    hit_at_k_final = metrics.get("hit_at_k_final") or 0.0
+    mrr = metrics.get("mrr") or 0.0
     return (
         FAITHFULNESS_WEIGHT * faithfulness
         + ANSWER_RELEVANCY_WEIGHT * answer_relevancy
@@ -241,7 +303,7 @@ def weighted_score(metrics: Mapping[str, float]) -> float:
     )
 
 
-def aggregate_result_metrics(results: list[Mapping[str, Any]]) -> dict[str, float]:
+def aggregate_result_metrics(results: list[Mapping[str, Any]]) -> dict[str, float | None]:
     """Mean aggregation per candidate config; p95 latency uses the rank method."""
     keys = (
         "faithfulness",
@@ -252,7 +314,7 @@ def aggregate_result_metrics(results: list[Mapping[str, Any]]) -> dict[str, floa
         "p95_latency_ms",
         "cost_per_query",
     )
-    aggregates: dict[str, float] = {}
+    aggregates: dict[str, float | None] = {}
     for key in keys:
         numbers = [
             float(result["metrics_json"].get(key))
@@ -289,7 +351,9 @@ def policy_view(policy: EvaluationPolicySnapshot) -> dict[str, Any]:
 __all__ = [
     "DEFAULT_POLICY_VERSION",
     "aggregate_result_metrics",
+    "aggregate_weak_signals",
     "build_comparator_key",
+    "config_threshold_eligibility",
     "default_policy_snapshot",
     "policy_view",
     "threshold_eligibility",

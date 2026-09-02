@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -91,6 +92,7 @@ class ShadowEvaluationWorker:
         owner: str = "shadow-evaluation-worker",
         now: Any = None,
         suggestion_callback: Callable[[str], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._engine = engine
         self._repository = repository
@@ -100,6 +102,9 @@ class ShadowEvaluationWorker:
         self._owner = owner
         self._now = now or (lambda: datetime.now(UTC))
         self._suggestion_callback = suggestion_callback
+        # Monotonic clock for pipeline latency samples; the wall clock drives
+        # leases/heartbeats and must not be used to measure durations.
+        self._monotonic = monotonic or time.perf_counter
 
     def _now_utc(self) -> datetime:
         return _utc(self._now())
@@ -208,6 +213,10 @@ class ShadowEvaluationWorker:
                                 )
                             last_heartbeat = self._now_utc()
                         session_id = f"shadow:{run.run_id}:{item['item_id']}:{candidate}"
+                        # Pipeline latency = retrieval + generation replay for
+                        # this item; the judge scores it afterwards and its
+                        # round-trip never enters the latency metric (§8.2).
+                        pipeline_started = self._monotonic()
                         outcome = self._retrieval.replay(
                             question=item["question_text"],
                             principal=self._principal_for(run),
@@ -228,6 +237,7 @@ class ShadowEvaluationWorker:
                             )
                         except PlatformError as error:
                             raise _JudgeFailure(error) from error
+                        pipeline_latency_ms = (self._monotonic() - pipeline_started) * 1000.0
                         if not isinstance(answer, str) or not answer.strip():
                             raise _JudgeFailure(
                                 PlatformError(
@@ -260,6 +270,7 @@ class ShadowEvaluationWorker:
                             expected_sources=expected_sources,
                             expects_refusal=expects_refusal,
                             judge_k=judge_k,
+                            pipeline_latency_ms=pipeline_latency_ms,
                         )
                         self._repository.insert_result(
                             connection,
@@ -390,7 +401,8 @@ class ShadowEvaluationWorker:
         expected_sources: tuple[str, ...],
         expects_refusal: bool | None,
         judge_k: int,
-    ) -> dict[str, float]:
+        pipeline_latency_ms: float,
+    ) -> dict[str, float | None]:
         final_ids = _hit_source_ids(hits)
         candidate_ids = _hit_source_ids(candidate_hits) if candidate_hits else final_ids
         if expected_sources:
@@ -411,15 +423,20 @@ class ShadowEvaluationWorker:
             hit_final = 0.0
             mrr_value = 0.0
             ndcg = 0.0
-        metrics = {
+        metrics: dict[str, float | None] = {
             "faithfulness": scores.faithfulness or 0.0,
             "answer_relevancy": scores.answer_relevancy or 0.0,
             "hit_at_k_candidate": hit_candidate,
             "hit_at_k_final": hit_final,
             "mrr": mrr_value,
             "ndcg_at_k": ndcg,
-            "p95_latency_ms": float(scores.latency_ms or 0),
-            "cost_per_query": 0.0,
+            # Latency of the evaluated pipeline (retrieval + generation replay),
+            # never the judge round-trip (§8.2).
+            "p95_latency_ms": pipeline_latency_ms,
+            # Per-item pipeline cost is not individually metered; the service
+            # fills the run-level metered cost per query when usage events
+            # exist, and leaves it null (not 0.0) when metering is unavailable.
+            "cost_per_query": None,
         }
         if expects_refusal is not None:
             metrics["refusal_rate"] = 1.0 if scores.is_refusal == expects_refusal else 0.0

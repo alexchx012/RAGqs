@@ -220,7 +220,8 @@ class LeaderboardEntry:
     rank: int
     name: str
     score: float
-    metrics: Mapping[str, float]
+    # Cost carries null when usage metering is unavailable (never a fake 0.0).
+    metrics: Mapping[str, float | None]
     eligible: bool
     is_active: bool
 

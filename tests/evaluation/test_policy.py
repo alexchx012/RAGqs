@@ -115,6 +115,75 @@ def test_threshold_eligibility_passes_when_all_pass() -> None:
     assert threshold_eligibility(metrics, policy) is True
 
 
+def test_threshold_eligibility_treats_null_cost_as_unmeasured() -> None:
+    """Null cost means metering was unavailable, not a fabricated 0.0 pass."""
+    policy = default_policy_snapshot()
+    metrics = {
+        "faithfulness": 0.9,
+        "refusal_rate": 1.0,
+        "hit_at_k_final": 0.9,
+        "mrr": 0.8,
+        "p95_latency_ms": 100,
+        "cost_per_query": None,
+    }
+    assert threshold_eligibility(metrics, policy) is True
+    # A measured cost above the bar still fails the gate.
+    assert (
+        threshold_eligibility({**metrics, "cost_per_query": policy.cost_per_query_max * 2}, policy)
+        is False
+    )
+
+
+def test_no_golden_eligibility_replaces_retrieval_gates_with_weak_signals() -> None:
+    """§8.4: without golden labels the weak citation share takes the hit@k bar."""
+    policy = default_policy_snapshot()
+    base = {
+        "faithfulness": 0.9,
+        "hit_at_k_final": 0.0,
+        "mrr": 0.0,
+        "p95_latency_ms": 100,
+        "cost_per_query": None,
+    }
+    at_bar = threshold_eligibility(
+        dict(base), policy, has_golden=False, weak_signal_rate=policy.hit_at_k_final_min
+    )
+    assert at_bar is True
+    assert (
+        threshold_eligibility(dict(base), policy, has_golden=False, weak_signal_rate=0.0) is False
+    )
+    # No weak-signal data at all: the candidate stays ineligible.
+    assert threshold_eligibility(dict(base), policy, has_golden=False) is False
+    # The generation, latency and cost gates keep applying independently.
+    assert (
+        threshold_eligibility(
+            {**base, "faithfulness": 0.1}, policy, has_golden=False, weak_signal_rate=1.0
+        )
+        is False
+    )
+    assert (
+        threshold_eligibility(
+            {**base, "p95_latency_ms": policy.p95_latency_max_ms + 1},
+            policy,
+            has_golden=False,
+            weak_signal_rate=1.0,
+        )
+        is False
+    )
+
+
+def test_aggregate_weak_signals_means_the_citation_share() -> None:
+    from app.evaluation.policy import aggregate_weak_signals
+
+    results = [
+        {"weak_signals_json": {"weak_has_citation": True}},
+        {"weak_signals_json": {"weak_has_citation": False}},
+        {"weak_signals_json": {"weak_has_citation": True}},
+        {"weak_signals_json": {}},
+    ]
+    summary = aggregate_weak_signals(results)
+    assert summary == {"weak_citation_rate": 2 / 3, "weak_sampled_items": 3.0}
+
+
 def test_comparator_key_changes_with_any_member() -> None:
     base = dict(
         golden_set_version="gv1",
