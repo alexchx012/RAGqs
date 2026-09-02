@@ -136,7 +136,6 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
       return;
     }
     const token = operationTokenRef.current;
-    const wasUploading = true;
     // key 绑定 target(space)+payload(文件指纹)：目标/文件变化自动换键
     const payloadFingerprint = files
       .map((file) => `${file.name}:${file.size}:${file.lastModified}`)
@@ -186,11 +185,9 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
         setSubmitError(copy.settings.knowledge.upload.itemError('upload_error'));
         setPhase('idle');
       }
-    } finally {
-      if (token === operationTokenRef.current && wasUploading) {
-        setPhase('idle');
-      }
     }
+    // 无 finally 重置（A37）：成功路径保留 done 状态（结果行常驻，phase 由文件变更/重开复位），
+    // 失败路径各分支已显式回 idle；恒真 wasUploading 守卫删除。
   };
 
   const requestClose = () => {
