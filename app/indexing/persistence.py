@@ -1895,7 +1895,13 @@ class SqlAlchemyIndexingRepository:
         reasons: list[str] = []
         if generation.status == "active":
             reasons.append("active_generation")
-        if head["rollback_candidate_id"] == candidate_generation_id:
+        rollback_until = generation.rollback_until_utc
+        if head["rollback_candidate_id"] == candidate_generation_id and (
+            rollback_until is None or _utc(now) <= _utc(rollback_until)
+        ):
+            # 回滚窗口内保持阻塞（A62）；过窗后 GC 不再被回滚候选身份无条件
+            # 阻塞——与 rollback 消费路径的窗口判定一致。窗口内租约/消费语义
+            # 不变；未设窗口（None）视为窗口未关闭，保持阻塞。
             reasons.append("rollback_candidate")
         if active_lease is not None:
             reasons.append("active_lease")

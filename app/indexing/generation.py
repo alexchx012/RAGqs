@@ -545,7 +545,11 @@ class GenerationManager:
                 return receipt
             if generation.status == "active":
                 reasons.append("active_generation")
-            if self._rollback_candidate_id == candidate_generation_id:
+            rollback_until = generation.rollback_until_utc
+            if self._rollback_candidate_id == candidate_generation_id and (
+                rollback_until is None or _utc(self._now()) <= _utc(rollback_until)
+            ):
+                # 与持久层一致（A62）：过回滚窗口后不再阻塞 GC；未设窗口保持阻塞。
                 reasons.append("rollback_candidate")
             if any(
                 record.lease.generation_id == candidate_generation_id
