@@ -74,6 +74,28 @@ Backlog growth, latency, and cost thresholds are supplied by the resolved deploy
 
 No business scheduler runs inside the API process. External CronJobs/workflows create persisted work through protected APIs or invoke the approved CLI. Workers reconcile persisted state at startup and during their normal loop.
 
+### 4.1 Worker entrypoints and run model
+
+Every console entry declared in `pyproject.toml` `project.scripts` is listed below. Resident entries run a `run_forever` loop and install SIGINT/SIGTERM stop handlers: a termination signal lets the current iteration finish and releases leases instead of hard-killing the process. One-shot entries execute a single bounded pass or operator action; their cadence is whatever the deployment's external CronJob/workflow gives them, and it must be frequent enough to honor the lifecycle deadlines of the work they own.
+
+| Console entry | Run model | Trigger and cadence | Responsibility |
+| --- | --- | --- | --- |
+| `ragqs-ingestion-worker` | Resident `run_forever`, graceful stop | Loop poll interval `RAG_INGESTION_POLL_INTERVAL_SECONDS` (default 5 s); 300 s attempt lease renewed every 20 s (`RAG_INGESTION_LEASE_SECONDS`, `RAG_INGESTION_HEARTBEAT_SECONDS`) | Claims pending/due ingestion jobs and stages/fences publication |
+| `ragqs-outbox-worker` | Resident `run_forever`, graceful stop | Default 5 s loop; delivery lease 60 s renewed every 20 s | Delivers outbox events, recycles expired leases, dead-letters after the eighth attempt |
+| `ragqs-outbox-retirement-worker` | Resident `run_forever`, graceful stop | Default 5 s loop | Applies durable account-retirement notification work from persisted accepted commands |
+| `ragqs-outbox-compaction-worker` | Resident `run_forever`, graceful stop | Default 60 s loop | Re-evaluates accepted compaction commands and compacts full events under a fence |
+| `ragqs-retention-maintenance` | Resident `run_forever`, graceful stop | Default 60 s loop | Advances account compression, generation GC handoff, and reconciliation from persisted state |
+| `ragqs-backup-maintenance` | Resident `run_forever`, graceful stop | Schedule poll interval `RAG_BACKUP_SCHEDULE_INTERVAL_SECONDS` (default 60 s) | Claims due backup schedule windows, runs backups under the write gate, drives restores, applies retention expiry |
+| `ragqs-identity-deletion-worker` | One-shot `run_once`, external schedule | CronJob cadence owned by the deployment | Finalizes due account-deletion archives and object cleanup under leases |
+| `ragqs-usage-maintenance` | One-shot, gated by `RAG_MAINTENANCE_KEY` | External CronJob per tick | Reconciles unknown provider calls, recovers expired usage meters, processes quota cancellation candidates; `--revoke-all` revokes all budgets |
+| `ragqs-evaluation-maintenance` | One-shot, gated by `RAG_MAINTENANCE_KEY` | External CronJob per tick | Advances queued shadow runs and closes due calibration windows |
+| `ragqs-graph-maintenance` | One-shot, gated by `RAG_MAINTENANCE_KEY` | External CronJob per tick | Advances explicitly created graph build runs; never creates or replays a run |
+| `ragqs-chat-maintenance` | One-shot, gated by `RAG_MAINTENANCE_KEY` | External CronJob per tick | Reaps expired generation leases and executes queued chat generations |
+| `ragqs-documents-maintenance` | One-shot, gated by `RAG_MAINTENANCE_KEY` | External CronJob per tick | Deletes private objects scheduled for cleanup (withdrawn/invalidated submissions) and records timestamps; idempotent |
+| `ragqs-identity-bootstrap-admin` | One-shot operator CLI | Once per new deployment, after Alembic and before any API/worker workload | Bootstraps the initial administrator declared in the admin roster |
+| `ragqs-outbox-delivery` | One-shot operator CLI | On demand by `ops` during the dead-letter runbook | Wraps the protected outbox delivery status and replay endpoints |
+| `ragqs-retrieval-acceptance` | One-shot release CLI, gated by `RAG_MAINTENANCE_KEY` | During the release procedure, per staged retrieval release | Replays the frozen acceptance suite scope and judges supplied metrics against the referenced release gate |
+
 | Activity | Required behavior |
 | --- | --- |
 | Worker startup | Scan `pending`, due `retry_wait`, expired leases, and provider-reconciliation records before claiming new work. Do not rely on an in-memory queue. |
@@ -301,7 +323,7 @@ The following actions are forbidden in production:
 
 - direct SQL updates to job, attempt, generation, lease, fencing, publication, outbox, notification, ACL, quota, or lifecycle state;
 - manual deletion or replacement of a Milvus collection, sparse index, object key, graph generation, or cache entry as a substitute for a persisted operation;
-- enabling `IMAGE_VLM_PROVIDER=none` or `RERANKER_PROVIDER=none` in production;
+- enabling `RAG_INDEX_IMAGE_VLM_PROVIDER=none` or `RAG_INDEX_RERANKER_PROVIDER=none` in production;
 - adding an unobserved retry layer, bypassing provider deadlines, or replaying an unknown provider request blindly;
 - starting a graph build without the current `source_revision`, replaying a failed graph run automatically, or using stale graph data for routing;
 - opening a calibration window or changing evaluation thresholds from the frontend;
