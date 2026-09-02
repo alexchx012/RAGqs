@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import and_, delete, func, select, text, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -1320,49 +1320,9 @@ class SqlAlchemyOutboxLifecycle:
         # including events whose delivery is still pending/dead-lettered.
         # Receipts alone are not enough: an event with no notification (all
         # recipients suppressed) must still be examined.
-        event_ids = (
-            connection.execute(
-                select(outbox_recipient_table.c.event_id).where(
-                    outbox_recipient_table.c.recipient_user_id == command.user_id
-                )
-            )
-            .scalars()
-            .all()
+        eligible_count, compacted_count, blocked_count = self._compact_associated_events(
+            connection, user_id=command.user_id, now=now
         )
-        eligible_count = 0
-        compacted_count = 0
-        blocked_count = 0
-        for event_id in event_ids:
-            event = (
-                connection.execute(
-                    select(
-                        outbox_event_table.c.storage_state,
-                        outbox_event_table.c.compacted_at_utc,
-                    ).where(outbox_event_table.c.event_id == event_id)
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if event is None or event["storage_state"] != "full":
-                continue
-            if event["compacted_at_utc"] is not None:
-                continue
-            non_delivered = connection.execute(
-                select(func.count())
-                .select_from(outbox_delivery_table)
-                .where(
-                    outbox_delivery_table.c.event_id == event_id,
-                    outbox_delivery_table.c.status != "delivered",
-                )
-            ).scalar_one()
-            if int(non_delivered) != 0:
-                blocked_count += 1
-                continue
-            eligible_count += 1
-            if compact_event(connection, event_id, now):
-                compacted_count += 1
-            else:
-                blocked_count += 1
 
         receipt = EligibleAccountEventCompactionReceipt(
             operation_id=command.operation_id,
@@ -1389,6 +1349,62 @@ class SqlAlchemyOutboxLifecycle:
             )
         )
         return receipt
+
+    @staticmethod
+    def _compact_associated_events(
+        connection: Connection,
+        *,
+        user_id: str,
+        now: datetime,
+    ) -> tuple[int, int, int]:
+        """Compact the account's compactable events in one candidate sweep.
+
+        One join/aggregate query resolves, for every event that ever listed
+        this account as a recipient, whether it is still full, not yet
+        compacted, and blocked by a non-delivered delivery. Only all-delivered
+        candidates are handed to compact_event, so already-compacted or
+        non-terminal events cost no per-event roundtrips. Counts match the
+        former per-event path: every all-delivered candidate is eligible even
+        when its conditional compact fails, and those failures are blocked.
+        """
+        candidates = connection.execute(
+            select(
+                outbox_recipient_table.c.event_id,
+                func.count(outbox_delivery_table.c.event_id).label("non_delivered"),
+            )
+            .select_from(outbox_recipient_table)
+            .join(
+                outbox_event_table,
+                outbox_event_table.c.event_id == outbox_recipient_table.c.event_id,
+            )
+            .join(
+                outbox_delivery_table,
+                and_(
+                    outbox_delivery_table.c.event_id == outbox_recipient_table.c.event_id,
+                    outbox_delivery_table.c.status != "delivered",
+                ),
+                isouter=True,
+            )
+            .where(
+                outbox_recipient_table.c.recipient_user_id == user_id,
+                outbox_event_table.c.storage_state == "full",
+                outbox_event_table.c.compacted_at_utc.is_(None),
+            )
+            .group_by(outbox_recipient_table.c.event_id)
+        ).all()
+        eligible_count = 0
+        compacted_count = 0
+        blocked_count = 0
+        for event_id, non_delivered in candidates:
+            if int(non_delivered) != 0:
+                blocked_count += 1
+                continue
+            eligible_count += 1
+            if compact_event(connection, str(event_id), now):
+                compacted_count += 1
+            else:
+                blocked_count += 1
+        return eligible_count, compacted_count, blocked_count
 
     def apply_compaction_command(
         self,
@@ -1433,49 +1449,11 @@ class SqlAlchemyOutboxLifecycle:
         previous = dict(stored["receipt_json"] or {})
         previous_compacted = int(previous.get("compacted_count", 0))
         previous_eligible = int(previous.get("eligible_count", 0))
-        event_ids = (
-            connection.execute(
-                select(outbox_recipient_table.c.event_id).where(
-                    outbox_recipient_table.c.recipient_user_id == user_id
-                )
-            )
-            .scalars()
-            .all()
+        eligible_delta, compacted_delta, blocked_count = self._compact_associated_events(
+            connection, user_id=user_id, now=now
         )
-        compacted_count = previous_compacted
-        eligible_count = previous_eligible
-        blocked_count = 0
-        for event_id in event_ids:
-            event = (
-                connection.execute(
-                    select(
-                        outbox_event_table.c.storage_state,
-                        outbox_event_table.c.compacted_at_utc,
-                    ).where(outbox_event_table.c.event_id == event_id)
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if event is None or event["storage_state"] != "full":
-                continue
-            if event["compacted_at_utc"] is not None:
-                continue
-            non_delivered = connection.execute(
-                select(func.count())
-                .select_from(outbox_delivery_table)
-                .where(
-                    outbox_delivery_table.c.event_id == event_id,
-                    outbox_delivery_table.c.status != "delivered",
-                )
-            ).scalar_one()
-            if int(non_delivered) != 0:
-                blocked_count += 1
-                continue
-            eligible_count += 1
-            if compact_event(connection, event_id, now):
-                compacted_count += 1
-            else:
-                blocked_count += 1
+        eligible_count = previous_eligible + eligible_delta
+        compacted_count = previous_compacted + compacted_delta
         completed = blocked_count == 0
         updated = connection.execute(
             update(outbox_compaction_command_table)

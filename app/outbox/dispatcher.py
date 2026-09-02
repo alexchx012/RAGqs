@@ -20,6 +20,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 
+from app.documents.schema import documents_table
 from app.platform.context import current_context
 from app.platform.database import platform_audit_table
 from app.platform.errors import PlatformError
@@ -53,6 +54,14 @@ RETRY_DELAYS_SECONDS = (5, 30, 120, 600, 1800, 7200, 21600)
 COMPACT_BATCH = 100
 
 _PENDING_STATUSES = ("pending", "retry_wait")
+
+# Document-bearing events substitute the document's current name into the
+# materialized title (design 13.1: the payload keeps only opaque machine
+# facts; readable fields are read from the domain at materialization time).
+_DOCUMENT_TITLE_TEMPLATES = {
+    "ingestion_completed": 'Document "{name}" ingestion completed',
+    "ocr_low_confidence": 'Low-confidence OCR result for document "{name}"',
+}
 
 _logger = logging.getLogger(__name__)
 
@@ -390,11 +399,7 @@ class OutboxDispatcher:
                         .one()
                     )
                     redacted = self._event_redacted(connection, claim)
-                    title = (
-                        claim.redacted_title
-                        if redacted
-                        else (claim.title if claim.title is not None else claim.redacted_title)
-                    )
+                    title = self._materialization_title(connection, claim, redacted=redacted)
                     for recipient in recipients:
                         consumer.materialize(
                             connection,
@@ -485,6 +490,52 @@ class OutboxDispatcher:
             )
         ).scalar_one_or_none()
         return matched is not None
+
+    @staticmethod
+    def _materialization_title(
+        connection: Connection,
+        claim: DeliveryClaim,
+        *,
+        redacted: bool,
+    ) -> str:
+        """Resolve the materialized title from current domain facts.
+
+        The redaction tombstone (re-checked inside the per-document advisory
+        lock taken above) always wins and keeps the fixed deleted-document
+        text. Document-bearing events otherwise substitute the document's
+        current name, read in the same fenced transaction that inserts the
+        notification, so a concurrent or later deletion redacts this title
+        through the existing redaction path. Events without a readable
+        document fact keep their typed default title.
+        """
+        if redacted:
+            return claim.redacted_title
+        typed_title = claim.title if claim.title is not None else claim.redacted_title
+        if claim.document_id is None:
+            return typed_title
+        template = _DOCUMENT_TITLE_TEMPLATES.get(claim.notification_type or "")
+        if template is None:
+            return typed_title
+        document = (
+            connection.execute(
+                select(
+                    documents_table.c.name,
+                    documents_table.c.lifecycle_status,
+                ).where(documents_table.c.id == claim.document_id)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if document is None:
+            return typed_title
+        if str(document["lifecycle_status"]) != "active":
+            # A document already inside the deletion lifecycle never
+            # contributes its name, even without an exact-version tombstone.
+            return claim.redacted_title
+        name = str(document["name"]) if document["name"] is not None else ""
+        if not name:
+            return typed_title
+        return template.format(name=name)
 
     def _recipients_for(self, connection: Connection, event_id: str) -> list[dict[str, object]]:
         rows = (
