@@ -4,9 +4,13 @@ name: Core Platform CI
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       RAG_DATABASE_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs_test
       RAGQS_TEST_POSTGRES_URL: postgresql+psycopg://ragqs:ragqs@localhost:5432/ragqs_test
@@ -33,7 +37,9 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       minio:
-        image: minio/minio:latest
+        # Pinned to the same MinIO release docker-compose.yml uses for the
+        # Milvus dependency stack; floating latest diverged from it.
+        image: minio/minio:RELEASE.2023-03-20T20-16-18Z
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
