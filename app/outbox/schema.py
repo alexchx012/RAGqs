@@ -150,6 +150,10 @@ notification_table = Table(
     # notification_seq) 索引；不再保留重复的普通索引（A30）。
     UniqueConstraint("recipient_user_id", "notification_seq", name="uq_notification_recipient_seq"),
     Index("ix_notification_document", "document_id", "document_version_id"),
+    # 保留期到期扫描（maintenance._retire_due）按 retire_after_at_utc 取到期行；
+    # 行随 retire 删除、列 NOT NULL，普通 btree 即与 outbox compact 扫描的
+    # due 索引同效，无需多余 predicate。
+    Index("ix_notification_retire_due", "retire_after_at_utc"),
 )
 
 notification_inbox_table = Table(
