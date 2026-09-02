@@ -79,6 +79,7 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
 
 from app.documents.schema import documents_metadata, knowledge_submissions_table
@@ -1446,3 +1447,119 @@ def test_approval_list_query_count_does_not_scale_with_rows() -> None:
     # 回落申请人（无 identity 行）显示名仍为 applicant id。
     by_id = {item["applicant"]["id"]: item["applicant"]["display_name"] for item in four_rows}
     assert by_id["extra1"] == "extra1"
+
+
+def test_approve_and_reject_freeze_approver_department_snapshot() -> None:
+    engine, quota, calendar, _times = make_service()
+    seed_identity(engine)
+    requests = QuotaRequestService(
+        engine, MutableClock(_times), calendar, quota, RecordingOutboxPort()
+    )
+    approved = create_pending(engine, requests, 100, uid="u1")
+    rejected = create_pending(engine, requests, 50, uid="u2")
+    department_approver = AuthPrincipal(
+        user_id="ops1",
+        auth_session_id="s9",
+        username="op",
+        role="ops",  # type: ignore[arg-type]
+        department_id="dept-9",
+    )
+
+    requests.approve(
+        actor=department_approver,
+        request_id=approved["id"],
+        expected_version=1,
+        approved_pages=10,
+        idempotency_key="approve-dept",
+    )
+    requests.reject(
+        actor=department_approver,
+        request_id=rejected["id"],
+        expected_version=1,
+        idempotency_key="reject-dept",
+    )
+
+    with engine.connect() as connection:
+        rows = {
+            str(row["quota_request_id"]): row
+            for row in connection.execute(select(quota_request_table)).mappings()
+        }
+        # 部门快照与 role snapshot 同源（AuthPrincipal），在审批事务内冻结。
+        assert rows[approved["id"]]["approver_department_id"] == "dept-9"
+        assert rows[approved["id"]]["approver_role_snapshot"] == "ops"
+        assert rows[rejected["id"]]["approver_department_id"] == "dept-9"
+        assert rows[rejected["id"]]["approver_role_snapshot"] == "ops"
+
+
+def test_approve_maps_dependency_read_failure_to_retryable_503(monkeypatch) -> None:
+    engine, quota, calendar, _times = make_service()
+    seed_identity(engine)
+    requests = QuotaRequestService(
+        engine, MutableClock(_times), calendar, quota, RecordingOutboxPort()
+    )
+    created = create_pending(engine, requests, 100)
+
+    def broken_lock_or_verify(connection):
+        raise OperationalError("SELECT calendar", {}, Exception("connection reset"))
+
+    monkeypatch.setattr(calendar, "lock_or_verify", broken_lock_or_verify)
+
+    with pytest.raises(PlatformError) as failure:
+        requests.approve(
+            actor=approver(),
+            request_id=created["id"],
+            expected_version=1,
+            approved_pages=10,
+            idempotency_key="approve-503",
+        )
+
+    assert failure.value.code == "quota_approval_unavailable"
+    assert failure.value.status_code == 503
+    assert failure.value.retryable is True
+    # 整个事务（含幂等 reserve）已回滚：申请仍 pending，无 credit/投影副作用。
+    with engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(quota_request_table).where(
+                    quota_request_table.c.quota_request_id == created["id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert row["status"] == "pending"
+        assert row["approver_department_id"] is None
+        credits = int(
+            connection.execute(
+                select(func.count())
+                .select_from(quota_debit_table)
+                .where(quota_debit_table.c.entry_kind == "credit")
+            ).scalar_one()
+        )
+        assert credits == 0
+
+
+def test_reject_maps_dependency_read_failure_to_retryable_503(monkeypatch) -> None:
+    engine, quota, calendar, _times = make_service()
+    seed_identity(engine)
+    requests = QuotaRequestService(
+        engine, MutableClock(_times), calendar, quota, RecordingOutboxPort()
+    )
+    created = create_pending(engine, requests, 100)
+
+    def broken_lock_or_verify(connection):
+        raise OperationalError("SELECT calendar", {}, Exception("connection reset"))
+
+    monkeypatch.setattr(calendar, "lock_or_verify", broken_lock_or_verify)
+
+    with pytest.raises(PlatformError) as failure:
+        requests.reject(
+            actor=approver(),
+            request_id=created["id"],
+            expected_version=1,
+            idempotency_key="reject-503",
+        )
+
+    assert failure.value.code == "quota_approval_unavailable"
+    assert failure.value.status_code == 503
+    assert failure.value.retryable is True

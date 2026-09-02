@@ -78,6 +78,34 @@ class FakeDocumentsJobsService:
         return {"items": self._items}
 
 
+def _processing_receipt(*, ocr: dict, tree: dict, chunk_count: int = 10) -> dict:
+    """Production shape of ``ingestion_jobs.processing_summary_json``.
+
+    The write side stores the full processing receipt (documents service
+    ``_json(dict(receipt))``); the summary facts live under
+    ``processing_summary`` with the OCR confidence in ``fact.confidence`` and
+    the tree routing flag in ``tree_indexed``.
+    """
+
+    return {
+        "job_id": "job_receipt",
+        "attempt_id": "attempt_receipt",
+        "processing_config_version": "doc:text:v1",
+        "generation_id": "gen_receipt",
+        "processing_summary": {
+            "chunk_count": chunk_count,
+            "page_count": 3,
+            "image_count": 1,
+            "table_count": 0,
+            "ocr": ocr,
+            "tree": tree,
+            "cr": {},
+        },
+        "ocr_low_confidence": bool(ocr.get("low_confidence", False)),
+        "ocr_low_confidence_fact": ocr.get("fact"),
+    }
+
+
 def _seed_basics(engine):
     now = fixed_now()
     with engine.begin() as connection:
@@ -114,15 +142,22 @@ def _seed_basics(engine):
                 next_attempt_at_utc=None,
                 failure_reason=None,
                 degradations_json=[],
-                processing_summary_json={
-                    "chunk_count": 10,
-                    "page_count": 3,
-                    "image_count": 1,
-                    "table_count": 0,
-                    "ocr": {"high_confidence": 3, "low_confidence": 1},
-                    "tree": {"tree": 1, "basic": 1},
-                    "cr": {},
-                },
+                processing_summary_json=_processing_receipt(
+                    ocr={
+                        "confidence": 0.98,
+                        "low_confidence": False,
+                        "reason": "low_confidence",
+                        "status": "ok",
+                        "fact": {"confidence": 0.98, "page": 1, "region": []},
+                        "threshold": 0.9,
+                        "threshold_version": "ocr_threshold:0.9",
+                    },
+                    tree={
+                        "tree_indexed": True,
+                        "tree_reason": "structure_signal",
+                        "section_count": 4,
+                    },
+                ),
                 usage_json=None,
                 ocr_low_confidence=False,
                 notification_event_ids_json=[],
@@ -323,27 +358,73 @@ def test_ingestion_quality_aggregates_json_in_the_database() -> None:
         "quota_exempt_reason": None,
         "created_at_utc": now,
     }
+
+    def _ocr_receipt(confidence: float, low: bool, *, tree_indexed: bool) -> dict:
+        return _processing_receipt(
+            ocr={
+                "confidence": confidence,
+                "low_confidence": low,
+                "reason": "low_confidence",
+                "status": "degraded" if low else "ok",
+                "fact": {"confidence": confidence, "page": 1, "region": []},
+                "threshold": 0.9,
+                "threshold_version": "ocr_threshold:0.9",
+            },
+            tree={
+                "tree_indexed": tree_indexed,
+                "tree_reason": "structure_signal" if tree_indexed else "no_structure",
+                **({"section_count": 4} if tree_indexed else {}),
+            },
+        )
+
     with engine.begin() as connection:
+        # low_confidence 布尔优先归低置信桶（即便置信度数值另有分桶）。
         connection.execute(
             ingestion_jobs_table.insert().values(
                 id="job_3",
                 **shared_values,
-                processing_summary_json={
-                    "ocr": {"high_confidence": 2, "medium_confidence": True, "ignored": 99},
-                    "tree": {"tree": 1, "basic": True},
-                },
+                processing_summary_json=_ocr_receipt(0.42, low=True, tree_indexed=True),
                 ocr_low_confidence=True,
                 updated_at_utc=now - timedelta(days=29),
             )
         )
         connection.execute(
             ingestion_jobs_table.insert().values(
+                id="job_5",
+                **shared_values,
+                processing_summary_json=_ocr_receipt(0.97, low=False, tree_indexed=False),
+                ocr_low_confidence=False,
+                updated_at_utc=now - timedelta(days=29),
+            )
+        )
+        connection.execute(
+            ingestion_jobs_table.insert().values(
+                id="job_6",
+                **shared_values,
+                processing_summary_json=_ocr_receipt(0.92, low=False, tree_indexed=False),
+                ocr_low_confidence=False,
+                updated_at_utc=now - timedelta(days=29),
+            )
+        )
+        # 图片路由：ocr 无 fact.confidence，不进任何置信度桶，tree 仍计 basic。
+        connection.execute(
+            ingestion_jobs_table.insert().values(
+                id="job_7",
+                **shared_values,
+                processing_summary_json=_processing_receipt(
+                    ocr={"sample_strategy": "head_middle_tail", "low_confidence": False},
+                    tree={"tree_indexed": False, "tree_reason": "image"},
+                ),
+                ocr_low_confidence=False,
+                updated_at_utc=now - timedelta(days=29),
+            )
+        )
+        # 窗口外（31 天前）的任务不计入。
+        connection.execute(
+            ingestion_jobs_table.insert().values(
                 id="job_4",
                 **shared_values,
-                processing_summary_json={
-                    "ocr": {"high_confidence": 100},
-                    "tree": {"outside": 100},
-                },
+                processing_summary_json=_ocr_receipt(0.99, low=False, tree_indexed=True),
                 ocr_low_confidence=True,
                 updated_at_utc=now - timedelta(days=31),
             )
@@ -366,15 +447,18 @@ def test_ingestion_quality_aggregates_json_in_the_database() -> None:
     finally:
         event.remove(engine, "before_cursor_execute", capture_statement)
 
+    # job_1（_seed_basics，0.98）+ job_5（0.97）→ high；job_3 → low（布尔）；
+    # job_6（0.92）→ medium；job_7 无置信度事实不进桶。
     assert facts == {
         "ocr_rows": [
-            {"label": "high_confidence", "count": 5},
+            {"label": "high_confidence", "count": 2},
             {"label": "low_confidence", "count": 1},
             {"label": "medium_confidence", "count": 1},
         ],
-        "tree_rows": [{"label": "basic", "count": 2}, {"label": "tree", "count": 2}],
+        # job_1 建树 + job_3 建树 → tree；job_5/6/7 basic。
+        "tree_rows": [{"label": "basic", "count": 3}, {"label": "tree", "count": 2}],
         "low_confidence_docs": 1,
-        "normal_docs": 1,
+        "normal_docs": 4,
     }
     assert any("sum(" in statement.lower() for statement in statements)
     assert not any(
@@ -417,7 +501,7 @@ def test_ingestion_quality_compiles_postgresql_json_aggregation() -> None:
         "low_confidence_docs": 0,
         "normal_docs": 0,
     }
-    assert any("json_each(" in statement for statement in compiled)
+    assert any("json_extract_path_text(" in statement for statement in compiled)
     assert any("json_typeof(" in statement for statement in compiled)
 
 

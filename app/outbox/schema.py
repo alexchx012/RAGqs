@@ -146,8 +146,9 @@ notification_table = Table(
     Column("redacted", Boolean, nullable=False),
     CheckConstraint("notification_seq >= 1", name="ck_notification_seq_positive"),
     UniqueConstraint("event_id", "recipient_user_id", name="uq_notification_event_recipient"),
+    # uq_notification_recipient_seq 的唯一约束自带 (recipient_user_id,
+    # notification_seq) 索引；不再保留重复的普通索引（A30）。
     UniqueConstraint("recipient_user_id", "notification_seq", name="uq_notification_recipient_seq"),
-    Index("ix_notification_recipient_seq", "recipient_user_id", "notification_seq"),
     Index("ix_notification_document", "document_id", "document_version_id"),
 )
 

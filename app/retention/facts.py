@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, String, and_, case, cast, func, or_, select, true
+from sqlalchemy import Float, and_, case, cast, func, or_, select
 from sqlalchemy.engine import Connection
 
 from app.chat.schema import (
@@ -44,7 +44,10 @@ from app.usage.schema import quota_debit_table, quota_request_table, usage_event
 _WINDOW_DAYS = {"today": 0, "7d": 7, "30d": 30}
 _ACTIVE_JOB_STATES = ("pending", "running", "retry_wait")
 _REPLAYABLE_JOB_STATES = ("failed", "cancelled", "dead_letter")
-_OCR_QUALITY_BUCKETS = ("high_confidence", "medium_confidence", "low_confidence")
+# OCR confidence buckets: the write side flags `low_confidence` below its
+# threshold (default 0.9); the read side splits the remainder at 0.95.
+_OCR_HIGH_CONFIDENCE_MIN = 0.95
+_OCR_MEDIUM_CONFIDENCE_MIN = 0.9
 
 
 def _utc(value: datetime) -> datetime:
@@ -160,124 +163,106 @@ def _quality_window_conditions(start: datetime, end: datetime) -> tuple[Any, ...
     )
 
 
-def _sqlite_quality_distribution(
-    connection: Connection,
-    *,
-    summary_key: str,
-    allowed_labels: tuple[str, ...] | None,
-    start: datetime,
-    end: datetime,
-) -> list[dict[str, Any]]:
-    path = f"$.{summary_key}"
-    entries = func.json_each(
-        ingestion_jobs_table.c.processing_summary_json,
-        path,
-    ).table_valued("key", "value", "type")
-    total = func.sum(cast(entries.c.value, BigInteger))
-    conditions: list[Any] = [
-        *_quality_window_conditions(start, end),
-        func.json_type(ingestion_jobs_table.c.processing_summary_json, path) == "object",
-        entries.c.type.in_(("integer", "true", "false")),
-    ]
-    if allowed_labels is not None:
-        conditions.append(entries.c.key.in_(allowed_labels))
-    rows = connection.execute(
-        select(entries.c.key.label("label"), total.label("count"))
-        .select_from(ingestion_jobs_table.join(entries, true()))
-        .where(*conditions)
-        .group_by(entries.c.key)
-        .having(total > 0)
-        .order_by(entries.c.key)
-    ).all()
-    return [{"label": str(label), "count": int(count)} for label, count in rows]
+def _sqlite_quality_labels() -> tuple[Any, Any]:
+    """OCR/tree bucket labels from the production receipt on succeeded jobs.
 
+    ``processing_summary_json`` holds the full processing receipt, so the
+    summary facts live under ``$.processing_summary``; the OCR object carries a
+    ``low_confidence`` flag plus the measured confidence in ``fact.confidence``,
+    and the tree object carries the ``tree_indexed`` routing flag.
+    """
 
-def _postgres_quality_distribution(
-    connection: Connection,
-    *,
-    summary_key: str,
-    allowed_labels: tuple[str, ...] | None,
-    start: datetime,
-    end: datetime,
-) -> list[dict[str, Any]]:
-    summary = ingestion_jobs_table.c.processing_summary_json[summary_key]
-    entries = func.json_each(summary).table_valued("key", "value")
-    value_kind = func.json_typeof(entries.c.value)
-    value_text = cast(entries.c.value, String)
-    is_integer = and_(
-        value_kind == "number",
-        value_text.op("~")(r"^-?[0-9]+$"),
+    summary = ingestion_jobs_table.c.processing_summary_json
+    confidence = func.json_extract(summary, "$.processing_summary.ocr.fact.confidence")
+    confidence_is_number = func.json_type(summary, "$.processing_summary.ocr.fact.confidence").in_(
+        ("integer", "real")
     )
-    is_boolean = value_kind == "boolean"
-    numeric_value = case(
-        (value_text == "true", 1),
-        (value_text == "false", 0),
-        (is_integer, cast(value_text, BigInteger)),
+    ocr_label = case(
+        (
+            func.json_extract(summary, "$.processing_summary.ocr.low_confidence") == 1,
+            "low_confidence",
+        ),
+        (and_(confidence_is_number, confidence >= _OCR_HIGH_CONFIDENCE_MIN), "high_confidence"),
+        (
+            and_(confidence_is_number, confidence >= _OCR_MEDIUM_CONFIDENCE_MIN),
+            "medium_confidence",
+        ),
+        (confidence_is_number, "low_confidence"),
         else_=None,
     )
-    total = func.sum(numeric_value)
-    conditions: list[Any] = [
-        *_quality_window_conditions(start, end),
-        func.json_typeof(summary) == "object",
-        or_(is_boolean, is_integer),
-    ]
-    if allowed_labels is not None:
-        conditions.append(entries.c.key.in_(allowed_labels))
-    rows = connection.execute(
-        select(entries.c.key.label("label"), total.label("count"))
-        .select_from(ingestion_jobs_table.join(entries, true()))
-        .where(*conditions)
-        .group_by(entries.c.key)
-        .having(total > 0)
-        .order_by(entries.c.key)
-    ).all()
-    return [{"label": str(label), "count": int(count)} for label, count in rows]
+    tree_indexed = func.json_extract(summary, "$.processing_summary.tree.tree_indexed")
+    tree_label = case(
+        (tree_indexed == 1, "tree"),
+        (tree_indexed == 0, "basic"),
+        else_=None,
+    )
+    return ocr_label, tree_label
 
 
-def _quality_distribution(
-    connection: Connection,
-    *,
-    summary_key: str,
-    allowed_labels: tuple[str, ...] | None,
-    start: datetime,
-    end: datetime,
+def _postgres_quality_labels() -> tuple[Any, Any]:
+    summary = ingestion_jobs_table.c.processing_summary_json
+    ocr_low = func.json_extract_path_text(summary, "processing_summary", "ocr", "low_confidence")
+    ocr_low_is_boolean = (
+        func.json_typeof(
+            func.json_extract_path(summary, "processing_summary", "ocr", "low_confidence")
+        )
+        == "boolean"
+    )
+    confidence_text = func.json_extract_path_text(
+        summary, "processing_summary", "ocr", "fact", "confidence"
+    )
+    confidence_is_number = (
+        func.json_typeof(
+            func.json_extract_path(summary, "processing_summary", "ocr", "fact", "confidence")
+        )
+        == "number"
+    )
+    confidence = cast(confidence_text, Float)
+    ocr_label = case(
+        (and_(ocr_low_is_boolean, ocr_low == "true"), "low_confidence"),
+        (and_(confidence_is_number, confidence >= _OCR_HIGH_CONFIDENCE_MIN), "high_confidence"),
+        (
+            and_(confidence_is_number, confidence >= _OCR_MEDIUM_CONFIDENCE_MIN),
+            "medium_confidence",
+        ),
+        (confidence_is_number, "low_confidence"),
+        else_=None,
+    )
+    tree_indexed = func.json_extract_path_text(
+        summary, "processing_summary", "tree", "tree_indexed"
+    )
+    tree_label = case(
+        (tree_indexed == "true", "tree"),
+        (tree_indexed == "false", "basic"),
+        else_=None,
+    )
+    return ocr_label, tree_label
+
+
+def _quality_label_counts(
+    connection: Connection, *, label: Any, start: datetime, end: datetime
 ) -> list[dict[str, Any]]:
-    if connection.dialect.name == "sqlite":
-        return _sqlite_quality_distribution(
-            connection,
-            summary_key=summary_key,
-            allowed_labels=allowed_labels,
-            start=start,
-            end=end,
-        )
-    if connection.dialect.name == "postgresql":
-        return _postgres_quality_distribution(
-            connection,
-            summary_key=summary_key,
-            allowed_labels=allowed_labels,
-            start=start,
-            end=end,
-        )
-    raise ValueError("ingestion quality aggregation requires SQLite or PostgreSQL")
+    rows = connection.execute(
+        select(label.label("label"), func.count().label("count"))
+        .where(*_quality_window_conditions(start, end), label.is_not(None))
+        .group_by(label)
+        .order_by(label)
+    ).all()
+    return [{"label": str(row_label), "count": int(count)} for row_label, count in rows]
 
 
 def ingestion_quality_facts(
     connection: Connection, *, start: datetime, end: datetime
 ) -> Mapping[str, Any]:
-    ocr_rows = _quality_distribution(
-        connection,
-        summary_key="ocr",
-        allowed_labels=_OCR_QUALITY_BUCKETS,
-        start=start,
-        end=end,
-    )
-    tree_rows = _quality_distribution(
-        connection,
-        summary_key="tree",
-        allowed_labels=None,
-        start=start,
-        end=end,
-    )
+    dialect = connection.dialect.name
+    if dialect == "sqlite":
+        ocr_label, tree_label = _sqlite_quality_labels()
+    elif dialect == "postgresql":
+        ocr_label, tree_label = _postgres_quality_labels()
+    else:
+        raise ValueError("ingestion quality aggregation requires SQLite or PostgreSQL")
+    ocr_rows = _quality_label_counts(connection, label=ocr_label, start=start, end=end)
+    tree_rows = _quality_label_counts(connection, label=tree_label, start=start, end=end)
     low_confidence, total = connection.execute(
         select(
             func.coalesce(

@@ -406,6 +406,8 @@ quota_request_table = Table(
     Column("status", String(16), nullable=False),
     Column("approver_user_id", String(64), nullable=True),
     Column("approver_role_snapshot", String(32), nullable=True),
+    # A58：审批事务冻结审核者当时部门快照（与 role snapshot 同源：AuthPrincipal）。
+    Column("approver_department_id", String(64), nullable=True),
     Column("approved_pages", Integer, nullable=True),
     Column("credit_entry_id", String(64), nullable=True),
     Column("cancel_reason", String(64), nullable=True),

@@ -33,7 +33,7 @@ REGISTERED_ERROR_CODES = frozenset("""
     deletion_documents_pending deletion_not_found deletion_not_pending deletion_not_ready
     deletion_workflow_invalid deletion_workflow_not_found department_action_forbidden
     department_deactivation_unverified department_has_active_work department_has_members
-    department_inactive department_name_exists department_not_found document_content_unavailable
+    department_inactive department_name_exists department_not_found dependency_unavailable document_content_unavailable
     document_deleted document_lifecycle_unavailable document_not_found document_not_published
     document_object_unavailable document_operation_in_progress document_pending_delete
     document_redaction_incomplete document_unavailable document_version_changed
@@ -91,10 +91,10 @@ REGISTERED_ERROR_CODES = frozenset("""
     provider_unavailable public_graph_source_manifest_invalid
     public_graph_source_revision_not_found
     public_graph_source_unavailable public_source_manifest_invalid public_source_outbox_unavailable
-    quota_debit_not_found quota_event_outbox_unavailable quota_exceeded quota_request_not_approvable
+    quota_approval_unavailable quota_debit_not_found quota_event_outbox_unavailable quota_exceeded quota_request_not_approvable
     rate_limit_exceeded read_lease_unavailable reader_unavailable recipient_account_inactive
     recipient_role_mismatch refresh_reuse_detected release_gate_failed repair_target_not_found
-    reranker_unavailable restore_copy_failed restore_copy_mismatch restore_hold_missing
+    reranker_invalid_output reranker_rate_limited reranker_timeout reranker_unavailable restore_copy_failed restore_copy_mismatch restore_hold_missing
     restore_in_progress restore_not_found restore_rebuild_unavailable restore_stage_unknown
     restore_target_not_found restore_validation_without_session retirement_conflict
     retirement_event_missing retirement_not_pending retirement_unverified
@@ -107,7 +107,7 @@ REGISTERED_ERROR_CODES = frozenset("""
     submission_already_reviewed submission_content_forbidden submission_content_unavailable
     submission_forbidden submission_grant_invalid submission_not_found
     submission_scope_changed submission_state_conflict
-    submitter_deleted submitter_pending_delete table_parse_failed too_many_attempts tree_provider_invalid
+    submitter_deleted submitter_pending_delete table_parse_failed too_many_attempts tree_provider_invalid tree_provider_invalid_response tree_provider_rate_limited tree_provider_timeout tree_provider_unavailable
     unsupported_event_type unsupported_media_type unsupported_schema_version upload_batch_not_found
     upload_content_type_mismatch upload_media_mismatch upload_too_large usage_event_not_found user_pending_delete
     username_exists validation_error vector_config_invalid version_conflict visibility_unavailable

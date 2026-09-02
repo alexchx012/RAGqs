@@ -315,6 +315,8 @@ On a new deployment, run `ragqs-identity-bootstrap-admin` once after Alembic and
 
 No workload is considered ready until all applicable gates pass. A failing gate keeps the workload out of service; it does not start in a degraded mode that hides the failed dependency.
 
+The API workload exposes `GET /v1/ready` as the runtime readiness probe: it verifies PostgreSQL with a `SELECT 1` and the object store with a probe request, and answers a retryable 503 when either dependency is unavailable. `GET /v1/health` remains the dependency-free liveness probe.
+
 ### 7.1 Preflight gates
 
 1. Validate profile schema, deployment ID, environment, region, residency, required fields, and immutable release identifiers.
