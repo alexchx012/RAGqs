@@ -172,13 +172,18 @@ def test_score_gap_exactly_equal_to_the_threshold_still_opens_a_suggestion() -> 
 
 def test_zero_sample_rate_window_never_samples_an_ab_pair() -> None:
     """A window snapshot with sample_rate 0 samples nothing, at any draw."""
-    from tests.chat.conftest import (
+    # isort: off
+    # (isort 8 and ruff I001 disagree on the canonical form of mixed plain/aliased
+    # same-module imports; keep isort's split form and suppress ruff's opinion.)
+    from tests.chat.conftest import (  # noqa: I001
         FakeCalibration,
+    )
+    from tests.chat.conftest import build_test_env as build_chat_env
+    from tests.chat.conftest import (
         open_window,
     )
-    from tests.chat.conftest import (
-        build_test_env as build_chat_env,
-    )
+
+    # isort: on
 
     env = build_chat_env(
         calibration=FakeCalibration(window=open_window(sample_rate=0.0)),
