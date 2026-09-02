@@ -12,6 +12,12 @@ export const zhCN = {
     notFoundTitle: '页面不存在', // 措辞后定
     notFoundBack: '返回首页', // 措辞后定
     loading: '加载中', // 措辞后定
+    // 顶层 ErrorBoundary 兜底页（渲染异常防白屏）
+    errorBoundary: {
+      title: '页面出现异常', // 措辞后定
+      description: '页面渲染遇到问题，刷新通常可以恢复；若持续出现请稍后再试。', // 措辞后定
+      reload: '刷新页面', // 措辞后定
+    },
     home: {
       composerPlaceholder: '输入你的问题…', // 措辞后定
       openDrawerAria: '打开设置抽屉', // 措辞后定
