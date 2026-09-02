@@ -9,24 +9,26 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import Connection, Engine
 
 from app.identity.schema import identity_space_table
 from app.platform.errors import PlatformError
+from app.usage.schema import usage_event_table
 
 from .judge import JudgePreflight, JudgeProviderPort
 from .models import (
     EvaluationPolicySnapshot,
     LeaderboardEntry,
     RunReadModel,
+    ShadowRunRecord,
 )
 from .policy import (
     aggregate_result_metrics,
     build_comparator_key,
+    config_threshold_eligibility,
     default_policy_snapshot,
     policy_view,
-    threshold_eligibility,
     validate_policy,
     weighted_score,
 )
@@ -318,6 +320,53 @@ class EvaluationService:
             return None
         return self._space_visibility.visible_space_ids(actor)
 
+    @staticmethod
+    def _run_has_golden(run: ShadowRunRecord | None) -> bool:
+        """Whether the run was frozen against a golden set (§8.4 ladder choice).
+
+        A run whose frozen snapshot is unavailable keeps the strict golden
+        semantics; only an explicitly golden-less snapshot switches to the
+        weak-signal replacement path.
+        """
+        if run is None:
+            return True
+        return bool(run.frozen_snapshot.get("golden_set_version"))
+
+    @staticmethod
+    def _metered_cost_per_query(
+        connection: Connection,
+        *,
+        run_id: str,
+        run_results: list[Mapping[str, Any]],
+    ) -> float | None:
+        """Real usage-metering cost per query for a shadow run (§8.2).
+
+        The run's metered provider-call usage events are summed and divided by
+        the run's distinct item count. When no metered cost exists the metric
+        reports ``None`` (metering unavailable) instead of fabricating 0.0, and
+        the eligibility gate treats the cost dimension as unevaluated. Legacy
+        rows that already carry per-result costs keep their mean as fallback.
+        """
+        item_count = len({str(result["sample_item_id"]) for result in run_results})
+        measured = [
+            float(result["metrics_json"]["cost_per_query"])
+            for result in run_results
+            if result["metrics_json"] and result["metrics_json"].get("cost_per_query") is not None
+        ]
+        fallback: float | None = (sum(measured) / len(measured)) if measured else None
+        if not run_id or item_count <= 0:
+            return fallback
+        total = connection.execute(
+            select(func.sum(usage_event_table.c.estimated_cost_amount)).where(
+                usage_event_table.c.event_kind == "provider_usage",
+                usage_event_table.c.execution_kind == "shadow_evaluation",
+                usage_event_table.c.execution_id == run_id,
+            )
+        ).scalar()
+        if total is None:
+            return fallback
+        return float(total) / item_count
+
     def _build_entries(
         self,
         connection: Connection,
@@ -336,20 +385,29 @@ class EvaluationService:
                 continue
             name = str(row["candidate_config_version"])
             source_run_id = row["source_run_id"]
-            results = (
-                [
-                    result
-                    for result in self._repository.list_results(
-                        connection, run_id=str(source_run_id)
-                    )
-                    if str(result["candidate_config_version"]) == name
-                ]
+            run_results = (
+                self._repository.list_results(connection, run_id=str(source_run_id))
                 if source_run_id is not None
                 else []
             )
+            results = [
+                result for result in run_results if str(result["candidate_config_version"]) == name
+            ]
             if results:
+                run = (
+                    self._repository.get_run(connection, run_id=str(source_run_id))
+                    if source_run_id is not None
+                    else None
+                )
                 metrics = self._aggregate_result_metrics(results)
-                eligible = threshold_eligibility(metrics, policy)
+                metrics["cost_per_query"] = self._metered_cost_per_query(
+                    connection,
+                    run_id=str(source_run_id or ""),
+                    run_results=run_results,
+                )
+                eligible = config_threshold_eligibility(
+                    results, metrics, policy, has_golden=self._run_has_golden(run)
+                )
                 score = weighted_score(metrics) if eligible else 0.0
                 entries.append(
                     LeaderboardEntry(
@@ -396,14 +454,23 @@ class EvaluationService:
             space_id = str(run_row["space_id"])
             if visible is not None and space_id not in visible:
                 continue
-            results = self._repository.list_results(connection, run_id=str(run_row["run_id"]))
+            run_id = str(run_row["run_id"])
+            results = self._repository.list_results(connection, run_id=run_id)
+            has_golden = bool((run_row["frozen_snapshot_json"] or {}).get("golden_set_version"))
             by_config: dict[str, list[Mapping[str, Any]]] = {}
             for result in results:
                 by_config.setdefault(str(result["candidate_config_version"]), []).append(result)
             aggregated: list[LeaderboardEntry] = []
             for config, config_results in by_config.items():
                 metrics = self._aggregate_result_metrics(config_results)
-                eligible = threshold_eligibility(metrics, policy)
+                metrics["cost_per_query"] = self._metered_cost_per_query(
+                    connection,
+                    run_id=run_id,
+                    run_results=results,
+                )
+                eligible = config_threshold_eligibility(
+                    config_results, metrics, policy, has_golden=has_golden
+                )
                 aggregated.append(
                     LeaderboardEntry(
                         rank=0,
@@ -429,7 +496,9 @@ class EvaluationService:
         return entries
 
     @staticmethod
-    def _aggregate_result_metrics(results: list[Mapping[str, Any]]) -> dict[str, float]:
+    def _aggregate_result_metrics(
+        results: list[Mapping[str, Any]],
+    ) -> dict[str, float | None]:
         return aggregate_result_metrics(results)
 
     # -------------------------------------------------------------- suggestion
@@ -503,6 +572,7 @@ class EvaluationService:
                 self._repository.get_policy(connection, policy_version=run.policy_version) or policy
             )
             validate_policy(run_policy)
+            has_golden = self._run_has_golden(run)
             results = self._repository.list_results(connection, run_id=run.run_id)
             distinct_samples = len({str(result["sample_item_id"]) for result in results})
             if distinct_samples < run_policy.min_real_queries:
@@ -513,22 +583,30 @@ class EvaluationService:
             scored: list[tuple[str, float, bool]] = []
             for config, config_results in by_config.items():
                 metrics = self._aggregate_result_metrics(config_results)
+                metrics["cost_per_query"] = self._metered_cost_per_query(
+                    connection,
+                    run_id=run.run_id,
+                    run_results=results,
+                )
                 scored.append(
                     (
                         config,
                         weighted_score(metrics),
-                        threshold_eligibility(metrics, run_policy),
+                        config_threshold_eligibility(
+                            config_results, metrics, run_policy, has_golden=has_golden
+                        ),
                     )
                 )
             if len(scored) < 2:
                 continue
             scored.sort(key=lambda item: (-item[1], item[0]))
             first, second = scored[0], scored[1]
-            if (
-                not first[2]
-                or not second[2]
-                or abs(first[1] - second[1]) > run_policy.calibration_open_score_gap
-            ):
+            if has_golden and (not first[2] or not second[2]):
+                continue
+            # §8.5 ladder level 3: only the top-2 composite gap decides; a
+            # golden-less (weak-signal) run is never additionally blocked by
+            # threshold eligibility.
+            if abs(first[1] - second[1]) > run_policy.calibration_open_score_gap:
                 continue
             actionable = self._repository.latest_actionable_suggestion(
                 connection,
@@ -600,6 +678,7 @@ class EvaluationService:
             if policy is None:
                 return
             validate_policy(policy)
+            has_golden = self._run_has_golden(run)
             results = self._repository.list_results(connection, run_id=run.run_id)
             distinct_samples = len({str(result["sample_item_id"]) for result in results})
             if distinct_samples < policy.min_real_queries:
@@ -610,15 +689,25 @@ class EvaluationService:
             scored: list[tuple[str, float, bool]] = []
             for config, config_results in by_config.items():
                 metrics = self._aggregate_result_metrics(config_results)
-                eligible = threshold_eligibility(metrics, policy)
+                metrics["cost_per_query"] = self._metered_cost_per_query(
+                    connection,
+                    run_id=run.run_id,
+                    run_results=results,
+                )
+                eligible = config_threshold_eligibility(
+                    config_results, metrics, policy, has_golden=has_golden
+                )
                 scored.append((config, weighted_score(metrics), eligible))
             if len(scored) < 2:
                 return
             scored.sort(key=lambda item: item[1], reverse=True)
             first = scored[0]
             second = scored[1]
-            if not first[2] or not second[2]:
+            if has_golden and (not first[2] or not second[2]):
                 return
+            # §8.5 ladder level 3: only the top-2 composite gap decides; a
+            # golden-less (weak-signal) run is never additionally blocked by
+            # threshold eligibility.
             if abs(first[1] - second[1]) > policy.calibration_open_score_gap:
                 return
             now = self._now_utc(connection)

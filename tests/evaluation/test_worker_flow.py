@@ -370,6 +370,44 @@ def test_non_retryable_judge_failure_fails_immediately() -> None:
     assert _attempt(env, "run_1") == 1
 
 
+def test_worker_records_pipeline_latency_not_judge_latency() -> None:
+    """§8.2: p95_latency_ms measures the replayed pipeline, not the judge call."""
+    from app.evaluation.models import JudgeScores
+
+    env = build_test_env()
+    _insert_run(env, sample_items=(_sample(),))
+    # A distinctive judge round-trip that must never leak into the metric.
+    judge = AttributionJudge(
+        scores=JudgeScores(
+            faithfulness=0.9,
+            answer_relevancy=0.8,
+            is_refusal=False,
+            latency_ms=98765,
+        )
+    )
+    repo = env["runtime"].resolve("evaluation_repository")
+    ticks = iter((0.0, 0.25))  # pipeline start / end -> 250 ms replay duration
+    worker = ShadowEvaluationWorker(
+        env["engine"],
+        repo,
+        judge,
+        FakeRetrievalReplayPort(),
+        answer_replay=FakeAnswerReplayPort(),
+        now=lambda: NOW,
+        monotonic=lambda: next(ticks),
+    )
+
+    worker.run_once()
+
+    with env["engine"].connect() as connection:
+        results = repo.list_results(connection, run_id="run_1")
+    assert len(results) == 1
+    metrics = results[0]["metrics_json"]
+    assert metrics["p95_latency_ms"] == 250.0
+    # Per-item pipeline cost is not individually metered: null, never 0.0.
+    assert metrics["cost_per_query"] is None
+
+
 def test_worker_passes_real_run_attribution_to_judge() -> None:
     env = build_test_env()
     _insert_run(env, sample_items=(_sample(),))

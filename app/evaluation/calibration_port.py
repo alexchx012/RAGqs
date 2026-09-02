@@ -16,7 +16,12 @@ from app.chat.schema import chat_ab_candidate_table, chat_ab_pair_table, chat_ab
 from app.identity.schema import identity_user_table
 from app.platform.errors import PlatformError
 
-from .policy import aggregate_result_metrics, threshold_eligibility, validate_policy, weighted_score
+from .policy import (
+    aggregate_result_metrics,
+    config_threshold_eligibility,
+    validate_policy,
+    weighted_score,
+)
 from .repository import SqlAlchemyEvaluationRepository
 from .schema import (
     calibration_window_table,
@@ -162,6 +167,7 @@ class EvaluationCalibrationWindowPort:
                 select(
                     shadow_evaluation_run_table.c.run_id,
                     shadow_evaluation_run_table.c.comparator_key,
+                    shadow_evaluation_run_table.c.frozen_snapshot_json,
                 )
                 .where(
                     shadow_evaluation_run_table.c.space_id == space_id,
@@ -183,6 +189,9 @@ class EvaluationCalibrationWindowPort:
         except PlatformError:
             # An invalid policy forbids switching the default (后端设计 §8.2).
             return
+        # A golden-less run adopts through the §8.4 weak-signal replacement
+        # ladder, so a cold-start library can still earn its own default.
+        has_golden = bool((run["frozen_snapshot_json"] or {}).get("golden_set_version"))
         results = self._repository.list_results(connection, run_id=str(run["run_id"]))
         distinct_samples = {str(result["sample_item_id"]) for result in results}
         if len(distinct_samples) < policy.min_real_queries:
@@ -193,7 +202,7 @@ class EvaluationCalibrationWindowPort:
         eligible: list[tuple[str, float]] = []
         for config, config_results in by_config.items():
             metrics = aggregate_result_metrics(config_results)
-            if threshold_eligibility(metrics, policy):
+            if config_threshold_eligibility(config_results, metrics, policy, has_golden=has_golden):
                 eligible.append((config, weighted_score(metrics)))
         if not eligible:
             return

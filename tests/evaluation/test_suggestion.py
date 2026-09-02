@@ -16,9 +16,38 @@ from .conftest import (
 )
 
 
-def _make_succeeded_run(env, *, run_id="run_1", space_id="space_1", now=NOW) -> None:
+def _make_succeeded_run(
+    env,
+    *,
+    run_id="run_1",
+    space_id="space_1",
+    now=NOW,
+    golden_version: str | None = None,
+    metrics_by_config: dict[str, dict] | None = None,
+    weak_signals: dict | None = None,
+) -> None:
     repo = env["runtime"].resolve("evaluation_repository")
     policy = default_policy_snapshot(now=now)
+    metrics_by_config = metrics_by_config or {
+        "default": {
+            "faithfulness": 0.9,
+            "answer_relevancy": 0.8,
+            "refusal_rate": 1.0,
+            "hit_at_k_final": 0.9,
+            "mrr": 0.8,
+            "p95_latency_ms": 100,
+            "cost_per_query": 0.001,
+        },
+        "candidate_b": {
+            "faithfulness": 0.9,
+            "answer_relevancy": 0.8,
+            "refusal_rate": 1.0,
+            "hit_at_k_final": 0.9,
+            "mrr": 0.8,
+            "p95_latency_ms": 100,
+            "cost_per_query": 0.001,
+        },
+    }
     samples = tuple(
         {
             "item_id": f"item_{i}",
@@ -26,11 +55,14 @@ def _make_succeeded_run(env, *, run_id="run_1", space_id="space_1", now=NOW) -> 
             "question_text": f"q{i}",
             "question_hash": f"h{i}",
             "evidence_hash": f"e{i}",
-            "weak_signals": {},
+            "weak_signals": dict(weak_signals or {}),
             "source_ref": f"m{i}",
         }
         for i in range(1, 51)
     )
+    frozen: dict = {"snapshot_id": f"snap_{run_id}"}
+    if golden_version:
+        frozen["golden_set_version"] = golden_version
     with env["engine"].begin() as connection:
         repo.ensure_policy(connection, policy=policy)
         repo.insert_run(
@@ -39,10 +71,10 @@ def _make_succeeded_run(env, *, run_id="run_1", space_id="space_1", now=NOW) -> 
             space_id=space_id,
             policy_version=policy.policy_version,
             comparator_key="cmp_1",
-            candidate_config_versions=("default", "candidate_b"),
+            candidate_config_versions=tuple(metrics_by_config),
             index_generation_id="gen_1",
             index_revision=1,
-            frozen_snapshot={"snapshot_id": f"snap_{run_id}"},
+            frozen_snapshot=frozen,
             snapshot_id=f"snap_{run_id}",
             sample_items=samples,
             now=now,
@@ -63,23 +95,15 @@ def _make_succeeded_run(env, *, run_id="run_1", space_id="space_1", now=NOW) -> 
             progress={"total": 50, "completed": 50, "failed": 0},
         )
         for i in range(1, 51):
-            for candidate in ("default", "candidate_b"):
+            for candidate, metrics in metrics_by_config.items():
                 repo.insert_result(
                     connection,
                     run_id=run_id,
                     sample_item_id=f"item_{i}",
                     candidate_config_version=candidate,
                     session_id=f"shadow:{run_id}:item_{i}:{candidate}",
-                    metrics_json={
-                        "faithfulness": 0.9,
-                        "answer_relevancy": 0.8,
-                        "refusal_rate": 1.0,
-                        "hit_at_k_final": 0.9,
-                        "mrr": 0.8,
-                        "p95_latency_ms": 100,
-                        "cost_per_query": 0.001,
-                    },
-                    weak_signals_json={},
+                    metrics_json=dict(metrics),
+                    weak_signals_json=dict(weak_signals or {}),
                     judged_at=now,
                 )
 
@@ -299,6 +323,125 @@ def test_manual_open_does_not_create_suggestion() -> None:
     )
     assert response.status_code == 201
     assert outbox.events == []
+
+
+# ------------------------------------------- §8.4/§8.5 no-golden ladder path
+
+
+_CITED_WEAK = {"weak_has_citation": True}
+_UNCITED_WEAK = {"weak_has_citation": False}
+
+
+def _suggestion_rows(env, *, space_id: str):
+    with env["engine"].connect() as connection:
+        return (
+            connection.execute(
+                select(
+                    calibration_window_suggestion_table.c.suggestion_id,
+                    calibration_window_suggestion_table.c.rank_summary_json,
+                ).where(
+                    calibration_window_suggestion_table.c.space_id == space_id,
+                    calibration_window_suggestion_table.c.status == "actionable",
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+
+def test_no_golden_run_suggests_on_score_gap_with_weak_signal_eligibility() -> None:
+    """§8.4/§8.5: a golden-less run needs only the top-2 gap to suggest."""
+    outbox = RecordingCalibrationOutboxPort()
+    env = build_test_env(outbox=outbox)
+    service = env["runtime"].resolve("evaluation_service")
+    service.attach_outbox(outbox)
+    _make_succeeded_run(
+        env,
+        run_id="run_weak",
+        golden_version=None,
+        weak_signals=_CITED_WEAK,
+        metrics_by_config={
+            # Retrieval metrics are unmeasurable without golden labels; the
+            # weak citation share carries the hit@k bar instead.
+            "cfg_a": {
+                "faithfulness": 0.9,
+                "answer_relevancy": 0.8,
+                "hit_at_k_final": 0.0,
+                "mrr": 0.0,
+                "p95_latency_ms": 100,
+                "cost_per_query": None,
+            },
+            "cfg_b": {
+                "faithfulness": 0.9,
+                "answer_relevancy": 0.79,
+                "hit_at_k_final": 0.0,
+                "mrr": 0.0,
+                "p95_latency_ms": 100,
+                "cost_per_query": None,
+            },
+        },
+    )
+
+    service.compute_suggestion("run_weak")
+
+    rows = _suggestion_rows(env, space_id="space_1")
+    assert len(rows) == 1
+    rankings = rows[0]["rank_summary_json"]["rankings"]
+    # The weak citation share (1.0) passes the hit_at_k_final bar.
+    assert all(item["eligible"] is True for item in rankings)
+    assert len(outbox.events) == 1
+
+
+def test_no_golden_run_still_suggests_without_weak_signal_eligibility() -> None:
+    """Ladder level 3 does not require threshold eligibility without golden."""
+    outbox = RecordingCalibrationOutboxPort()
+    env = build_test_env(outbox=outbox)
+    service = env["runtime"].resolve("evaluation_service")
+    service.attach_outbox(outbox)
+    # No weak-signal data at all: configs stay ineligible, but the small
+    # top-2 composite gap still opens the §8.5 level-3 suggestion.
+    _make_succeeded_run(env, run_id="run_nosignal", golden_version=None)
+
+    service.compute_suggestion("run_nosignal")
+
+    rows = _suggestion_rows(env, space_id="space_1")
+    assert len(rows) == 1
+    assert all(item["eligible"] is False for item in rows[0]["rank_summary_json"]["rankings"])
+
+
+def test_golden_run_still_requires_threshold_eligible_top_two() -> None:
+    """The relaxed gap-only gate applies only to golden-less runs."""
+    env = build_test_env()
+    service = env["runtime"].resolve("evaluation_service")
+    _make_succeeded_run(
+        env,
+        run_id="run_golden_strict",
+        golden_version="gv1",
+        metrics_by_config={
+            "cfg_a": {
+                "faithfulness": 0.1,
+                "answer_relevancy": 0.8,
+                "refusal_rate": 1.0,
+                "hit_at_k_final": 0.9,
+                "mrr": 0.8,
+                "p95_latency_ms": 100,
+                "cost_per_query": 0.001,
+            },
+            "cfg_b": {
+                "faithfulness": 0.1,
+                "answer_relevancy": 0.8,
+                "refusal_rate": 1.0,
+                "hit_at_k_final": 0.9,
+                "mrr": 0.8,
+                "p95_latency_ms": 100,
+                "cost_per_query": 0.001,
+            },
+        },
+    )
+
+    service.compute_suggestion("run_golden_strict")
+
+    assert _suggestion_rows(env, space_id="space_1") == []
 
 
 def _ops(env):

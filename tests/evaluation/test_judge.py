@@ -339,6 +339,88 @@ def test_http_judge_records_sent_rate_limits_as_failed_usage() -> None:
     assert raised.value.code == "judge_rate_limited"
     assert len(submission.completed) == JUDGE_SHORT_RETRY_ATTEMPTS
     assert {entry["result"] for entry in submission.completed} == {"failed"}
+    # A failed send never fabricates token measurements (A19).
+    for entry in submission.completed:
+        measurement = entry["measurement"]
+        assert measurement.input_tokens is None
+        assert measurement.output_tokens is None
+        assert measurement.reasoning_tokens is None
+        assert measurement.measurement_sources == {}
+
+
+def test_http_judge_measures_provider_reported_tokens_from_the_usage_block() -> None:
+    submission = RecordingUsageSubmission()
+    provider, _ = _http_judge(
+        submission=submission,
+        responses=[
+            _Response(
+                status_code=200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"faithfulness": 0.9, "answer_relevancy": 0.8, '
+                                    '"is_refusal": false}'
+                                )
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 120,
+                        "completion_tokens": 40,
+                        "completion_tokens_details": {"reasoning_tokens": 12},
+                    },
+                },
+            )
+        ],
+    )
+
+    scores = provider.judge(JudgeRequest(question="q", answer="a"))
+
+    assert scores.faithfulness == 0.9
+    assert len(submission.completed) == 1
+    measurement = submission.completed[0]["measurement"]
+    assert measurement.input_tokens == 120
+    assert measurement.output_tokens == 40
+    assert measurement.reasoning_tokens == 12
+    assert measurement.measurement_sources == {
+        "input_tokens": "provider_reported",
+        "output_tokens": "provider_reported",
+        "reasoning_tokens": "provider_reported",
+    }
+
+
+def test_http_judge_keeps_meters_empty_when_the_response_has_no_usage() -> None:
+    submission = RecordingUsageSubmission()
+    provider, _ = _http_judge(
+        submission=submission,
+        responses=[
+            _Response(
+                status_code=200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"faithfulness": 0.9, "answer_relevancy": 0.8, '
+                                    '"is_refusal": false}'
+                                )
+                            }
+                        }
+                    ],
+                    # No usage block at all: meters stay null, not zero.
+                },
+            )
+        ],
+    )
+
+    provider.judge(JudgeRequest(question="q", answer="a"))
+
+    measurement = submission.completed[0]["measurement"]
+    assert measurement.input_tokens is None
+    assert measurement.output_tokens is None
+    assert measurement.measurement_sources == {}
 
 
 def test_usage_recorder_records_every_real_send_without_quota() -> None:

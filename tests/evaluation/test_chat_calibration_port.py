@@ -264,9 +264,14 @@ def _seed_admissible_run(
     space_id: str,
     samples: int = 20,
     metrics_by_config: dict[str, dict] | None = None,
+    golden_version: str | None = "gv1",
+    weak_signals: dict | None = None,
 ) -> str:
     """A succeeded shadow run whose configs' metrics may pass the ladder."""
     metrics_by_config = metrics_by_config or {"cfg_top": dict(_PASSING_METRICS)}
+    frozen: dict = {}
+    if golden_version:
+        frozen["golden_set_version"] = golden_version
     with env["engine"].begin() as connection:
         connection.execute(
             shadow_evaluation_run_table.insert().values(
@@ -280,7 +285,7 @@ def _seed_admissible_run(
                 candidate_config_versions_json=list(metrics_by_config),
                 index_generation_id="generation_1",
                 index_revision=1,
-                frozen_snapshot_json={},
+                frozen_snapshot_json=frozen,
                 created_at_utc=NOW,
                 started_at_utc=NOW,
                 completed_at_utc=NOW,
@@ -296,7 +301,7 @@ def _seed_admissible_run(
                         candidate_config_version=config,
                         session_id=f"session_{config}_{sample}",
                         metrics_json=metrics,
-                        weak_signals_json={},
+                        weak_signals_json=dict(weak_signals or {}),
                         judged_at_utc=NOW,
                     )
                 )
@@ -414,6 +419,50 @@ def test_ten_votes_only_adopt_threshold_eligible_configs() -> None:
     adopted = _active_default(env)
     assert adopted is not None
     assert adopted["candidate_config_version"] == "cfg_eligible"
+
+
+def test_ten_votes_adopt_a_no_golden_run_through_weak_signals() -> None:
+    """§8.4: a cold-start library without golden labels still earns a default."""
+    env = build_test_env()
+    _seed_policy(env)
+    _seed_admissible_run(
+        env,
+        space_id="space_1",
+        golden_version=None,
+        weak_signals={"weak_has_citation": True},
+        metrics_by_config={
+            # Retrieval metrics are unmeasurable; the citation share replaces
+            # the hit@k bar on the golden-less ladder.
+            "cfg_weak_top": {
+                **_PASSING_METRICS,
+                "hit_at_k_final": 0.0,
+                "mrr": 0.0,
+            },
+        },
+    )
+    _seed_votes(env, space_id="space_1", effective=MIN_EFFECTIVE_AB_VOTES_FOR_DEFAULT)
+    port = EvaluationCalibrationWindowPort(env["engine"])
+    with env["engine"].begin() as connection:
+        port.maybe_adopt_active_default(connection, space_id="space_1", now=NOW)
+    adopted = _active_default(env)
+    assert adopted is not None
+    assert adopted["candidate_config_version"] == "cfg_weak_top"
+
+
+def test_ten_votes_never_adopt_a_no_golden_run_without_weak_signals() -> None:
+    env = build_test_env()
+    _seed_policy(env)
+    _seed_admissible_run(
+        env,
+        space_id="space_1",
+        golden_version=None,
+        weak_signals={},
+    )
+    _seed_votes(env, space_id="space_1", effective=MIN_EFFECTIVE_AB_VOTES_FOR_DEFAULT)
+    port = EvaluationCalibrationWindowPort(env["engine"])
+    with env["engine"].begin() as connection:
+        port.maybe_adopt_active_default(connection, space_id="space_1", now=NOW)
+    assert _active_default(env) is None
 
 
 # -------------------------------------------------------------- golden seeds
