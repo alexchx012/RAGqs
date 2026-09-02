@@ -72,7 +72,7 @@ describe('工具链与规格 §1 一致', () => {
   it('测试：vitest + @playwright/test；包管理器 npm；运行环境 Node 22', () => {
     expect(pkg.devDependencies?.vitest).toBeDefined();
     expect(pkg.devDependencies?.['@playwright/test']).toBeDefined();
-    expect(pkg.engines?.node).toBe('>=22');
+    expect(pkg.engines?.node).toBe('>=22.22'); // A49：Node 下限收紧至 22.22
     expect(process.version).toMatch(/^v22\./);
   });
 });
