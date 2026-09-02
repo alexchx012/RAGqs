@@ -396,3 +396,34 @@ def test_postgres_backfills_inboxes_and_compact_due_index_serves_the_scan() -> N
                 connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         finally:
             admin.dispose()
+
+
+def test_head_keeps_single_recipient_seq_index_and_downgrade_restores_it(
+    tmp_path: Path,
+) -> None:
+    """0047 去重：升级后 notification 只剩唯一约束自带的索引，downgrade 可恢复。"""
+
+    database_url = f"sqlite:///{tmp_path / 'notification-index.sqlite3'}"
+    config = alembic_config(database_url)
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    index_names = {index["name"] for index in inspect(engine).get_indexes("notification")}
+    unique_constraints = {
+        constraint["name"]: tuple(constraint["column_names"])
+        for constraint in inspect(engine).get_unique_constraints("notification")
+    }
+    engine.dispose()
+
+    assert "ix_notification_recipient_seq" not in index_names
+    assert unique_constraints["uq_notification_recipient_seq"] == (
+        "recipient_user_id",
+        "notification_seq",
+    )
+
+    command.downgrade(config, "0046_quota_approver_department")
+    engine = create_engine(database_url)
+    index_names = {index["name"] for index in inspect(engine).get_indexes("notification")}
+    engine.dispose()
+
+    assert "ix_notification_recipient_seq" in index_names
