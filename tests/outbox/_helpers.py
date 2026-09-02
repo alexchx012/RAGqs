@@ -8,6 +8,7 @@ from sqlalchemy import Column, MetaData, String, Table, create_engine
 from sqlalchemy.pool import StaticPool
 
 from alembic.config import Config
+from app.documents.schema import documents_metadata
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import IdentityAccessService
@@ -63,6 +64,9 @@ def build_engine():
     identity_metadata.create_all(engine)
     outbox_metadata.create_all(engine)
     usage_metadata.create_all(engine)
+    # Materialized titles read the current document name from the documents
+    # fact table, so outbox tests need its schema present.
+    documents_metadata.create_all(engine)
     _LIVE_ENGINES.append(engine)
     return engine
 
