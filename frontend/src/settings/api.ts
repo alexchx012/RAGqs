@@ -99,6 +99,12 @@ function idempotencyHeaders(idempotencyKey: string): Record<string, string> {
   return { 'Idempotency-Key': idempotencyKey };
 }
 
+/**
+ * 大文件传输客户端超时（A17）：multipart 上传（含 body 发送）与原件 blob 下载的整段耗时
+ * 显式放宽到 120s；不走基座默认 10s（大文件慢网络下必超）。对齐 enhancePrompt 的显式超时先例。
+ */
+const LARGE_TRANSFER_TIMEOUT_MS = 120_000;
+
 export function createSettingsApi(client: ApiClient): SettingsApi {
   /** 全部请求（含读）绑定发起时的逻辑会话；响应前后 client 校验 fail-closed。 */
   function guard(): AuthSessionGuard {
@@ -217,6 +223,7 @@ export function createSettingsApi(client: ApiClient): SettingsApi {
           'Content-Type': `multipart/form-data; boundary=${boundary}`,
           ...idempotencyHeaders(idempotencyKey),
         },
+        timeoutMs: LARGE_TRANSFER_TIMEOUT_MS,
         authSessionGuard,
       });
     },
@@ -259,6 +266,7 @@ export function createSettingsApi(client: ApiClient): SettingsApi {
             'Content-Type': `multipart/form-data; boundary=${boundary}`,
             ...idempotencyHeaders(idempotencyKey),
           },
+          timeoutMs: LARGE_TRANSFER_TIMEOUT_MS,
           authSessionGuard,
         },
       );
@@ -361,6 +369,7 @@ export function createSettingsApi(client: ApiClient): SettingsApi {
       const authSessionGuard = guard();
       return client.request(`/submissions/${encodeURIComponent(submissionId)}/content`, {
         responseType: 'blob',
+        timeoutMs: LARGE_TRANSFER_TIMEOUT_MS,
         authSessionGuard,
       });
     },

@@ -15,6 +15,9 @@ import type {
   WordContentResponse,
 } from './types';
 
+/** 原件 blob 下载客户端超时（A17）：大文件整段下载放宽到 120s，不走基座默认 10s。 */
+const LARGE_TRANSFER_TIMEOUT_MS = 120_000;
+
 export interface PreviewRequestOptions {
   readonly documentVersionId?: string | null;
 }
@@ -84,7 +87,10 @@ export function createPreviewApi(client: ApiClient): PreviewApi {
       );
     },
     async getTextContent(documentId, options) {
-      const blob = await client.request(contentPath(documentId, options), { responseType: 'blob' });
+      const blob = await client.request(contentPath(documentId, options), {
+        responseType: 'blob',
+        timeoutMs: LARGE_TRANSFER_TIMEOUT_MS,
+      });
       return blob.text();
     },
     getWordContent(documentId, options) {
@@ -94,7 +100,10 @@ export function createPreviewApi(client: ApiClient): PreviewApi {
       return client.request<SheetContentResponse>(contentPath(documentId, { ...options, sheet }));
     },
     getImageContent(documentId, options) {
-      return client.request(contentPath(documentId, options), { responseType: 'blob' });
+      return client.request(contentPath(documentId, options), {
+        responseType: 'blob',
+        timeoutMs: LARGE_TRANSFER_TIMEOUT_MS,
+      });
     },
     buildContentUrl(contentUrl, documentVersionId) {
       const parsed = parseSupportedContentUrl(contentUrl);
