@@ -1254,7 +1254,7 @@ class RetrievalService:
         ]
         # Tree hits inherit the owning document's 8B score, so they satisfy the
         # final-threshold rule without a separate threshold and enter the same
-        # per-library quota assembly below.
+        # quota assembly below.
         filtered.extend(tree_result_hits)
         budgeted: list[RetrievalHit] = []
         deferred: list[RetrievalHit] = []
@@ -1293,25 +1293,19 @@ class RetrievalService:
             budgeted.append(hit)
             return True
 
+        # A63：按库条数配额以知识空间为桶——树命中归入所属文档的 space 桶，
+        # 不再以检索来源（dense/sparse/tree）自成桶；条数配额对单/多来源一致
+        # 生效。token 预算按 space 的既有行为不变（见 include）。
         selected_per_space: dict[str, int] = {}
-        selected_per_library: dict[str, int] = {}
-        library_quota_enabled = len({hit.source or "unknown" for hit in filtered}) > 1
         for hit in filtered:
-            library = hit.source or "unknown"
-            library_count = selected_per_library.get(library, 0)
-            if (
-                library_quota_enabled
-                and library_count >= selected.retrieval_context_items_per_space
-            ):
-                deferred.append(hit)
-                continue
             count = selected_per_space.get(hit.chunk.space_id, 0)
-            if not library_quota_enabled and count >= selected.retrieval_context_items_per_space:
+            if count >= selected.retrieval_context_items_per_space:
                 deferred.append(hit)
                 continue
             if include(hit):
                 selected_per_space[hit.chunk.space_id] = count + 1
-                selected_per_library[library] = library_count + 1
+        # 可空位补位：scope 内仍有空间未达下限时，用被顺延的命中回填至 top_k
+        # （与原单来源路径的补位/下限机制语义一致，多来源同样适用）。
         if any(
             selected_per_space.get(space_id, 0) < selected.retrieval_context_items_per_space
             for space_id in scope.space_ids
@@ -1319,16 +1313,7 @@ class RetrievalService:
             for hit in deferred:
                 if len(budgeted) >= selected.top_k:
                     break
-                library = hit.source or "unknown"
-                if (
-                    library_quota_enabled
-                    and selected_per_library.get(library, 0)
-                    >= selected.retrieval_context_items_per_space
-                ):
-                    continue
-                if include(hit):
-                    selected_per_library[library] = selected_per_library.get(library, 0) + 1
-        result_limit = selected.top_k if not library_quota_enabled else len(budgeted)
+                include(hit)
         if hard_gate_breaches:
             self._alert_hard_gate_exceeded(
                 cap_tokens=selected.retrieval_context_tokens_cap,
@@ -1336,7 +1321,7 @@ class RetrievalService:
                 breaches=hard_gate_breaches,
             )
         return RetrievalResult(
-            tuple(budgeted[:result_limit]),
+            tuple(budgeted[: selected.top_k]),
             lease.generation_id,
             selected,
             tuple(degradations),
