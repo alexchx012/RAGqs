@@ -544,3 +544,169 @@ def test_billing_rejects_sensitive_source_metadata() -> None:
     with pytest.raises(PlatformError) as failure:
         billing.import_record(billing_record(source_metadata={"response_body": "<secret/>"}))
     assert failure.value.code == "billing_source_metadata_rejected"
+
+
+def test_rebuild_cost_projection_is_stable_across_rebuilds() -> None:
+    """A40：重建是纯派生——两次重建行数与业务字段完全一致，无重复无漂移。"""
+
+    engine, clock, ledger, _, billing = make_env()
+    seed_provider_usage(engine, ledger)
+
+    linked_id = billing.import_record(billing_record())
+    billing.reconcile(linked_id, ownership=ownership())
+
+    group_id = billing.import_record(
+        billing_record(
+            billing_source_record_id="bill-rebuild-group",
+            provider_request_id=None,
+            service_month="2026-08",
+            amount=Decimal("0.300"),
+        )
+    )
+    billing.reconcile(
+        group_id,
+        ownership=ownership(),
+        allocations=[
+            {"period": "2026-07", "amount_delta": Decimal("0.180")},
+            {"period": "2026-08", "amount_delta": Decimal("0.120")},
+        ],
+    )
+    unallocated_id = billing.import_record(
+        billing_record(
+            billing_source_record_id="bill-rebuild-unallocated",
+            provider_request_id=None,
+            service_month=None,
+            amount=Decimal("0.050"),
+        )
+    )
+    billing.reconcile(unallocated_id, ownership=ownership())
+
+    def _projection_facts() -> list[tuple]:
+        with engine.connect() as connection:
+            return sorted(
+                (
+                    row["target_kind"],
+                    row["target_id"],
+                    row["effective_period"],
+                    row["currency_code"],
+                    row["estimated_amount"],
+                    row["adjustment_amount"],
+                    row["projected_amount"],
+                    row["cost_status"],
+                )
+                for row in connection.execute(select(usage_cost_projection_table)).mappings()
+            )
+
+    first_count = billing.rebuild_cost_projection()
+    first_facts = _projection_facts()
+    second_count = billing.rebuild_cost_projection()
+    second_facts = _projection_facts()
+
+    assert first_count == second_count == 4
+    assert first_facts == second_facts
+    statuses = {fact[0] for fact in first_facts}
+    assert statuses == {"provider_event", "reconciliation_group"}
+    assert [fact[7] for fact in first_facts].count("reconciled") == 3
+    assert [fact[7] for fact in first_facts].count("billing_period_unallocated") == 1
+
+
+def test_group_allocation_replay_is_idempotent_and_conflict_rolls_back() -> None:
+    """A40：同额分摊重放复用既有行；异额重放 409 且不残留任何新事实。"""
+
+    engine, clock, ledger, _, billing = make_env()
+    source_id = billing.import_record(
+        billing_record(
+            billing_source_record_id="bill-idem-group",
+            provider_request_id=None,
+            service_start_utc=datetime(2026, 7, 1, tzinfo=UTC),
+            service_end_utc=datetime(2026, 8, 31, tzinfo=UTC),
+            amount=Decimal("0.300"),
+        )
+    )
+    allocations = [
+        {"period": "2026-07", "amount_delta": Decimal("0.180")},
+        {"period": "2026-08", "amount_delta": Decimal("0.120")},
+    ]
+    first = billing.reconcile(source_id, ownership=ownership(), allocations=allocations)
+    replay = billing.reconcile(source_id, ownership=ownership(), allocations=allocations)
+
+    assert [item.adjustment_id for item in replay.adjustments] == [
+        item.adjustment_id for item in first.adjustments
+    ]
+    # 总额仍等于账单金额，但既有月份的金额不同 → 409 冲突而非静默改写。
+    divergent = [
+        {"period": "2026-07", "amount_delta": Decimal("0.150")},
+        {"period": "2026-08", "amount_delta": Decimal("0.150")},
+    ]
+    with pytest.raises(PlatformError) as failure:
+        billing.reconcile(source_id, ownership=ownership(), allocations=divergent)
+    assert failure.value.code == "billing_allocation_conflict"
+
+    with engine.connect() as connection:
+        rows = (
+            connection.execute(
+                select(provider_billing_cost_adjustment_table).order_by(
+                    provider_billing_cost_adjustment_table.c.effective_period
+                )
+            )
+            .mappings()
+            .all()
+        )
+        # 冲突事务整体回滚：既有分摊保持原额，无新增行。
+        assert [(row["effective_period"], row["amount_delta"]) for row in rows] == [
+            ("2026-07", Decimal("0.180")),
+            ("2026-08", Decimal("0.120")),
+        ]
+
+
+def test_group_currencies_stay_separate_and_request_linked_mismatch_is_rejected() -> None:
+    """A40：货币边界——分组按币种隔离；request-linked 账单币种不符直接 422。"""
+
+    engine, clock, ledger, _, billing = make_env()
+    seed_provider_usage(engine, ledger)
+
+    usd_group_id = billing.import_record(
+        billing_record(
+            billing_source_record_id="bill-usd-group",
+            provider_request_id=None,
+            service_month="2026-08",
+            amount=Decimal("0.100"),
+        )
+    )
+    billing.reconcile(usd_group_id, ownership=ownership())
+    cny_group_id = billing.import_record(
+        billing_record(
+            billing_source_record_id="bill-cny-group",
+            provider_request_id=None,
+            service_month="2026-08",
+            amount=Decimal("0.300"),
+            currency_code="CNY",
+        )
+    )
+    cny = billing.reconcile(cny_group_id, ownership=ownership())
+    assert [(item.period, item.amount_delta) for item in cny.adjustments] == [
+        ("2026-08", Decimal("0.300"))
+    ]
+
+    mismatched = billing.import_record(
+        billing_record(
+            billing_source_record_id="bill-mismatch",
+            currency_code="CNY",
+        )
+    )
+    with pytest.raises(PlatformError) as failure:
+        billing.reconcile(mismatched, ownership=ownership())
+    assert failure.value.code == "billing_currency_mismatch"
+
+    rebuilt = billing.cost_projection()
+    group_rows = [row for row in rebuilt if row["target_kind"] == "reconciliation_group"]
+    by_source = {row["provider_billing_source_record_id"]: row for row in group_rows}
+    assert by_source[usd_group_id]["currency_code"] == "USD"
+    assert by_source[cny_group_id]["currency_code"] == "CNY"
+    # 币种不同 → 永不并入同一分摊组。
+    assert by_source[usd_group_id]["target_id"] != by_source[cny_group_id]["target_id"]
+    with engine.connect() as connection:
+        groups = (
+            connection.execute(select(provider_billing_reconciliation_group_table)).mappings().all()
+        )
+        assert {group["currency_code"] for group in groups} == {"USD", "CNY"}
