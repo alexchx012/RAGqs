@@ -628,7 +628,8 @@ export class MockKnowledgeController {
       }
       return { upload_batch_id: uploadBatchId, items };
     }
-    return { items };
+    // 纯投稿分支：后端契约（A55）顶层显式补 upload_batch_id: null 占位，与真实后端一致
+    return { upload_batch_id: null, items };
   }
 
   /* ---------- §6.4 上传新版本 ---------- */

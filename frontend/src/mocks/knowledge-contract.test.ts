@@ -311,6 +311,7 @@ describe('knowledge contract mock：上传三分支', () => {
     );
     expect(response.status).toBe(202);
     const body = (await response.json()) as {
+      upload_batch_id: string | null;
       items: {
         submission_id: string;
         version: number;
@@ -322,7 +323,7 @@ describe('knowledge contract mock：上传三分支', () => {
         job_id: null;
       }[];
     };
-    expect(body).not.toHaveProperty('upload_batch_id');
+    expect(body.upload_batch_id).toBe(null); // 纯投稿分支：顶层显式 null 占位（A55 契约）
     expect(body.items[0]).toMatchObject({ status: 'pending', space_id: 'public', quota_exempt: true });
     expect(sortedKeys(body.items[0]!)).toEqual([
       'accepted',
