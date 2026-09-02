@@ -21,6 +21,7 @@ from app.documents.service import (
 from app.identity.revocation import NoopGenerationRevocationPort
 from app.identity.schema import identity_metadata
 from app.identity.service import AuthPrincipal, IdentityAccessService
+from app.outbox.schema import outbox_metadata
 from app.platform.config import AuthSettings
 from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
@@ -236,6 +237,9 @@ def pg_acl_services():
         scoped_engine = create_engine(_schema_url(base_url, schema))
         core_metadata.create_all(scoped_engine)
         identity_metadata.create_all(scoped_engine)
+        # Department deactivation writes deprecation notices through the outbox
+        # domain, so its tables must exist alongside the identity ones.
+        outbox_metadata.create_all(scoped_engine)
         documents_metadata.create_all(scoped_engine)
         identity = IdentityAccessService(
             scoped_engine,
