@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -16,6 +17,10 @@ DEFAULT_EMBEDDING_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 # DashScope-compatible endpoints cap texts per embeddings request well below
 # large-document chunk counts, so embed() fans out in fixed batches.
 _EMBEDDING_BATCH_SIZE = 10
+# Batches are independent sends (usage is idempotent per batch index),
+# so a small worker pool overlaps their network latency without
+# reordering results.
+_EMBEDDING_BATCH_CONCURRENCY = 4
 _DOCUMENT_EMBEDDING_OPERATION = "document_embedding"
 
 
@@ -193,11 +198,22 @@ class OpenAICompatibleEmbedding:
         self.config = config
         self._timeout = timeout
         self._transport = transport
+        from app.platform.model_http import build_model_http_client
+
+        # Long-lived pooled egress client; per-attempt timeouts are
+        # still derived per send by ModelHttpTransport.
+        self._client = build_model_http_client(timeout=timeout, transport=transport)
         self._usage_submission = usage_submission
         self._now = now or (lambda: datetime.now(UTC))
 
     def set_usage_submission(self, submission: UsageSubmissionPort | None) -> None:
         self._usage_submission = submission
+
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        self.close()
 
     def embed(
         self,
@@ -206,11 +222,33 @@ class OpenAICompatibleEmbedding:
         usage_context: EmbeddingUsageContext | None = None,
     ) -> tuple[tuple[float, ...], ...]:
         payload = _normalize_texts(texts)
-        vectors: list[tuple[float, ...]] = []
-        for batch_index, start in enumerate(range(0, len(payload), _EMBEDDING_BATCH_SIZE)):
+        batches = [
+            payload[start : start + _EMBEDDING_BATCH_SIZE]
+            for start in range(0, len(payload), _EMBEDDING_BATCH_SIZE)
+        ]
+        if len(batches) > 1:
+            with ThreadPoolExecutor(
+                max_workers=min(_EMBEDDING_BATCH_CONCURRENCY, len(batches)),
+                thread_name_prefix="embedding-batch",
+            ) as pool:
+                futures = [
+                    pool.submit(
+                        self._embed_batch,
+                        batch,
+                        usage_context=usage_context,
+                        batch_index=batch_index,
+                    )
+                    for batch_index, batch in enumerate(batches)
+                ]
+                vectors: list[tuple[float, ...]] = []
+                for future in futures:
+                    vectors.extend(future.result())
+                return tuple(vectors)
+        vectors = []
+        for batch_index, batch in enumerate(batches):
             vectors.extend(
                 self._embed_batch(
-                    payload[start : start + _EMBEDDING_BATCH_SIZE],
+                    batch,
                     usage_context=usage_context,
                     batch_index=batch_index,
                 )
@@ -375,7 +413,7 @@ class OpenAICompatibleEmbedding:
                     headers=headers,
                     payload=request_payload,
                     timeout_seconds=self._timeout,
-                    transport=self._transport,
+                    client=self._client,
                     asynchronous=True,
                     now=self._now,
                 )
@@ -401,7 +439,7 @@ class OpenAICompatibleEmbedding:
             """一次物理发送 + 完整响应解析；解析失败按 sent=True 确定失败记账。"""
 
             transport = ModelHttpTransport(
-                url=url, headers=headers, transport=self._transport, now=self._now
+                url=url, headers=headers, client=self._client, now=self._now
             )
             response = transport(ctx, req)
             try:

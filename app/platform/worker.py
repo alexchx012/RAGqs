@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import signal
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -9,6 +11,34 @@ from .config import PlatformSettings
 from .context import TaskContext, new_request_context, task_context
 from .persistence import LeaseStore, MemoryLeaseStore
 from .runtime import PlatformRuntime, build_runtime
+
+
+def install_stop_signal_handlers() -> tuple[threading.Event, dict[int, Any]]:
+    """Install SIGINT/SIGTERM handlers that cooperatively stop resident workers.
+
+    Resident entry points feed ``stop_event.is_set`` into their
+    ``run_forever`` loop so a termination signal finishes the current
+    iteration instead of hard-killing the process; the returned mapping
+    carries the previous handlers for ``restore_signal_handlers``.
+    """
+
+    stop_event = threading.Event()
+    previous: dict[int, Any] = {}
+
+    def request_stop(_signum: int, _frame: Any) -> None:
+        stop_event.set()
+
+    for name in ("SIGINT", "SIGTERM"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_stop)
+    return stop_event, previous
+
+
+def restore_signal_handlers(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
 
 
 @dataclass(slots=True)

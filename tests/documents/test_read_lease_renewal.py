@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select, update
 
+from app.documents.read_models import DocumentsRetrievalVisibilityPort
 from app.documents.schema import (
     document_read_leases_table,
     document_versions_table,
@@ -74,20 +75,16 @@ def test_read_lease_acquisition_returns_fresh_reference(service, principal) -> N
     assert rows == [second.reference_id]
 
 
-def test_content_read_acquires_a_renewable_reference(service, principal) -> None:
+def test_content_read_releases_its_read_lease_at_request_end(service, principal) -> None:
     item = _accepted(service, principal)
 
     assert service.content(principal=principal, document_id=item["document_id"]).body == b"hello"
 
+    # Preview/content requests hand the lease back when they finish
+    # instead of leaning on the TTL, so no read-lease row is left behind.
     with service._engine.connect() as connection:
-        lease = connection.execute(select(document_read_leases_table)).mappings().one()
-    renewed = service.renew_read_lease(
-        reference_id=str(lease["id"]),
-        owner_id=str(lease["principal_id"]),
-        lease_token=str(lease["lease_token"]),
-    )
-    assert renewed.reference_id == lease["id"]
-    assert renewed.lease_token == lease["lease_token"]
+        rows = connection.execute(select(document_read_leases_table.c.id)).scalars().all()
+    assert rows == []
 
 
 def test_read_lease_renewal_extends_expiry_and_rejects_expired(service, principal) -> None:
@@ -181,3 +178,67 @@ def test_active_read_lease_blocks_version_purge_until_expired(service, principal
 
     service._now = lambda: datetime(2026, 2, 1, 0, 6, tzinfo=UTC)
     assert service.purge_retained_versions(limit=10) == [created["document_version_id"]]
+
+
+class _PortCandidate:
+    def __init__(self, document_id: str, space_id: str) -> None:
+        self.document_id = document_id
+        self.space_id = space_id
+
+
+def test_visibility_port_leases_carry_tokens_for_request_release(service, principal) -> None:
+    item = _accepted(service, principal)
+    candidate = _PortCandidate(item["document_id"], "space_1")
+
+    port = DocumentsRetrievalVisibilityPort(service._engine, service._object_store)
+    facts = port.get_visibility_facts((candidate,), principal)
+    (fact,) = facts.values()
+    lease = fact["read_lease"]
+    assert lease["lease_token"]
+
+    port.release_read_leases([lease])
+    with service._engine.connect() as connection:
+        rows = (
+            connection.execute(
+                select(document_read_leases_table.c.id).where(
+                    document_read_leases_table.c.document_version_id == item["document_version_id"]
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+def test_release_read_leases_deletes_only_matching_triples(service, principal) -> None:
+    item = _accepted(service, principal)
+    first = _acquire(service, item)
+    second = _acquire(service, item, owner_id="user_2")
+
+    port = DocumentsRetrievalVisibilityPort(service._engine)
+    port.release_read_leases(
+        [
+            {
+                "reference_id": first.reference_id,
+                "owner_id": first.owner_id,
+                "lease_token": first.lease_token,
+            },
+            {
+                "reference_id": second.reference_id,
+                "owner_id": second.owner_id,
+                "lease_token": "not-the-lease-token",
+            },
+        ]
+    )
+
+    with service._engine.connect() as connection:
+        rows = (
+            connection.execute(
+                select(document_read_leases_table.c.id).where(
+                    document_read_leases_table.c.document_version_id == item["document_version_id"]
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == [second.reference_id]

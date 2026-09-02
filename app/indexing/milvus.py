@@ -156,6 +156,7 @@ class HttpMilvusClient:
         self._timeout = timeout
         self._transport = transport
         self._allow_create = allow_create
+        self._client = httpx.Client(timeout=self._timeout, transport=self._transport)
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -163,11 +164,16 @@ class HttpMilvusClient:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
 
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        self.close()
+
     def _post(self, path: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         url = urljoin(self._base, path.lstrip("/"))
         try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
-                response = client.post(url, headers=self._headers(), json=dict(payload))
+            response = self._client.post(url, headers=self._headers(), json=dict(payload))
         except httpx.HTTPError as exc:
             raise PlatformError("milvus_unavailable", "Milvus request failed", {}, 503) from exc
         if response.status_code >= 400:

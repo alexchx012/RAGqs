@@ -68,7 +68,6 @@ class ProviderSettings(_StrictModel):
 
 
 class WorkerSettings(_StrictModel):
-    concurrency: int = Field(default=1, ge=1, le=128)
     lease_seconds: int = Field(default=60, ge=5, le=3600)
     ingestion_lease_seconds: int = Field(default=300, ge=5, le=3600)
     ingestion_heartbeat_seconds: int = Field(default=20, ge=1, le=300)
@@ -322,7 +321,6 @@ _ENV_KEYS = {
     "RAG_PROVIDER_NAME",
     "RAG_PROVIDER_API_KEY",
     "RAG_PROVIDER_BASE_URL",
-    "RAG_WORKER_CONCURRENCY",
     "RAG_WORKER_LEASE_SECONDS",
     "RAG_INGESTION_LEASE_SECONDS",
     "RAG_INGESTION_HEARTBEAT_SECONDS",
@@ -550,7 +548,6 @@ def load_platform_settings(
         "worker": {
             key: value
             for key, value in {
-                "concurrency": _int(env, "RAG_WORKER_CONCURRENCY"),
                 "lease_seconds": _int(env, "RAG_WORKER_LEASE_SECONDS"),
                 "ingestion_lease_seconds": _int(env, "RAG_INGESTION_LEASE_SECONDS"),
                 "ingestion_heartbeat_seconds": _int(env, "RAG_INGESTION_HEARTBEAT_SECONDS"),

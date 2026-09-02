@@ -192,8 +192,19 @@ def build_object_store(
 
     def create_client() -> Any:
         import boto3  # type: ignore[import-untyped]
+        from botocore.config import Config  # type: ignore[import-untyped]
 
-        options: dict[str, Any] = {"service_name": "s3", "endpoint_url": endpoint}
+        options: dict[str, Any] = {
+            "service_name": "s3",
+            "endpoint_url": endpoint,
+            # Object-store HEADs run next to locked read-lease work, so
+            # every request needs bounded timeouts and few retries.
+            "config": Config(
+                connect_timeout=3,
+                read_timeout=5,
+                retries={"max_attempts": 2, "mode": "standard"},
+            ),
+        }
         if access_key is not None:
             options["aws_access_key_id"] = access_key
         if secret_key is not None:

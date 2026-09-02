@@ -15,7 +15,12 @@ from app.platform.config import PlatformSettings
 from app.platform.context import TaskContext
 from app.platform.errors import PlatformError
 from app.platform.persistence import FenceViolation, LeaseUnavailable
-from app.platform.worker import WorkerRuntime, create_worker_runtime
+from app.platform.worker import (
+    WorkerRuntime,
+    create_worker_runtime,
+    install_stop_signal_handlers,
+    restore_signal_handlers,
+)
 
 from .service import RetentionOpsService
 
@@ -162,9 +167,11 @@ def main() -> None:
     settings = load_platform_settings_for_main()
     worker_runtime = create_worker_runtime(settings)
     worker = RetentionMaintenanceWorker(worker_runtime)
+    stop_event, previous_handlers = install_stop_signal_handlers()
     try:
-        worker.run_forever(owner=f"retention-worker:{_hostname()}")
+        worker.run_forever(owner=f"retention-worker:{_hostname()}", stop=stop_event.is_set)
     finally:
+        restore_signal_handlers(previous_handlers)
         worker_runtime.close()
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import socket
 import threading
 import time
@@ -20,7 +19,12 @@ from app.platform.errors import PlatformError
 from app.platform.persistence import FenceViolation
 from app.platform.runtime import PlatformRuntime
 from app.platform.storage import StorageKeyError
-from app.platform.worker import WorkerRuntime, create_worker_runtime
+from app.platform.worker import (
+    WorkerRuntime,
+    create_worker_runtime,
+    install_stop_signal_handlers,
+    restore_signal_handlers,
+)
 
 from .indexing import IndexProcessingReceipt
 from .jobs import JobLease
@@ -496,21 +500,6 @@ def run_ingestion_worker_once(
         worker.close()
 
 
-def _stop_event_for_signals() -> tuple[threading.Event, dict[int, Any]]:
-    stop_event = threading.Event()
-    previous: dict[int, Any] = {}
-
-    def request_stop(_signum: int, _frame: Any) -> None:
-        stop_event.set()
-
-    for name in ("SIGINT", "SIGTERM"):
-        signum = getattr(signal, name, None)
-        if signum is not None:
-            previous[signum] = signal.getsignal(signum)
-            signal.signal(signum, request_stop)
-    return stop_event, previous
-
-
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
@@ -521,7 +510,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = load_platform_settings()
     worker_runtime = create_worker_runtime(settings)
     worker = IngestionWorker(worker_runtime)
-    stop_event, previous_handlers = _stop_event_for_signals()
+    stop_event, previous_handlers = install_stop_signal_handlers()
     owner = _default_owner()
     interval = args.interval_seconds
     if interval is None:
@@ -539,8 +528,7 @@ def main(argv: list[str] | None = None) -> None:
             stop=stop_event.is_set,
         )
     finally:
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
+        restore_signal_handlers(previous_handlers)
         worker.close()
 
 

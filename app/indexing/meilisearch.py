@@ -126,6 +126,7 @@ class HttpMeilisearchClient:
         self._api_key = api_key
         self._timeout = timeout
         self._transport = transport
+        self._client = httpx.Client(timeout=self._timeout, transport=self._transport)
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -133,11 +134,16 @@ class HttpMeilisearchClient:
             "Content-Type": "application/json",
         }
 
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        self.close()
+
     def _request(self, method: str, path: str, payload: Any | None = None) -> Any:
         url = urljoin(self._base, path.lstrip("/"))
         try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
-                response = client.request(method, url, headers=self._headers(), json=payload)
+            response = self._client.request(method, url, headers=self._headers(), json=payload)
         except httpx.HTTPError as exc:
             raise PlatformError(
                 "meilisearch_unavailable", "Meilisearch request failed", {}, 503
@@ -174,8 +180,7 @@ class HttpMeilisearchClient:
     def health(self) -> None:
         url = urljoin(self._base, "health")
         try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
-                response = client.get(url)
+            response = self._client.get(url)
         except httpx.HTTPError as exc:
             raise PlatformError(
                 "meilisearch_unavailable", "Meilisearch is unreachable", {}, 503

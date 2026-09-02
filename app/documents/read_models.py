@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
-from sqlalchemy import Engine, and_, delete, func, select
+from sqlalchemy import Engine, and_, delete, func, select, tuple_
 
 from app.platform.errors import PlatformError
 from app.platform.storage import ObjectStorePort, StorageKeyError
@@ -91,44 +91,49 @@ class DocumentReadModels:
         document_version_id: str | None = None,
         message_id: str | None = None,
     ) -> dict[str, Any]:
-        document, version, publication = self._visible_version(
+        document, version, publication, lease = self._visible_version(
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
         )
-        manifest = dict(publication["resource_manifest_json"] or {})
-        summary = manifest.get("processing_summary")
-        renderer = self._service._preview_renderer
-        metadata = (
-            renderer.metadata(processing_summary=summary if isinstance(summary, Mapping) else {})
-            if renderer is not None
-            else PreviewMetadata(
-                has_text_layer=False,
-                tree_indexed=False,
-                page_count=None,
-                sheets=None,
+        try:
+            manifest = dict(publication["resource_manifest_json"] or {})
+            summary = manifest.get("processing_summary")
+            renderer = self._service._preview_renderer
+            metadata = (
+                renderer.metadata(
+                    processing_summary=summary if isinstance(summary, Mapping) else {}
+                )
+                if renderer is not None
+                else PreviewMetadata(
+                    has_text_layer=False,
+                    tree_indexed=False,
+                    page_count=None,
+                    sheets=None,
+                )
             )
-        )
-        hits: Sequence[Any] = ()
-        if message_id is not None and self._service._message_citation_preview_port is not None:
-            hits = self._service._message_citation_preview_port.get_hits(
-                principal, message_id, str(document["id"]), str(version["id"])
-            )
-        result = {
-            "document_id": document["id"],
-            "document_version_id": version["id"],
-            "name": document["name"],
-            "media_kind": preview_media_kind(version["media_kind"]),
-            "size_bytes": version["size_bytes"],
-            "content_available": True,
-            "content_url": (
-                f"/v1/documents/{document['id']}/content?"
-                f"{urlencode({'document_version_id': str(version['id'])})}"
-            ),
-            "hits": [hit.to_mapping() for hit in hits],
-        }
-        result.update(metadata.to_mapping())
-        return result
+            hits: Sequence[Any] = ()
+            if message_id is not None and self._service._message_citation_preview_port is not None:
+                hits = self._service._message_citation_preview_port.get_hits(
+                    principal, message_id, str(document["id"]), str(version["id"])
+                )
+            result = {
+                "document_id": document["id"],
+                "document_version_id": version["id"],
+                "name": document["name"],
+                "media_kind": preview_media_kind(version["media_kind"]),
+                "size_bytes": version["size_bytes"],
+                "content_available": True,
+                "content_url": (
+                    f"/v1/documents/{document['id']}/content?"
+                    f"{urlencode({'document_version_id': str(version['id'])})}"
+                ),
+                "hits": [hit.to_mapping() for hit in hits],
+            }
+            result.update(metadata.to_mapping())
+            return result
+        finally:
+            self._release_read_lease(lease)
 
     def content(
         self,
@@ -138,32 +143,35 @@ class DocumentReadModels:
         document_version_id: str | None = None,
         sheet: str | None = None,
     ) -> PreviewContent:
-        _, version, publication = self._visible_version(
+        _, version, publication, lease = self._visible_version(
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
         )
         try:
-            content, object_metadata = self._service._object_store.get(
-                str(version["original_object_key"])
+            try:
+                content, object_metadata = self._service._object_store.get(
+                    str(version["original_object_key"])
+                )
+            except (StorageKeyError, KeyError) as exc:
+                raise PlatformError(
+                    "document_content_unavailable", "Document content is unavailable", {}, 410
+                ) from exc
+            renderer = self._service._preview_renderer
+            if renderer is None:
+                return PreviewContent(body=content, media_type=object_metadata.content_type)
+            manifest = dict(publication["resource_manifest_json"] or {})
+            summary = manifest.get("processing_summary")
+            processing_summary = dict(summary) if isinstance(summary, Mapping) else {}
+            metadata = renderer.metadata(processing_summary=processing_summary)
+            return renderer.render(
+                version={**version, "processing_summary": processing_summary},
+                content=content,
+                metadata=metadata,
+                sheet=sheet,
             )
-        except (StorageKeyError, KeyError) as exc:
-            raise PlatformError(
-                "document_content_unavailable", "Document content is unavailable", {}, 410
-            ) from exc
-        renderer = self._service._preview_renderer
-        if renderer is None:
-            return PreviewContent(body=content, media_type=object_metadata.content_type)
-        manifest = dict(publication["resource_manifest_json"] or {})
-        summary = manifest.get("processing_summary")
-        processing_summary = dict(summary) if isinstance(summary, Mapping) else {}
-        metadata = renderer.metadata(processing_summary=processing_summary)
-        return renderer.render(
-            version={**version, "processing_summary": processing_summary},
-            content=content,
-            metadata=metadata,
-            sheet=sheet,
-        )
+        finally:
+            self._release_read_lease(lease)
 
     def content_head_supported(
         self,
@@ -173,14 +181,17 @@ class DocumentReadModels:
         document_version_id: str | None = None,
     ) -> bool:
         """Whether HEAD may serve this document without rendering; DB-only, no object read."""
-        _, version, _ = self._visible_version(
+        _, version, _, lease = self._visible_version(
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
         )
-        if self._service._preview_renderer is None:
-            return True
-        return preview_media_kind(version.get("media_kind")) in {"pdf", "image"}
+        try:
+            if self._service._preview_renderer is None:
+                return True
+            return preview_media_kind(version.get("media_kind")) in {"pdf", "image"}
+        finally:
+            self._release_read_lease(lease)
 
     def get_upload_batch(self, *, principal: Any, upload_batch_id: str) -> dict[str, Any]:
         with self._service._engine.connect() as connection:
@@ -231,6 +242,26 @@ class DocumentReadModels:
         if counts["succeeded"] or counts["deduplicated"]:
             return "partial"
         return "failed"
+
+    def _release_read_lease(self, lease: Any) -> None:
+        """Hand the preview/content read lease back when the request finishes.
+
+        Conditional on the full ``(reference_id, owner_id, lease_token)`` triple
+        so a superseding acquisition by the same principal is never revoked.
+        """
+
+        from .schema import document_read_leases_table
+
+        with self._service._engine.begin() as connection:
+            connection.execute(
+                delete(document_read_leases_table).where(
+                    and_(
+                        document_read_leases_table.c.id == str(lease.reference_id),
+                        document_read_leases_table.c.principal_id == str(lease.owner_id),
+                        document_read_leases_table.c.lease_token == str(lease.lease_token),
+                    )
+                )
+            )
 
     def _visible_version(
         self, *, principal: Any, document_id: str, document_version_id: str | None
@@ -317,7 +348,7 @@ class DocumentReadModels:
                 raise PlatformError(
                     "document_content_unavailable", "Document content is unavailable", {}, 410
                 )
-            self._service._acquire_read_lease(
+            lease = self._service._acquire_read_lease(
                 connection,
                 document_id=str(row["document_id"]),
                 document_version_id=str(row["selected_version_id"]),
@@ -337,7 +368,7 @@ class DocumentReadModels:
                 "size_bytes": row["selected_version_size_bytes"],
                 "original_object_key": row["selected_version_original_object_key"],
             }
-            return document, version, row
+            return document, version, row, lease
 
 
 class DocumentsRetrievalVisibilityPort:
@@ -363,6 +394,7 @@ class DocumentsRetrievalVisibilityPort:
         if not document_ids:
             return {}
         principal_id = str(getattr(principal, "user_id", "") or "anonymous")
+        existing_objects = self._existing_object_keys(document_ids)
         facts: dict[tuple[str, str], Mapping[str, Any]] = {}
         with self._engine.begin() as connection:
             for document_id in document_ids:
@@ -421,8 +453,8 @@ class DocumentsRetrievalVisibilityPort:
                 if row is None:
                     continue
                 object_key = row["original_object_key"]
-                if self._object_store is not None and (
-                    not object_key or not self._object_store.exists(str(object_key))
+                if existing_objects is not None and (
+                    not object_key or str(object_key) not in existing_objects
                 ):
                     continue
                 manifest = row["resource_manifest_json"]
@@ -456,6 +488,39 @@ class DocumentsRetrievalVisibilityPort:
                 }
         return facts
 
+    def _existing_object_keys(self, document_ids: Sequence[str]) -> frozenset[str] | None:
+        """Resolve object-store existence before the locked transaction opens.
+
+        The visibility gate sits on the retrieval hot path (every search
+        page, rerank pass and citation resolve), so the synchronous object
+        HEAD must not run while the document/version row locks are held.
+        The locked transaction still re-verifies lifecycle and version
+        state before the lease is written.
+        """
+
+        if self._object_store is None:
+            return None
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(
+                    documents_table.c.id,
+                    document_versions_table.c.original_object_key,
+                )
+                .select_from(
+                    documents_table.outerjoin(
+                        document_versions_table,
+                        document_versions_table.c.id == documents_table.c.active_version_id,
+                    )
+                )
+                .where(documents_table.c.id.in_(document_ids))
+            ).all()
+        existing: set[str] = set()
+        for _document_id, object_key in rows:
+            key = str(object_key or "")
+            if key and key not in existing and self._object_store.exists(key):
+                existing.add(key)
+        return frozenset(existing)
+
     def _acquire_read_lease(
         self,
         connection: Any,
@@ -477,6 +542,7 @@ class DocumentsRetrievalVisibilityPort:
         now = datetime.now(UTC)
         expires = now + timedelta(seconds=ttl_seconds)
         reference_id = f"read_lease_{secrets.token_urlsafe(15)}"
+        lease_token = secrets.token_hex(16)
         connection.execute(
             delete(document_read_leases_table).where(
                 and_(
@@ -491,7 +557,7 @@ class DocumentsRetrievalVisibilityPort:
                 document_id=document_id,
                 document_version_id=document_version_id,
                 principal_id=principal_id,
-                lease_token=secrets.token_hex(16),
+                lease_token=lease_token,
                 expires_at_utc=expires,
                 created_at_utc=now,
                 updated_at_utc=now,
@@ -500,6 +566,7 @@ class DocumentsRetrievalVisibilityPort:
         return {
             "reference_id": reference_id,
             "owner_id": principal_id,
+            "lease_token": lease_token,
             "document_id": document_id,
             "document_version_id": document_version_id,
         }
@@ -508,25 +575,32 @@ class DocumentsRetrievalVisibilityPort:
         """Release the document read leases held by one retrieval request.
 
         Deletes are conditional on ``(reference_id, owner_id, lease_token)`` so
-        a superseding acquisition by the same principal is never revoked.
+        a superseding acquisition by the same principal is never revoked; one
+        tuple ``IN`` statement releases the whole request batch.
         """
 
         if not leases:
             return
         from .schema import document_read_leases_table
 
+        triples = [
+            (
+                str(lease.get("reference_id")),
+                str(lease.get("owner_id")),
+                str(lease.get("lease_token")),
+            )
+            for lease in leases
+        ]
         with self._engine.begin() as connection:
-            for lease in leases:
-                connection.execute(
-                    delete(document_read_leases_table).where(
-                        and_(
-                            document_read_leases_table.c.id == str(lease.get("reference_id")),
-                            document_read_leases_table.c.principal_id == str(lease.get("owner_id")),
-                            document_read_leases_table.c.lease_token
-                            == str(lease.get("lease_token")),
-                        )
-                    )
+            connection.execute(
+                delete(document_read_leases_table).where(
+                    tuple_(
+                        document_read_leases_table.c.id,
+                        document_read_leases_table.c.principal_id,
+                        document_read_leases_table.c.lease_token,
+                    ).in_(triples)
                 )
+            )
 
     def get_visibility_fact(
         self, candidate: Any, principal: Any = None

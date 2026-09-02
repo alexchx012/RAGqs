@@ -18,7 +18,12 @@ from app.platform.config import PlatformSettings, load_platform_settings
 from app.platform.errors import PlatformError
 from app.platform.persistence import FenceViolation
 from app.platform.runtime import PlatformRuntime
-from app.platform.worker import WorkerRuntime, create_worker_runtime
+from app.platform.worker import (
+    WorkerRuntime,
+    create_worker_runtime,
+    install_stop_signal_handlers,
+    restore_signal_handlers,
+)
 
 from .dispatcher import OutboxDispatcher
 from .ports import DeliveryClaim, DeliveryOutcome
@@ -293,14 +298,16 @@ def main() -> None:
     settings = load_platform_settings()
     worker_runtime = create_worker_runtime(settings)
     owns_runtime = True
+    stop_event, previous_handlers = install_stop_signal_handlers()
     try:
         resolved_owner = f"outbox:{socket.gethostname()}:{os.getpid()}"
         worker = OutboxWorker(worker_runtime)
         try:
             _logger.info("outbox worker resident loop starting owner=%s", resolved_owner)
-            worker.run_forever(owner=resolved_owner)
+            worker.run_forever(owner=resolved_owner, stop=stop_event.is_set)
         finally:
             worker.close()
     finally:
+        restore_signal_handlers(previous_handlers)
         if owns_runtime:
             worker_runtime.close()

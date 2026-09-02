@@ -23,7 +23,7 @@ from app.platform.config import PlatformSettings, load_platform_settings
 from app.platform.errors import PlatformError
 from app.platform.persistence import FenceViolation
 from app.platform.runtime import PlatformRuntime, build_runtime
-from app.platform.worker import WorkerRuntime
+from app.platform.worker import WorkerRuntime, install_stop_signal_handlers, restore_signal_handlers
 
 from .lifecycle import SqlAlchemyOutboxLifecycle
 from .schema import outbox_compaction_command_table
@@ -183,6 +183,7 @@ def main() -> None:
     """
     settings = load_platform_settings()
     runtime = build_runtime(settings)
+    stop_event, previous_handlers = install_stop_signal_handlers()
     try:
         resolved_owner = f"outbox-compaction:{socket.gethostname()}:{os.getpid()}"
         worker = runtime.resolve("compaction_worker", None)
@@ -190,8 +191,9 @@ def main() -> None:
             raise RuntimeError("compaction worker is not configured")
         try:
             _logger.info("outbox compaction resident loop starting owner=%s", resolved_owner)
-            worker.run_forever(owner=resolved_owner)
+            worker.run_forever(owner=resolved_owner, stop=stop_event.is_set)
         finally:
             worker.close()
     finally:
+        restore_signal_handlers(previous_handlers)
         runtime.close()

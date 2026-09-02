@@ -252,11 +252,34 @@ def test_upload_batch_summary_counts_items(service, principal) -> None:
     assert batch["summary"]["pending"] == 2
 
 
-def test_active_read_lease_blocks_physical_document_deletion(service, principal) -> None:
+def test_content_read_no_longer_blocks_document_deletion(service, principal) -> None:
     item = _accepted(service, principal)
     service._lifecycle_port = _Lifecycle()
 
     assert service.content(principal=principal, document_id=item["document_id"]).body == b"hello"
+    deletion = service.delete_document(
+        principal=principal,
+        document_id=item["document_id"],
+        expected_version=2,
+        idempotency_key="delete-after-read",
+    )
+
+    # Content reads release their lease at request end, so the finished
+    # read no longer blocks physical cleanup.
+    service.finalize_deletion(document_id=item["document_id"], deletion_id=deletion["deletion_id"])
+
+
+def test_active_read_lease_blocks_physical_document_deletion(service, principal) -> None:
+    item = _accepted(service, principal)
+    service._lifecycle_port = _Lifecycle()
+
+    with service._engine.begin() as connection:
+        service._acquire_read_lease(
+            connection,
+            document_id=item["document_id"],
+            document_version_id=item["document_version_id"],
+            principal_id=principal.user_id,
+        )
     deletion = service.delete_document(
         principal=principal,
         document_id=item["document_id"],
