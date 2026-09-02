@@ -422,3 +422,34 @@ def test_health_smoke() -> None:
     client, _ = make_client()
     health = client.get("/v1/health")
     assert health.status_code == 200
+
+
+def test_ready_probes_database_and_object_storage() -> None:
+    client, _ = make_client()
+    ready = client.get("/v1/ready")
+    assert ready.status_code == 200
+    assert ready.json() == {
+        "status": "ready",
+        "service": "core-platform",
+        "database": "ok",
+        "object_storage": "ok",
+    }
+
+
+def test_ready_returns_retryable_503_when_a_dependency_fails() -> None:
+    class BrokenObjectStore:
+        def exists(self, key: str) -> bool:
+            raise OSError("storage endpoint unreachable")
+
+    client, runtime = make_client()
+    runtime.adapters["object_store"] = BrokenObjectStore()
+    ready = client.get("/v1/ready")
+    error = assert_error_shape(ready, 503, "dependency_unavailable")
+    assert error["message"] == "The object storage readiness check failed"
+
+
+def test_ready_returns_retryable_503_when_the_database_fails() -> None:
+    client, runtime = make_client()
+    runtime.adapters["database_engine"] = None
+    ready = client.get("/v1/ready")
+    assert_error_shape(ready, 503, "dependency_unavailable")

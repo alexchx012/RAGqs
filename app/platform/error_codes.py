@@ -33,7 +33,7 @@ REGISTERED_ERROR_CODES = frozenset("""
     deletion_documents_pending deletion_not_found deletion_not_pending deletion_not_ready
     deletion_workflow_invalid deletion_workflow_not_found department_action_forbidden
     department_deactivation_unverified department_has_active_work department_has_members
-    department_inactive department_name_exists department_not_found document_content_unavailable
+    department_inactive department_name_exists department_not_found dependency_unavailable document_content_unavailable
     document_deleted document_lifecycle_unavailable document_not_found document_not_published
     document_object_unavailable document_operation_in_progress document_pending_delete
     document_redaction_incomplete document_unavailable document_version_changed

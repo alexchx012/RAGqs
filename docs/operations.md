@@ -111,7 +111,7 @@ When correctness is uncertain, preserve PostgreSQL and object storage, stop deri
 **Trigger:** readiness failures, elevated HTTP errors, failed SSE establishment, or missing dashboard export.
 
 1. Confirm the ingress route, TLS certificate, service endpoints, pod readiness, and release digest.
-2. Check PostgreSQL connectivity and migration head, object-storage private access, Milvus, sparse-provider probe, secret-manager resolution, and telemetry export.
+2. Check PostgreSQL connectivity and migration head, object-storage private access, Milvus, sparse-provider probe, secret-manager resolution, and telemetry export. `GET /v1/ready` reports the API workload's own database and object-storage dependency state as a retryable 503 or a ready 200.
 3. Compare the failure time with a rollout, profile change, secret rotation, migration, or index-generation switch.
 4. Remove only failing replicas from service. Do not force readiness by disabling dependency checks.
 5. Roll back the image only if its schema is compatible. A database restore or index rollback is a separate runbook.
