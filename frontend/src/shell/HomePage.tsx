@@ -336,6 +336,9 @@ function ChatHomeInner({
               onRetry={(messageId) => void store.retry(messageId)}
               onFeedback={(messageId, vote) => void store.submitFeedback(messageId, vote)}
               onAbVote={(messageId, choice) => void store.submitAbVote(messageId, choice)}
+              onCitationClick={(messageId, citation, index) =>
+                store.reportCitationClick(messageId, citation, index)
+              }
               pendingSubmits={state.pendingSubmits}
               composer={
                 <Composer

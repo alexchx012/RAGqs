@@ -220,8 +220,11 @@ def aggregate_weak_signals(results: list[Mapping[str, Any]]) -> dict[str, float]
     rows = [result.get("weak_signals_json") or {} for result in results]
     citations = [signals.get("weak_has_citation") for signals in rows if signals is not None]
     values = [1.0 if citation else 0.0 for citation in citations if citation is not None]
+    clicks = [signals.get("weak_citation_clicks") for signals in rows if signals is not None]
+    clicked = [1.0 if count else 0.0 for count in clicks if count is not None]
     return {
         "weak_citation_rate": (sum(values) / len(values)) if values else 0.0,
+        "weak_citation_click_rate": (sum(clicked) / len(clicked)) if clicked else 0.0,
         "weak_sampled_items": float(len(values)),
     }
 

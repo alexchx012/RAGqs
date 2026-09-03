@@ -143,6 +143,27 @@ describe('会话与问答域 API 封装（JSON 端点）', () => {
     expect(JSON.parse(String(init.body))).toEqual({ vote: 'down', reason: 'wrong_citation' });
   });
 
+  it('POST /messages/{id}/citation-clicks：无幂等键，body 透传，204 → undefined', async () => {
+    const mock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const api = makeClient(mock);
+    await expect(
+      api.reportCitationClick('m_1', {
+        document_id: 'doc_1',
+        document_version_id: 'ver_1',
+        citation_index: 0,
+      }),
+    ).resolves.toBeUndefined();
+    const { url, init } = captureFetch(mock);
+    expect(url).toContain('/v1/messages/m_1/citation-clicks');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeUndefined();
+    expect(JSON.parse(String(init.body))).toEqual({
+      document_id: 'doc_1',
+      document_version_id: 'ver_1',
+      citation_index: 0,
+    });
+  });
+
   it('POST /messages/{id}/ab-vote：Idempotency-Key + body 正确', async () => {
     const mock = vi.fn<typeof fetch>(async () =>
       jsonResponse(200, { pair_id: 'pair_1', voted: true, choice: '0' }),

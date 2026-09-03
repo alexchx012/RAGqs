@@ -317,6 +317,20 @@ export function createChatHandlers(controller: MockChatController) {
       }
     }),
 
+    http.post('/v1/messages/:id/citation-clicks', async ({ request, params }) => {
+      try {
+        const body = (await request.json().catch(() => ({}))) as never;
+        controller.recordCitationClick(
+          request.headers.get('Authorization'),
+          String(params['id']),
+          body,
+        );
+        return new HttpResponse(null, { status: 204 });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }),
+
     http.post('/v1/messages/:id/ab-vote', async ({ request, params }) => {
       try {
         const idempotencyKey = requireIdempotencyKey(request);

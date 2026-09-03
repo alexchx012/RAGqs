@@ -59,6 +59,12 @@ def list_events_after(
     generation_id: str,
     after_seq: int,
 ) -> list[StoredEvent]:
+    """SSE replay log: stream events only, never client interaction facts.
+
+    ``citation_click`` rows share the append-only event storage for durable
+    weak-signal aggregation, but they are not part of the SSE contract, so
+    replay and terminal detection stay exactly as before.
+    """
     rows = (
         connection.execute(
             select(
@@ -69,6 +75,7 @@ def list_events_after(
             .where(
                 chat_generation_event_table.c.generation_id == generation_id,
                 chat_generation_event_table.c.event_seq > after_seq,
+                chat_generation_event_table.c.event_type != "citation_click",
             )
             .order_by(chat_generation_event_table.c.event_seq)
         )

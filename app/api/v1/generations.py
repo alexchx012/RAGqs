@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.chat.generation import GenerationService
 from app.chat.models import AbVoteRequest, FeedbackRequest
@@ -24,6 +24,13 @@ class FeedbackBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vote: Literal["up", "down"]
     reason: Literal["no_grounding", "wrong_citation"] | None = None
+
+
+class CitationClickBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: str
+    document_version_id: str
+    citation_index: int = Field(ge=0)
 
 
 class AbVoteBody(BaseModel):
@@ -140,6 +147,24 @@ def submit_feedback(
         message_id=message_id,
         request=FeedbackRequest(vote=body.vote, down_reason=body.reason),
         idempotency_key=_key(request),
+    )
+    return Response(status_code=204)
+
+
+@router.post("/messages/{message_id}/citation-clicks", status_code=204, response_class=Response)
+def record_citation_click(
+    message_id: str,
+    body: CitationClickBody,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(current_principal)],
+) -> Response:
+    """Citation click fact (§8.4 weak signal); immutable, no idempotency key."""
+    _service(request).record_citation_click(
+        principal=principal,
+        message_id=message_id,
+        document_id=body.document_id,
+        document_version_id=body.document_version_id,
+        citation_index=body.citation_index,
     )
     return Response(status_code=204)
 

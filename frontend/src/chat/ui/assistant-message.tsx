@@ -15,6 +15,7 @@ import { TextLink } from '../../ui/TextLink';
 import type { AssistantMessageView } from '../store';
 import type {
   AbChoice,
+  Citation,
   FeedbackVoteRequest,
   Notice,
   SseStagePhase,
@@ -30,6 +31,8 @@ export interface AssistantMessageProps {
   readonly onRetry: (messageId: string) => void;
   readonly onFeedback: (messageId: string, vote: FeedbackVoteRequest) => void;
   readonly onAbVote: (messageId: string, choice: AbChoice) => void;
+  /** 引用点击上报（§8.4 弱信号「引用点击率」）；缺省不采集。 */
+  readonly onCitationClick?: (messageId: string, citation: Citation, index: number) => void;
   /** m2：反馈 / A/B 投票提交中，锁定控件（禁连击同键不同请求体）。 */
   readonly pendingSubmits?: readonly { readonly kind: 'feedback' | 'ab-vote'; readonly messageId: string }[];
 }
@@ -58,6 +61,7 @@ export function AssistantMessage({
   onRetry,
   onFeedback,
   onAbVote,
+  onCitationClick,
   pendingSubmits = [],
 }: AssistantMessageProps) {
   const { generation, status, ab, stop_reason } = message;
@@ -109,7 +113,11 @@ export function AssistantMessage({
         {single !== undefined && (
           <>
             <Markdown markdown={single.content} />
-            <CitationBadges citations={single.citations} messageId={message.id} />
+            <CitationBadges
+              citations={single.citations}
+              messageId={message.id}
+              onCitationClick={onCitationClick}
+            />
           </>
         )}
         {generating && (
@@ -140,7 +148,11 @@ export function AssistantMessage({
     body = (
       <div className="chat-body-text leading-[var(--leading-body)] text-ink-black">
         <Markdown markdown={message.content} />
-        <CitationBadges citations={message.citations} messageId={message.id} />
+        <CitationBadges
+          citations={message.citations}
+          messageId={message.id}
+          onCitationClick={onCitationClick}
+        />
         {generating && <span className="chat-caret" aria-hidden="true" />}
         {generating && message.content === '' && generation.stage !== null && (
           <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-gray">

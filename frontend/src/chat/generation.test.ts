@@ -92,6 +92,7 @@ function makeStubApi(): StubApi {
       return { id: 'c_1', title: '', pinned: false, group_id: null, last_active_at: '' };
     },
     async deleteConversation() {},
+    async reportCitationClick() {},
     async createConversationGroup() {
       return { id: 'g', name: '' };
     },

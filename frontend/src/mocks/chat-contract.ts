@@ -813,6 +813,27 @@ export class MockChatController {
     this.idemMap(userId).set(idempotencyKey, { kind: 'feedback', normalized, messageId });
   }
 
+  /**
+   * 引用点击事实（§8.4 弱信号「引用点击率」）：fire-and-forget，无幂等键，
+   * 不改读模型状态；只校验认证与消息归属。
+   */
+  recordCitationClick(
+    auth: string | null,
+    messageId: string,
+    body: { document_id: string; document_version_id: string; citation_index: number },
+  ): void {
+    this.requireAuth(auth);
+    this.assistantMessage(messageId);
+    if (
+      typeof body.document_id !== 'string' ||
+      typeof body.document_version_id !== 'string' ||
+      !Number.isInteger(body.citation_index) ||
+      body.citation_index < 0
+    ) {
+      throw new MockHttpError(422, 'validation_error', { field: 'citation_index' });
+    }
+  }
+
   submitAbVote(
     auth: string | null,
     messageId: string,
