@@ -403,7 +403,6 @@ export function Composer({
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slashOpen]);
 
   useEffect(() => {
@@ -518,7 +517,6 @@ export function Composer({
     frame.addEventListener('transitionend', finish);
     // jsdom 不触发 transitionend：setTimeout 兜底（降级路径），必须保留
     setTimeout(finish, 260);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, enhancing]);
 
   // 驱动增强药丸挂载/退场：有文本时进入；离开前先播放退场动画——

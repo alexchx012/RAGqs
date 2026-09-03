@@ -49,6 +49,25 @@ describe('会话与问答域 API 封装（JSON 端点）', () => {
     expect(init.body).toBeUndefined();
   });
 
+  it('GET /conversations：A25 分页 limit 参数透传（q+limit / 仅 limit / 均省略）', async () => {
+    const mock = vi.fn<typeof fetch>(async () => jsonResponse(200, { items: [], groups: [] }));
+    const api = makeClient(mock);
+
+    await api.listConversations('年假', 50);
+    let url = captureFetch(mock).url;
+    expect(url).toContain(`q=${encodeURIComponent('年假')}`);
+    expect(url).toContain('limit=50');
+
+    await api.listConversations(undefined, 100);
+    url = captureFetch(mock).url;
+    expect(url).toContain('/v1/conversations?limit=100');
+    expect(url).not.toContain('q=');
+
+    await api.listConversations();
+    url = captureFetch(mock).url;
+    expect(url.endsWith('/v1/conversations')).toBe(true);
+  });
+
   it('POST /conversations：body 为空对象', async () => {
     const mock = vi.fn<typeof fetch>(async () =>
       jsonResponse(200, { id: 'c_1', title: '', pinned: false, group_id: null, last_active_at: '' }),

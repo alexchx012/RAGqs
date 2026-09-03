@@ -159,7 +159,6 @@ export function ScopeSelector({
     if (personalId === null || selection.document_ids.length === 0 || documents.length > 0) return;
     const seq = ++docFetchSeq.current;
     void onFetchDocuments(personalId).then((docs) => applyDocuments(seq, docs));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // m4：文档名过滤即时把 q 传给服务端（客户端同时过滤已加载集；>分页页量的服务端过滤

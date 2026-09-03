@@ -188,3 +188,58 @@ describe('移出分组', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe('A25 加载更多', () => {
+  function renderListWith(overrides: { hasMore?: boolean; loadingMore?: boolean; onLoadMore?: () => void }) {
+    const onOpen = vi.fn();
+    render(
+      <EscStackProvider>
+        <ConversationList
+          items={[conversation('c1', '项目周报')]}
+          groups={[]}
+          listStatus="ready"
+          currentId={null}
+          searchQuery=""
+          onOpen={onOpen}
+          onRename={vi.fn()}
+          onTogglePin={vi.fn()}
+          onMoveToGroup={vi.fn()}
+          onDelete={vi.fn()}
+          onRenameGroup={vi.fn()}
+          onDeleteGroup={vi.fn()}
+          onCreateGroup={vi.fn<(name: string) => Promise<string | null>>().mockResolvedValue(null)}
+          onRetryLoad={vi.fn()}
+          {...overrides}
+        />
+      </EscStackProvider>,
+    );
+    return { onOpen };
+  }
+
+  it('hasMore 时列表底部展示「加载更多」，点击触发 onLoadMore', async () => {
+    const user = userEvent.setup();
+    const onLoadMore = vi.fn();
+    renderListWith({ hasMore: true, loadingMore: false, onLoadMore });
+
+    await user.click(screen.getByRole('button', { name: copy.chat.sidebar.loadMore }));
+
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it('loadingMore 时按钮禁用并切换为加载中文案', () => {
+    renderListWith({ hasMore: true, loadingMore: true, onLoadMore: vi.fn() });
+
+    expect(screen.getByRole('button', { name: copy.chat.sidebar.loadingMore })).toBeDisabled();
+    expect(
+      screen.queryByRole('button', { name: copy.chat.sidebar.loadMore }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hasMore=false 不展示加载更多（不足一页 / 已达上限）', () => {
+    renderListWith({ hasMore: false, loadingMore: false, onLoadMore: vi.fn() });
+
+    expect(
+      screen.queryByRole('button', { name: copy.chat.sidebar.loadMore }),
+    ).not.toBeInTheDocument();
+  });
+});

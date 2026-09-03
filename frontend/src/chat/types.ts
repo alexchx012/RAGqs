@@ -72,7 +72,7 @@ export interface ConversationGroup {
   readonly name: string;
 }
 
-/** GET /conversations：不分页，排序数据一次给全。 */
+/** GET /conversations（A25 分页）：items 按 limit 截取（last_active_at 降序），groups 每次全量返回。 */
 export interface ConversationsListResponse {
   readonly items: readonly ConversationSummary[];
   readonly groups: readonly ConversationGroup[];

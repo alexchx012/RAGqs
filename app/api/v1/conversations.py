@@ -116,9 +116,10 @@ def list_conversations(
     request: Request,
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     q: Annotated[str | None, Query(max_length=256)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict[str, Any]:
     return _conversation_service(request).list_conversations(
-        user_id=str(principal.user_id), query=q
+        user_id=str(principal.user_id), query=q, limit=limit
     )
 
 

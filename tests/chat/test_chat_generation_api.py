@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select, update
 
 from app.chat.models import CalibrationWindowSnapshot, RetrievalHitOutcome, RetrievalOutcome
-from app.chat.schema import chat_ab_pair_table
+from app.chat.schema import chat_ab_pair_table, chat_conversation_table
 
 from .conftest import (
     NOW,
@@ -190,6 +190,48 @@ def test_empty_group_is_deleted_after_last_conversation_moved_out() -> None:
     client.patch(f"/v1/conversations/{c1}", json={"group_id": group_b}, headers=headers)
     client.patch(f"/v1/conversations/{c1}", json={"group_id": None}, headers=headers)
     assert group_b not in group_ids()
+
+
+def test_list_conversations_limit_pagination_and_validation() -> None:
+    """A25：limit 分页——按 last_active_at 降序截取；缺省返回全量；超上限 422 validation_error。"""
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    client = env["client"]
+
+    created = [
+        client.post("/v1/conversations", json={}, headers=headers).json()["id"] for _ in range(3)
+    ]
+
+    # 固定时钟下三者 last_active_at 相同——错开为 未来/现在/过去，使排序断言确定
+    offsets = {
+        created[0]: timedelta(hours=2),
+        created[1]: timedelta(hours=1),
+        created[2]: timedelta(0),
+    }
+    with env["engine"].begin() as connection:
+        for conversation_id, offset in offsets.items():
+            connection.execute(
+                update(chat_conversation_table)
+                .where(chat_conversation_table.c.id == conversation_id)
+                .values(last_active_at_utc=NOW + offset)
+            )
+
+    listed = client.get("/v1/conversations", params={"limit": 2}, headers=headers)
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert [item["id"] for item in items] == [created[0], created[1]]
+
+    # 缺省（默认 50）：三条全部返回
+    default_page = client.get("/v1/conversations", headers=headers)
+    assert default_page.status_code == 200
+    assert {item["id"] for item in default_page.json()["items"]} == set(created)
+
+    # 上限约束：limit=201 / limit=0 → 422 validation_error
+    for invalid_limit in (201, 0):
+        rejected = client.get("/v1/conversations", params={"limit": invalid_limit}, headers=headers)
+        assert rejected.status_code == 422
+        assert rejected.json()["error"]["code"] == "validation_error"
 
 
 def test_message_creation_requires_streaming_accept_and_idempotency_key() -> None:

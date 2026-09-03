@@ -86,7 +86,6 @@ export function SecurityModule() {
     } else {
       setSessionsLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey]);
 
   function onOldPasswordChange(event: ChangeEvent<HTMLInputElement>): void {

@@ -43,7 +43,6 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
   useLayoutEffect(() => {
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIndex]);
 
   function move(delta: number): void {

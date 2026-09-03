@@ -29,6 +29,8 @@ export class NotificationsStore {
   private readonly listeners = new Set<() => void>();
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private running = false;
+  /** 运行代际：start/stop 各递增一次；在飞响应写回前按代际比对（A26）。 */
+  private runGeneration = 0;
   private unreadInflight: Promise<void> | null = null;
 
   constructor(private readonly api: NotificationsApi) {}
@@ -55,6 +57,7 @@ export class NotificationsStore {
       return;
     }
     this.running = true;
+    this.runGeneration += 1;
     void this.refreshUnread();
     this.pollTimer = setInterval(() => {
       void this.refreshUnread();
@@ -63,6 +66,7 @@ export class NotificationsStore {
 
   stop(): void {
     this.running = false;
+    this.runGeneration += 1; // 在飞响应按代际失效（A26）：登出后旧会话计数不得写回
     if (this.pollTimer !== undefined) {
       clearInterval(this.pollTimer);
       this.pollTimer = undefined;
@@ -81,8 +85,14 @@ export class NotificationsStore {
       return this.unreadInflight;
     }
     const inflight = (async () => {
+      const generation = this.runGeneration;
       try {
         const { count } = await this.api.unreadCount();
+        // A26：请求发起后若经历 stop（登出）/ start（重登）代际更替，
+        // 旧会话的在飞响应不写入当前视图（markRead/markAllRead 等面板内刷新不受影响）。
+        if (generation !== this.runGeneration) {
+          return;
+        }
         this.setState({ unreadCount: count });
       } catch {
         // 轮询失败静默：保持上次权威值，下个周期收敛

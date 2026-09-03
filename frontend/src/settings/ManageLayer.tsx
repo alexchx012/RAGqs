@@ -283,7 +283,6 @@ function ManageDocuments({
     deleteIdem.current.clear();
     reindexIdem.current.clear();
     void loadDocuments('', 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId]);
 
   // Paginator 翻页：作废旧操作并释放 confirming
@@ -304,7 +303,6 @@ function ManageDocuments({
       invalidateMutations();
       void loadDocuments(committedQuery, page);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId, committedQuery, page]);
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {

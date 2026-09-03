@@ -96,7 +96,6 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
       return;
     }
     void loadVersions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId]);
 
   // 卸载：作废旧 restore operation（迟到 completion no-op）
@@ -104,7 +103,6 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
     return () => {
       invalidateRestoreOperation();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const confirmRestore = async () => {

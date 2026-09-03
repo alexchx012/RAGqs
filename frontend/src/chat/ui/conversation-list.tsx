@@ -35,6 +35,11 @@ export interface ConversationListProps {
   /** 创建分组；返回新分组 id（失败 null）。m5：新建分组后直接移入当前会话。 */
   readonly onCreateGroup: (name: string) => Promise<string | null>;
   readonly onRetryLoad: () => void;
+  /** A25 分页：仍有更多可加载时展示「加载更多」（父级省略 = 旧全量语义，不展示）。 */
+  readonly hasMore?: boolean;
+  /** A25 分页：「加载更多」请求进行中（按钮禁用）。 */
+  readonly loadingMore?: boolean;
+  readonly onLoadMore?: () => void;
 }
 
 export function ConversationList({
@@ -52,6 +57,9 @@ export function ConversationList({
   onDeleteGroup,
   onCreateGroup,
   onRetryLoad,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
 }: ConversationListProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -69,19 +77,29 @@ export function ConversationList({
           // m11：过滤无结果与无任何会话是两条独立措辞（§3.2）
           <p className="py-10 text-center text-[15px] text-smoke-gray">{copy.chat.sidebar.emptySearch}</p>
         ) : (
-          <SidebarSections
-            items={items}
-            groups={groups}
-            currentId={currentId}
-            onOpen={onOpen}
-            onRename={onRename}
-            onTogglePin={onTogglePin}
-            onMoveToGroup={onMoveToGroup}
-            onDelete={onDelete}
-            onRenameGroup={onRenameGroup}
-            onDeleteGroup={onDeleteGroup}
-            onCreateGroup={onCreateGroup}
-          />
+          <>
+            <SidebarSections
+              items={items}
+              groups={groups}
+              currentId={currentId}
+              onOpen={onOpen}
+              onRename={onRename}
+              onTogglePin={onTogglePin}
+              onMoveToGroup={onMoveToGroup}
+              onDelete={onDelete}
+              onRenameGroup={onRenameGroup}
+              onDeleteGroup={onDeleteGroup}
+              onCreateGroup={onCreateGroup}
+            />
+            {/* A25：按需分页——「加载更多」递增 limit 重取（后端 last_active_at 降序，旧前缀不变） */}
+            {hasMore && (
+              <div className="flex justify-center pt-2">
+                <TextLink onClick={onLoadMore} disabled={loadingMore}>
+                  {loadingMore ? copy.chat.sidebar.loadingMore : copy.chat.sidebar.loadMore}
+                </TextLink>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

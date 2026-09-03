@@ -108,7 +108,7 @@ class ConversationService:
         return dict(row)
 
     def list_conversations(
-        self, *, user_id: str, query: str | None = None
+        self, *, user_id: str, query: str | None = None, limit: int = 50
     ) -> dict[str, list[dict[str, Any]]]:
         with self._engine.begin() as connection:
             statement = select(chat_conversation_table).where(
@@ -123,7 +123,9 @@ class ConversationService:
                 )
             rows = (
                 connection.execute(
-                    statement.order_by(chat_conversation_table.c.last_active_at_utc.desc())
+                    statement.order_by(chat_conversation_table.c.last_active_at_utc.desc()).limit(
+                        limit
+                    )
                 )
                 .mappings()
                 .all()
