@@ -457,6 +457,12 @@ def test_ingestion_quality_aggregates_json_in_the_database() -> None:
         ],
         # job_1 建树 + job_3 建树 → tree；job_5/6/7 basic。
         "tree_rows": [{"label": "basic", "count": 3}, {"label": "tree", "count": 2}],
+        # job_5/6 tree_reason=no_structure → unstructured；
+        # job_1/3 structure_signal + job_7 image → structured。
+        "structure_rows": [
+            {"label": "structured", "count": 3},
+            {"label": "unstructured", "count": 2},
+        ],
         "low_confidence_docs": 1,
         "normal_docs": 4,
     }
@@ -498,6 +504,7 @@ def test_ingestion_quality_compiles_postgresql_json_aggregation() -> None:
     assert facts == {
         "ocr_rows": [],
         "tree_rows": [],
+        "structure_rows": [],
         "low_confidence_docs": 0,
         "normal_docs": 0,
     }
@@ -532,6 +539,22 @@ def test_ops_dashboard_has_fixed_four_packs_and_port_values() -> None:
     todo_cards = {card["key"]: card for card in todo["cards"]}
     assert todo_cards["quota_pending"]["value"] == 1
     assert todo_cards["submission_pending"]["value"] == 1
+    # 入库质量包：置信桶、低置信占比、建树/basic 分流、无结构占比并列可查。
+    quality = next(pack for pack in response["packs"] if pack["key"] == "ingestion_quality")
+    quality_cards = {card["key"]: card["kind"] for card in quality["cards"]}
+    assert quality_cards == {
+        "ocr_confidence_dist": "distribution",
+        "low_confidence_doc_ratio": "distribution",
+        "graph_basic_split": "distribution",
+        "unstructured_doc_ratio": "distribution",
+    }
+    unstructured = next(
+        card for card in quality["cards"] if card["key"] == "unstructured_doc_ratio"
+    )
+    # _seed_basics 只有 job_1（structure_signal）在窗口内成功：有结构 1、无结构 0。
+    assert unstructured["rows"] == [
+        {"label": "有结构文档", "value": 1, "ratio": 1.0, "tone": "normal"}
+    ]
     assert [call.caller for call in port.calls] == ["retention-ops"]
     assert [call.audience for call in port.calls] == ["ops"]
 

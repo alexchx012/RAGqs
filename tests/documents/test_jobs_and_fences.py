@@ -75,6 +75,7 @@ class _RejectingQuota:
 class _IngestionNotifications:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.terminal_calls: list[dict[str, object]] = []
 
     def publish_ingestion_events(
         self,
@@ -102,6 +103,35 @@ class _IngestionNotifications:
             }
         )
         return ("evt_ingestion_completed",)
+
+    def publish_ingestion_terminal_event(
+        self,
+        *,
+        event_type: str,
+        job_id: str,
+        document_id: str,
+        document_version_id: str,
+        publication_id: str | None,
+        transition_version: int,
+        recipient_user_id: str,
+        occurred_at: object,
+        reason: str | None,
+        connection: object,
+    ) -> tuple[str, ...]:
+        del occurred_at, connection
+        self.terminal_calls.append(
+            {
+                "event_type": event_type,
+                "job_id": job_id,
+                "document_id": document_id,
+                "document_version_id": document_version_id,
+                "publication_id": publication_id,
+                "transition_version": transition_version,
+                "recipient_user_id": recipient_user_id,
+                "reason": reason,
+            }
+        )
+        return (f"evt_{event_type}",)
 
 
 def _receipt_contract_fields() -> dict[str, object]:
@@ -1016,6 +1046,97 @@ def test_successful_publication_records_creator_notification_event_ids(service, 
     ]
     jobs = service.list_jobs(principal=principal)
     assert jobs["items"][0]["notification_event_ids"] == ["evt_ingestion_completed"]
+
+
+def test_failed_job_notifies_creator_and_records_event_ids(service, principal) -> None:
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-failure-notification-1",
+    )
+    item = created["items"][0]
+    notifications = _IngestionNotifications()
+    service._ingestion_notification_port = notifications
+    lease = service.claim_job(worker_id="worker_1", job_id=item["job_id"])
+
+    failed = service.fail_job(
+        job_id=item["job_id"],
+        reason="account_deleted",
+        retryable=False,
+        attempt_id=lease.attempt_id,
+        fencing_token=lease.fencing_token,
+    )
+    assert failed["state"] == "failed"
+    assert notifications.terminal_calls == [
+        {
+            "event_type": "ingestion_failed",
+            "job_id": item["job_id"],
+            "document_id": item["document_id"],
+            "document_version_id": item["document_version_id"],
+            "publication_id": lease.publication_id,
+            "transition_version": 1,
+            "recipient_user_id": principal.user_id,
+            "reason": "account_deleted",
+        }
+    ]
+    with service._engine.connect() as connection:
+        stored = connection.execute(
+            ingestion_jobs_table.select()
+            .with_only_columns(ingestion_jobs_table.c.notification_event_ids_json)
+            .where(ingestion_jobs_table.c.id == item["job_id"])
+        ).scalar_one()
+    assert stored == ["evt_ingestion_failed"]
+
+
+def test_retryable_failure_waits_for_a_terminal_state_before_notifying(service, principal) -> None:
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-retry-notification-1",
+    )
+    item = created["items"][0]
+    notifications = _IngestionNotifications()
+    service._ingestion_notification_port = notifications
+    lease = service.claim_job(worker_id="worker_1", job_id=item["job_id"])
+
+    retry_wait = service.fail_job(
+        job_id=item["job_id"],
+        reason="temporary",
+        retryable=True,
+        attempt_id=lease.attempt_id,
+        fencing_token=lease.fencing_token,
+    )
+    assert retry_wait["state"] == "retry_wait"
+    # retry_wait 仍会自动重试，不算终态：不补发铃铛。
+    assert notifications.terminal_calls == []
+
+
+def test_cancelled_job_notifies_creator(service, principal) -> None:
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-cancel-notification-1",
+    )
+    item = created["items"][0]
+    service.claim_job(worker_id="worker_1", job_id=item["job_id"])
+    notifications = _IngestionNotifications()
+    service._ingestion_notification_port = notifications
+
+    cancelled = service.cancel_job(principal=principal, job_id=item["job_id"])
+    assert cancelled["state"] == "cancelled"
+    assert [call["event_type"] for call in notifications.terminal_calls] == ["ingestion_cancelled"]
+    assert notifications.terminal_calls[0]["recipient_user_id"] == principal.user_id
+    assert notifications.terminal_calls[0]["reason"] is None
+    with service._engine.connect() as connection:
+        stored = connection.execute(
+            ingestion_jobs_table.select()
+            .with_only_columns(ingestion_jobs_table.c.notification_event_ids_json)
+            .where(ingestion_jobs_table.c.id == item["job_id"])
+        ).scalar_one()
+    assert stored == ["evt_ingestion_cancelled"]
 
 
 def test_same_content_replace_deduplicates_before_quota_admission(service, principal) -> None:

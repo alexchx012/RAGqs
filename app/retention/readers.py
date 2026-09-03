@@ -316,6 +316,14 @@ class DashboardReadModels:
             },
         ]
         tree_rows = [{"label": row["label"], "value": row["count"]} for row in quality["tree_rows"]]
+        structure_rows = [
+            (
+                {"label": "无结构文档", "value": row["count"], "tone": "warning"}
+                if row["label"] == "unstructured"
+                else {"label": "有结构文档", "value": row["count"]}
+            )
+            for row in quality["structure_rows"]
+        ]
         return [
             {
                 "key": "tasks_health",
@@ -389,6 +397,7 @@ class DashboardReadModels:
                         "low_confidence_doc_ratio", "低置信文档占比", low_confidence_rows
                     ),
                     _distribution("graph_basic_split", "建树/basic 分流比例", tree_rows),
+                    _distribution("unstructured_doc_ratio", "无结构文档占比", structure_rows),
                 ],
             },
             {

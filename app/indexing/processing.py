@@ -726,6 +726,8 @@ class ContentProcessor:
         contextual_max_attempts: int = CONTEXTUAL_PROVIDER_ATTEMPTS,
         contextual_prefix_token_limit: int = CONTEXTUAL_PREFIX_TOKEN_LIMIT,
         contextual_token_counter: Callable[[str], int] | None = None,
+        model_version: str = "none",
+        prompt_version: str = "none",
     ) -> None:
         self._compressor = compressor or IdentityCompression()
         self._mineru = mineru
@@ -741,6 +743,21 @@ class ContentProcessor:
         self._contextual_max_attempts = contextual_max_attempts
         self._contextual_prefix_token_limit = contextual_prefix_token_limit
         self._contextual_token_counter = contextual_token_counter
+        self._model_version = model_version
+        self._prompt_version = prompt_version
+
+    def processing_identity(self) -> dict[str, str]:
+        """Effective model/prompt identity for replay snapshot freezing (§2.3).
+
+        The manual replay transaction freezes these values into the job's
+        processing config snapshot, so every attempt of the same replay
+        generation stamps the identical model/prompt identity into its
+        receipt instead of re-resolving whatever is live at execution time.
+        """
+        identity = {"model_version": self._model_version, "prompt_version": self._prompt_version}
+        if self._contextual_provider is not None:
+            identity["cr_model"] = str(self._contextual_provider.model)
+        return identity
 
     def process(
         self,
@@ -751,8 +768,8 @@ class ContentProcessor:
         content_manifest_id: str,
         content_manifest_hash: str,
         processing_config_version: str | None = None,
-        model_version: str = "none",
-        prompt_version: str = "none",
+        model_version: str | None = None,
+        prompt_version: str | None = None,
         page_count: int = 0,
         has_text_layer: bool | None = None,
         image_context: Mapping[str, Any] | None = None,
@@ -760,6 +777,8 @@ class ContentProcessor:
         decorative_image: bool = False,
     ) -> ProcessingOutput:
         raw = content if isinstance(content, bytes) else content.encode("utf-8")
+        model_version = self._model_version if model_version is None else model_version
+        prompt_version = self._prompt_version if prompt_version is None else prompt_version
         kind = media_kind.strip().casefold()
         document_profile = document_profile_for_media_kind(media_kind)
         profile = processing_config_version or document_profile.config_version
@@ -1251,6 +1270,18 @@ class ContentProcessor:
         if self._contextual_provider is not None:
             configured_models["cr"] = self._contextual_provider.model
             configured_prompts["cr_prefix"] = CONTEXTUAL_PROMPT_SCHEMA_VERSION
+        # §2.3：重放序列的快照固化了主模型/prompt 版本，执行端优先用冻结值，
+        # 保证同代 attempt 的回执身份一致（初始序列快照无该键，走注入值）。
+        model_version = (
+            str(request.processing_config_snapshot["model_version"])
+            if request.processing_config_snapshot.get("model_version") is not None
+            else model_version
+        )
+        prompt_version = (
+            str(request.processing_config_snapshot["prompt_version"])
+            if request.processing_config_snapshot.get("prompt_version") is not None
+            else prompt_version
+        )
         receipt = IndexProcessingReceipt(
             job_id=request.job_id,
             attempt_id=request.attempt_id,

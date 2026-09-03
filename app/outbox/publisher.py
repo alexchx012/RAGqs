@@ -32,6 +32,7 @@ from .ports import (
     NOTIFICATION_EVENT_TYPES,
     OUTBOX_ONLY_EVENT_TYPES,
     V1_CONSUMER,
+    EventType,
     OutboxPublishCommand,
     OutboxPublishReceipt,
     RecipientSelection,
@@ -50,6 +51,8 @@ SUPPORTED_EVENT_SCHEMA_VERSION = 1
 # event_type -> (allowed caller principals, required aggregate_type)
 PRODUCER_MATRIX: dict[str, tuple[frozenset[str], str]] = {
     "ingestion_completed": (frozenset({"ingestion"}), "ingestion_job"),
+    "ingestion_failed": (frozenset({"ingestion"}), "ingestion_job"),
+    "ingestion_cancelled": (frozenset({"ingestion"}), "ingestion_job"),
     "ocr_low_confidence": (frozenset({"ingestion"}), "ingestion_job"),
     "submission_approved": (frozenset({"submissions"}), "knowledge_submission"),
     "submission_rejected": (frozenset({"submissions"}), "knowledge_submission"),
@@ -76,6 +79,21 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
         "document_id": str,
         "document_version_id": str,
         "publication_id": str,
+    },
+    # 终态事件的 publication 已被丢弃/可能缺席，因此允许为 null；失败事件
+    # 携带机器可读的 failure reason（与 attempt.failure_reason 同源）。
+    "ingestion_failed": {
+        "job_id": str,
+        "document_id": str,
+        "document_version_id": str,
+        "publication_id": (str, None),
+        "reason": str,
+    },
+    "ingestion_cancelled": {
+        "job_id": str,
+        "document_id": str,
+        "document_version_id": str,
+        "publication_id": (str, None),
     },
     "ocr_low_confidence": {
         "job_id": str,
@@ -1182,9 +1200,7 @@ class SqlAlchemyIngestionOutboxAdapter:
             "document_version_id": document_version_id,
             "publication_id": publication_id,
         }
-        events: list[
-            tuple[Literal["ingestion_completed", "ocr_low_confidence"], dict[str, object]]
-        ] = [("ingestion_completed", base_payload)]
+        events: list[tuple[EventType, dict[str, object]]] = [("ingestion_completed", base_payload)]
         if ocr_low_confidence:
             if not isinstance(ocr_low_confidence_fact, Mapping):
                 raise PlatformError(
@@ -1204,6 +1220,63 @@ class SqlAlchemyIngestionOutboxAdapter:
                     },
                 )
             )
+        return self._publish_ingestion_commands(
+            events,
+            job_id=job_id,
+            transition_version=transition_version,
+            recipient_user_id=recipient_user_id,
+            occurred_at=occurred_at,
+            connection=connection,
+        )
+
+    def publish_ingestion_terminal_event(
+        self,
+        *,
+        event_type: Literal["ingestion_failed", "ingestion_cancelled"],
+        job_id: str,
+        document_id: str,
+        document_version_id: str,
+        publication_id: str | None,
+        transition_version: int,
+        recipient_user_id: str,
+        occurred_at: datetime,
+        reason: str | None,
+        connection: Connection,
+    ) -> tuple[str, ...]:
+        """Notify the job creator about a failed/cancelled terminal transition.
+
+        Mirrors the success path: same recipient rule (job creator), same
+        event-id scheme and the same tolerance for inactive recipient
+        accounts, so a notification problem never fails the terminal
+        transition itself.
+        """
+        payload: dict[str, object] = {
+            "job_id": job_id,
+            "document_id": document_id,
+            "document_version_id": document_version_id,
+            "publication_id": publication_id,
+        }
+        if event_type == "ingestion_failed":
+            payload["reason"] = str(reason or "processing_failed")
+        return self._publish_ingestion_commands(
+            [(event_type, payload)],
+            job_id=job_id,
+            transition_version=transition_version,
+            recipient_user_id=recipient_user_id,
+            occurred_at=occurred_at,
+            connection=connection,
+        )
+
+    def _publish_ingestion_commands(
+        self,
+        events: list[tuple[EventType, dict[str, object]]],
+        *,
+        job_id: str,
+        transition_version: int,
+        recipient_user_id: str,
+        occurred_at: datetime,
+        connection: Connection,
+    ) -> tuple[str, ...]:
         context = current_context()
         event_ids: list[str] = []
         for event_type, payload in events:

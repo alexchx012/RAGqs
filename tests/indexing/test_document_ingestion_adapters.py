@@ -232,6 +232,50 @@ def test_a3_structure_classification_fixtures_are_mutually_exclusive() -> None:
     assert all(chunk.locator == {} for chunk in basic.chunks)
 
 
+def test_processing_identity_exposes_configured_model_and_prompt_identity() -> None:
+    class _ContextualModel:
+        model = "ds-v4-flash"
+
+    configured = ContentProcessor(
+        contextual_provider=_ContextualModel(),  # type: ignore[arg-type]
+        model_version="doc-model-v2",
+        prompt_version="doc-prompt-v2",
+    )
+    assert configured.processing_identity() == {
+        "model_version": "doc-model-v2",
+        "prompt_version": "doc-prompt-v2",
+        "cr_model": "ds-v4-flash",
+    }
+    assert ContentProcessor().processing_identity() == {
+        "model_version": "none",
+        "prompt_version": "none",
+    }
+
+
+def test_execution_prefers_the_frozen_model_and_prompt_identity() -> None:
+    processor = ContentProcessor()
+    request = _request(
+        processing_config_snapshot={
+            "model_version": "frozen-model-v9",
+            "prompt_version": "frozen-prompt-v9",
+        }
+    )
+    output = processor.process(
+        request,
+        "plain body without structure signal",
+        media_kind="text/plain",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+    # 重放执行端优先使用 staging request 快照固化的模型/prompt 身份。
+    assert output.receipt.model_version == "frozen-model-v9"
+    assert output.receipt.prompt_version == "frozen-prompt-v9"
+    assert output.receipt.model_versions["primary"] == "frozen-model-v9"
+    assert output.receipt.prompt_versions["primary"] == "frozen-prompt-v9"
+    # 快照原样回显，receipt 与 staging request 一致（validate_against 通过）。
+    assert output.receipt.processing_config_snapshot == request.processing_config_snapshot
+
+
 def test_a3_pipeline_failure_degrades_to_raw_chunks_without_fake_empty_text() -> None:
     def failing_runner(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         raise subprocess.CalledProcessError(1, ["mineru"])

@@ -127,6 +127,10 @@ class IndexingService:
             if object_store is not None:
                 repository.set_generation_builder(self._build_generation_publication)
 
+    def processing_identity(self) -> dict[str, str]:
+        """Current processing model/prompt identity (replay snapshot freezing)."""
+        return self.processor.processing_identity()
+
     def _cleanup_generation_publication(
         self, generation_id: str, document_id: str, document_version_id: str | None
     ) -> None:

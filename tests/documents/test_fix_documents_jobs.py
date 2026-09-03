@@ -897,6 +897,102 @@ def test_replay_freezes_processing_config_snapshot_shared_by_generation(service,
         assert replay_request["processing_profile_version"] == "document-profile:text:v1"
 
 
+class _IdentityHandoff(NoopIndexingHandoff):
+    """Handoff exposing the indexing side's model/prompt identity (§2.3)."""
+
+    def __init__(self) -> None:
+        self.generation = _MutableGeneration()
+        self.identity = {
+            "model_version": "frozen-model-v2",
+            "prompt_version": "frozen-prompt-v2",
+            "cr_model": "ds-v4-flash",
+        }
+
+    def processing_identity(self) -> dict[str, str]:
+        return dict(self.identity)
+
+
+def test_replay_freezes_model_and_prompt_identity_across_generation_attempts(
+    service, principal
+) -> None:
+    service._identity_access = None
+    clock = {"now": datetime(2026, 1, 1, tzinfo=UTC)}
+    service._now = lambda: clock["now"]
+    handoff = _IdentityHandoff()
+    service._indexing_handoff_port = handoff
+    generation = {"n": 0}
+
+    def bump_generation() -> None:
+        generation["n"] += 1
+        handoff.generation.active_generation_id = f"gen-replay-identity-{generation['n']}"
+
+    item = _direct_job(
+        service,
+        principal,
+        space_id="space_1",
+        name="replay-identity.txt",
+        key="upload-replay-identity-1",
+    )
+
+    # 初始序列：无重放快照，处理端按注入身份执行。
+    bump_generation()
+    first_lease = service.claim_job(worker_id="worker-replay-identity", job_id=item["job_id"])
+    service.fail_job(
+        job_id=item["job_id"],
+        reason="deterministic failure",
+        attempt_id=first_lease.attempt_id,
+        fencing_token=first_lease.fencing_token,
+    )
+
+    bump_generation()
+    replayed = service.replay_job(
+        principal=_principal("ops", user_id="ops_1"),
+        job_id=item["job_id"],
+        idempotency_key="replay-identity-1",
+    )
+    assert replayed["replay_generation"] == 1
+    with service._engine.connect() as connection:
+        stored = connection.execute(
+            select(ingestion_jobs_table.c.replay_config_snapshot_json).where(
+                ingestion_jobs_table.c.id == item["job_id"]
+            )
+        ).scalar_one()
+    # 重放事务把模型 ID/版本与 prompt 版本随处理画像一并冻结。
+    assert stored["model_version"] == "frozen-model-v2"
+    assert stored["prompt_version"] == "frozen-prompt-v2"
+    assert stored["cr_model"] == "ds-v4-flash"
+    assert stored["config_version"] == "document-profile:text:v1"
+
+    # 同代两次 claim（重试路径）的 staging request 携带完全一致的冻结身份。
+    bump_generation()
+    second_lease = service.claim_job(worker_id="worker-replay-identity", job_id=item["job_id"])
+    service.fail_job(
+        job_id=item["job_id"],
+        reason="transient failure",
+        retryable=True,
+        attempt_id=second_lease.attempt_id,
+        fencing_token=second_lease.fencing_token,
+    )
+    clock["now"] += timedelta(minutes=45)
+    bump_generation()
+    third_lease = service.claim_job(worker_id="worker-replay-identity", job_id=item["job_id"])
+
+    with service._engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                ingestion_attempts_table.c.id, ingestion_attempts_table.c.staging_request_json
+            ).where(
+                ingestion_attempts_table.c.id.in_([second_lease.attempt_id, third_lease.attempt_id])
+            )
+        ).all()
+    snapshots = [request["processing_config_snapshot"] for _, request in rows]
+    assert snapshots[0] == snapshots[1]
+    for snapshot in snapshots:
+        assert snapshot["model_version"] == "frozen-model-v2"
+        assert snapshot["prompt_version"] == "frozen-prompt-v2"
+        assert snapshot["cr_model"] == "ds-v4-flash"
+
+
 class _LifecycleIdentity:
     def __init__(self, statuses: dict[str, str]) -> None:
         self._statuses = statuses

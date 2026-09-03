@@ -15,6 +15,8 @@ from sqlalchemy.engine import Connection
 RecipientKind = Literal["identity", "role_snapshot"]
 EventType = Literal[
     "ingestion_completed",
+    "ingestion_failed",
+    "ingestion_cancelled",
     "ocr_low_confidence",
     "submission_approved",
     "submission_rejected",
@@ -32,6 +34,8 @@ V1_CONSUMER = "in_app_notification"
 NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "ingestion_completed",
+        "ingestion_failed",
+        "ingestion_cancelled",
         "ocr_low_confidence",
         "submission_approved",
         "submission_rejected",

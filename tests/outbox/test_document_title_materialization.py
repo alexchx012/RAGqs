@@ -52,6 +52,27 @@ _PRODUCTION_EVENTS: dict[str, dict[str, object]] = {
             "machine_low_confidence_fact": {"confidence": 0.42, "page": 1, "region": [0, 0, 6, 6]},
         },
     },
+    "ingestion_failed": {
+        "caller_principal": "ingestion",
+        "aggregate_type": "ingestion_job",
+        "payload": {
+            "job_id": "job_evt_1",
+            "document_id": "doc_evt_1",
+            "document_version_id": "docv_evt_1",
+            "publication_id": None,
+            "reason": "account_deleted",
+        },
+    },
+    "ingestion_cancelled": {
+        "caller_principal": "ingestion",
+        "aggregate_type": "ingestion_job",
+        "payload": {
+            "job_id": "job_evt_1",
+            "document_id": "doc_evt_1",
+            "document_version_id": "docv_evt_1",
+            "publication_id": None,
+        },
+    },
     "quota_approved": {
         "caller_principal": "quota",
         "aggregate_type": "quota_request",
@@ -212,6 +233,25 @@ def test_ocr_low_confidence_title_substitutes_document_name() -> None:
     title, redacted = materialized(engine, event_id="evt_ocr_low_confidence")
     assert title == 'Low-confidence OCR result for document "Scanned contract.pdf"'
     assert redacted is False
+
+
+def test_ingestion_terminal_titles_substitute_document_name() -> None:
+    # failed/cancelled 终态事件与成功路径共用文档名替换标题惯例。
+    cases = (
+        ("ingestion_failed", "重放失败.pdf", 'Document "重放失败.pdf" ingestion failed'),
+        ("ingestion_cancelled", "手动取消.pdf", 'Document "手动取消.pdf" ingestion cancelled'),
+    )
+    for event_type, name, expected in cases:
+        engine = build_engine()
+        identity = build_identity_service(engine)
+        alice = provision_user(identity, username="alice")
+        insert_document(engine, document_id="doc_evt_1", name=name, lifecycle_status="active")
+        publish(engine, user_id=alice, event_type=event_type)
+        deliver(engine)
+
+        title, redacted = materialized(engine, event_id=f"evt_{event_type}")
+        assert title == expected
+        assert redacted is False
 
 
 def test_deleted_document_with_tombstone_keeps_redacted_title() -> None:

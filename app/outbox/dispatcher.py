@@ -60,6 +60,8 @@ _PENDING_STATUSES = ("pending", "retry_wait")
 # facts; readable fields are read from the domain at materialization time).
 _DOCUMENT_TITLE_TEMPLATES = {
     "ingestion_completed": 'Document "{name}" ingestion completed',
+    "ingestion_failed": 'Document "{name}" ingestion failed',
+    "ingestion_cancelled": 'Document "{name}" ingestion cancelled',
     "ocr_low_confidence": 'Low-confidence OCR result for document "{name}"',
 }
 
@@ -1154,6 +1156,8 @@ def _permanent_error_code(exc: BaseException) -> str:
 def _default_title(event_type: str) -> str:
     titles = {
         "ingestion_completed": "Document ingestion completed",
+        "ingestion_failed": "Document ingestion failed",
+        "ingestion_cancelled": "Document ingestion cancelled",
         "ocr_low_confidence": "Low-confidence OCR result",
         "submission_approved": "Submission approved",
         "submission_rejected": "Submission rejected",
@@ -1168,14 +1172,24 @@ def _default_title(event_type: str) -> str:
 
 
 def _document_id_for(event_type: str, payload: dict[str, object]) -> str | None:
-    if event_type in {"ingestion_completed", "ocr_low_confidence"}:
+    if event_type in {
+        "ingestion_completed",
+        "ingestion_failed",
+        "ingestion_cancelled",
+        "ocr_low_confidence",
+    }:
         value = payload.get("document_id")
         return str(value) if value else None
     return None
 
 
 def _document_version_id_for(event_type: str, payload: dict[str, object]) -> str | None:
-    if event_type in {"ingestion_completed", "ocr_low_confidence"}:
+    if event_type in {
+        "ingestion_completed",
+        "ingestion_failed",
+        "ingestion_cancelled",
+        "ocr_low_confidence",
+    }:
         value = payload.get("document_version_id")
         return str(value) if value else None
     return None
