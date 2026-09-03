@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.pool import StaticPool
 
+from app.documents.indexing import NoopIndexingHandoff
 from app.documents.schema import (
     documents_metadata,
     documents_table,
@@ -18,6 +19,8 @@ from app.identity.service import AuthPrincipal
 from app.platform.database import core_metadata, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore
+
+from .test_commands import _accept
 
 
 class _Identity:
@@ -39,6 +42,7 @@ def _make_service() -> DocumentsService:
         now=lambda: datetime(2026, 8, 22, tzinfo=UTC),
         object_store=MemoryObjectStore(),
         identity_access=_Identity(),
+        indexing_handoff_port=NoopIndexingHandoff(),
     )
 
 
@@ -205,6 +209,98 @@ def test_member_department_listing_is_not_audited(service, principal) -> None:
         ).scalar_one()
 
     assert count == 0
+
+
+def _accepted_upload(service, principal, *, space_id: str, key: str):
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id=space_id,
+        files=[
+            DocumentUpload(filename="note.txt", content=b"preview body", media_kind="text/plain")
+        ],
+        idempotency_key=key,
+    )
+    item = created["items"][0]
+    _accept(service, principal, item)
+    return item
+
+
+def _view_audit_rows(service, resource_type: str):
+    with service._engine.connect() as connection:
+        return connection.execute(
+            select(
+                platform_audit_table.c.actor_id,
+                platform_audit_table.c.resource_id,
+            ).where(platform_audit_table.c.resource_type == resource_type)
+        ).all()
+
+
+def test_management_preview_of_foreign_personal_document_is_audited(service, principal) -> None:
+    item = _accepted_upload(service, principal, space_id="personal:user_2", key="view-audit-1")
+
+    service.preview(principal=principal, document_id=item["document_id"])
+
+    assert _view_audit_rows(service, "documents.personal_document_view") == [
+        ("user_1", item["document_id"])
+    ]
+
+
+def test_management_content_of_foreign_personal_document_is_audited(service, principal) -> None:
+    item = _accepted_upload(service, principal, space_id="personal:user_2", key="view-audit-2")
+
+    service.content(principal=principal, document_id=item["document_id"])
+
+    assert _view_audit_rows(service, "documents.personal_document_view") == [
+        ("user_1", item["document_id"])
+    ]
+
+
+def test_own_personal_document_preview_is_not_audited(service, principal) -> None:
+    item = _accepted_upload(service, principal, space_id="personal:user_1", key="view-audit-3")
+
+    preview = service.preview(principal=principal, document_id=item["document_id"])
+    assert preview["document_id"] == item["document_id"]
+
+    with service._engine.connect() as connection:
+        count = connection.execute(
+            select(func.count()).select_from(platform_audit_table)
+        ).scalar_one()
+    assert count == 0
+
+
+def test_ops_department_document_content_is_audited(service, principal) -> None:
+    ops = AuthPrincipal(
+        user_id="user_1",
+        auth_session_id="session_1",
+        username="alice",
+        role="ops",
+        department_id="dept_9",
+    )
+    item = _accepted_upload(service, ops, space_id="department:dept_1", key="view-audit-4")
+
+    service.content(principal=ops, document_id=item["document_id"])
+    service.preview(principal=ops, document_id=item["document_id"])
+
+    assert _view_audit_rows(service, "documents.department_document_view") == [
+        ("user_1", item["document_id"]),
+        ("user_1", item["document_id"]),
+    ]
+
+
+def test_member_department_document_view_is_not_audited(service, principal) -> None:
+    member = AuthPrincipal(
+        user_id="user_2",
+        auth_session_id="session_2",
+        username="bob",
+        role="user",
+        department_id="dept_1",
+    )
+    item = _accepted_upload(service, principal, space_id="department:dept_1", key="view-audit-5")
+
+    service.preview(principal=member, document_id=item["document_id"])
+
+    assert _view_audit_rows(service, "documents.department_document_view") == []
+    assert _view_audit_rows(service, "documents.personal_document_view") == []
 
 
 def test_audit_failure_does_not_block_drilldown_listing(service, principal, monkeypatch) -> None:

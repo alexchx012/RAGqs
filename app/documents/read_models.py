@@ -131,6 +131,11 @@ class DocumentReadModels:
                 "hits": [hit.to_mapping() for hit in hits],
             }
             result.update(metadata.to_mapping())
+            self._audit_management_view(
+                principal=principal,
+                space_id=str(document["space_id"]),
+                document_id=str(document["id"]),
+            )
             return result
         finally:
             self._release_read_lease(lease)
@@ -143,7 +148,7 @@ class DocumentReadModels:
         document_version_id: str | None = None,
         sheet: str | None = None,
     ) -> PreviewContent:
-        _, version, publication, lease = self._visible_version(
+        document, version, publication, lease = self._visible_version(
             principal=principal,
             document_id=document_id,
             document_version_id=document_version_id,
@@ -157,6 +162,11 @@ class DocumentReadModels:
                 raise PlatformError(
                     "document_content_unavailable", "Document content is unavailable", {}, 410
                 ) from exc
+            self._audit_management_view(
+                principal=principal,
+                space_id=str(document["space_id"]),
+                document_id=str(document["id"]),
+            )
             renderer = self._service._preview_renderer
             if renderer is None:
                 return PreviewContent(body=content, media_type=object_metadata.content_type)
@@ -242,6 +252,29 @@ class DocumentReadModels:
         if counts["succeeded"] or counts["deduplicated"]:
             return "partial"
         return "failed"
+
+    def _audit_management_view(self, *, principal: Any, space_id: str, document_id: str) -> None:
+        """§14「查看他人记审计」延伸到 preview/content 接口级，与 §12.6 目录
+        下钻列表审计（documents.*_library_view）同口径并列可查。"""
+
+        audit_resource_type = None
+        if space_id.startswith("personal:") and space_id != f"personal:{principal.user_id}":
+            # Directory-privileged view of another user's personal document.
+            audit_resource_type = "documents.personal_document_view"
+        elif space_id.startswith("department:") and str(getattr(principal, "role", "")) in {
+            "ops",
+            "admin",
+        }:
+            # Management view into a department library document.
+            audit_resource_type = "documents.department_document_view"
+        if audit_resource_type is None:
+            return
+        self._service._audit_best_effort(
+            actor_id=str(principal.user_id),
+            resource_type=audit_resource_type,
+            resource_id=document_id,
+            result="succeeded",
+        )
 
     def _release_read_lease(self, lease: Any) -> None:
         """Hand the preview/content read lease back when the request finishes.

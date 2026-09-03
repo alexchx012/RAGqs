@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
+from app.platform.context import current_context
+from app.platform.database import SqlAlchemyDatabaseClock, platform_audit_table
 from app.platform.errors import PlatformError
 
 from . import facts
@@ -17,6 +20,8 @@ from .reconcile import (
     ReconciliationService,
 )
 from .repository import SqlAlchemyRetentionRepository
+
+logger = logging.getLogger(__name__)
 
 
 class RetentionOpsService:
@@ -40,15 +45,42 @@ class RetentionOpsService:
         self._gc = gc_coordinator
         self._compaction = compaction
         self._engine = engine
+        self._clock = SqlAlchemyDatabaseClock(engine)
         self._documents_cleanup = documents_cleanup_port
         self._identity_history_cleanup = identity_history_cleanup_port
 
     # ---- HTTP read models ----
 
-    def dashboard(self, *, role: str, window: str, expand: str | None = None) -> dict[str, Any]:
+    def dashboard(
+        self, *, principal: Any, window: str, expand: str | None = None
+    ) -> dict[str, Any]:
+        role = str(getattr(principal, "role", ""))
         if expand is None:
-            return self._dashboard.dashboard(role=role, window=window)
-        return self._dashboard.dashboard(role=role, window=window, expand=expand)
+            result = self._dashboard.dashboard(role=role, window=window)
+        else:
+            result = self._dashboard.dashboard(role=role, window=window, expand=expand)
+        if role in {"ops", "admin"}:
+            # 配额消耗类查看与库查看审计同口径：尽力落库，绝不阻断读取。
+            self._audit_quota_consumption_view(principal=principal, window=window)
+        return result
+
+    def _audit_quota_consumption_view(self, *, principal: Any, window: str) -> None:
+        try:
+            with self._engine.begin() as connection:
+                context = current_context()
+                connection.execute(
+                    platform_audit_table.insert().values(
+                        actor_id=str(principal.user_id),
+                        resource_type="retention.quota_consumption_view",
+                        resource_id=window,
+                        request_id=context.request_id if context is not None else "req_retention",
+                        occurred_at_utc=self._clock.now_utc(connection),
+                        result="succeeded",
+                        details_json={},
+                    )
+                )
+        except Exception:  # noqa: BLE001 - 观测读的审计尽力而为
+            logger.warning("quota consumption view audit write failed for window %s", window)
 
     def operations(self, *, window: str) -> dict[str, Any]:
         return self._dashboard.operations(window=window)

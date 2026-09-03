@@ -983,7 +983,86 @@ def test_managed_user_department_move_writes_a_dedicated_audit_code() -> None:
                 )
             ).all()
         ]
-    assert results == ["user_department_changed", "user_updated"]
+    assert results == [
+        "user_department_tasks_invalidated",
+        "user_department_changed",
+        "user_department_tasks_invalidated",
+        "user_updated",
+    ]
+
+
+def test_authorization_change_writes_dedicated_task_invalidation_audit() -> None:
+    """设计 §9.3：授权变化使旧部门任务失去执行授权，落专项审计事实。"""
+
+    service = make_service()
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin = service.authenticate_access_token(
+        service.login(username="admin", password="Password1").access_token
+    )
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+    department = service.create_department(
+        actor=admin,
+        name="Finance",
+        idempotency_key="department-create-tasks-audit-1",
+    )
+
+    service.update_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=1,
+        role=None,
+        department_id=department["id"],
+        department_provided=True,
+        idempotency_key="user-update-tasks-audit-1",
+    )
+
+    with service._engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                platform_audit_table.c.actor_id,
+                platform_audit_table.c.resource_type,
+                platform_audit_table.c.resource_id,
+                platform_audit_table.c.result,
+            ).where(platform_audit_table.c.result == "user_department_tasks_invalidated")
+        ).all()
+    assert rows == [(admin.user_id, "user", user["id"], "user_department_tasks_invalidated")]
+
+    # 授权未变化的更新不写该专项事实。
+    service.update_managed_user(
+        actor=admin,
+        user_id=user["id"],
+        expected_version=2,
+        role=None,
+        department_id=None,
+        department_provided=False,
+        idempotency_key="user-update-tasks-audit-2",
+    )
+
+    with service._engine.connect() as connection:
+        results = connection.execute(
+            select(platform_audit_table.c.result).where(
+                platform_audit_table.c.resource_id == user["id"],
+            )
+        ).scalars()
+    assert list(results) == [
+        "user_department_tasks_invalidated",
+        "user_department_changed",
+        "user_updated",
+    ]
 
 
 def test_department_write_conflicts_report_the_current_server_version() -> None:

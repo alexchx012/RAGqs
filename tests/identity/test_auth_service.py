@@ -1247,6 +1247,127 @@ def test_login_throttles_after_repeated_invalid_credentials() -> None:
     assert exc_info.value.details["retry_after_seconds"] > 0
 
 
+def test_login_success_writes_a_login_audit_fact() -> None:
+    service = make_service()
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+
+    result = service.login(username="alice", password="Password1")
+
+    with service._engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                platform_audit_table.c.actor_id,
+                platform_audit_table.c.resource_id,
+                platform_audit_table.c.result,
+            ).where(platform_audit_table.c.resource_type == "auth_session")
+        ).all()
+
+    assert rows == [(user["id"], result.session_id, "login_succeeded")]
+
+
+def test_login_lock_trigger_writes_a_throttle_audit_fact() -> None:
+    service = make_service()
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+
+    for _ in range(4):
+        with pytest.raises(PlatformError) as exc_info:
+            service.login(username="alice", password="WrongPassword1")
+        assert exc_info.value.code == "invalid_credentials"
+    with service._engine.connect() as connection:
+        unlocked_rows = connection.execute(
+            select(platform_audit_table.c.result).where(
+                platform_audit_table.c.resource_type == "identity_login_throttle"
+            )
+        ).all()
+    # 未触发锁定的普通失败只计数，不写审计。
+    assert unlocked_rows == []
+
+    with pytest.raises(PlatformError) as exc_info:
+        service.login(username="alice", password="WrongPassword1")
+    assert exc_info.value.code == "too_many_attempts"
+
+    with service._engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                platform_audit_table.c.actor_id,
+                platform_audit_table.c.resource_id,
+                platform_audit_table.c.result,
+            ).where(platform_audit_table.c.resource_type == "identity_login_throttle")
+        ).all()
+        throttle = (
+            connection.execute(
+                select(identity_login_throttle_table).where(
+                    identity_login_throttle_table.c.normalized_username == "alice"
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert rows == [(user["id"], "alice", "login_locked")]
+    assert int(throttle["failed_attempts"]) == 5
+    assert throttle["locked_until_utc"] is not None
+
+    # 已锁定后的尝试（即使密码正确）不追加新的审计事实。
+    with pytest.raises(PlatformError) as exc_info:
+        service.login(username="alice", password="Password1")
+    assert exc_info.value.code == "too_many_attempts"
+    with service._engine.connect() as connection:
+        rows_after = connection.execute(
+            select(platform_audit_table.c.result).where(
+                platform_audit_table.c.resource_type == "identity_login_throttle"
+            )
+        ).all()
+    assert rows_after == [("login_locked",)]
+
+
+def test_password_rule_requires_letters_and_digits() -> None:
+    service = make_service()
+    user = service.provision_user(
+        username="alice",
+        password="Password1",
+        real_name="Alice",
+        display_name="Alice",
+        role="user",
+        department_id=None,
+    )
+
+    for index, weak in enumerate(("Abcdefg", "12345678", "!!!!!!!!")):
+        with pytest.raises(PlatformError) as exc_info:
+            service.provision_user(
+                username=f"weak{index}",
+                password=weak,
+                real_name="Weak",
+                display_name="Weak",
+                role="user",
+                department_id=None,
+            )
+        assert exc_info.value.code == "invalid_password_rule"
+
+    # 改密与注册共用同一规则。
+    with pytest.raises(PlatformError) as exc_info:
+        service.change_password(
+            user_id=user["id"], old_password="Password1", new_password="!!!!!!!!"
+        )
+    assert exc_info.value.code == "invalid_password_rule"
+
+    # 恰好 8 位且同时包含字母与数字可以通过。
+    service.change_password(user_id=user["id"], old_password="Password1", new_password="Abcdefg1")
+
+
 def test_avatar_replacement_uses_the_shared_object_store() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
