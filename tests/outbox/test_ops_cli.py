@@ -9,13 +9,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 
 import app.outbox.ops_cli as ops_cli_module
 from app.outbox.dispatcher import OutboxDispatcher
@@ -29,6 +22,13 @@ from app.outbox.ops_cli import (
 from app.platform.config import load_platform_settings
 from app.platform.errors import PlatformError
 from app.platform.runtime import PlatformRuntime
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 _SETTINGS = load_platform_settings(
     {

@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from _helpers import build_engine, build_identity_service, make_settings, provision_user
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -14,6 +13,7 @@ from app.identity.service import AuthPrincipal
 from app.platform.app_factory import create_platform_app
 from app.platform.database import platform_audit_table
 from app.platform.runtime import build_runtime
+from tests._support import build_engine, build_identity_service, make_settings, provision_user
 
 REPAIR_NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=UTC)
 

@@ -3,13 +3,6 @@ retirement serialize on the same user lock and re-check identity lifecycle."""
 
 from __future__ import annotations
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, update
 
 from app.identity.schema import identity_user_table
@@ -22,6 +15,13 @@ from app.outbox.schema import (
     notification_suppression_table,
     notification_table,
     outbox_account_retirement_tombstone_table,
+)
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
 )
 
 

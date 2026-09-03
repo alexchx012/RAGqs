@@ -4,13 +4,6 @@ insert, so a redaction committed concurrently can never be overwritten."""
 
 from __future__ import annotations
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, text
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -18,6 +11,13 @@ from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
 from app.outbox.schema import notification_table
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 
 def make_lifecycle(engine):

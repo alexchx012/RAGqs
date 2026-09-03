@@ -13,14 +13,6 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    make_settings,
-    provision_user,
-)
 from sqlalchemy import select
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -32,6 +24,14 @@ from app.outbox.worker import OutboxWorker
 from app.platform.persistence import FenceViolation
 from app.platform.runtime import build_runtime
 from app.platform.worker import create_worker_runtime
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    make_settings,
+    provision_user,
+)
 
 
 class _MutableClock:

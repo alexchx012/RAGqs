@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from _helpers import alembic_config
 from sqlalchemy import create_engine, inspect, select, text
 
 from alembic import command
 from app.outbox.schema import OUTBOX_TABLE_NAMES
+from tests._support import alembic_config
 
 # Migration/trigger contract tests: the PostgreSQL legs skip themselves when
 # RAGQS_TEST_POSTGRES_URL is unset; the marker keeps `-m "not integration"`
@@ -199,10 +199,10 @@ def _assert_full_event_identity_guarded(engine) -> None:
     """Publish one event and verify the installed guards reject a trace_id change."""
     import uuid
 
-    from _helpers import build_identity_service, fixed_now, make_publisher, provision_user
     from sqlalchemy.exc import ProgrammingError
 
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
+    from tests._support import build_identity_service, fixed_now, make_publisher, provision_user
 
     identity = build_identity_service(engine)
     user_id = provision_user(identity, username=f"trigger_user_{uuid.uuid4().hex[:8]}")
@@ -253,10 +253,10 @@ def test_postgres_backfills_inboxes_and_compact_due_index_serves_the_scan() -> N
 
     if not _pg_url():
         pytest.skip("PostgreSQL integration environment is not configured")
-    from _helpers import build_identity_service
     from sqlalchemy import create_engine
 
     from app.identity.schema import identity_user_table
+    from tests._support import build_identity_service
 
     database_url = _pg_url()
     schema = f"mig_backfill_{uuid.uuid4().hex[:12]}"

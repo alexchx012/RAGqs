@@ -5,7 +5,6 @@ full-event artifacts (verified when RAGQS_TEST_POSTGRES_URL is configured)."""
 from __future__ import annotations
 
 import pytest
-from _helpers import build_engine, build_identity_service, fixed_now, provision_user
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -16,6 +15,7 @@ from app.outbox.schema import (
     notification_table,
     outbox_delivery_table,
 )
+from tests._support import build_engine, build_identity_service, fixed_now, provision_user
 
 # Migration guard tests: the PostgreSQL trigger legs skip themselves when
 # RAGQS_TEST_POSTGRES_URL is unset; the marker keeps `-m "not integration"`
@@ -142,9 +142,8 @@ def test_check_rejects_unknown_receipt_outcome() -> None:
 
 
 def _publish_immutable_event(engine, *, event_id: str, user_id: str) -> None:
-    from _helpers import make_publisher
-
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
+    from tests._support import make_publisher
 
     publisher = make_publisher(engine)
     with engine.begin() as connection:
@@ -178,8 +177,9 @@ def test_postgres_triggers_protect_full_event_artifacts_when_configured() -> Non
     if not os.environ.get("RAGQS_TEST_POSTGRES_URL"):
         pytest.skip("PostgreSQL integration environment is not configured")
 
-    from _helpers import pg_schema_context
     from sqlalchemy.exc import ProgrammingError
+
+    from tests._support import pg_schema_context
 
     context = pg_schema_context()
     try:
@@ -470,9 +470,8 @@ def test_pg_schema_context_cleans_up_created_schema_when_upgrade_fails(
     if not os.environ.get("RAGQS_TEST_POSTGRES_URL"):
         pytest.skip("PostgreSQL integration environment is not configured")
 
-    from _helpers import pg_schema_context, pg_test_schema_names
-
     from alembic import command
+    from tests._support import pg_schema_context, pg_test_schema_names
 
     before = pg_test_schema_names()
 
@@ -497,7 +496,7 @@ def test_pg_schema_context_disposes_engine_before_dropping_schema() -> None:
     if not os.environ.get("RAGQS_TEST_POSTGRES_URL"):
         pytest.skip("PostgreSQL integration environment is not configured")
 
-    from _helpers import pg_schema_context
+    from tests._support import pg_schema_context
 
     context = pg_schema_context()
     # Return a checked-out connection to the pool so dispose is observable.
@@ -517,8 +516,9 @@ def test_pg_test_schema_names_matches_only_literal_prefixes() -> None:
     if not os.environ.get("RAGQS_TEST_POSTGRES_URL"):
         pytest.skip("PostgreSQL integration environment is not configured")
 
-    from _helpers import pg_test_schema_names
     from sqlalchemy import create_engine, text
+
+    from tests._support import pg_test_schema_names
 
     admin = create_engine(os.environ["RAGQS_TEST_POSTGRES_URL"])
     # The underscore position holds a hex character, so a `_` wildcard in a

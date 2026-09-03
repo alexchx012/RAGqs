@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from _helpers import make_settings
 
 from app.platform.config import load_platform_settings
+from tests._support import make_settings
 
 
 def test_outbox_settings_default_to_spec_retention_values() -> None:

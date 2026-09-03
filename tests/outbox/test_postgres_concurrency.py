@@ -17,14 +17,6 @@ import uuid
 from urllib.parse import quote
 
 import pytest
-from _helpers import (
-    alembic_config,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    pg_test_schema_names,
-    provision_user,
-)
 from sqlalchemy import create_engine, text
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -32,6 +24,14 @@ from app.outbox.lifecycle import SqlAlchemyOutboxLifecycle
 from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
 from app.outbox.service import NotificationService
+from tests._support import (
+    alembic_config,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    pg_test_schema_names,
+    provision_user,
+)
 
 pytestmark = pytest.mark.integration
 

@@ -5,14 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    make_settings,
-    provision_user,
-)
 from sqlalchemy import select, update
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -23,6 +15,14 @@ from app.outbox.worker import LeaseHeartbeat, OutboxWorker
 from app.platform.persistence import FenceViolation
 from app.platform.runtime import build_runtime
 from app.platform.worker import create_worker_runtime
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    make_settings,
+    provision_user,
+)
 
 
 class _MutableClock:

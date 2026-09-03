@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from _helpers import build_engine, fixed_now, make_publisher
 from sqlalchemy import select
 
 from app.outbox.publisher import SqlAlchemyRetrievalHardGateAlertAdapter
 from app.outbox.schema import outbox_event_table, outbox_recipient_table
+from tests._support import build_engine, fixed_now, make_publisher
 
 
 def test_hard_gate_breach_publishes_an_outbox_only_alert_event() -> None:

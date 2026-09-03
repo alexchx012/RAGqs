@@ -7,13 +7,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, update
 
 from app.identity.schema import identity_user_table
@@ -31,6 +24,13 @@ from app.outbox.schema import (
 )
 from app.outbox.service import NotificationService
 from app.platform.errors import PlatformError
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 
 class _Accepting:
@@ -566,12 +566,11 @@ def test_retention_inner_loop_honors_the_global_limit() -> None:
 
 
 def test_worker_dead_lettered_counts_only_this_passes_transitions() -> None:
-    from _helpers import make_settings
-
     from app.outbox.schema import outbox_delivery_table
     from app.outbox.worker import OutboxWorker
     from app.platform.runtime import build_runtime
     from app.platform.worker import create_worker_runtime
+    from tests._support import make_settings
 
     engine = build_engine()
     identity = build_identity_service(engine)

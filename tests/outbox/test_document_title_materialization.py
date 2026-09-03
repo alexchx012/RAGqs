@@ -9,13 +9,6 @@ events without a document fact keep their typed default title.
 
 from __future__ import annotations
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select
 
 from app.documents.schema import documents_table
@@ -27,6 +20,13 @@ from app.outbox.ports import (
     RecipientSelection,
 )
 from app.outbox.schema import notification_table
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 _PRODUCTION_EVENTS: dict[str, dict[str, object]] = {
     "ingestion_completed": {

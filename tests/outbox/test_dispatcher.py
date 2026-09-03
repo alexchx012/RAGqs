@@ -5,13 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, update
 
 from app.graph.outbox import SqlAlchemyGraphBuildOutboxAdapter
@@ -27,6 +20,13 @@ from app.outbox.schema import (
     outbox_delivery_table,
 )
 from app.platform.persistence import FenceViolation
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 
 def publish(engine, publisher: SqlAlchemyOutboxPublisher, *, user_ids: tuple[str, ...], **kwargs):
