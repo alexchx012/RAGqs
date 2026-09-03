@@ -125,7 +125,11 @@ def _directory_search_text(
 
 
 def _validate_password_rule(password: str) -> None:
-    if len(password) < 8 or password.isalpha() or password.isdigit():
+    # 口径与前端文案一致：至少 8 位，且同时包含字母与数字（纯字母、纯数字、
+    # 纯符号均不满足）。
+    has_letter = any(char.isalpha() for char in password)
+    has_digit = any(char.isdigit() for char in password)
+    if len(password) < 8 or not has_letter or not has_digit:
         raise PlatformError("invalid_password_rule", "Password does not meet the policy", {}, 400)
 
 
@@ -1303,6 +1307,17 @@ class IdentityAccessService:
                     department_id=final_department_id,
                     lifecycle_status="active",
                     reason="identity_authorization_changed",
+                )
+                # §9.3 审计事实：授权变化使旧部门任务失去执行授权（在途投稿
+                # 已失效、执行中任务将按 authorization_changed 失败）；与
+                # user_department_changed、投稿失效审计并列可查。
+                self._audit(
+                    connection,
+                    actor_id=actor.user_id,
+                    resource_type="user",
+                    resource_id=user_id,
+                    result="user_department_tasks_invalidated",
+                    occurred_at=now,
                 )
                 self._revoke_account_sessions_in_transaction(
                     connection,
@@ -3704,19 +3719,32 @@ class IdentityAccessService:
                         normalized_username=normalized_username,
                         now=now,
                     )
-                    login_error = (
-                        PlatformError(
+                    if locked_until is not None:
+                        # §9.3 审计事实：本次失败尝试触发 throttle 锁定；普通
+                        # 失败计数（未触发锁定）不写审计。
+                        self._audit(
+                            connection,
+                            actor_id=(
+                                str(user_record["id"])
+                                if user_record is not None
+                                else f"username:{normalized_username}"
+                            ),
+                            resource_type="identity_login_throttle",
+                            resource_id=normalized_username,
+                            result="login_locked",
+                            occurred_at=now,
+                        )
+                        login_error = PlatformError(
                             "too_many_attempts",
                             "Too many failed login attempts",
                             {"retry_after_seconds": self._settings.login_lock_seconds},
                             429,
                             True,
                         )
-                        if locked_until is not None
-                        else PlatformError(
+                    else:
+                        login_error = PlatformError(
                             "invalid_credentials", "Username or password is invalid", {}, 401
                         )
-                    )
             if login_error is None:
                 assert user_record is not None
                 user = dict(user_record)
@@ -3752,6 +3780,15 @@ class IdentityAccessService:
                         replay_payload=None,
                         replay_expires_at_utc=None,
                     )
+                )
+                # §9.3 审计事实：成功登录与建会话同事务落一条审计。
+                self._audit(
+                    connection,
+                    actor_id=str(user["id"]),
+                    resource_type="auth_session",
+                    resource_id=session_id,
+                    result="login_succeeded",
+                    occurred_at=now,
                 )
         if login_error is not None:
             raise login_error

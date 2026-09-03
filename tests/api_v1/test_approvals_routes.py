@@ -281,12 +281,20 @@ def test_ops_approve_full_shape_and_reject() -> None:
         "quota_period": period,
     }
     assert isinstance(body["credit_entry_id"], str) and body["credit_entry_id"]
-    # 审计行 request_id 来自请求 context（middleware 安装的 RequestContext）
+    # 审计行 request_id 来自请求 context（middleware 安装的 RequestContext）；
+    # 登录审计（auth_session）与审批事实分开断言。
     engine = runtime.resolve("database_engine")
     with engine.connect() as connection:
-        audits = connection.execute(select(platform_audit_table)).mappings().all()
+        audits = (
+            connection.execute(
+                select(platform_audit_table).where(
+                    platform_audit_table.c.resource_type == "quota_request"
+                )
+            )
+            .mappings()
+            .all()
+        )
         assert len(audits) == 1
-        assert audits[0]["resource_type"] == "quota_request"
         assert audits[0]["result"] == "quota_request_approved"
         assert audits[0]["request_id"].startswith("req_")
     # 同用户可再申请（已 approved 不占 pending 唯一索引）→ ops reject 200 形状

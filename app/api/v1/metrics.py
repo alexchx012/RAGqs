@@ -91,7 +91,7 @@ def metrics_dashboard(
 ) -> dict[str, object]:
     _require_metrics_reader(principal)
     return retention_service(request).dashboard(
-        role=principal.role,
+        principal=principal,
         window=_window(window),
         expand=_expand(expand),
     )

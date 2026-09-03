@@ -360,3 +360,36 @@ def test_admin_document_drilldown_writes_audit_records() -> None:
         ).all()
     assert department_rows == [(str(ops["record"]["id"]), f"department:{department_id}")] * 2
     assert personal_rows == [(str(admin["record"]["id"]), f"personal:{ops['record']['id']}")]
+
+
+def test_quota_consumption_dashboard_view_writes_audit_records() -> None:
+    configured, engine, runtime, identity = _standalone_app()
+    admin = provision_user(identity, "admin", "admin")
+    ops = provision_user(identity, "ops", "ops")
+    user = provision_user(identity, "alice", "user")
+    app = create_platform_app(configured, runtime=runtime)
+    with TestClient(app) as client:
+        for token in (ops["token"], admin["token"]):
+            response = client.get(
+                "/v1/metrics/dashboard?window=7d",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+        # 普通用户被 403 拒绝，路径不产生查看审计。
+        forbidden = client.get(
+            "/v1/metrics/dashboard?window=7d", headers={"Authorization": f"Bearer {user['token']}"}
+        )
+        assert forbidden.status_code == 403
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                platform_audit_table.c.actor_id,
+                platform_audit_table.c.resource_type,
+                platform_audit_table.c.resource_id,
+                platform_audit_table.c.result,
+            ).where(platform_audit_table.c.resource_type == "retention.quota_consumption_view")
+        ).all()
+    assert rows == [
+        (str(ops["record"]["id"]), "retention.quota_consumption_view", "7d", "succeeded"),
+        (str(admin["record"]["id"]), "retention.quota_consumption_view", "7d", "succeeded"),
+    ]
