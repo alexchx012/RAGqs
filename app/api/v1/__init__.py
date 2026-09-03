@@ -15,6 +15,7 @@ from .metrics import router as metrics_router
 from .notifications import router as notifications_router
 from .ops import router as ops_router
 from .ops_backups import router as ops_backups_router
+from .ops_index import router as ops_index_router
 from .prompt_enhancements import router as prompt_enhancements_router
 from .quota import router as quota_router
 from .spaces import router as spaces_router
@@ -28,6 +29,7 @@ router.include_router(admin_router)
 router.include_router(notifications_router)
 router.include_router(ops_router)
 router.include_router(ops_backups_router)
+router.include_router(ops_index_router)
 router.include_router(quota_router)
 router.include_router(prompt_enhancements_router)
 router.include_router(approvals_router)

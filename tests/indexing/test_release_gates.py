@@ -269,12 +269,18 @@ def test_new_runs_require_a_gate_version_and_record_the_judgment() -> None:
             select(
                 retrieval_releases_table.c.gate_version_id,
                 retrieval_releases_table.c.gate_judgment_json,
+                retrieval_releases_table.c.acceptance_suite_json,
             ).where(retrieval_releases_table.c.id == str(staged["id"]))
         )
         .mappings()
         .one()
     )
     assert row["gate_version_id"] == str(gate["id"])
+    # 验收 run 记录显式携带活动与候选 index generation 和 reranker release 清单。
+    evidence = dict(row["acceptance_suite_json"] or {})
+    assert evidence["candidate_generation_id"] == "generation_initial"
+    assert evidence["active_generation_id"] == "generation_initial"
+    assert evidence["reranker_releases"] == ["default"]
     judgment = dict(row["gate_judgment_json"] or {})
     # 判定输入（指标值、样本数、profile）与结论被保存。
     assert judgment["gate_version"] == "gate_1"
