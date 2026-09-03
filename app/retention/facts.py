@@ -163,8 +163,8 @@ def _quality_window_conditions(start: datetime, end: datetime) -> tuple[Any, ...
     )
 
 
-def _sqlite_quality_labels() -> tuple[Any, Any]:
-    """OCR/tree bucket labels from the production receipt on succeeded jobs.
+def _sqlite_quality_labels() -> tuple[Any, Any, Any]:
+    """OCR/tree/structure bucket labels from the production receipt on succeeded jobs.
 
     ``processing_summary_json`` holds the full processing receipt, so the
     summary facts live under ``$.processing_summary``; the OCR object carries a
@@ -196,10 +196,18 @@ def _sqlite_quality_labels() -> tuple[Any, Any]:
         (tree_indexed == 0, "basic"),
         else_=None,
     )
-    return ocr_label, tree_label
+    # 无结构桶：tree_reason=="no_structure" 是处理端"判定该文档无可用结构"
+    # 的机器事实（区别于 table/image/code 等路由性不分桶原因）。
+    tree_reason = func.json_extract(summary, "$.processing_summary.tree.tree_reason")
+    structure_label = case(
+        (tree_reason == "no_structure", "unstructured"),
+        (tree_reason.is_not(None), "structured"),
+        else_=None,
+    )
+    return ocr_label, tree_label, structure_label
 
 
-def _postgres_quality_labels() -> tuple[Any, Any]:
+def _postgres_quality_labels() -> tuple[Any, Any, Any]:
     summary = ingestion_jobs_table.c.processing_summary_json
     ocr_low = func.json_extract_path_text(summary, "processing_summary", "ocr", "low_confidence")
     ocr_low_is_boolean = (
@@ -236,7 +244,13 @@ def _postgres_quality_labels() -> tuple[Any, Any]:
         (tree_indexed == "false", "basic"),
         else_=None,
     )
-    return ocr_label, tree_label
+    tree_reason = func.json_extract_path_text(summary, "processing_summary", "tree", "tree_reason")
+    structure_label = case(
+        (tree_reason == "no_structure", "unstructured"),
+        (tree_reason.is_not(None), "structured"),
+        else_=None,
+    )
+    return ocr_label, tree_label, structure_label
 
 
 def _quality_label_counts(
@@ -256,13 +270,14 @@ def ingestion_quality_facts(
 ) -> Mapping[str, Any]:
     dialect = connection.dialect.name
     if dialect == "sqlite":
-        ocr_label, tree_label = _sqlite_quality_labels()
+        ocr_label, tree_label, structure_label = _sqlite_quality_labels()
     elif dialect == "postgresql":
-        ocr_label, tree_label = _postgres_quality_labels()
+        ocr_label, tree_label, structure_label = _postgres_quality_labels()
     else:
         raise ValueError("ingestion quality aggregation requires SQLite or PostgreSQL")
     ocr_rows = _quality_label_counts(connection, label=ocr_label, start=start, end=end)
     tree_rows = _quality_label_counts(connection, label=tree_label, start=start, end=end)
+    structure_rows = _quality_label_counts(connection, label=structure_label, start=start, end=end)
     low_confidence, total = connection.execute(
         select(
             func.coalesce(
@@ -276,6 +291,7 @@ def ingestion_quality_facts(
     return {
         "ocr_rows": ocr_rows,
         "tree_rows": tree_rows,
+        "structure_rows": structure_rows,
         "low_confidence_docs": low_confidence_docs,
         "normal_docs": int(total) - low_confidence_docs,
     }

@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.engine import Connection, Engine
@@ -400,6 +400,15 @@ class DocumentsService:
             return str(generation.active_generation_id)
         return "generation_initial"
 
+    def _frozen_processing_identity(self) -> dict[str, str]:
+        """Model/prompt identity to freeze into a replay's config snapshot.
+
+        Resolved from the indexing side at replay-transaction time; test
+        handoffs without a processing identity freeze the profile only.
+        """
+        identity_reader = getattr(self._indexing_handoff_port, "processing_identity", None)
+        return dict(identity_reader()) if callable(identity_reader) else {}
+
     def _check_quota(self, connection: Connection, principal: Any, *, pages: int = 1) -> None:
         if self._quota_service is None:
             return
@@ -556,6 +565,39 @@ class DocumentsService:
             occurred_at=occurred_at,
             ocr_low_confidence=bool(receipt.get("ocr_low_confidence", False)),
             ocr_low_confidence_fact=receipt.get("ocr_low_confidence_fact"),
+            connection=connection,
+        )
+        return [str(event_id) for event_id in event_ids]
+
+    def _publish_ingestion_terminal_notification(
+        self,
+        connection: Connection,
+        *,
+        job: Mapping[Any, Any],
+        event_type: Literal["ingestion_failed", "ingestion_cancelled"],
+        occurred_at: datetime,
+        reason: str | None = None,
+    ) -> list[str]:
+        """Failed/cancelled terminal transitions also ring the creator's bell.
+
+        Same recipient rule, event-id scheme, and inactive-account tolerance
+        as the success path; publishing happens inside the terminal
+        transaction so the bell never lags the state change.
+        """
+        port = self._ingestion_notification_port
+        if port is None:
+            return []
+        publication_id = job["active_publication_id"]
+        event_ids = port.publish_ingestion_terminal_event(
+            event_type=event_type,
+            job_id=str(job["id"]),
+            document_id=str(job["document_id"]),
+            document_version_id=str(job["document_version_id"] or ""),
+            publication_id=str(publication_id) if publication_id else None,
+            transition_version=int(job["replay_generation"]) + 1,
+            recipient_user_id=str(job["created_by_user_id"]),
+            occurred_at=occurred_at,
+            reason=reason,
             connection=connection,
         )
         return [str(event_id) for event_id in event_ids]
@@ -4580,6 +4622,14 @@ class DocumentsService:
                     "job_not_cancellable", "The ingestion job cannot be cancelled", {}, 409
                 )
             now = self._current_time()
+            # 取消是终态：与成功路径同事务内补发创建者铃铛（通知失败容忍
+            # recipient_account_inactive，不阻断取消本身）。
+            notification_event_ids = self._publish_ingestion_terminal_notification(
+                connection,
+                job=job,
+                event_type="ingestion_cancelled",
+                occurred_at=now,
+            )
             self._discard_indexing_attempt(connection, job["active_attempt_id"])
             connection.execute(
                 update(ingestion_jobs_table)
@@ -4595,6 +4645,7 @@ class DocumentsService:
                     active_attempt_id=None,
                     cancelled_by_user_id=str(principal.user_id),
                     cancelled_at_utc=now,
+                    notification_event_ids_json=notification_event_ids,
                     updated_at_utc=now,
                 )
             )
@@ -4776,6 +4827,17 @@ class DocumentsService:
                 retry_delay = timedelta(
                     seconds=base_minutes * 60 * (80 + secrets.randbelow(41)) / 100
                 )
+            # failed/dead_letter 是终态：与成功路径同事务内补发创建者铃铛；
+            # retry_wait 仍会重试，不打扰，也不改写上一批通知事件 ID。
+            notification_event_ids: list[str] = []
+            if not will_retry:
+                notification_event_ids = self._publish_ingestion_terminal_notification(
+                    connection,
+                    job=job,
+                    event_type="ingestion_failed",
+                    occurred_at=now,
+                    reason=reason,
+                )
             self._discard_indexing_attempt(connection, active_attempt_id)
             connection.execute(
                 update(ingestion_attempts_table)
@@ -4787,7 +4849,7 @@ class DocumentsService:
                     updated_at_utc=now,
                 )
             )
-            connection.execute(
+            job_update = (
                 update(ingestion_jobs_table)
                 .where(
                     and_(
@@ -4805,6 +4867,9 @@ class DocumentsService:
                     updated_at_utc=now,
                 )
             )
+            if not will_retry:
+                job_update = job_update.values(notification_event_ids_json=notification_event_ids)
+            connection.execute(job_update)
             connection.execute(
                 update(publications_table)
                 .where(
@@ -4938,6 +5003,9 @@ class DocumentsService:
                     or replay_media_kind
                 )
             replay_config_snapshot = document_profile_for_media_kind(replay_media_kind).to_mapping()
+            # §2.3：重放固化处理画像时一并冻结模型 ID/版本与 prompt 版本；
+            # 执行端优先读快照值，同代 attempt 的模型/prompt 不漂移。
+            replay_config_snapshot.update(self._frozen_processing_identity())
             if job["operation"] in {"initial", "replace"}:
                 connection.execute(
                     update(document_versions_table)
