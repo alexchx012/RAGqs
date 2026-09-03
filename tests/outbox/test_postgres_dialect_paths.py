@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from _helpers import build_engine, fixed_now
 from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import make_url
@@ -23,6 +22,7 @@ from app.outbox.schema import (
     notification_inbox_table,
     outbox_delivery_table,
 )
+from tests._support import build_engine, fixed_now
 
 
 def compile_statement(statement) -> str:

@@ -6,14 +6,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    make_settings,
-    provision_user,
-)
 from sqlalchemy import select, update
 
 from app.identity.schema import identity_user_table
@@ -26,6 +18,14 @@ from app.outbox.schema import (
     outbox_event_table,
 )
 from app.platform.runtime import build_runtime
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    make_settings,
+    provision_user,
+)
 
 
 class _Accepting:

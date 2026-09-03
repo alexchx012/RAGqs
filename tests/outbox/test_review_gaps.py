@@ -6,13 +6,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, text, update
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -26,6 +19,13 @@ from app.outbox.schema import (
 )
 from app.outbox.service import NotificationService
 from app.platform.errors import PlatformError
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 
 def make_lifecycle(engine, **kwargs):
@@ -183,11 +183,11 @@ def test_ack_only_accepts_materialized_receipt_evidence() -> None:
 
 
 def test_ops_api_restricts_consumer_and_rejects_oversized_keys() -> None:
-    from _helpers import make_settings
     from fastapi.testclient import TestClient
 
     from app.platform.app_factory import create_platform_app
     from app.platform.runtime import build_runtime
+    from tests._support import make_settings
 
     configured = make_settings()
     engine = build_engine()

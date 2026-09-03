@@ -5,13 +5,6 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -19,6 +12,13 @@ from app.outbox.metrics import SqlAlchemyOutboxMetrics
 from app.outbox.notifications import NotificationMaterializer
 from app.outbox.schema import outbox_event_table, outbox_metric_table
 from app.platform.database import platform_audit_table
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 
 class _MutableClock:

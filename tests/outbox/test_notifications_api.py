@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_settings,
-    provision_user,
-)
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
@@ -22,6 +15,13 @@ from app.outbox.schema import (
 from app.outbox.service import NotificationService
 from app.platform.app_factory import create_platform_app
 from app.platform.runtime import build_runtime
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_settings,
+    provision_user,
+)
 
 
 def make_app(*, alice_ops: bool = False):
@@ -48,9 +48,8 @@ def make_app(*, alice_ops: bool = False):
 
 
 def deliver(engine, *, user_ids, event_id="evt_1", event_type="ingestion_completed"):
-    from _helpers import make_publisher
-
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
+    from tests._support import make_publisher
 
     publisher = make_publisher(engine, now=lambda: fixed_now())
 

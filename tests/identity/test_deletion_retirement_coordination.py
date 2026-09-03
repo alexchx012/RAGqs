@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from _helpers import build_engine, fixed_now, make_publisher, make_settings
 from sqlalchemy import select, update
 
 from app.chat.schema import chat_metadata
@@ -32,6 +31,7 @@ from app.platform.database import core_metadata
 from app.platform.runtime import build_runtime
 from app.platform.storage import MemoryObjectStore
 from app.platform.worker import create_worker_runtime
+from tests._support import build_engine, fixed_now, make_publisher, make_settings
 
 
 def settings():

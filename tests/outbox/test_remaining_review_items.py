@@ -6,13 +6,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, update
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -26,6 +19,15 @@ from app.outbox.schema import (
     outbox_event_table,
 )
 from app.platform.errors import PlatformError
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
+
+pytestmark = pytest.mark.integration
 
 
 def make_lifecycle(engine, **kwargs):
@@ -334,7 +336,7 @@ def test_postgres_integration_hook_runs_production_statements_when_configured() 
     if not os.environ.get("RAGQS_TEST_POSTGRES_URL"):
         pytest.skip("PostgreSQL integration environment is not configured")
 
-    from _helpers import pg_schema_context
+    from tests._support import pg_schema_context
 
     context = pg_schema_context()
     try:
@@ -554,9 +556,8 @@ def test_replay_reserves_before_state_checks_and_rolls_back_on_conflict() -> Non
 
 
 def test_runtime_assembles_publisher_dispatcher_lifecycle_and_worker_entries() -> None:
-    from _helpers import make_settings
-
     from app.platform.runtime import build_runtime
+    from tests._support import make_settings
 
     engine = build_engine()
     runtime = build_runtime(make_settings(), adapters={"database_engine": engine})
@@ -575,10 +576,9 @@ def test_runtime_assembles_publisher_dispatcher_lifecycle_and_worker_entries() -
 
 
 def test_end_to_end_publish_dispatch_notify_read_and_ack() -> None:
-    from _helpers import make_publisher, make_settings
-
     from app.outbox.ports import OutboxPublishCommand, RecipientSelection
     from app.platform.runtime import build_runtime
+    from tests._support import make_publisher, make_settings
 
     configured = make_settings()
     engine = build_engine()
@@ -632,11 +632,10 @@ def test_end_to_end_publish_dispatch_notify_read_and_ack() -> None:
 
 
 def test_worker_run_forever_loop_is_stoppable_and_delivers() -> None:
-    from _helpers import make_settings
-
     from app.outbox.worker import OutboxWorker
     from app.platform.runtime import build_runtime
     from app.platform.worker import create_worker_runtime
+    from tests._support import make_settings
 
     engine = build_engine()
     identity = build_identity_service(engine)

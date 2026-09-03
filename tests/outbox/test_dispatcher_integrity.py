@@ -6,13 +6,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, text, update
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -25,6 +18,13 @@ from app.outbox.schema import (
     outbox_delivery_table,
 )
 from app.platform.persistence import FenceViolation
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
+)
 
 
 class _MutableClock:
@@ -250,11 +250,10 @@ def test_worker_run_once_delivers_and_tracks_dead_lettered() -> None:
     alice = provision_user(identity, username="alice")
     publish(engine, user_ids=(alice,), event_id="evt_1")
     publish(engine, user_ids=(alice,), event_id="evt_2")
-    from _helpers import make_settings
-
     from app.outbox.worker import OutboxWorker
     from app.platform.runtime import build_runtime
     from app.platform.worker import create_worker_runtime
+    from tests._support import make_settings
 
     configured = make_settings()
     runtime = build_runtime(
@@ -282,11 +281,10 @@ def test_worker_run_once_dead_letters_an_unsupported_consumer() -> None:
     alice = provision_user(identity, username="alice")
     publish(engine, user_ids=(alice,), event_id="evt_1")
     # A consumer-less dispatcher makes the single delivery permanent-fail.
-    from _helpers import make_settings
-
     from app.outbox.worker import OutboxWorker
     from app.platform.runtime import build_runtime
     from app.platform.worker import create_worker_runtime
+    from tests._support import make_settings
 
     bare = OutboxDispatcher(
         engine,
@@ -323,9 +321,8 @@ def test_worker_run_once_dead_letters_an_unsupported_consumer() -> None:
 
 
 def test_runtime_hides_raw_publisher_behind_scoped_adapters() -> None:
-    from _helpers import make_settings
-
     from app.platform.runtime import build_runtime
+    from tests._support import make_settings
 
     engine = build_engine()
     runtime = build_runtime(make_settings(), adapters={"database_engine": engine})

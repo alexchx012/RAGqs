@@ -6,7 +6,11 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from _helpers import (
+from sqlalchemy import select
+
+from app.outbox.ports import OutboxPublishCommand, RecipientSelection
+from app.platform.errors import PlatformError
+from tests._support import (
     build_engine,
     build_identity_service,
     create_publish_domain_tables,
@@ -15,10 +19,6 @@ from _helpers import (
     provision_user,
     publish_business_table,
 )
-from sqlalchemy import select
-
-from app.outbox.ports import OutboxPublishCommand, RecipientSelection
-from app.platform.errors import PlatformError
 
 
 def make_publish_command(

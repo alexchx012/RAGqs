@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from _helpers import alembic_config, pg_schema_context
 from sqlalchemy import text
 
 from alembic import command
+from tests._support import alembic_config, pg_schema_context
 
 
 def test_head_upgrade_secondary_indexes_are_used_by_query_plans_on_postgres() -> None:

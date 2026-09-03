@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from _helpers import (
+from fastapi.testclient import TestClient
+
+from app.outbox.dispatcher import OutboxDispatcher
+from app.outbox.notifications import NotificationMaterializer
+from app.platform.app_factory import create_platform_app
+from app.platform.runtime import build_runtime
+from tests._support import (
     build_engine,
     build_identity_service,
     fixed_now,
@@ -10,12 +16,6 @@ from _helpers import (
     make_settings,
     provision_user,
 )
-from fastapi.testclient import TestClient
-
-from app.outbox.dispatcher import OutboxDispatcher
-from app.outbox.notifications import NotificationMaterializer
-from app.platform.app_factory import create_platform_app
-from app.platform.runtime import build_runtime
 
 
 def make_app(*, role: str):

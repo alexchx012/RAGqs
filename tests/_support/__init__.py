@@ -1,4 +1,4 @@
-"""Shared test helpers for the outbox and notifications change."""
+"""Shared cross-domain test helpers: engines, settings, publishers, identity."""
 
 from __future__ import annotations
 

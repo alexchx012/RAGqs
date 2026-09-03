@@ -2,14 +2,6 @@
 
 from __future__ import annotations
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    make_settings,
-    provision_user,
-)
 from sqlalchemy import select
 
 from app.outbox.schema import notification_table
@@ -17,6 +9,14 @@ from app.outbox.worker import OutboxWorker
 from app.platform.config import load_platform_settings
 from app.platform.runtime import build_runtime
 from app.platform.worker import create_worker_runtime
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    make_settings,
+    provision_user,
+)
 
 
 def test_outbox_worker_delivers_pending_events() -> None:

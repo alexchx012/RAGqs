@@ -27,6 +27,8 @@ from app.platform.database import core_metadata
 from app.platform.errors import PlatformError
 from app.platform.storage import MemoryObjectStore, ObjectMetadata
 
+pytestmark = pytest.mark.integration
+
 _PG_URL_ENV = "RAGQS_TEST_POSTGRES_URL"
 _DESTRUCTIVE_OPTIN_ENV = "RAGQS_ALLOW_DESTRUCTIVE_POSTGRES_TESTS"
 

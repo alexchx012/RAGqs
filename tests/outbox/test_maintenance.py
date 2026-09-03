@@ -4,13 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from _helpers import (
-    build_engine,
-    build_identity_service,
-    fixed_now,
-    make_publisher,
-    provision_user,
-)
 from sqlalchemy import select, update
 
 from app.outbox.dispatcher import OutboxDispatcher
@@ -22,6 +15,13 @@ from app.outbox.schema import (
     notification_delivery_receipt_table,
     notification_inbox_table,
     notification_table,
+)
+from tests._support import (
+    build_engine,
+    build_identity_service,
+    fixed_now,
+    make_publisher,
+    provision_user,
 )
 
 

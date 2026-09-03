@@ -68,7 +68,7 @@ select = ["E", "W", "F", "I", "B", "UP"]
 ignore = ["E501", "B008"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["alembic", "app"]
+known-first-party = ["alembic", "app", "tests"]
 
 [tool.black]
 line-length = 100
@@ -77,12 +77,13 @@ target-version = ["py311"]
 [tool.isort]
 profile = "black"
 line_length = 100
-known_first_party = ["alembic", "app"]
+known_first_party = ["alembic", "app", "tests"]
 src_paths = ["app", "tests"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = ["-ra", "-q", "--strict-markers", "--cov=app"]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = ["integration: requires configured PostgreSQL and S3-compatible object storage"]

@@ -6,7 +6,6 @@ import itertools
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from _helpers import build_engine, make_settings
 from sqlalchemy import delete, select, update
 
 from app.backup.ops_service import BackupOpsService
@@ -33,6 +32,7 @@ from app.platform.database import (
 )
 from app.platform.runtime import PlatformRuntime
 from app.platform.worker import WorkerRuntime
+from tests._support import build_engine, make_settings
 
 NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=UTC)  # a Tuesday
 
