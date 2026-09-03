@@ -97,6 +97,51 @@ describe('通知轮询层', () => {
       await expect(store.refreshUnread()).resolves.toBeUndefined();
       expect(store.getState().unreadCount).toBe(5);
     });
+
+    /** 手动决定 unread-count 响应何时到达（模拟登出后旧在飞响应晚到）。 */
+    function deferredUnreadCount() {
+      let resolveCount: (value: { count: number }) => void = () => {};
+      const unreadCount = vi.fn(
+        () =>
+          new Promise<{ count: number }>((resolve) => {
+            resolveCount = resolve;
+          }),
+      );
+      const resolve = (value: { count: number }) => resolveCount(value);
+      return { unreadCount, resolve };
+    }
+
+    it('stop 后在飞响应不写回 unreadCount（A26 运行代际 fence）', async () => {
+      const { unreadCount, resolve } = deferredUnreadCount();
+      const api = fakeNotificationsApi({ unreadCount });
+      const store = new NotificationsStore(api);
+      store.start();
+      expect(store.getState().unreadCount).toBeNull();
+      store.stop(); // 登出：状态清空、代际失效
+      resolve({ count: 9 }); // 旧会话响应晚到
+      await flushMicrotasks();
+      expect(unreadCount).toHaveBeenCalledTimes(1);
+      expect(store.getState().unreadCount).toBeNull();
+      store.dispose();
+    });
+
+    it('登出→重登窗口：旧会话晚到响应不写入新会话视图', async () => {
+      const { unreadCount, resolve } = deferredUnreadCount();
+      const api = fakeNotificationsApi({ unreadCount });
+      const store = new NotificationsStore(api);
+      store.start(); // 旧会话：请求在飞
+      store.stop();
+      store.start(); // 重登：single-flight 下复用同一在飞请求，30s 轮询收敛新值
+      resolve({ count: 9 }); // 旧会话的计数晚到
+      await flushMicrotasks();
+      expect(store.getState().unreadCount).toBeNull();
+      // 下一轮询周期代际匹配，新会话权威值正常写入
+      await vi.advanceTimersByTimeAsync(NOTIFICATION_POLL_INTERVAL_MS);
+      resolve({ count: 2 });
+      await flushMicrotasks();
+      expect(store.getState().unreadCount).toBe(2);
+      store.dispose();
+    });
   });
 
   describe('openPanel', () => {

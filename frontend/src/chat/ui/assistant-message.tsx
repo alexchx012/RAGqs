@@ -7,7 +7,7 @@
  */
 
 import { Info } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import { copy } from '../../copy';
 import { formatRelativeTime } from '../../notifications/relative-time';
 import { Orb } from '../../ui/Orb';
@@ -53,7 +53,7 @@ const STAGE_TEXT: Record<SseStagePhase, string> = {
   generating: copy.chat.stage.generating,
 };
 
-export function AssistantMessage({
+function AssistantMessageBody({
   message,
   onRetry,
   onFeedback,
@@ -204,6 +204,12 @@ export function AssistantMessage({
     </div>
   );
 }
+
+/**
+ * A28：memo 化——store 对无变化消息透传同一视图引用（chat/store recomputeMessages），
+ * 流式 tick 中非活动消息不再重渲染；回调 props 由 HomePage useCallback 提供稳定引用。
+ */
+export const AssistantMessage = memo(AssistantMessageBody);
 
 function stopReasonText(reason: StopReason): string {
   switch (reason) {

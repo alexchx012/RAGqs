@@ -26,7 +26,11 @@ import type {
 
 export interface ChatApi {
   /* ---------- §3.1–§3.6 会话与分组 CRUD ---------- */
-  listConversations(q?: string): Promise<ConversationsListResponse>;
+  /**
+   * GET /conversations（A25 分页）：q 关键词过滤；limit 单页条数（后端 ge=1 le=200，默认 50），
+   * 省略时由后端取默认值。
+   */
+  listConversations(q?: string, limit?: number): Promise<ConversationsListResponse>;
   createConversation(): Promise<CreateConversationResponse>;
   getConversation(id: string): Promise<ConversationDetail>;
   patchConversation(id: string, patch: PatchConversationRequest): Promise<ConversationSummary>;
@@ -137,9 +141,16 @@ function stream(params: SseCallParams): Promise<void> {
 
 export function createChatApi(client: ApiClient): ChatApi {
   return {
-    listConversations(q) {
-      const query = q === undefined ? '' : `?q=${encodeURIComponent(q)}`;
-      return client.request<ConversationsListResponse>(`/conversations${query}`);
+    listConversations(q, limit) {
+      const params = new URLSearchParams();
+      if (q !== undefined) {
+        params.set('q', q);
+      }
+      if (limit !== undefined) {
+        params.set('limit', String(limit));
+      }
+      const query = params.toString();
+      return client.request<ConversationsListResponse>(`/conversations${query === '' ? '' : `?${query}`}`);
     },
     createConversation() {
       return client.request<CreateConversationResponse>('/conversations', {

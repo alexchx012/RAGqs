@@ -18,6 +18,11 @@ export interface ChatSidebarProps {
   readonly conversations: readonly ConversationSummary[];
   readonly groups: readonly ConversationGroup[];
   readonly listStatus: 'idle' | 'loading' | 'ready' | 'error';
+  /** A25 分页：仍可「加载更多」（上次响应满页且未达上限）。 */
+  readonly hasMore: boolean;
+  /** A25 分页：「加载更多」请求进行中。 */
+  readonly loadingMore: boolean;
+  readonly onLoadMore: () => void;
   readonly currentId: string | null;
   readonly searchQuery: string;
   readonly drawerOpen: boolean;
@@ -56,6 +61,9 @@ function SidebarContent({
   conversations,
   groups,
   listStatus,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   currentId,
   searchQuery,
   onSearchChange,
@@ -96,6 +104,9 @@ function SidebarContent({
         items={conversations}
         groups={groups}
         listStatus={listStatus}
+        hasMore={hasMore}
+        loadingMore={loadingMore}
+        onLoadMore={onLoadMore}
         currentId={currentId}
         searchQuery={searchQuery}
         onOpen={onOpen}
@@ -149,6 +160,9 @@ function NarrowDrawer({
   conversations,
   groups,
   listStatus,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   currentId,
   searchQuery,
   drawerOpen,
@@ -172,7 +186,6 @@ function NarrowDrawer({
     if (drawerOpen) {
       onDrawerOpenChange(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname]);
 
   useEffect(() => {
@@ -215,6 +228,9 @@ function NarrowDrawer({
           conversations={conversations}
           groups={groups}
           listStatus={listStatus}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          onLoadMore={onLoadMore}
           currentId={currentId}
           searchQuery={searchQuery}
           onSearchChange={onSearchChange}

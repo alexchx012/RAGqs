@@ -1,7 +1,7 @@
 /*
  * 会话状态机（fe-chat-home 规格 §2–§6；契约 §3.3、§3.7–3.9、§6.1）。纯 TS，React 绑定在 chat-context.tsx。
- * - 会话列表：排序（置顶 → 自定义分组 → 今天/本周/更早，数据一次给全）；q 实时过滤已加载列表，
- *   已加载量超阈值（默认 500）走服务端 q。
+ * - 会话列表：按需分页（A25：首页 50 条，「加载更多」递增 limit，后端上限 200）；排序（置顶 →
+ *   自定义分组 → 今天/本周/更早）；q 实时过滤已加载列表，已加载量超阈值（默认 500）走服务端 q。
  * - 当前会话读模型：消息 / 引用 / 反馈 / A/B 状态 / 重试链恢复；generating 消息自动恢复订阅。
  * - 活动 generation 会话（ask/retry/recover）叠加到消息视图：模拟流式正文、阶段/步骤、A/B 双候选、
  *   终态与 stop_reason；重试链（同 root_generation_id）呈现为同一链，失败保留、后继追加。
@@ -89,7 +89,7 @@ export type ActionNotice =
 
 export interface ChatStoreState {
   readonly listStatus: ChatListStatus;
-  /** 全量已加载会话（置顶在前、last_active_at 降序；搜索过滤见 visibleConversations）。 */
+  /** 已加载会话（置顶在前、last_active_at 降序；分页按需加载，搜索过滤见 visibleConversations）。 */
   readonly conversations: readonly ConversationSummary[];
   /** 客户端实时过滤后的可见列表（服务端 q 模式下与 conversations 一致）。 */
   readonly visibleConversations: readonly ConversationSummary[];
@@ -98,6 +98,12 @@ export interface ChatStoreState {
   readonly searchStatus: 'idle' | 'loading';
   /** 是否已走服务端 q（已加载量超阈值）。 */
   readonly serverFiltered: boolean;
+  /** 当前列表请求使用的 limit（A25：「加载更多」按页递增，后端上限 200）。 */
+  readonly listLimit: number;
+  /** 「加载更多」是否还能取到更多（上次响应满页且 limit 未达上限）。 */
+  readonly hasMoreConversations: boolean;
+  /** 「加载更多」请求进行中。 */
+  readonly loadingMore: boolean;
 
   readonly conversationStatus: ChatConversationStatus;
   readonly conversationId: string | null;
@@ -119,6 +125,8 @@ interface PendingAsk {
   readonly createdAt: string;
   /** start 事件下发后绑定真实 user_message_id（M16：按 id 去重本地气泡）。 */
   userMessageId: string | null;
+  /** 本地气泡视图构建一次、跨 tick 透传同一引用（A28）。 */
+  readonly localView: UserMessage;
 }
 
 interface MessageOverlay {
@@ -141,6 +149,9 @@ interface MessageOverlay {
 }
 
 const DEFAULT_SERVER_SEARCH_THRESHOLD = 500;
+/** A25 分页：首页与「加载更多」单次递增量；后端 le=200 上限，达到后不再展示加载更多。 */
+const CONVERSATIONS_PAGE_SIZE = 50;
+const CONVERSATIONS_MAX_LIMIT = 200;
 
 const INITIAL_STATE: ChatStoreState = {
   listStatus: 'idle',
@@ -150,6 +161,9 @@ const INITIAL_STATE: ChatStoreState = {
   searchQuery: '',
   searchStatus: 'idle',
   serverFiltered: false,
+  listLimit: CONVERSATIONS_PAGE_SIZE,
+  hasMoreConversations: false,
+  loadingMore: false,
   conversationStatus: 'idle',
   conversationId: null,
   conversation: null,
@@ -168,6 +182,12 @@ export class ChatStore {
   private readonly serverSearchThreshold: number;
   private sessions = new Map<string, GenerationSession>();
   private overlays = new Map<string, MessageOverlay>();
+  /**
+   * A28：无 overlay 的 assistant 消息视图缓存——读模型消息对象引用不变时透传同一视图，
+   * 流式 tick 不再全量重建数组元素（这是 AssistantMessage memo 生效的前提）。
+   * 仅缓存 attachEmptyGeneration 的确定性产物；有 overlay 的活动消息每 tick 更新引用。
+   */
+  private assistantViews = new Map<string, { base: AssistantMessage; view: AssistantMessageView }>();
   private activeSession: GenerationSession | null = null;
   private pendingAsk: PendingAsk | null = null;
   private feedbackKeys = new Map<string, string>();
@@ -209,6 +229,7 @@ export class ChatStore {
     }
     this.sessions.clear();
     this.overlays.clear();
+    this.assistantViews.clear();
     this.listeners.clear();
   }
 
@@ -219,7 +240,7 @@ export class ChatStore {
     this.setState({ listStatus: 'loading', searchStatus: this.state.searchQuery.trim() !== '' ? 'loading' : 'idle' });
     try {
       const q = this.shouldServerSearch(this.state.searchQuery) ? this.state.searchQuery : undefined;
-      const result = await this.deps.api.listConversations(q);
+      const result = await this.deps.api.listConversations(q, CONVERSATIONS_PAGE_SIZE);
       if (seq !== this.listSeq) return; // 已有更新的加载请求
       const sorted = sortConversations(result.items);
       const serverFiltered = q !== undefined;
@@ -229,11 +250,43 @@ export class ChatStore {
         listStatus: 'ready',
         searchStatus: 'idle',
         serverFiltered,
+        listLimit: CONVERSATIONS_PAGE_SIZE,
+        hasMoreConversations: result.items.length >= CONVERSATIONS_PAGE_SIZE,
+        loadingMore: false,
       });
       this.recomputeVisible();
     } catch {
       if (seq !== this.listSeq) return;
-      this.setState({ listStatus: 'error', searchStatus: 'idle' });
+      // A25：刷新与「加载更多」共用代际——刷新结果落地时一并解除加载更多的 in-flight 锁
+      this.setState({ listStatus: 'error', searchStatus: 'idle', loadingMore: false });
+    }
+  }
+
+  /**
+   * A25「加载更多」：后端仅支持 limit（无 offset/cursor），按页递增 limit 重取并整体替换——
+   * 服务端按 last_active_at 降序返回，旧前缀不变。失败静默保留已加载数据，可再次点击。
+   */
+  async loadMoreConversations(): Promise<void> {
+    if (this.state.loadingMore || !this.state.hasMoreConversations) return;
+    const nextLimit = Math.min(this.state.listLimit + CONVERSATIONS_PAGE_SIZE, CONVERSATIONS_MAX_LIMIT);
+    const seq = ++this.listSeq; // 与首屏加载共用代际；「加载更多」与刷新互斥，后完成者为准
+    this.setState({ loadingMore: true });
+    try {
+      const q = this.shouldServerSearch(this.state.searchQuery) ? this.state.searchQuery : undefined;
+      const result = await this.deps.api.listConversations(q, nextLimit);
+      if (seq !== this.listSeq) return; // 已有更新的加载请求
+      const sorted = sortConversations(result.items);
+      this.setState({
+        conversations: sorted,
+        groups: result.groups,
+        listLimit: nextLimit,
+        hasMoreConversations: result.items.length >= nextLimit && nextLimit < CONVERSATIONS_MAX_LIMIT,
+        loadingMore: false,
+      });
+      this.recomputeVisible();
+    } catch {
+      if (seq !== this.listSeq) return;
+      this.setState({ loadingMore: false });
     }
   }
 
@@ -448,11 +501,14 @@ export class ChatStore {
       overrides: null,
     });
     this.activeSession = session;
+    const localId = `local_user_${++pendingSeq}`;
+    const createdAt = new Date().toISOString();
     this.pendingAsk = {
-      localId: `local_user_${++pendingSeq}`,
+      localId,
       content,
-      createdAt: new Date().toISOString(),
+      createdAt,
       userMessageId: null,
+      localView: { id: localId, role: 'user', content, created_at: createdAt },
     };
     this.setState({ actionNotice: null });
     this.trackSession(session, null, conversationId, null, null);
@@ -875,19 +931,27 @@ export class ChatStore {
         continue;
       }
       const overlay = this.overlays.get(message.id);
-      out.push(overlay === undefined ? this.attachEmptyGeneration(message) : this.mergeAssistant(message, overlay));
+      if (overlay !== undefined) {
+        // A28：活动流式消息是唯一每 tick 更新引用的元素
+        out.push(this.mergeAssistant(message, overlay));
+        continue;
+      }
+      // A28：无 overlay 时确定性视图按读模型引用缓存，透传同一对象（memo 生效前提）
+      const cached = this.assistantViews.get(message.id);
+      if (cached !== undefined && cached.base === message) {
+        out.push(cached.view);
+        continue;
+      }
+      const view = this.attachEmptyGeneration(message);
+      this.assistantViews.set(message.id, { base: message, view });
+      out.push(view);
     }
     if (this.pendingAsk !== null && !knownIds.has(this.pendingAsk.localId)) {
       // M16：本地气泡按 id 去重——start 已绑定真实 user_message_id 且读模型已含该消息时收起
       const realLanded =
         this.pendingAsk.userMessageId !== null && knownIds.has(this.pendingAsk.userMessageId);
       if (!realLanded) {
-        out.push({
-          id: this.pendingAsk.localId,
-          role: 'user',
-          content: this.pendingAsk.content,
-          created_at: this.pendingAsk.createdAt,
-        });
+        out.push(this.pendingAsk.localView);
       }
     }
     for (const [messageId, overlay] of this.overlays) {
@@ -899,6 +963,12 @@ export class ChatStore {
     }
     // M2：pre-start requestError 无 message_id / overlay——合成临时错误行，避免不可达
     this.appendPreStartRequestError(out, knownIds);
+    // A28：切换会话后修剪不在当前读模型中的缓存条目（条目仅在本循环写入，量级≤当前消息数）
+    if (this.assistantViews.size > knownIds.size) {
+      for (const id of this.assistantViews.keys()) {
+        if (!knownIds.has(id)) this.assistantViews.delete(id);
+      }
+    }
     this.setState({ messages: out });
   }
 

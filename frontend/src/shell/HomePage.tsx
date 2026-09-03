@@ -12,7 +12,7 @@
  * 侧栏会话/分组 patch·delete 失败经 HeaderNotice 轻提示（A38）：store 返回 false，不再静默吞错。
  */
 
-import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { createApiClient } from '../api/client';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
@@ -28,7 +28,7 @@ import { useNotifications } from '../notifications/NotificationsProvider';
 import { AUTO_OPEN_ADMIN_DRAWER_STATE_KEY } from '../router/landing';
 import { HeaderNotice } from '../ui';
 import { ShellBell } from './ShellBell';
-import type { ConversationScope, EffortLevel } from '../chat/types';
+import type { AbChoice, ConversationScope, EffortLevel, FeedbackVoteRequest } from '../chat/types';
 import type { ScopeSelection } from '../chat/ui/scope-chip';
 
 /** 聊天装配：ChatStore 与其依赖的 ChatApi（优化输入端点复用同一 client 的 401 refresh 链路）。 */
@@ -168,7 +168,6 @@ function ChatHomeInner({
     void store.fetchSpaces().then((items) => {
       if (items !== null) setSpaces(items);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 新登录落地（每次新登录主页即新会话界面）：有未命名新会话则指向它，否则创建一个；
@@ -179,7 +178,6 @@ function ChatHomeInner({
     freshLandingHandled.current = true;
     authStore.clearFreshLoginLanding();
     void store.openOrCreateNewConversation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [freshLoginLanding, state.listStatus]);
 
   // 列表就绪且未打开会话：自动打开最近一条（历史会话恢复；空列表则停留在空态问候语）。
@@ -191,7 +189,6 @@ function ChatHomeInner({
     if (first !== undefined) {
       void store.openConversation(first.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [freshLoginLanding, state.listStatus, state.visibleConversations.length]);
 
   // 会话切换：加载该会话记忆（无则默认快速 + 全部范围）；新建会话重置
@@ -200,7 +197,6 @@ function ChatHomeInner({
     if (conversationId === '') return;
     const memory = memoryByConversation.current.get(conversationId) ?? DEFAULT_MEMORY;
     onComposerMemoryChange(memory);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
   const openConversation = (id: string) => {
@@ -266,6 +262,17 @@ function ChatHomeInner({
     generating && session?.start !== null && !session.stopRequested && session.phase !== 'stopping';
   const stopping = session?.phase === 'stopping' || session?.stopRequested === true;
 
+  // A28：消息回调稳定引用（store 单例，天然稳定）——配合 AssistantMessage memo 生效
+  const onRetry = useCallback((messageId: string) => void store.retry(messageId), [store]);
+  const onFeedback = useCallback(
+    (messageId: string, vote: FeedbackVoteRequest) => void store.submitFeedback(messageId, vote),
+    [store],
+  );
+  const onAbVote = useCallback(
+    (messageId: string, choice: AbChoice) => void store.submitAbVote(messageId, choice),
+    [store],
+  );
+
   return (
     <div className="flex min-h-screen">
       <ChatSidebar
@@ -273,6 +280,9 @@ function ChatHomeInner({
         conversations={state.visibleConversations}
         groups={state.groups}
         listStatus={state.listStatus}
+        hasMore={state.hasMoreConversations}
+        loadingMore={state.loadingMore}
+        onLoadMore={() => void store.loadMoreConversations()}
         currentId={state.conversationId}
         searchQuery={state.searchQuery}
         drawerOpen={drawerOpen}
@@ -333,9 +343,9 @@ function ChatHomeInner({
               conversationId={state.conversationId}
               conversationStatus={state.conversationStatus}
               messages={state.messages}
-              onRetry={(messageId) => void store.retry(messageId)}
-              onFeedback={(messageId, vote) => void store.submitFeedback(messageId, vote)}
-              onAbVote={(messageId, choice) => void store.submitAbVote(messageId, choice)}
+              onRetry={onRetry}
+              onFeedback={onFeedback}
+              onAbVote={onAbVote}
               pendingSubmits={state.pendingSubmits}
               composer={
                 <Composer

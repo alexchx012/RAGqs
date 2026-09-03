@@ -11,7 +11,12 @@ import {
 } from './store';
 import { mockAuth, mockChat } from '../mocks/testing';
 import type { SseEventMessage } from './sse';
-import type { ConversationSummary, SseGenerationEvent } from './types';
+import type {
+  AssistantMessage,
+  ConversationDetail,
+  ConversationSummary,
+  SseGenerationEvent,
+} from './types';
 
 /*
  * 会话状态机行为验证（spec §2–§6）：经 MSW 契约 mock 真实 HTTP 边界驱动（reduced-motion 直出模拟），
@@ -131,12 +136,14 @@ describe('会话状态机（ChatStore）', () => {
     function makeDeferredListApi() {
       const pending: {
         q: string | undefined;
+        limit: number | undefined;
         resolve: (value: { items: ConversationSummary[]; groups: never[] }) => void;
+        reject: (reason?: unknown) => void;
       }[] = [];
       const api = {
-        listConversations: (q?: string) =>
-          new Promise<{ items: ConversationSummary[]; groups: never[] }>((resolve) => {
-            pending.push({ q, resolve });
+        listConversations: (q?: string, limit?: number) =>
+          new Promise<{ items: ConversationSummary[]; groups: never[] }>((resolve, reject) => {
+            pending.push({ q, limit, resolve, reject });
           }),
       } as unknown as ChatApi;
       const take = () => {
@@ -191,6 +198,117 @@ describe('会话状态机（ChatStore）', () => {
       const state = store.getState();
       expect(state.conversations.map((item) => item.id)).toEqual(['a', 'b']);
       expect(state.listStatus).toBe('ready');
+    });
+
+    /* ---------- A25：列表按需分页（首页 50，「加载更多」递增 limit，后端上限 200） ---------- */
+
+    function pageOf(count: number, offset = 0): { items: ConversationSummary[]; groups: never[] } {
+      return {
+        items: Array.from({ length: count }, (_, index) =>
+          summary(`c${offset + index}`, `T${offset + index}`),
+        ),
+        groups: [],
+      };
+    }
+
+    it('A25 分页：首屏请求 limit=50，满页时 hasMoreConversations=true', async () => {
+      const { api, take } = makeDeferredListApi();
+      const { store } = makeStore({ api });
+
+      const first = store.loadConversationList();
+      const request = take();
+      expect(request.limit).toBe(50);
+      request.resolve(pageOf(50));
+      await first;
+
+      const state = store.getState();
+      expect(state.conversations).toHaveLength(50);
+      expect(state.listStatus).toBe('ready');
+      expect(state.listLimit).toBe(50);
+      expect(state.hasMoreConversations).toBe(true);
+    });
+
+    it('A25 分页：加载更多以递增 limit 重取并整体替换；不足满页时收口', async () => {
+      const { api, take } = makeDeferredListApi();
+      const { store } = makeStore({ api });
+
+      const first = store.loadConversationList();
+      take().resolve(pageOf(50));
+      await first;
+
+      const more = store.loadMoreConversations();
+      const request = take();
+      expect(request.limit).toBe(100);
+      request.resolve(pageOf(60));
+      await more;
+
+      const state = store.getState();
+      expect(state.conversations.map((item) => item.id)).toEqual(
+        Array.from({ length: 60 }, (_, index) => `c${index}`),
+      );
+      expect(state.listLimit).toBe(100);
+      expect(state.hasMoreConversations).toBe(false);
+      expect(state.loadingMore).toBe(false);
+    });
+
+    it('A25 分页：加载中重复触发不发新请求；limit 逐页递增至上限后收口', async () => {
+      const { api, take } = makeDeferredListApi();
+      const { store } = makeStore({ api });
+
+      const first = store.loadConversationList();
+      take().resolve(pageOf(50));
+      await first;
+
+      const more = store.loadMoreConversations();
+      const request100 = take();
+      expect(request100.limit).toBe(100);
+      expect(store.getState().loadingMore).toBe(true);
+      void store.loadMoreConversations(); // 重复触发：single-flight，不发新请求
+      expect(() => take()).toThrow('no pending list request');
+      request100.resolve(pageOf(100));
+      await more;
+      expect(store.getState().hasMoreConversations).toBe(true);
+
+      const next = store.loadMoreConversations();
+      const request150 = take();
+      expect(request150.limit).toBe(150);
+      request150.resolve(pageOf(150));
+      await next;
+
+      const last = store.loadMoreConversations();
+      const request200 = take();
+      expect(request200.limit).toBe(200);
+      request200.resolve(pageOf(200));
+      await last;
+      // 达上限 200：无论是否满页都不再展示加载更多
+      expect(store.getState().hasMoreConversations).toBe(false);
+      expect(store.getState().loadingMore).toBe(false);
+      void store.loadMoreConversations();
+      expect(() => take()).toThrow('no pending list request');
+    });
+
+    it('A25 分页：加载更多失败保留已加载数据，仍可再次点击', async () => {
+      const { api, take } = makeDeferredListApi();
+      const { store } = makeStore({ api });
+
+      const first = store.loadConversationList();
+      take().resolve(pageOf(50));
+      await first;
+
+      const failed = store.loadMoreConversations();
+      take().reject(new Error('network down'));
+      await failed;
+
+      expect(store.getState().conversations).toHaveLength(50);
+      expect(store.getState().loadingMore).toBe(false);
+      expect(store.getState().listStatus).toBe('ready');
+
+      const retry = store.loadMoreConversations();
+      const request = take();
+      expect(request.limit).toBe(100);
+      request.resolve(pageOf(60));
+      await retry;
+      expect(store.getState().conversations).toHaveLength(60);
     });
   });
 
@@ -333,6 +451,109 @@ describe('会话状态机（ChatStore）', () => {
         expect(latest.stop_reason).toBe('manual_request');
         expect(latest.content.length).toBeGreaterThan(0); // 保留已收稳定 answer
       }
+    });
+  });
+
+  describe('A28：消息视图引用稳定性', () => {
+    function readModelMessage(id: string, generationId: string): AssistantMessage {
+      return {
+        id,
+        role: 'assistant',
+        content: `answer ${id}`,
+        created_at: '2026-08-16T00:00:00Z',
+        answer_mode: 'grounded',
+        effort_level: 'quick',
+        generation_id: generationId,
+        root_generation_id: generationId,
+        retry_of_generation_id: null,
+        attempt_number: 1,
+        status: 'completed',
+        stop_reason: null,
+        notices: [],
+        citations: [],
+        feedback: null,
+        ab: null,
+      };
+    }
+
+    const readModel: ConversationDetail = {
+      id: 'c_refs',
+      title: '引用稳定',
+      effort_level: 'quick',
+      scope: { space_ids: [], document_ids: [] },
+      messages: [
+        { id: 'u_1', role: 'user', content: '第一问', created_at: '2026-08-16T00:00:00Z' },
+        readModelMessage('m_1', 'g_1'),
+        readModelMessage('m_2', 'g_2'),
+      ],
+    };
+
+    /** 全挂起 API：getConversation 挂起等待交付；ask 永不推进（仅 trackSession 触发重算）。 */
+    function makeHangingApi() {
+      let deliverFn: ((value: ConversationDetail) => void) | null = null;
+      const api = {
+        getConversation: () =>
+          new Promise<ConversationDetail>((resolve) => {
+            deliverFn = resolve;
+          }),
+        ask: () => new Promise<void>(() => {}),
+      } as unknown as ChatApi;
+      return { api, deliverDetail: (value: ConversationDetail) => deliverFn?.(value) };
+    }
+
+    it('流式重算 tick：非活动消息与本地气泡透传同一对象引用', async () => {
+      const { api, deliverDetail } = makeHangingApi();
+      const { store } = makeStore({ api });
+
+      const opening = store.openConversation('c_refs');
+      deliverDetail(readModel);
+      await opening;
+
+      const before = store.getState().messages;
+      expect(before.map((message) => message.id)).toEqual(['u_1', 'm_1', 'm_2']);
+
+      // ask：挂起流无事件，仅 trackSession 的 setState + recomputeMessages 触发一次重算
+      void store.ask('第二问', 'quick');
+      const after = store.getState().messages;
+      expect(after).toHaveLength(4); // 历史 3 条 + 未落地的本地气泡
+      expect(after).not.toBe(before); // 数组本身重建
+      // A28：未变化的历史消息（含读模型 user 消息）引用不变
+      expect(after[0]).toBe(before[0]);
+      expect(after[1]).toBe(before[1]);
+      expect(after[2]).toBe(before[2]);
+
+      // 再次重算（重新打开同一读模型对象）：assistant 视图引用仍稳定
+      const reopening = store.openConversation('c_refs');
+      deliverDetail(readModel);
+      await reopening;
+      const third = store.getState().messages;
+      expect(third).toHaveLength(3); // openConversation 清空 pendingAsk
+      expect(third[1]).toBe(before[1]);
+      expect(third[2]).toBe(before[2]);
+    });
+
+    it('读模型刷新（新消息对象）后受影响视图重建，未变化消息仍稳定', async () => {
+      const { api, deliverDetail } = makeHangingApi();
+      const { store } = makeStore({ api });
+
+      const opening = store.openConversation('c_refs');
+      deliverDetail(readModel);
+      await opening;
+      const before = store.getState().messages;
+
+      // 读模型换新对象：m_2 以新对象交付（正文更新），u_1 / m_1 沿用原对象
+      const refreshed: ConversationDetail = {
+        ...readModel,
+        messages: [readModel.messages[0], readModel.messages[1], readModelMessage('m_2', 'g_2')],
+      };
+      const reopening = store.openConversation('c_refs');
+      deliverDetail(refreshed);
+      await reopening;
+
+      const after = store.getState().messages;
+      expect(after[0]).toBe(before[0]);
+      expect(after[1]).toBe(before[1]); // base 引用未变：缓存命中
+      expect(after[2]).not.toBe(before[2]); // base 换新对象：视图重建，不误用旧缓存
     });
   });
 
