@@ -432,3 +432,109 @@ def test_head_keeps_single_recipient_seq_index_and_downgrade_restores_it(
     engine.dispose()
 
     assert "ix_notification_recipient_seq" in index_names
+
+
+def test_notification_retire_due_index_round_trips(tmp_path: Path) -> None:
+    """0048：notification 表由 0003 的冻结定义建成，upgrade 到 head 时由迁移补建
+    retire due 索引，downgrade 再对称摘除，往返回到终态一致。"""
+    database_url = f"sqlite:///{tmp_path / 'notification-retire-index.sqlite3'}"
+    config = alembic_config(database_url)
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert "ix_notification_retire_due" in {
+        index["name"] for index in inspect(engine).get_indexes("notification")
+    }
+    engine.dispose()
+
+    command.downgrade(config, "0047_drop_notification_seq_idx")
+    engine = create_engine(database_url)
+    assert "ix_notification_retire_due" not in {
+        index["name"] for index in inspect(engine).get_indexes("notification")
+    }
+    engine.dispose()
+
+    # 摘除后的库再次升级（存量库形态）由迁移补建。
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert "ix_notification_retire_due" in {
+        index["name"] for index in inspect(engine).get_indexes("notification")
+    }
+    engine.dispose()
+
+
+def test_postgres_retire_due_index_serves_the_scan() -> None:
+    """0048（review #14）：与 outbox compact 扫描同型——notification 的保留期
+    到期扫描在 PostgreSQL 下必须走索引；0003 用冻结表定义建 notification，
+    upgrade 到 head 由 0048 补建该索引。"""
+    import uuid
+
+    if not _pg_url():
+        pytest.skip("PostgreSQL integration environment is not configured")
+    from sqlalchemy import create_engine
+
+    database_url = _pg_url()
+    schema = f"mig_retire_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(database_url)
+    try:
+        with admin.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    finally:
+        admin.dispose()
+    scoped = _scoped_url(database_url, schema)
+    engine = create_engine(scoped)
+    try:
+        config = alembic_config(scoped)
+        # 0047 时点 notification 尚无 retire due 索引（新装与存量库同形）。
+        command.upgrade(config, "0047_drop_notification_seq_idx")
+        with engine.connect() as connection:
+            index_names = {
+                index["name"] for index in inspect(connection).get_indexes("notification")
+            }
+        assert "ix_notification_retire_due" not in index_names
+
+        command.upgrade(config, "head")
+
+        with engine.begin() as connection:
+            # 20000 行远期保留 + 1 行到期：大表使规划器自然选择索引路径
+            # （与 compact 扫描断言同一构造）。
+            connection.execute(
+                text(
+                    "INSERT INTO notification (id, event_id, recipient_user_id, "
+                    "notification_type, title, payload_json, event_occurred_at_utc, "
+                    "materialized_at_utc, notification_seq, read_at_utc, "
+                    "retire_after_at_utc, redacted) "
+                    "SELECT 'ntf_r_' || g, 'evt_r_' || g, 'retire_user', "
+                    "'ingestion_completed', 't', '{}', now(), now(), g, NULL, "
+                    "now() + interval '90 days', FALSE FROM generate_series(1, 20000) g"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO notification (id, event_id, recipient_user_id, "
+                    "notification_type, title, payload_json, event_occurred_at_utc, "
+                    "materialized_at_utc, notification_seq, read_at_utc, "
+                    "retire_after_at_utc, redacted) "
+                    "VALUES ('ntf_due_1', 'evt_due_1', 'retire_user', "
+                    "'ingestion_completed', 't', '{}', now(), now(), 20001, NULL, "
+                    "now() - interval '1 hour', FALSE)"
+                )
+            )
+            connection.execute(text("ANALYZE notification"))
+            plan = "\n".join(
+                connection.execute(
+                    text(
+                        "EXPLAIN (COSTS OFF) SELECT id FROM notification "
+                        "WHERE retire_after_at_utc <= now()"
+                    )
+                ).scalars()
+            )
+            assert "ix_notification_retire_due" in plan
+    finally:
+        engine.dispose()
+        admin = create_engine(database_url)
+        try:
+            with admin.begin() as connection:
+                connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        finally:
+            admin.dispose()

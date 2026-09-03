@@ -633,3 +633,79 @@ def test_quota_request_pending_index_allows_terminal_then_pending(tmp_path: Path
         assert count == 2
     finally:
         engine.dispose()
+
+
+_BILLING_FUNCTION_NAMES = (
+    "prevent_provider_billing_source_mutation",
+    "prevent_provider_billing_adjustment_mutation",
+    "prevent_provider_billing_group_mutation",
+)
+
+
+def _pg_billing_function_names(engine, schema: str) -> set[str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT p.proname FROM pg_proc p "
+                "JOIN pg_namespace n ON p.pronamespace = n.oid "
+                "WHERE n.nspname = :schema"
+            ),
+            {"schema": schema},
+        )
+        return {row[0] for row in rows}
+
+
+@pytest.mark.integration
+def test_postgres_billing_trigger_functions_round_trip_through_0030() -> None:
+    """review #2：0030 的 PG 降级只删表时会把 3 个触发器函数留在库里，
+    降级后的库重新 upgrade 会因 CREATE FUNCTION 撞名而失败。降级必须随
+    downgrade 删除函数，upgrade→downgrade→upgrade 往返成立。"""
+    import os
+    import uuid
+    from urllib.parse import quote
+
+    if not os.environ.get("RAGQS_TEST_POSTGRES_URL"):
+        pytest.skip("PostgreSQL integration environment is not configured")
+    from sqlalchemy import create_engine
+
+    database_url = os.environ["RAGQS_TEST_POSTGRES_URL"]
+    schema = f"mig_billing_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(database_url)
+    try:
+        with admin.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    finally:
+        admin.dispose()
+
+    # 合法密码可能含 %（URL 编码等），ConfigParser 把裸 % 当插值语法，先转义
+    # （outbox 迁移测试的 alembic_config helper 同一处理）。
+    scoped_url = (
+        f"{database_url}{'&' if '?' in database_url else '?'}"
+        f"options=-c%20search_path%3D{quote(schema)}"
+    )
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", scoped_url.replace("%", "%%"))
+
+    try:
+        command.upgrade(config, "0030_usage_meter_budget")
+        engine = create_engine(scoped_url)
+        assert _pg_billing_function_names(engine, schema) >= set(_BILLING_FUNCTION_NAMES)
+        engine.dispose()
+
+        command.downgrade(config, "0029_account_deletion_archive")
+        engine = create_engine(scoped_url)
+        assert _pg_billing_function_names(engine, schema).isdisjoint(_BILLING_FUNCTION_NAMES)
+        engine.dispose()
+
+        # 往返：函数已随降级删除，重新 upgrade 不得报 function already exists。
+        command.upgrade(config, "0030_usage_meter_budget")
+        engine = create_engine(scoped_url)
+        assert _pg_billing_function_names(engine, schema) >= set(_BILLING_FUNCTION_NAMES)
+        engine.dispose()
+    finally:
+        admin = create_engine(database_url)
+        try:
+            with admin.begin() as connection:
+                connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        finally:
+            admin.dispose()

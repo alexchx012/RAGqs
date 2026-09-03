@@ -122,3 +122,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     for table in reversed(_TABLES):
         op.drop_table(table.name)
+    # drop_table 已随表移除各触发器，但 plpgsql 函数独立于表存在：
+    # 不显式删除的话，降级后的库重新 upgrade 会因函数已存在而失败
+    # （写法对照 0011 的既有 downgrade）。
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("DROP FUNCTION IF EXISTS prevent_provider_billing_source_mutation()")
+        op.execute("DROP FUNCTION IF EXISTS prevent_provider_billing_adjustment_mutation()")
+        op.execute("DROP FUNCTION IF EXISTS prevent_provider_billing_group_mutation()")

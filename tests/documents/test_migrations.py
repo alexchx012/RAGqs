@@ -23,6 +23,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from app.documents.schema import DOCUMENTS_TABLE_NAMES, documents_metadata
+from app.outbox.schema import outbox_metadata
 
 
 def _config(database_url: str) -> Config:
@@ -240,3 +241,78 @@ def test_documents_write_migration_hashes_legacy_keys_and_is_rerunnable() -> Non
     assert primary_key == ["actor_id", "endpoint", "target_id", "idempotency_key_hash"]
     assert "document_version_id" in claim_columns
     assert claim_row["document_version_id"] == "version_1"
+
+
+_SECONDARY_INDEXES = (
+    ("upload_batch_items", "ix_upload_batch_items_batch"),
+    ("ingestion_jobs", "ix_ingestion_jobs_document"),
+)
+
+
+def _index_names(engine, table: str) -> set[str]:
+    return {index["name"] for index in inspect(engine).get_indexes(table)}
+
+
+def test_secondary_indexes_migration_round_trips_for_fresh_and_legacy_databases(
+    tmp_path: Path,
+) -> None:
+    """0048：新装库的表由 create_all 随当前 schema.py 建成（索引已存在），迁移的
+    inspect 守卫必须跳过；索引缺失的存量库升级时由迁移补建，downgrade 再对称摘除。"""
+    database_url = f"sqlite:///{tmp_path / 'secondary-indexes.sqlite3'}"
+    config = _config(database_url)
+
+    # 新装库路径：守卫跳过（无守卫时 create_index 会因重复创建而失败）。
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    for table, index_name in _SECONDARY_INDEXES:
+        assert index_name in _index_names(engine, table)
+    engine.dispose()
+
+    # downgrade 对称摘除。
+    command.downgrade(config, "0047_drop_notification_seq_idx")
+    engine = create_engine(database_url)
+    for table, index_name in _SECONDARY_INDEXES:
+        assert index_name not in _index_names(engine, table)
+    engine.dispose()
+
+    # 存量库路径：索引缺失时由迁移补建。
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    for table, index_name in _SECONDARY_INDEXES:
+        assert index_name in _index_names(engine, table)
+    engine.dispose()
+
+
+def test_secondary_indexes_migration_is_rerunnable_in_both_directions() -> None:
+    """直接以 Operations 上下文重跑 0048，四个守卫分支各到一次：带索引 upgrade
+    跳过、缺索引 upgrade 补建、带索引 downgrade 摘除、缺索引 downgrade 跳过。"""
+    migration_path = Path("alembic/versions/0048_doc_ingest_retire_idx.py")
+    spec = importlib.util.spec_from_file_location("doc_ingest_retire_idx", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    # 0048 同时覆盖 documents 与 notification（outbox）两张域的表。
+    documents_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    try:
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                # create_all 库已带索引：upgrade 的守卫必须跳过。
+                migration.upgrade()
+                migration.upgrade()
+                for table, index_name in _SECONDARY_INDEXES:
+                    assert index_name in _index_names(connection, table)
+                    connection.execute(text(f"DROP INDEX {index_name}"))
+                # 缺索引（存量库形态）：upgrade 补建、downgrade 摘除、再跑跳过。
+                migration.upgrade()
+                migration.downgrade()
+                migration.downgrade()
+                for table, index_name in _SECONDARY_INDEXES:
+                    assert index_name not in _index_names(connection, table)
+                migration.upgrade()
+                for table, index_name in _SECONDARY_INDEXES:
+                    assert index_name in _index_names(connection, table)
+    finally:
+        engine.dispose()

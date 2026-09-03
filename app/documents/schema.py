@@ -181,6 +181,8 @@ upload_batch_items_table = Table(
         name="ck_upload_batch_items_one_target",
     ),
 )
+# 批次状态 API 按批次聚合 item，批次轮询不能随 items 表无界增长退化为全表扫描。
+Index("ix_upload_batch_items_batch", upload_batch_items_table.c.upload_batch_id)
 
 
 upload_dedup_claims_table = Table(
@@ -316,6 +318,8 @@ Index(
     ingestion_jobs_table.c.state,
     ingestion_jobs_table.c.next_attempt_at_utc,
 )
+# 文档删除/软删路径按 document_id 过滤 ingestion_jobs 加行锁。
+Index("ix_ingestion_jobs_document", ingestion_jobs_table.c.document_id)
 
 
 ingestion_attempts_table = Table(
