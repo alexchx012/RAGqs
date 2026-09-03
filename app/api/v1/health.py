@@ -11,11 +11,13 @@ router = APIRouter()
 
 @router.get("/health")
 async def health(request: Request) -> dict[str, str]:
-    del request
     context = current_context()
+    settings = request.app.state.platform_runtime.settings
     return {
         "status": "ok",
         "service": "core-platform",
+        "version": request.app.version,
+        "release_id": settings.release_id,
         "request_id": context.request_id if context is not None else "req_system",
     }
 
@@ -59,6 +61,8 @@ def ready(request: Request) -> dict[str, str]:
     return {
         "status": "ready",
         "service": "core-platform",
+        "version": request.app.version,
+        "release_id": request.app.state.platform_runtime.settings.release_id,
         "database": "ok",
         "object_storage": "ok",
     }

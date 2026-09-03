@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import version as package_version
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,6 +45,27 @@ def settings():
     )
 
 
+def production_settings(tmp_path: Path):
+    values = {
+        "RAG_PLATFORM_PROFILE": "production",
+        "RAG_DATABASE_URL": "postgresql+psycopg://app:secret@db/rag",
+        "RAG_OBJECT_STORAGE_ENDPOINT": "https://objects.example.test",
+        "RAG_OBJECT_STORAGE_BUCKET": "rag-prod",
+        "RAG_PROVIDER_NAME": "openai-compatible",
+        "RAG_PROVIDER_API_KEY": "provider-secret",
+        "RAG_EVALUATION_JUDGE_BASE_URL": "https://judge.example.test/v1",
+        "RAG_EVALUATION_JUDGE_API_KEY": "judge-secret",
+        "RAG_BUSINESS_TIMEZONE": "UTC",
+        "RAG_DEBUG": "false",
+        "RAG_AUTH_SECRET_KEY": "auth-secret-that-is-long-enough",
+        "RAG_AUTH_ALLOWED_ORIGINS": "https://app.example.test",
+        "RAG_AUTH_ADMIN_ROSTER": "admin",
+        "RAG_BACKUP_TARGET_NAMESPACE": "ragqs-test-backups",
+        "USER_DELETION_ARCHIVE_DIR": str(tmp_path / "deletion-archives"),
+    }
+    return load_platform_settings(values)
+
+
 def test_platform_app_registers_only_v1_health_and_request_header() -> None:
     app = create_platform_app(settings())
     engine = app.state.platform_runtime.resolve("database_engine")
@@ -63,6 +86,58 @@ def test_platform_app_registers_only_v1_health_and_request_header() -> None:
     assert response.json()["service"] == "core-platform"
     assert response.headers["x-request-id"].startswith("req_")
     assert response.headers["x-request-id"] != "req_client"
+
+
+def test_health_and_ready_surface_configured_version_and_release_id() -> None:
+    configured = load_platform_settings(
+        {
+            "RAG_PLATFORM_PROFILE": "development",
+            "RAG_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+            "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+            "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+            "RAG_PROVIDER_NAME": "fake",
+            "RAG_RELEASE_ID": "release-test-42",
+        }
+    )
+
+    class ReadyProbeObjectStore:
+        def exists(self, key: str) -> bool:
+            return True
+
+    runtime = build_runtime(configured, adapters={"object_store": ReadyProbeObjectStore()})
+    app = create_platform_app(configured, runtime=runtime)
+    engine = runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+
+    with TestClient(app) as client:
+        health = client.get("/v1/health")
+        ready = client.get("/v1/ready")
+
+    expected_version = package_version("ragqs-core-platform")
+    assert health.status_code == 200
+    assert health.json()["version"] == expected_version
+    assert health.json()["release_id"] == "release-test-42"
+    assert ready.status_code == 200
+    assert ready.json()["version"] == expected_version
+    assert ready.json()["release_id"] == "release-test-42"
+    runtime.close()
+
+
+def test_production_assembly_hides_openapi_schema_and_docs_ui(tmp_path: Path) -> None:
+    configured = production_settings(tmp_path)
+    app = create_platform_app(
+        configured,
+        runtime=PlatformRuntime(configured, adapters={"observability_metrics": None}),
+    )
+
+    client = TestClient(app)
+    assert client.get("/v1/openapi.json").status_code == 404
+    assert client.get("/v1/docs").status_code == 404
+    assert client.get("/v1/docs/oauth2-redirect").status_code == 404
+    assert client.get("/v1/health").status_code == 200
 
 
 def test_platform_app_records_only_bounded_http_telemetry() -> None:

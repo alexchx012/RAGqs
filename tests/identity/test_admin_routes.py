@@ -150,6 +150,48 @@ def test_admin_routes_manage_non_admin_users_and_expose_read_only_matrix() -> No
     assert forbidden_matrix.json()["error"]["code"] == "forbidden_target"
 
 
+def test_admin_user_search_rejects_overlong_query() -> None:
+    configured = settings()
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+    service = IdentityAccessService(
+        engine,
+        configured.auth,
+        revocation_port=NoopGenerationRevocationPort(),
+        department_work_check=NoopDepartmentWorkCheckPort(),
+    )
+    service.provision_user(
+        username="admin",
+        password="Password1",
+        real_name="Admin",
+        display_name="Admin",
+        role="admin",
+        department_id=None,
+    )
+    admin_token = service.login(username="admin", password="Password1").access_token
+    runtime = build_runtime(
+        configured,
+        adapters={"database_engine": engine, "identity_access": service},
+    )
+    app = create_platform_app(configured, runtime=runtime)
+
+    with TestClient(app) as client:
+        auth = {"Authorization": f"Bearer {admin_token}"}
+        boundary = client.get("/v1/admin/users", params={"q": "a" * 256}, headers=auth)
+        overlong = client.get("/v1/admin/users", params={"q": "a" * 257}, headers=auth)
+
+    assert boundary.status_code == 200
+    assert overlong.status_code == 422
+    assert overlong.json()["error"]["code"] == "validation_error"
+
+
 def test_admin_directory_counts_read_active_documents_from_the_documents_owner() -> None:
     configured = settings()
     engine = create_engine(

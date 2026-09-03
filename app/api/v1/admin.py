@@ -58,7 +58,7 @@ class ExpectedVersionRequest(BaseModel):
 def list_users(
     principal: Annotated[AuthPrincipal, Depends(current_principal)],
     service: Annotated[IdentityAccessService, Depends(identity_access_service)],
-    q: str | None = None,
+    q: Annotated[str | None, Query(max_length=256)] = None,
     department_id: str | None = None,
     role: Literal["user", "minister", "ops", "admin"] | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
