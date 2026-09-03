@@ -185,6 +185,10 @@ def test_runner_replays_frozen_suite_and_releases_on_pass() -> None:
     assert record["gate_version_id"] == str(gate["id"])
     assert record["judgment"]["passed"] is True
     assert record["metrics"]["p50_ms"] == 1
+    # 运行记录同时携带活动与候选 index generation 和 reranker release 清单。
+    assert record["candidate_generation_id"] == "generation_initial"
+    assert record["active_generation_id"] == "generation_initial"
+    assert record["reranker_releases"] == ["default"]
 
 
 def test_runner_reports_gate_failure_and_keeps_the_release_staged() -> None:

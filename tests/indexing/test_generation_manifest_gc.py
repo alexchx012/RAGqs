@@ -11,7 +11,11 @@ from app.indexing import (
     SqlAlchemyIndexingRepository,
     indexing_metadata,
 )
-from app.indexing.schema import index_generations_table, index_operations_table
+from app.indexing.schema import (
+    index_generation_leases_table,
+    index_generations_table,
+    index_operations_table,
+)
 
 _REQUIRED_MANIFEST_KEYS = {
     "generation_id",
@@ -195,3 +199,45 @@ def test_sql_gc_blocking_respects_rollback_window() -> None:
         "generation_initial", reconciliation_run_id="run_1", operation_id="gc_after_window"
     )
     assert after_window.state == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# lease 清理：GC 收尾删除已释放/已过期租约，活跃租约保留
+# ---------------------------------------------------------------------------
+
+
+def test_generation_gc_purges_released_and_expired_leases_and_keeps_active() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    documents_metadata.create_all(engine)
+    indexing_metadata.create_all(engine)
+    repository = SqlAlchemyIndexingRepository(engine)
+    staging = repository.create_staging([], generation_id="generation_next")
+    repository.release(staging.generation_id)
+
+    released = repository.acquire_reference_lease(owner_id="released")
+    repository.release_reference_lease(released.lease_id)
+    expired = repository.acquire_reference_lease(owner_id="expired")
+    active = repository.acquire_reference_lease(ttl=timedelta(hours=1), owner_id="active")
+
+    with engine.begin() as connection:
+        connection.execute(
+            update(index_generation_leases_table)
+            .where(index_generation_leases_table.c.id == expired.lease_id)
+            .values(expires_at_utc=datetime.now(UTC) - timedelta(minutes=1))
+        )
+        # 回滚窗口直接判过窗，避免推动全局时钟使 active 租约同时过期。
+        connection.execute(
+            update(index_generations_table)
+            .where(index_generations_table.c.id == "generation_initial")
+            .values(rollback_until_utc=datetime.now(UTC) - timedelta(days=1))
+        )
+
+    repository.request_index_generation_gc(
+        "generation_initial", reconciliation_run_id="reconcile_1", operation_id="gc_1"
+    )
+    receipt = repository.complete_generation_gc("generation_initial", operation_id="gc_1")
+
+    assert receipt.state == "already_purged"
+    with engine.connect() as connection:
+        remaining = set(connection.execute(select(index_generation_leases_table.c.id)).scalars())
+    assert remaining == {active.lease_id}

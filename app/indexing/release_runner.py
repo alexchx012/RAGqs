@@ -115,6 +115,9 @@ def _run_record(row: Mapping[str, Any], *, passed: bool) -> dict[str, Any]:
     return {
         "release_id": str(row["id"]),
         "generation_id": str(row["generation_id"]),
+        "candidate_generation_id": str(row["generation_id"]),
+        "active_generation_id": frozen.get("active_generation_id"),
+        "reranker_releases": list(frozen.get("reranker_releases") or []),
         "profile_id": str(row["profile_id"]),
         "version": str(row["version"]),
         "state": str(row["state"]),

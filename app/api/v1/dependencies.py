@@ -42,6 +42,15 @@ def quota_request_service(request: Request):
     return service
 
 
+def index_generation_manager(request: Request):
+    from app.indexing.persistence import SqlAlchemyGenerationManager
+
+    manager = request.app.state.platform_runtime.resolve("indexing_generation_manager")
+    if not isinstance(manager, SqlAlchemyGenerationManager):
+        raise RuntimeError("indexing generation manager is not configured")
+    return manager
+
+
 def require_streaming(accept: str | None) -> None:
     if accept is None:
         return

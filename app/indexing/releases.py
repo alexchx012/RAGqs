@@ -15,7 +15,11 @@ from .models import RetrievalProfile
 from .release_gates import REQUIRED_LATENCY_METRICS as _REQUIRED_METRICS
 from .release_gates import REQUIRED_QUALITY_METRICS as _REQUIRED_QUALITY_METRICS
 from .release_gates import load_gate_version
-from .schema import index_generations_table, retrieval_releases_table
+from .schema import (
+    index_generation_heads_table,
+    index_generations_table,
+    retrieval_releases_table,
+)
 
 _REQUIRED_SAMPLES = frozenset(
     {
@@ -254,12 +258,25 @@ class RetrievalReleaseService:
         }
         with self._engine.begin() as connection:
             binding = _generation_binding(connection, generation_id)
+            active_generation_id = connection.execute(
+                select(index_generation_heads_table.c.active_generation_id).where(
+                    index_generation_heads_table.c.id == "instance"
+                )
+            ).scalar_one_or_none()
             gate: Mapping[str, Any] | None = None
             if gate_version_id is not None:
                 gate, _ = load_gate_version(connection, gate_version_id)
+            # 验收 run 记录（§7.4.1）显式携带活动与候选两个 index generation，
+            # 以及本次 run 引用的全部 reranker release（当前 profile 模型是单个
+            # 标识，清单形态保持与多阶段 reranker release 兼容）。
             evidence = {
                 **suite,
                 **binding,
+                "candidate_generation_id": generation_id,
+                "active_generation_id": (
+                    str(active_generation_id) if active_generation_id is not None else None
+                ),
+                "reranker_releases": [profile.reranker_release],
                 "gate_version_id": gate_version_id,
                 "profile_config_hash": _fingerprint(snapshot),
                 "results": None,

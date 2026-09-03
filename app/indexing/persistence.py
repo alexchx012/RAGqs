@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
-from sqlalchemy import Engine, and_, delete, select, update
+from sqlalchemy import Engine, and_, delete, or_, select, update
 from sqlalchemy.engine import Connection
 
 from app.documents.schema import (
@@ -2219,6 +2219,18 @@ class SqlAlchemyIndexingRepository:
             conn.execute(
                 index_chunks_table.delete().where(
                     index_chunks_table.c.generation_id == candidate_generation_id
+                )
+            )
+            # 代际 GC 收尾顺带清理已释放/已过期的 generation lease：所有读侧判定
+            # （GC 阻塞、reader lease 读取、retention 候选筛选）都只看未释放且未
+            # 过期的租约，清理不影响活跃 lease 与检索热路径。
+            now = self._timestamp(conn)
+            conn.execute(
+                delete(index_generation_leases_table).where(
+                    or_(
+                        index_generation_leases_table.c.released_at_utc.is_not(None),
+                        index_generation_leases_table.c.expires_at_utc <= now,
+                    )
                 )
             )
             conn.execute(
