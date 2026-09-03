@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from sqlalchemy import select, update
 
+from app.agents.selfeval import SelfEvaluationResult
 from app.chat.models import AskRequest, ConversationScope, RetrievalHitOutcome, RetrievalOutcome
 from app.chat.ports import RecordingChatRetrievalPort
 from app.chat.schema import (
@@ -761,6 +762,79 @@ def test_disconnect_grace_reaps_unleased_generation() -> None:
     assert json.loads(frames[-1][2])["stop_reason"] == "client_disconnected"
 
 
+def test_disconnect_reaper_stops_generation_with_only_expired_lease_residue() -> None:
+    """A crash-left expired lease must not block the disconnect early-stop."""
+
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id, key="ask-expired-lease-residue")
+    with env["engine"].begin() as connection:
+        connection.execute(
+            chat_subscription_lease_table.insert().values(
+                id="lease_residue",
+                generation_id=result.generation_id,
+                auth_session_id="session_crashed",
+                lease_token="token_crashed",
+                expires_at_utc=NOW - timedelta(seconds=1),
+                created_at_utc=NOW,
+                last_renewed_at_utc=NOW,
+            )
+        )
+        connection.execute(
+            update(chat_generation_table)
+            .where(chat_generation_table.c.id == result.generation_id)
+            .values(disconnect_deadline_at_utc=NOW - timedelta(seconds=1))
+        )
+
+    env["runtime"].resolve("chat_generation_worker").run_maintenance()
+    frames = _events(env, headers, result.generation_id)
+    assert frames[-1][0] == "stopped"
+    assert json.loads(frames[-1][2])["stop_reason"] == "client_disconnected"
+
+
+def test_disconnect_reaper_spares_generation_with_live_lease() -> None:
+    env = build_test_env()
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id, key="ask-live-lease")
+    with env["engine"].begin() as connection:
+        connection.execute(
+            chat_subscription_lease_table.insert().values(
+                id="lease_live",
+                generation_id=result.generation_id,
+                auth_session_id="session_live",
+                lease_token="token_live",
+                expires_at_utc=NOW + timedelta(seconds=30),
+                created_at_utc=NOW,
+                last_renewed_at_utc=NOW,
+            )
+        )
+        connection.execute(
+            update(chat_generation_table)
+            .where(chat_generation_table.c.id == result.generation_id)
+            .values(disconnect_deadline_at_utc=NOW - timedelta(seconds=1))
+        )
+
+    env["runtime"].resolve("chat_generation_worker").run_maintenance()
+    with env["engine"].connect() as connection:
+        row = (
+            connection.execute(
+                select(
+                    chat_generation_table.c.status,
+                    chat_generation_table.c.disconnect_deadline_at_utc,
+                ).where(chat_generation_table.c.id == result.generation_id)
+            )
+            .mappings()
+            .one()
+        )
+    assert row == {"status": "running", "disconnect_deadline_at_utc": None}
+
+
 def test_disconnect_reaper_preserves_an_existing_manual_stop_request() -> None:
     env = build_test_env()
     token, _ = provision_and_login(env["identity"], "alice")
@@ -994,9 +1068,128 @@ def test_effort_upgrade_persists_the_effort_used_by_retrieval_provider_and_event
     assert generation["upgraded_from"] == "quick"
     assert [search["effort"] for search in retrieval.searches] == ["quick", "think"]
     assert [request.effort_level for request in env["provider"].calls] == ["think"]
-    assert notice["data_json"] == {"kind": "effort_upgraded", "detail": {"effort_level": "think"}}
+    assert notice["data_json"] == {
+        "kind": "effort_upgraded",
+        "detail": {"effort_level": "think", "from": "quick", "to": "think"},
+    }
     assert answer["data_json"]["effort_level"] == "think"
     assert answer["data_json"]["upgraded_from"] == "quick"
+
+
+class _RoundExhaustingRetrieval(RecordingChatRetrievalPort):
+    """Keeps citations partial until every think-tier RAG round is spent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.resolutions = 0
+
+    def resolve_citations(self, hits, *, principal):  # type: ignore[no-untyped-def]
+        self.resolutions += 1
+        if self.resolutions < 4:
+            return super().resolve_citations(hits[:1], principal=principal)
+        return super().resolve_citations(hits, principal=principal)
+
+
+class _RejectFirstDraftEvaluator:
+    """Self-evaluation that rejects the first draft with a rewrite, then accepts."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def evaluate(self, *, query, candidate_content, citations, context_items):  # type: ignore[no-untyped-def]
+        del query, candidate_content, citations, context_items
+        self.calls += 1
+        if self.calls == 1:
+            return SelfEvaluationResult(acceptable=False, rewritten_query="hello rewritten")
+        return SelfEvaluationResult(acceptable=True)
+
+
+def test_rewrite_loop_effort_upgrade_notice_carries_previous_and_upgraded_tiers() -> None:
+    """The self-evaluation rewrite loop builds the same upgrade notice detail."""
+
+    retrieval = _RoundExhaustingRetrieval()
+    retrieval.outcomes["hello"] = RetrievalOutcome(
+        hits=(
+            RetrievalHitOutcome(
+                document_id="doc_1",
+                document_version_id="ver_1",
+                publication_id="pub_1",
+                chunk_id="chunk_1",
+                space_id="space_1",
+                locator={"page": 1},
+                snippet="first",
+            ),
+            RetrievalHitOutcome(
+                document_id="doc_2",
+                document_version_id="ver_2",
+                publication_id="pub_2",
+                chunk_id="chunk_2",
+                space_id="space_1",
+                locator={"page": 2},
+                snippet="second",
+            ),
+        )
+    )
+    env = build_test_env(retrieval=retrieval)
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = (
+        env["runtime"]
+        .resolve("chat_generation_service")
+        .ask(
+            principal=principal,
+            conversation_id=conversation_id,
+            request=AskRequest(content="hello", effort_level="think", scope=None),
+            idempotency_key="ask-rewrite-upgrade",
+        )
+    )
+
+    worker = env["runtime"].resolve("chat_generation_worker")
+    worker._self_evaluator = _RejectFirstDraftEvaluator()
+    worker.run_once()
+
+    with env["engine"].connect() as connection:
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        notice = (
+            connection.execute(
+                select(chat_generation_event_table)
+                .where(
+                    chat_generation_event_table.c.generation_id == result.generation_id,
+                    chat_generation_event_table.c.event_type == "notice",
+                )
+                .order_by(chat_generation_event_table.c.event_seq)
+            )
+            .mappings()
+            .one()
+        )
+        message_notices = connection.execute(
+            select(chat_message_table.c.notices_json).where(
+                chat_message_table.c.generation_id == result.generation_id
+            )
+        ).scalar_one()
+    assert generation["effective_effort_level"] == "deep"
+    assert generation["upgraded_from"] == "think"
+    expected_detail = {"effort_level": "deep", "from": "think", "to": "deep"}
+    assert notice["data_json"] == {"kind": "effort_upgraded", "detail": expected_detail}
+    assert message_notices == [{"kind": "effort_upgraded", "detail": expected_detail}]
+    # The four think rounds were exhausted, then the rewrite ran at deep.
+    assert [search["effort"] for search in retrieval.searches] == [
+        "think",
+        "think",
+        "think",
+        "think",
+        "deep",
+    ]
 
 
 def test_stale_execution_cannot_persist_effort_upgrade_after_fence_then_lease_recovery(

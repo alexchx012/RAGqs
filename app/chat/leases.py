@@ -137,13 +137,22 @@ def invalidate_lease(
         )
 
 
-def generation_has_active_lease(connection: Connection, *, generation_id: str) -> bool:
-    row = connection.execute(
-        select(chat_subscription_lease_table.c.id).where(
+def generation_has_active_lease(
+    connection: Connection, *, generation_id: str, now: datetime
+) -> bool:
+    """A lease is active only while it exists and has not expired.
+
+    A process crash can leave lease rows behind that will never be renewed;
+    treating those as active would keep the disconnect early-stop from ever
+    firing, so liveness requires ``expires_at_utc`` still in the future.
+    """
+
+    rows = connection.execute(
+        select(chat_subscription_lease_table.c.expires_at_utc).where(
             chat_subscription_lease_table.c.generation_id == generation_id
         )
-    ).first()
-    return row is not None
+    ).all()
+    return any(_utc(row.expires_at_utc) > now for row in rows)
 
 
 def invalidate_all_generation_leases(

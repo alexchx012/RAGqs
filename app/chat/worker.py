@@ -205,6 +205,9 @@ class ChatGenerationWorker:
                     chat_generation_table.c.status == "running",
                     chat_generation_table.c.disconnect_deadline_at_utc.is_not(None),
                 )
+                # Concurrent maintenance instances must iterate candidates in
+                # the same order so their row locks never cross.
+                .order_by(chat_generation_table.c.id)
             )
             .mappings()
             .all()
@@ -214,12 +217,24 @@ class ChatGenerationWorker:
             if _utc(row["disconnect_deadline_at_utc"]) > now:
                 continue
             generation_id = str(row["id"])
-            if generation_has_active_lease(connection, generation_id=generation_id):
+            if generation_has_active_lease(connection, generation_id=generation_id, now=now):
                 connection.execute(
                     update(chat_generation_table)
                     .where(chat_generation_table.c.id == generation_id)
                     .values(disconnect_deadline_at_utc=None, updated_at_utc=now)
                 )
+                continue
+            # Same lock order as the execution paths (execution rows first,
+            # then the generation row) so a concurrent claim/stop/fail can
+            # never deadlock against this reaper on real PostgreSQL.
+            self._lock_generation_executions(connection, generation_id=generation_id)
+            generation = self._lock_generation(connection, generation_id=generation_id)
+            if (
+                generation is None
+                or str(generation["status"]) != "running"
+                or generation["disconnect_deadline_at_utc"] is None
+                or _utc(generation["disconnect_deadline_at_utc"]) > now
+            ):
                 continue
             updated = connection.execute(
                 update(chat_generation_table)
@@ -306,6 +321,8 @@ class ChatGenerationWorker:
                 ).where(
                     chat_generation_execution_table.c.status == "running",
                 )
+                # Same cross-instance ordering discipline as the reaper.
+                .order_by(chat_generation_execution_table.c.execution_id)
             )
             .mappings()
             .all()
@@ -395,6 +412,8 @@ class ChatGenerationWorker:
                 ).where(
                     chat_generation_execution_table.c.status == "provider_reconciling",
                 )
+                # Same cross-instance ordering discipline as the reaper.
+                .order_by(chat_generation_execution_table.c.execution_id)
             )
             .mappings()
             .all()
@@ -402,6 +421,18 @@ class ChatGenerationWorker:
         expired = 0
         for row in rows:
             generation_id = str(row["generation_id"])
+            # Same lock order as the execution paths (execution row first, then
+            # the generation row) so a concurrent stop/fail can never deadlock
+            # against this expirer on real PostgreSQL.
+            if (
+                self._lock_execution(
+                    connection,
+                    generation_id=generation_id,
+                    execution_id=str(row["execution_id"]),
+                )
+                is None
+            ):
+                continue
             generation = self._lock_generation(connection, generation_id=generation_id)
             if generation is None or str(generation["status"]) != "running":
                 continue
@@ -734,23 +765,25 @@ class ChatGenerationWorker:
             running_generations = select(chat_generation_execution_table.c.generation_id).where(
                 chat_generation_execution_table.c.status == "running"
             )
-            due = (
-                connection.execute(
-                    select(
-                        chat_generation_execution_table.c.execution_id,
-                        chat_generation_execution_table.c.generation_id,
-                        chat_generation_execution_table.c.next_attempt_at_utc,
-                    )
-                    .where(
-                        chat_generation_execution_table.c.status.in_(["queued", "retry_wait"]),
-                        chat_generation_execution_table.c.generation_id.not_in(running_generations),
-                    )
-                    .order_by(chat_generation_execution_table.c.next_attempt_at_utc)
-                    .limit(1)
+            claimable = (
+                select(
+                    chat_generation_execution_table.c.execution_id,
+                    chat_generation_execution_table.c.generation_id,
+                    chat_generation_execution_table.c.next_attempt_at_utc,
                 )
-                .mappings()
-                .first()
+                .where(
+                    chat_generation_execution_table.c.status.in_(["queued", "retry_wait"]),
+                    chat_generation_execution_table.c.generation_id.not_in(running_generations),
+                )
+                .order_by(chat_generation_execution_table.c.next_attempt_at_utc)
+                .limit(1)
             )
+            if connection.dialect.name == "postgresql":
+                # Concurrent workers must not queue behind the same candidate:
+                # SKIP LOCKED lets each claim the next free execution instead
+                # of idling (outbox dispatcher uses the same pattern).
+                claimable = claimable.with_for_update(skip_locked=True)
+            due = connection.execute(claimable).mappings().first()
             if due is None:
                 return None
             if _utc(due["next_attempt_at_utc"]) > now:
@@ -1027,7 +1060,7 @@ class ChatGenerationWorker:
                     fencing_token=fencing_token,
                     control_version=control_version,
                     kind="effort_upgraded",
-                    detail={"effort_level": upgraded},
+                    detail={"effort_level": upgraded, "from": previous_effort, "to": upgraded},
                     generation=generation,
                 )
             stage = "retrieving" if round_index == 0 else "retrieving_again"
@@ -1251,7 +1284,7 @@ class ChatGenerationWorker:
                     fencing_token=fencing_token,
                     control_version=control_version,
                     kind="effort_upgraded",
-                    detail={"effort_level": upgraded},
+                    detail={"effort_level": upgraded, "from": previous_effort, "to": upgraded},
                     generation=generation,
                 )
             # The current draft is discarded before the rewritten query is
@@ -2646,9 +2679,30 @@ class ChatGenerationWorker:
             chat_generation_execution_table.c.generation_id == generation_id,
         )
         if connection.dialect.name != "sqlite":
-            statement = statement.with_for_update()
+            # SKIP LOCKED: a row another transaction already locked is not this
+            # transaction's candidate (claim must move on, and stop/fail/fence
+            # converge through the subsequent conditional updates instead of
+            # queueing behind maintenance).
+            statement = statement.with_for_update(skip_locked=True)
         row = connection.execute(statement).mappings().one_or_none()
         return None if row is None else dict(row)
+
+    @staticmethod
+    def _lock_generation_executions(connection: Connection, *, generation_id: str) -> None:
+        """Row-lock every execution of one generation in a stable order.
+
+        Called before the generation row is locked so maintenance holds the
+        same execution-then-generation order as claim/stop/fail.
+        """
+
+        statement = (
+            select(chat_generation_execution_table.c.execution_id)
+            .where(chat_generation_execution_table.c.generation_id == generation_id)
+            .order_by(chat_generation_execution_table.c.execution_id)
+        )
+        if connection.dialect.name != "sqlite":
+            statement = statement.with_for_update()
+        connection.execute(statement).all()
 
     def _lock_generation(
         self, connection: Connection, *, generation_id: str
