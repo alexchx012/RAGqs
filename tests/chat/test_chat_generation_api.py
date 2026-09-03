@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select, update
 
 from app.chat.models import CalibrationWindowSnapshot, RetrievalHitOutcome, RetrievalOutcome
-from app.chat.schema import chat_ab_pair_table, chat_conversation_table
+from app.chat.schema import chat_ab_pair_table, chat_conversation_table, chat_generation_event_table
 
 from .conftest import (
     NOW,
@@ -834,3 +834,153 @@ def test_ab_pair_is_space_isolated_and_cross_space_vote_is_forbidden() -> None:
     # No vote landed for the inaccessible space (A3).
     with env["engine"].connect() as connection:
         assert connection.execute(select(chat_ab_vote_table)).all() == []
+
+
+def test_citation_click_fact_is_recorded_and_kept_out_of_sse_replay() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=(_hit(),))})
+    token, _ = provision_and_login(env["identity"], "alice")
+    other_token, _ = provision_and_login(env["identity"], "bob")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    done = _complete_generation(env, token, conversation_id, content="hello")
+    body = {
+        "document_id": "doc_1",
+        "document_version_id": "ver_1",
+        "citation_index": 0,
+    }
+
+    first = env["client"].post(
+        f"/v1/messages/{done['message_id']}/citation-clicks", json=body, headers=headers
+    )
+    assert first.status_code == 204
+    second = env["client"].post(
+        f"/v1/messages/{done['message_id']}/citation-clicks", json=body, headers=headers
+    )
+    assert second.status_code == 204
+
+    # Ownership and message-kind boundaries match the feedback contract.
+    foreign = env["client"].post(
+        f"/v1/messages/{done['message_id']}/citation-clicks",
+        json=body,
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert foreign.status_code == 404
+    assert foreign.json()["error"]["code"] == "message_not_found"
+    user_message_click = env["client"].post(
+        f"/v1/messages/{done['user_message_id']}/citation-clicks", json=body, headers=headers
+    )
+    assert user_message_click.status_code == 422
+    invalid = env["client"].post(
+        f"/v1/messages/{done['message_id']}/citation-clicks",
+        json={**body, "citation_index": -1},
+        headers=headers,
+    )
+    assert invalid.status_code == 422
+
+    with env["engine"].connect() as connection:
+        event_types = (
+            connection.execute(
+                select(chat_generation_event_table.c.event_type).where(
+                    chat_generation_event_table.c.generation_id == done["generation_id"]
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert event_types.count("citation_click") == 2
+
+    # The SSE replay contract is unchanged: stream events only, terminal done.
+    events = env["client"].get(
+        f"/v1/generations/{done['generation_id']}/events",
+        headers={**headers, "Accept": "text/event-stream"},
+    )
+    assert events.status_code == 200
+    frames = sse_frames(events.text)
+    assert frames
+    assert all(event_type != "citation_click" for event_type, _, _ in frames)
+    assert frames[-1][0] == "done"
+
+
+def test_citation_click_flows_into_the_snapshot_weak_signal_set() -> None:
+    env = build_test_env(
+        outcomes={"hello": RetrievalOutcome(hits=(_hit(),))},
+    )
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    service = env["runtime"].resolve("chat_generation_service")
+    principal = env["identity"].authenticate_access_token(token)
+    from app.chat.models import AskRequest, ConversationScope
+
+    result = service.ask(
+        principal=principal,
+        conversation_id=conversation_id,
+        request=AskRequest(
+            content="hello",
+            effort_level="quick",
+            scope=ConversationScope.from_value({"space_ids": ["space_1"]}),
+        ),
+        idempotency_key="key-1",
+    )
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    click = env["client"].post(
+        f"/v1/messages/{result.message_id}/citation-clicks",
+        json={"document_id": "doc_1", "document_version_id": "ver_1", "citation_index": 0},
+        headers=headers,
+    )
+    assert click.status_code == 204
+
+    snapshot = env["runtime"].resolve("sample_snapshot_source")
+    with env["engine"].connect() as connection:
+        samples = snapshot.collect_samples(connection, space_id="space_1", limit=10)
+    assert len(samples) == 1
+    assert samples[0]["weak_signals"]["weak_has_citation"] is True
+    assert samples[0]["weak_signals"]["weak_citation_clicks"] == 1
+
+    from app.evaluation.policy import aggregate_weak_signals
+
+    summary = aggregate_weak_signals(
+        [{"weak_signals_json": sample["weak_signals"]} for sample in samples]
+    )
+    assert summary["weak_citation_click_rate"] == 1.0
+    assert summary["weak_citation_rate"] == 1.0
+    assert summary["weak_sampled_items"] == 1.0
+
+
+def test_feedback_contract_rejects_invalid_reason_and_foreign_message() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=(_hit(),))})
+    alice_token, _ = provision_and_login(env["identity"], "alice")
+    bob_token, _ = provision_and_login(env["identity"], "bob")
+    headers = {"Authorization": f"Bearer {alice_token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    done = _complete_generation(env, alice_token, conversation_id, content="hello")
+
+    # down_reason accepts only the contract enum, and only for down votes.
+    invalid_reason = env["client"].post(
+        f"/v1/messages/{done['message_id']}/feedback",
+        json={"vote": "down", "reason": "too_slow"},
+        headers={**headers, "Idempotency-Key": "fb-bad-reason"},
+    )
+    assert invalid_reason.status_code == 422
+    down_without_reason = env["client"].post(
+        f"/v1/messages/{done['message_id']}/feedback",
+        json={"vote": "down"},
+        headers={**headers, "Idempotency-Key": "fb-no-reason"},
+    )
+    assert down_without_reason.status_code == 422
+    up_with_reason = env["client"].post(
+        f"/v1/messages/{done['message_id']}/feedback",
+        json={"vote": "up", "reason": "no_grounding"},
+        headers={**headers, "Idempotency-Key": "fb-up-reason"},
+    )
+    assert up_with_reason.status_code == 422
+
+    # Feedback on another user's message stays existence-hidden (404, not 403).
+    foreign = env["client"].post(
+        f"/v1/messages/{done['message_id']}/feedback",
+        json={"vote": "up"},
+        headers={"Authorization": f"Bearer {bob_token}", "Idempotency-Key": "fb-bob"},
+    )
+    assert foreign.status_code == 404
+    assert foreign.json()["error"]["code"] == "message_not_found"

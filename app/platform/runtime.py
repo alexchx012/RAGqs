@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from sqlalchemy import inspect
@@ -125,6 +127,7 @@ from app.outbox.publisher import (
     SqlAlchemyPublicGraphSourceOutboxAdapter,
     SqlAlchemyQuotaOutboxEnqueueAdapter,
     SqlAlchemyRetrievalHardGateAlertAdapter,
+    SqlAlchemyStartupConfigurationAlertAdapter,
     SqlAlchemySubmissionOutboxAdapter,
 )
 from app.outbox.service import NotificationService
@@ -203,6 +206,61 @@ def _index_configuration_staging_table_exists(engine: Any, table_name: str) -> b
         return False
     finally:
         connection.close()
+
+
+def missing_evaluation_judge_configuration(settings: PlatformSettings) -> tuple[str, ...]:
+    """Return only the missing judge setting names safe to expose in an alert."""
+    missing: list[str] = []
+    if not settings.evaluation.judge_base_url or not settings.evaluation.judge_base_url.strip():
+        missing.append("RAG_EVALUATION_JUDGE_BASE_URL")
+    judge_api_key = settings.evaluation.judge_api_key
+    if judge_api_key is None or not judge_api_key.get_secret_value().strip():
+        missing.append("RAG_EVALUATION_JUDGE_API_KEY")
+    return tuple(missing)
+
+
+def publish_missing_evaluation_judge_configuration_alert(
+    settings: PlatformSettings,
+    runtime: PlatformRuntime | None = None,
+) -> None:
+    """Best-effort ops bell when production startup rejects judge configuration.
+
+    Called on the production preflight failure path (missing
+    ``RAG_EVALUATION_JUDGE_BASE_URL`` / ``RAG_EVALUATION_JUDGE_API_KEY``). The
+    caller re-raises the original startup failure, so this helper never raises
+    and never masks it; when the judge settings are complete there is nothing
+    to publish.
+    """
+    missing = missing_evaluation_judge_configuration(settings)
+    if not missing:
+        return
+    engine = None
+    owns_engine = False
+    try:
+        engine = runtime.resolve("database_engine") if runtime is not None else None
+        if engine is None:
+            engine = create_engine_for_settings(settings)
+            owns_engine = True
+        alert_port = (
+            runtime.resolve("startup_configuration_alert_port") if runtime is not None else None
+        )
+        if alert_port is None:
+            alert_port = SqlAlchemyStartupConfigurationAlertAdapter(
+                SqlAlchemyOutboxPublisher(engine)
+            )
+        with engine.begin() as connection:
+            alert_port.publish_missing_evaluation_judge_configuration(
+                missing_variable_names=missing,
+                occurred_at=datetime.now(UTC),
+                connection=connection,
+            )
+    except Exception:  # noqa: BLE001 - the alert must never mask the startup failure
+        logging.getLogger(__name__).warning(
+            "startup evaluation judge configuration alert could not be published", exc_info=True
+        )
+    finally:
+        if owns_engine and engine is not None:
+            engine.dispose()
 
 
 class _LazyUsageSubmission:
@@ -411,6 +469,10 @@ def build_runtime(
         graph_activated_receipt_port=graph_activated_receipt_verifier,
         retention_days=settings.outbox.outbox_delivered_retention_days,
     )
+    startup_configuration_alert_port = configured.get("startup_configuration_alert_port") or (
+        SqlAlchemyStartupConfigurationAlertAdapter(outbox_publisher)
+    )
+    configured.setdefault("startup_configuration_alert_port", startup_configuration_alert_port)
     retrieval_hard_gate_alert_port = configured.get("retrieval_hard_gate_alert_port") or (
         SqlAlchemyRetrievalHardGateAlertAdapter(engine, outbox_publisher)
     )

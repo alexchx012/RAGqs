@@ -12,6 +12,7 @@ from app.chat.schema import (
     chat_ab_pair_table,
     chat_ab_vote_table,
     chat_conversation_table,
+    chat_generation_event_table,
     chat_generation_table,
     chat_message_feedback_table,
     chat_message_table,
@@ -20,6 +21,7 @@ from app.chat.schema import (
 _MINIMAL_SIGNAL_KEYS = frozenset(
     {
         "weak_has_citation",
+        "weak_citation_clicks",
         "weak_feedback_up",
         "weak_feedback_down",
         "weak_ab_vote_count",
@@ -131,6 +133,7 @@ class SqlAlchemyChatFactsSnapshot:
         )
         signals: dict[str, Any] = {
             "weak_has_citation": bool(assistant and (assistant["citations_json"] or None)),
+            "weak_citation_clicks": 0,
             "weak_feedback_up": 0,
             "weak_feedback_down": 0,
             "weak_ab_vote_count": 0,
@@ -148,6 +151,14 @@ class SqlAlchemyChatFactsSnapshot:
             )
             signals["weak_feedback_up"] = sum(1 for vote in feedback if str(vote) == "up")
             signals["weak_feedback_down"] = sum(1 for vote in feedback if str(vote) == "down")
+            signals["weak_citation_clicks"] = len(
+                connection.execute(
+                    select(chat_generation_event_table.c.event_seq).where(
+                        chat_generation_event_table.c.generation_id == assistant["generation_id"],
+                        chat_generation_event_table.c.event_type == "citation_click",
+                    )
+                ).all()
+            )
             pair_id = connection.execute(
                 select(chat_ab_pair_table.c.pair_id).where(
                     chat_ab_pair_table.c.generation_id == assistant["generation_id"],

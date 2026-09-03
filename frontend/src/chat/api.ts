@@ -11,6 +11,7 @@ import type {
   AbVoteRequest,
   AbVoteResponse,
   AskRequest,
+  CitationClickRequest,
   ConversationDetail,
   ConversationGroup,
   ConversationsListResponse,
@@ -70,6 +71,7 @@ export interface ChatApi {
     body: FeedbackVoteRequest,
     idempotencyKey: string,
   ): Promise<void>;
+  reportCitationClick(messageId: string, body: CitationClickRequest): Promise<void>;
   submitAbVote(
     messageId: string,
     body: AbVoteRequest,
@@ -235,6 +237,12 @@ export function createChatApi(client: ApiClient): ChatApi {
         method: 'POST',
         body,
         headers: { 'Idempotency-Key': idempotencyKey },
+      });
+    },
+    async reportCitationClick(messageId, body) {
+      await client.request<void>(`/messages/${encodeURIComponent(messageId)}/citation-clicks`, {
+        method: 'POST',
+        body,
       });
     },
     submitAbVote(messageId, body, idempotencyKey) {

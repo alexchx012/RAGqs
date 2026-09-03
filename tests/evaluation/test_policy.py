@@ -175,13 +175,17 @@ def test_aggregate_weak_signals_means_the_citation_share() -> None:
     from app.evaluation.policy import aggregate_weak_signals
 
     results = [
-        {"weak_signals_json": {"weak_has_citation": True}},
-        {"weak_signals_json": {"weak_has_citation": False}},
-        {"weak_signals_json": {"weak_has_citation": True}},
+        {"weak_signals_json": {"weak_has_citation": True, "weak_citation_clicks": 2}},
+        {"weak_signals_json": {"weak_has_citation": False, "weak_citation_clicks": 0}},
+        {"weak_signals_json": {"weak_has_citation": True, "weak_citation_clicks": 0}},
         {"weak_signals_json": {}},
     ]
     summary = aggregate_weak_signals(results)
-    assert summary == {"weak_citation_rate": 2 / 3, "weak_sampled_items": 3.0}
+    assert summary == {
+        "weak_citation_rate": 2 / 3,
+        "weak_citation_click_rate": 1 / 3,
+        "weak_sampled_items": 3.0,
+    }
 
 
 def test_comparator_key_changes_with_any_member() -> None:

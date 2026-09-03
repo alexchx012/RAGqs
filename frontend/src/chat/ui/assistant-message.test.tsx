@@ -344,3 +344,37 @@ describe('AssistantMessage', () => {
     expect(root?.lastElementChild).toBe(time);
   });
 });
+
+describe('AssistantMessage 引用点击上报', () => {
+  it('点击引用角标触发 onCitationClick（消息 id + citation + 序号）', async () => {
+    const user = userEvent.setup();
+    const onCitationClick = vi.fn();
+    const props = renderMessage(
+      makeMessage({
+        citations: [
+          {
+            document_id: 'doc_1',
+            document_version_id: 'ver_1',
+            locator: { page: 3 },
+          },
+        ],
+      }),
+      { onCitationClick },
+    );
+    await user.click(screen.getByRole('button', { name: copy.chat.message.citeOpenAria }));
+    expect(onCitationClick).toHaveBeenCalledWith('m_1', props.message.citations[0], 0);
+  });
+
+  it('未传 onCitationClick 时点击仍打开预览（缺省不采集，不抛错）', async () => {
+    const user = userEvent.setup();
+    renderMessage(makeMessage({ citations: [
+      {
+        document_id: 'doc_1',
+        document_version_id: 'ver_1',
+        locator: { page: 3 },
+      },
+    ] }));
+    await user.click(screen.getByRole('button', { name: copy.chat.message.citeOpenAria }));
+    expect(screen.getByRole('button', { name: copy.chat.message.citeOpenAria })).toBeInTheDocument();
+  });
+});

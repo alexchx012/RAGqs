@@ -18,6 +18,7 @@ import { createApiClient } from '../api/client';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import { createChatApi, type ChatApi } from '../chat/api';
 import { ChatProvider, useChatStore, useChatState } from '../chat/chat-context';
+import type { Citation } from '../chat/types';
 import { createPromptEnhanceHandler } from '../chat/enhance';
 import { ChatStore } from '../chat/store';
 import { ChatMenuButton, ChatSidebar } from '../chat/ui/sidebar';
@@ -272,6 +273,11 @@ function ChatHomeInner({
     (messageId: string, choice: AbChoice) => void store.submitAbVote(messageId, choice),
     [store],
   );
+  const onCitationClick = useCallback(
+    (messageId: string, citation: Citation, index: number) =>
+      store.reportCitationClick(messageId, citation, index),
+    [store],
+  );
 
   return (
     <div className="flex min-h-screen">
@@ -346,6 +352,7 @@ function ChatHomeInner({
               onRetry={onRetry}
               onFeedback={onFeedback}
               onAbVote={onAbVote}
+              onCitationClick={onCitationClick}
               pendingSubmits={state.pendingSubmits}
               composer={
                 <Composer

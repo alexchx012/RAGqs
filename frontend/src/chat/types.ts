@@ -339,6 +339,13 @@ export type FeedbackVoteRequest =
 
 export type AbChoice = '0' | '1' | 'neither';
 
+/** 引用点击事实（§8.4 弱信号「引用点击率」）；fire-and-forget，无幂等键。 */
+export interface CitationClickRequest {
+  readonly document_id: string;
+  readonly document_version_id: string;
+  readonly citation_index: number;
+}
+
 export interface AbVoteRequest {
   readonly pair_id: string;
   readonly choice: AbChoice;

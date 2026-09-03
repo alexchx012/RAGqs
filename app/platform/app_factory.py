@@ -22,7 +22,12 @@ from app.indexing.observability import INDEX_INTERNAL_OBSERVABILITY_ROUTES
 from app.indexing.retrieval import SPARSE_EXACT_MATCH_ROUTE
 
 from . import runtime as platform_runtime_module
-from .config import PlatformSettings, load_platform_settings, validate_startup_settings
+from .config import (
+    PlatformConfigurationError,
+    PlatformSettings,
+    load_platform_settings,
+    validate_startup_settings,
+)
 from .context import new_request_context
 from .errors import PlatformError, map_exception
 from .http_contract import (
@@ -90,7 +95,16 @@ def create_platform_app(
 ) -> FastAPI:
     settings = settings or load_platform_settings()
     if settings.profile == "production":
-        validate_startup_settings(settings)
+        try:
+            validate_startup_settings(settings)
+        except PlatformConfigurationError:
+            # Production preflight rejected the configuration. When the judge
+            # settings are the reason, ring the ops bell before dying (best
+            # effort; the alert must never mask the startup failure).
+            platform_runtime_module.publish_missing_evaluation_judge_configuration_alert(
+                settings, runtime
+            )
+            raise
     # RAG_LOG_LEVEL：无 handler 时安装默认 handler，并始终把根 logger 调到配置级别
     # （uvicorn 已配置 handler 时 basicConfig 不生效，setLevel 仍然生效）。
     logging.basicConfig(level=settings.logging.level)

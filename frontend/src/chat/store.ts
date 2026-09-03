@@ -561,6 +561,20 @@ export class ChatStore {
 
   /* ---------- 反馈 / A/B 投票 ---------- */
 
+  /**
+   * 引用点击上报（§8.4 弱信号「引用点击率」）：fire-and-forget 事实记录，
+   * 无幂等键；失败静默（不打扰预览窗口打开，也不产生用户可见错误）。
+   */
+  reportCitationClick(messageId: string, citation: Citation, index: number): void {
+    void this.deps.api
+      .reportCitationClick(messageId, {
+        document_id: citation.document_id,
+        document_version_id: citation.document_version_id,
+        citation_index: index,
+      })
+      .catch(() => undefined);
+  }
+
   /** 反馈：Idempotency-Key 幂等；网络未知复用同键（不换键）；409 刷新读模型保留首次事实。 */
   async submitFeedback(messageId: string, vote: FeedbackVoteRequest): Promise<void> {
     const key = this.feedbackKeys.get(messageId) ?? createIdempotencyKey();

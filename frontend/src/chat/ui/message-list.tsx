@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type UIEv
 import { copy } from '../../copy';
 import { formatRelativeTime } from '../../notifications/relative-time';
 import type { ChatConversationStatus } from '../store';
-import type { AbChoice, FeedbackVoteRequest } from '../types';
+import type { AbChoice, Citation, FeedbackVoteRequest } from '../types';
 import { AssistantMessage } from './assistant-message';
 
 export interface MessageListProps {
@@ -22,6 +22,8 @@ export interface MessageListProps {
   readonly onRetry: (messageId: string) => void;
   readonly onFeedback: (messageId: string, vote: FeedbackVoteRequest) => void;
   readonly onAbVote: (messageId: string, choice: AbChoice) => void;
+  /** 引用点击上报（§8.4 弱信号「引用点击率」）；缺省不采集。 */
+  readonly onCitationClick?: (messageId: string, citation: Citation, index: number) => void;
   /** m2：反馈 / A/B 投票提交中锁定控件。 */
   readonly pendingSubmits?: readonly { readonly kind: 'feedback' | 'ab-vote'; readonly messageId: string }[];
   /** M11：输入区节点——空态时随问候语居中下方，首条消息后落底（400ms 过渡）。 */
@@ -35,6 +37,7 @@ export function MessageList({
   onRetry,
   onFeedback,
   onAbVote,
+  onCitationClick,
   pendingSubmits = [],
   composer,
 }: MessageListProps) {
@@ -117,6 +120,7 @@ export function MessageList({
                   onRetry={onRetry}
                   onFeedback={onFeedback}
                   onAbVote={onAbVote}
+                  onCitationClick={onCitationClick}
                   pendingSubmits={pendingSubmits}
                 />
               ),

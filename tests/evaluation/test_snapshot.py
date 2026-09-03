@@ -8,6 +8,7 @@ from app.chat.schema import (
     chat_ab_pair_table,
     chat_ab_vote_table,
     chat_conversation_table,
+    chat_generation_event_table,
     chat_generation_table,
     chat_message_feedback_table,
     chat_message_table,
@@ -126,6 +127,16 @@ def test_snapshot_uses_completed_assistant_facts_for_weak_signals() -> None:
                     created_at_utc=NOW,
                 )
             )
+        for event_seq, document_id in enumerate(("doc_1", "doc_2"), start=1):
+            connection.execute(
+                chat_generation_event_table.insert().values(
+                    generation_id="generation_1",
+                    event_seq=event_seq,
+                    event_type="citation_click",
+                    data_json={"document_id": document_id, "citation_index": event_seq - 1},
+                    created_at_utc=NOW,
+                )
+            )
 
     with env["engine"].connect() as connection:
         samples = SqlAlchemyChatFactsSnapshot(env["engine"]).collect_samples(
@@ -138,6 +149,7 @@ def test_snapshot_uses_completed_assistant_facts_for_weak_signals() -> None:
     assert samples[0]["source_ref"] == "user_message_1"
     assert samples[0]["weak_signals"] == {
         "weak_has_citation": True,
+        "weak_citation_clicks": 2,
         "weak_feedback_up": 1,
         "weak_feedback_down": 1,
         "weak_ab_vote_count": 2,

@@ -17,6 +17,8 @@ export interface CitationBadgeProps {
   readonly citations: readonly Citation[];
   /** 所属 assistant 消息 id：预览接口 message_id 参数（该次回答引用本文档的全部 hits）。 */
   readonly messageId: string;
+  /** 引用点击上报（§8.4 弱信号「引用点击率」）；缺省不采集。 */
+  readonly onCitationClick?: (messageId: string, citation: Citation, index: number) => void;
 }
 
 function locatorLine(citation: Citation): string | null {
@@ -47,16 +49,17 @@ function documentTitle(citation: Citation): string {
   return copy.chat.message.citeFromFallback;
 }
 
-export function CitationBadges({ citations, messageId }: CitationBadgeProps) {
+export function CitationBadges({ citations, messageId, onCitationClick }: CitationBadgeProps) {
   const openPreview = useCallback(
-    (citation: Citation) => {
+    (citation: Citation, index: number) => {
+      onCitationClick?.(messageId, citation, index);
       const url =
         `/preview/${encodeURIComponent(citation.document_id)}` +
         `?message_id=${encodeURIComponent(messageId)}` +
         `&document_version_id=${encodeURIComponent(citation.document_version_id)}`;
       window.open(url, '_blank', 'noopener,noreferrer');
     },
-    [messageId],
+    [messageId, onCitationClick],
   );
 
   if (citations.length === 0) {
@@ -74,7 +77,7 @@ export function CitationBadges({ citations, messageId }: CitationBadgeProps) {
               <button
                 type="button"
                 aria-label={copy.chat.message.citeOpenAria}
-                onClick={() => openPreview(citation)}
+                onClick={() => openPreview(citation, index)}
                 className="text-[12px] font-medium text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black focus-visible:text-ink-black"
               >
                 {label}

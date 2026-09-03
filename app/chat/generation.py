@@ -11,13 +11,14 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 
 from app.platform.context import current_context
 from app.platform.errors import PlatformError
 
 from .budget import RAG_BUDGET_POLICY_VERSION
 from .conversations import create_conversation_row
-from .events import append_event
+from .events import append_event, lock_generation_row
 from .models import (
     AB_PAIR_OPEN_SECONDS,
     AbVoteRequest,
@@ -966,15 +967,25 @@ class GenerationService:
                     409,
                 )
             now = self._now(connection)
-            connection.execute(
-                chat_message_feedback_table.insert().values(
-                    message_id=message_id,
-                    voter_user_id=user_id,
-                    vote=request.vote,
-                    down_reason=request.down_reason,
-                    created_at_utc=now,
+            try:
+                connection.execute(
+                    chat_message_feedback_table.insert().values(
+                        message_id=message_id,
+                        voter_user_id=user_id,
+                        vote=request.vote,
+                        down_reason=request.down_reason,
+                        created_at_utc=now,
+                    )
                 )
-            )
+            except IntegrityError as error:
+                # A concurrent same-key feedback committed between the check
+                # above and this insert; the unique contract stays 409.
+                raise PlatformError(
+                    "feedback_already_submitted",
+                    "Feedback has already been submitted for this message",
+                    {},
+                    409,
+                ) from error
             self._record_idempotency(
                 connection,
                 user_id=user_id,
@@ -984,6 +995,60 @@ class GenerationService:
                 fingerprint=fingerprint,
                 response_target=message_id,
                 now=now,
+            )
+
+    def record_citation_click(
+        self,
+        *,
+        principal: Any,
+        message_id: str,
+        document_id: str,
+        document_version_id: str,
+        citation_index: int,
+    ) -> None:
+        """Record one citation click on an assistant answer (§8.4 weak signal).
+
+        Clicks land as ``citation_click`` facts in the generation event log;
+        the SSE replay stream filters them out and the evaluation chat-facts
+        snapshot aggregates them. Clicks are immutable facts, never feedback.
+        """
+        with self._engine.begin() as connection:
+            self._authorization.verify_active(connection, principal)
+            message = (
+                connection.execute(
+                    select(
+                        chat_message_table.c.owner_user_id,
+                        chat_message_table.c.role,
+                        chat_message_table.c.generation_id,
+                    ).where(chat_message_table.c.id == message_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if message is None or str(message["owner_user_id"]) != str(principal.user_id):
+                raise PlatformError("message_not_found", "Message was not found", {}, 404)
+            if str(message["role"]) != "assistant":
+                raise PlatformError(
+                    "validation_error",
+                    "Only assistant messages accept citation clicks",
+                    {"field": "message_id"},
+                    422,
+                )
+            generation = lock_generation_row(
+                connection, generation_id=str(message["generation_id"])
+            )
+            if generation is None:
+                raise PlatformError("generation_not_found", "Generation was not found", {}, 404)
+            append_event(
+                connection,
+                generation_id=str(message["generation_id"]),
+                event_type="citation_click",
+                data={
+                    "document_id": document_id,
+                    "document_version_id": document_version_id,
+                    "citation_index": citation_index,
+                },
+                now=self._now(connection),
             )
 
     def _require_owned_assistant_message(
