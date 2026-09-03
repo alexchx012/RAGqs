@@ -129,6 +129,7 @@ from app.outbox.publisher import (
     SqlAlchemyRetrievalHardGateAlertAdapter,
     SqlAlchemyStartupConfigurationAlertAdapter,
     SqlAlchemySubmissionOutboxAdapter,
+    SqlAlchemyUsageInvariantAlertAdapter,
 )
 from app.outbox.service import NotificationService
 from app.usage.billing import ProviderBillingService
@@ -477,6 +478,10 @@ def build_runtime(
         SqlAlchemyRetrievalHardGateAlertAdapter(engine, outbox_publisher)
     )
     configured.setdefault("retrieval_hard_gate_alert_port", retrieval_hard_gate_alert_port)
+    usage_invariant_alert_port = configured.get("usage_invariant_alert_port") or (
+        SqlAlchemyUsageInvariantAlertAdapter(engine, outbox_publisher)
+    )
+    configured.setdefault("usage_invariant_alert_port", usage_invariant_alert_port)
     public_source_outbox_port = configured.get("public_graph_source_outbox_port") or (
         SqlAlchemyPublicGraphSourceOutboxAdapter(outbox_publisher)
     )
@@ -781,7 +786,9 @@ def build_runtime(
         settings.business_timezone or "UTC",
     )
     prices = configured.get("price_catalog") or PriceCatalogService(engine, clock)
-    ledger = configured.get("usage_ledger") or UsageLedger(engine, clock, calendar, prices)
+    ledger = configured.get("usage_ledger") or UsageLedger(
+        engine, clock, calendar, prices, invariant_alert_port=usage_invariant_alert_port
+    )
     provider_reconciliation_port = configured.get("provider_reconciliation_port") or (
         LedgerBackedProviderReconciliationPort(engine)
     )

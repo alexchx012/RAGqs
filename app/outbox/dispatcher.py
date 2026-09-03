@@ -1167,6 +1167,7 @@ def _default_title(event_type: str) -> str:
         "calibration_window_suggested": "Calibration window suggested",
         "graph_build_completed": "Knowledge graph build completed",
         "evaluation_judge_configuration_missing": "Evaluation judge configuration missing",
+        "usage_ledger_invariant_conflict": "Usage ledger invariant conflict",
     }
     return titles.get(event_type, "Notification")
 
