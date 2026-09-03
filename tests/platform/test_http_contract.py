@@ -16,7 +16,6 @@ from app.platform.http_contract import (
     batch_item_error,
     paginated_response,
     request_error_payload,
-    sse_error_event,
 )
 from app.usage.schema import usage_metadata
 
@@ -51,10 +50,26 @@ def test_request_and_batch_error_shapes_are_stable() -> None:
             "details": {"field": "name"},
         }
     }
-    assert sse_error_event(error, "req_123") == (
-        'event: error\ndata: {"code":"validation_error","message":"Invalid input",'
-        '"details":{"field":"name"},"request_id":"req_123"}\n\n'
-    )
+
+
+def test_every_response_carries_nosniff_and_frame_options_headers() -> None:
+    app = create_platform_app(settings())
+    engine = app.state.platform_runtime.resolve("database_engine")
+    core_metadata.create_all(engine)
+    identity_metadata.create_all(engine)
+    outbox_metadata.create_all(engine)
+    usage_metadata.create_all(engine)
+
+    with TestClient(app) as client:
+        health = client.get("/v1/health")
+        unknown = client.get("/v1/not-registered")
+
+    assert health.status_code == 200
+    assert health.headers["x-content-type-options"] == "nosniff"
+    assert health.headers["x-frame-options"] == "DENY"
+    assert unknown.status_code == 404
+    assert unknown.headers["x-content-type-options"] == "nosniff"
+    assert unknown.headers["x-frame-options"] == "DENY"
 
 
 def test_pagination_helpers_keep_v1_contract_shape() -> None:

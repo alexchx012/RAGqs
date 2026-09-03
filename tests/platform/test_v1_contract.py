@@ -42,4 +42,10 @@ def test_uvicorn_entrypoint_exposes_only_versioned_routes(monkeypatch) -> None:
         response = client.get("/v1/health")
 
     assert response.status_code == 200
-    assert set(response.json()) == {"status", "service", "request_id"}
+    assert set(response.json()) == {
+        "status",
+        "service",
+        "version",
+        "release_id",
+        "request_id",
+    }

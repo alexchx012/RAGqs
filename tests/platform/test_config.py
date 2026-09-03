@@ -57,6 +57,13 @@ def test_development_profile_loads_with_explicit_sqlite_provider() -> None:
     assert settings.observability.api_metric_retention_days == 90
 
 
+def test_release_id_defaults_to_empty_and_loads_from_environment() -> None:
+    assert load_platform_settings(development_environment()).release_id == ""
+    configured = load_platform_settings(development_environment(RAG_RELEASE_ID="release-test-42"))
+
+    assert configured.release_id == "release-test-42"
+
+
 def test_production_profile_requires_database_and_object_storage() -> None:
     values = production_environment()
     values.pop("RAG_DATABASE_URL")

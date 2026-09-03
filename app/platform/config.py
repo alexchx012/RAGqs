@@ -332,6 +332,8 @@ class PlatformSettings(BaseSettings):
     documents: DocumentsSettings = Field(default_factory=DocumentsSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     business_timezone: str | None = None
+    # 部署发布标识（构建/发布号），经 /v1/health 与 /v1/ready 透出；未配置为空串。
+    release_id: str = ""
     # 受保护维护 CLI（ragqs-usage-maintenance）的显式密钥：只从环境读取，不进参数/
     # 日志/输出；production 下缺失时维护入口拒绝执行（fail-closed）。
     maintenance_key: SecretStr | None = None
@@ -463,6 +465,7 @@ _ENV_KEYS = {
     "RAG_EVALUATION_JUDGE_API_KEY",
     "RAG_EVALUATION_CANDIDATE_CONFIGS",
     "RAG_BUSINESS_TIMEZONE",
+    "RAG_RELEASE_ID",
     "RAG_MAINTENANCE_KEY",
     "RAG_OBSERVABILITY_API_METRIC_RETENTION_DAYS",
     "RAG_OBSERVABILITY_SUCCESS_SAMPLE_RATE",
@@ -813,6 +816,7 @@ def load_platform_settings(
             if value not in (None, ())
         },
         "business_timezone": _optional(env, "RAG_BUSINESS_TIMEZONE"),
+        "release_id": _optional(env, "RAG_RELEASE_ID") or "",
         "maintenance_key": _optional_secret(env, "RAG_MAINTENANCE_KEY"),
         "observability": {
             key: value

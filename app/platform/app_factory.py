@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.metadata import version as package_version
 from pathlib import Path
 from time import perf_counter
 
@@ -117,14 +118,17 @@ def create_platform_app(
             if owns_runtime:
                 runtime.close()
 
+    # 应用版本与 pyproject 单一来源（安装元数据）；production 不暴露 API schema
+    # 与文档 UI（404），development 保持可达。
+    expose_api_docs = settings.profile != "production"
     app = FastAPI(
         title="RAGqs Core Platform",
-        version="1.0.0",
+        version=package_version("ragqs-core-platform"),
         lifespan=lifespan,
-        openapi_url="/v1/openapi.json",
-        docs_url="/v1/docs",
+        openapi_url="/v1/openapi.json" if expose_api_docs else None,
+        docs_url="/v1/docs" if expose_api_docs else None,
         redoc_url=None,
-        swagger_ui_oauth2_redirect_url="/v1/docs/oauth2-redirect",
+        swagger_ui_oauth2_redirect_url="/v1/docs/oauth2-redirect" if expose_api_docs else None,
     )
     app.state.platform_runtime = runtime
     register_exception_handlers(app)
@@ -225,6 +229,9 @@ def create_platform_app(
                             pass
         assert response is not None
         response.headers["X-Request-Id"] = context.request_id
+        # 全局安全响应头：成功、错误与静态资源响应统一携带。
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
         return response
 
     return app

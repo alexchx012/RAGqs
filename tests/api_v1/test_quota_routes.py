@@ -428,12 +428,17 @@ def test_ready_probes_database_and_object_storage() -> None:
     client, _ = make_client()
     ready = client.get("/v1/ready")
     assert ready.status_code == 200
-    assert ready.json() == {
-        "status": "ready",
-        "service": "core-platform",
-        "database": "ok",
-        "object_storage": "ok",
+    assert set(ready.json()) == {
+        "status",
+        "service",
+        "version",
+        "release_id",
+        "database",
+        "object_storage",
     }
+    assert ready.json()["status"] == "ready"
+    assert ready.json()["database"] == "ok"
+    assert ready.json()["object_storage"] == "ok"
 
 
 def test_ready_returns_retryable_503_when_a_dependency_fails() -> None:

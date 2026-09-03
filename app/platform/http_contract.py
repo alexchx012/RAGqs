@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -54,13 +53,6 @@ def batch_item_error(error: PlatformError) -> dict[str, Any]:
             "details": dict(error.details),
         }
     }
-
-
-def sse_error_event(error: PlatformError, request_id: str | None = None) -> str:
-    payload = request_error_payload(error, request_id)["error"]
-    return (
-        f"event: error\ndata: {json.dumps(payload, ensure_ascii=True, separators=(',', ':'))}\n\n"
-    )
 
 
 def validate_idempotency_key(value: str | None) -> str:
