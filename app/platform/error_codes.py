@@ -114,8 +114,4 @@ REGISTERED_ERROR_CODES = frozenset("""
     wrong_old_password bad_request conflict http_error rate_limited internal_error
     """.split())
 
-# Short alias for callers that want the contract name used in API documentation.
-ERROR_CODES = REGISTERED_ERROR_CODES
-ERROR_CODE_REGISTRY = REGISTERED_ERROR_CODES
-
-__all__ = ["ERROR_CODE_REGISTRY", "ERROR_CODES", "REGISTERED_ERROR_CODES"]
+__all__ = ["REGISTERED_ERROR_CODES"]
