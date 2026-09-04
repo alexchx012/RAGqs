@@ -50,7 +50,7 @@ def test_provider_settings_load_from_environment() -> None:
     settings = load_platform_settings({**_BASE, **_provider_env()})
     assert settings.index.tree_search_provider == "dashscope"
     assert settings.index.tree_search_base_url == "https://dashscope.example.test/v1"
-    assert settings.index.tree_search_model == "ds-v4-flash"
+    assert settings.index.tree_search_model == "deepseek-v4-flash-0731"
     assert settings.index.reranker_base_url == "https://reranker.example.test"
     assert settings.index.reranker_coarse_model == "qwen3-reranker-0.6b"
     assert settings.index.reranker_final_model == "qwen3-reranker-8b"
@@ -95,7 +95,7 @@ def test_runtime_assembles_configured_provider_transports() -> None:
     try:
         tree_provider = runtime.resolve("indexing_tree_search_provider")
         assert isinstance(tree_provider, DashScopeTreeSearchProvider)
-        assert tree_provider.provider_name == "ds-v4-flash"
+        assert tree_provider.provider_name == "deepseek-v4-flash-0731"
         tree_router = runtime.resolve("indexing_tree_router")
         assert isinstance(tree_router, PageIndexTreeRouter)
         indexing_service = runtime.resolve("indexing_service")

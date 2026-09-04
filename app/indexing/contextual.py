@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from .models import IndexChunk
 from .prefix_cache import PrefixCacheKey, PrefixCacheManager
 
-CONTEXTUAL_MODEL = "ds-v4-flash"
+CONTEXTUAL_MODEL = "deepseek-v4-flash-0731"
 CONTEXTUAL_PROMPT_SCHEMA_VERSION = "contextual-prefix-v1"
 CONTEXTUAL_TOKENIZATION_VERSION = "unicode-approx-v1"
 CONTEXTUAL_PREFIX_TOKEN_LIMIT = 30_000

@@ -1,4 +1,4 @@
-"""OpenAI-compatible Contextual Retrieval transport for ``ds-v4-flash``."""
+"""OpenAI-compatible Contextual Retrieval transport for ``deepseek-v4-flash-0731``."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class DashScopeContextualRetriever:
         transport: _Transport | None = None,
     ) -> None:
         if model != CONTEXTUAL_MODEL:
-            raise ValueError("contextual retrieval model must be ds-v4-flash")
+            raise ValueError("contextual retrieval model must be deepseek-v4-flash-0731")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model

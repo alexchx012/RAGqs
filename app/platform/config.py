@@ -173,18 +173,20 @@ class IndexSettings(_StrictModel):
     contextual_retrieval_provider: Literal["disabled", "dashscope"] = "disabled"
     contextual_retrieval_base_url: str | None = None
     contextual_retrieval_api_key: SecretStr | None = None
-    contextual_retrieval_model: Literal["ds-v4-flash"] = "ds-v4-flash"
-    contextual_retrieval_revision: str = Field(default="ds-v4-flash", min_length=1, max_length=128)
+    contextual_retrieval_model: Literal["deepseek-v4-flash-0731"] = "deepseek-v4-flash-0731"
+    contextual_retrieval_revision: str = Field(
+        default="deepseek-v4-flash-0731", min_length=1, max_length=128
+    )
     contextual_retrieval_timeout_seconds: int = Field(default=60, ge=1, le=600)
     contextual_retrieval_concurrency: int = Field(default=4, ge=1, le=32)
     contextual_retrieval_prefix_token_limit: int = Field(default=30_000, ge=1_000, le=100_000)
     contextual_prefix_cache_provider: Literal["memory", "disabled"] = "memory"
-    # 第二阶段树搜索（PageIndex）：仅远程 ds-v4-flash；disabled 时不装配 tree
+    # 第二阶段树搜索（PageIndex）：仅远程 deepseek-v4-flash-0731；disabled 时不装配 tree
     # router，检索保持既有混合检索路径。
     tree_search_provider: Literal["disabled", "dashscope"] = "disabled"
     tree_search_base_url: str | None = None
     tree_search_api_key: SecretStr | None = None
-    tree_search_model: Literal["ds-v4-flash"] = "ds-v4-flash"
+    tree_search_model: Literal["deepseek-v4-flash-0731"] = "deepseek-v4-flash-0731"
     tree_search_timeout_seconds: int = Field(default=30, ge=1, le=600)
     # 两阶段远程 cross-encoder reranker：单端点两模型参数（vLLM /rerank）。
     # base_url 未配置时沿用既有装配（生产要求显式注入 reranker）。
@@ -712,10 +714,12 @@ def load_platform_settings(
                     or contextual_defaults.get("contextual_retrieval_api_key")
                 ),
                 "contextual_retrieval_model": (
-                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_MODEL") or "ds-v4-flash"
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_MODEL")
+                    or "deepseek-v4-flash-0731"
                 ),
                 "contextual_retrieval_revision": (
-                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_REVISION") or "ds-v4-flash"
+                    _optional(env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_REVISION")
+                    or "deepseek-v4-flash-0731"
                 ),
                 "contextual_retrieval_timeout_seconds": _int(
                     env, "RAG_INDEX_CONTEXTUAL_RETRIEVAL_TIMEOUT_SECONDS"
@@ -734,7 +738,8 @@ def load_platform_settings(
                 ),
                 "tree_search_base_url": _optional(env, "RAG_INDEX_TREE_SEARCH_BASE_URL"),
                 "tree_search_api_key": _optional_secret(env, "RAG_INDEX_TREE_SEARCH_API_KEY"),
-                "tree_search_model": _optional(env, "RAG_INDEX_TREE_SEARCH_MODEL") or "ds-v4-flash",
+                "tree_search_model": _optional(env, "RAG_INDEX_TREE_SEARCH_MODEL")
+                or "deepseek-v4-flash-0731",
                 "tree_search_timeout_seconds": _int(env, "RAG_INDEX_TREE_SEARCH_TIMEOUT_SECONDS"),
                 "reranker_base_url": _optional(env, "RAG_INDEX_RERANKER_BASE_URL"),
                 "reranker_api_key": _optional_secret(env, "RAG_INDEX_RERANKER_API_KEY"),

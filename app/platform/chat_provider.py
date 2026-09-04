@@ -72,7 +72,9 @@ class DashScopeChatProvider:
             egress = model_http_post(
                 provider=self.provider,
                 operation="chat.generate",
-                url=f"{self._client.base_url}/chat/completions",
+                # httpx 会把 base_url 规范化为带尾斜杠；直接 f-string 拼接会产出
+                # `//chat/completions` 双斜杠路径（DashScope 404）。先去尾斜杠。
+                url=f"{str(self._client.base_url).rstrip('/')}/chat/completions",
                 headers=self._client.headers,
                 payload={
                     "model": self._model,

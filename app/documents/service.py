@@ -3930,15 +3930,29 @@ class DocumentsService:
                     result="jobs_cancelled",
                     occurred_at=now,
                 )
+            # 同上：staged 直接删除，避免同键第二行 discarded 撞唯一约束；
+            # 删除前解除本文档各 attempt 对这些行的引用。
             connection.execute(
-                update(publications_table)
+                update(ingestion_attempts_table)
                 .where(
+                    ingestion_attempts_table.c.publication_id.in_(
+                        select(publications_table.c.id).where(
+                            and_(
+                                publications_table.c.document_id == document_id,
+                                publications_table.c.status == PublicationState.STAGED.value,
+                            )
+                        )
+                    )
+                )
+                .values(publication_id=None)
+            )
+            connection.execute(
+                publications_table.delete().where(
                     and_(
                         publications_table.c.document_id == document_id,
                         publications_table.c.status == PublicationState.STAGED.value,
                     )
                 )
-                .values(status=PublicationState.DISCARDED.value, discarded_at_utc=now)
             )
             connection.execute(
                 update(publications_table)
@@ -4675,18 +4689,21 @@ class DocumentsService:
                         state="cancelled",
                         fencing_token=next_fencing_token,
                         lease_expires_at_utc=None,
+                        # 解除对 staged publication 的引用，随后的删除才满足外键。
+                        publication_id=None,
                         updated_at_utc=now,
                     )
                 )
+            # Staged 行只属于本 attempt：直接删除而非转入 discarded——同键第二行
+            # discarded 会撞 uq_publications_version_generation_status（重试/重放
+            # job 的再次失败会把终态事务整个打回）。
             connection.execute(
-                update(publications_table)
-                .where(
+                publications_table.delete().where(
                     and_(
                         publications_table.c.job_id == job_id,
                         publications_table.c.status == PublicationState.STAGED.value,
                     )
                 )
-                .values(status=PublicationState.DISCARDED.value, discarded_at_utc=now)
             )
             if job["operation"] in {"initial", "replace"} and job["document_version_id"]:
                 connection.execute(
@@ -4850,6 +4867,8 @@ class DocumentsService:
                 .values(
                     state="failed",
                     lease_expires_at_utc=None,
+                    # 解除对 staged publication 的引用，随后的删除才满足外键。
+                    publication_id=None,
                     failure_reason=reason,
                     updated_at_utc=now,
                 )
@@ -4875,15 +4894,16 @@ class DocumentsService:
             if not will_retry:
                 job_update = job_update.values(notification_event_ids_json=notification_event_ids)
             connection.execute(job_update)
+            # Staged 行只属于本 attempt：直接删除而非转入 discarded——同键第二行
+            # discarded 会撞 uq_publications_version_generation_status（重试/重放
+            # job 的再次失败会把终态事务整个打回）。
             connection.execute(
-                update(publications_table)
-                .where(
+                publications_table.delete().where(
                     and_(
                         publications_table.c.job_id == job_id,
                         publications_table.c.status == PublicationState.STAGED.value,
                     )
                 )
-                .values(status=PublicationState.DISCARDED.value, discarded_at_utc=now)
             )
             if not will_retry:
                 if job["operation"] in {"initial", "replace"} and job["document_version_id"]:

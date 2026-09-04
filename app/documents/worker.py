@@ -425,9 +425,12 @@ class IngestionWorker:
                 except PlatformError as fail_error:
                     deferred += 1
                     _logger.warning(
-                        "ingestion failure could not be fenced attempt_id=%s code=%s",
+                        "ingestion failure could not be fenced attempt_id=%s code=%s "
+                        "original=%s: %s",
                         claim.attempt_id,
                         fail_error.code,
+                        type(exc).__name__,
+                        exc,
                     )
             except Exception as exc:
                 retryable = True
@@ -444,9 +447,12 @@ class IngestionWorker:
                 except PlatformError as fail_error:
                     deferred += 1
                     _logger.warning(
-                        "ingestion failure could not be fenced attempt_id=%s code=%s",
+                        "ingestion failure could not be fenced attempt_id=%s code=%s "
+                        "original=%s: %s",
                         claim.attempt_id,
                         fail_error.code,
+                        type(exc).__name__,
+                        exc,
                     )
             else:
                 succeeded += 1

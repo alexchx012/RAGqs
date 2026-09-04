@@ -741,7 +741,7 @@ def build_runtime(
     probe_configured_backends(dense_writer, sparse_provider, metrics=observability_metrics)
     tree_router = configured.get("indexing_tree_router")
     if tree_router is None and settings.index.tree_search_provider == "dashscope":
-        # 配置提供端点时装配远程树搜索 provider（仅 ds-v4-flash）与 tree router；
+        # 配置提供端点时装配远程树搜索 provider（仅 deepseek-v4-flash-0731）与 tree router；
         # 传输失败经 provider 错误分类进入既有降级 notice 路径。
         tree_search_provider = DashScopeTreeSearchProvider(
             base_url=settings.index.tree_search_base_url or "",

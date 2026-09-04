@@ -303,7 +303,7 @@ def test_reindex_keeps_active_version_and_stages_new_publication(service, princi
     )
 
 
-def test_cancel_discards_staged_publication(service, principal) -> None:
+def test_cancel_removes_staged_publication(service, principal) -> None:
     item = _accepted(service, principal)
     job = service.reindex(
         principal=principal,
@@ -314,12 +314,12 @@ def test_cancel_discards_staged_publication(service, principal) -> None:
     cancelled = service.cancel_job(principal=principal, job_id=job["job_id"])
     assert cancelled["state"] == "cancelled"
     with service._engine.connect() as connection:
-        publication_state = (
+        publication = (
             connection.execute(
                 publications_table.select().where(publications_table.c.id == job["publication_id"])
             )
             .mappings()
-            .one()["status"]
+            .one_or_none()
         )
         job_state = (
             connection.execute(
@@ -328,7 +328,8 @@ def test_cancel_discards_staged_publication(service, principal) -> None:
             .mappings()
             .one()["state"]
         )
-    assert publication_state == "discarded"
+    # 取消回收删除 staged publication（幂等回收，不再产出同键第二行 discarded）。
+    assert publication is None
     assert job_state == "cancelled"
 
 
@@ -1268,3 +1269,79 @@ def test_replay_rejects_a_stale_replacement_after_a_newer_version_is_active(
     with pytest.raises(PlatformError) as error:
         service.replay_job(principal=ops, job_id=failed["job_id"], idempotency_key="replay-stale")
     assert error.value.code == "document_version_changed"
+
+
+def test_terminal_notification_conflict_keeps_terminal_transition(
+    service, principal, caplog
+) -> None:
+    """同键异指纹 outbox 行不再把终态迁移打回（线上僵尸 job 现场）。"""
+
+    import logging
+
+    from app.outbox.publisher import (
+        SqlAlchemyIngestionOutboxAdapter,
+        SqlAlchemyOutboxPublisher,
+    )
+    from app.outbox.schema import outbox_event_table, outbox_metadata
+
+    engine = service._engine
+    outbox_metadata.create_all(engine)
+    service._ingestion_notification_port = SqlAlchemyIngestionOutboxAdapter(
+        SqlAlchemyOutboxPublisher(engine, now=service._now)
+    )
+
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-zombie-1",
+    )["items"][0]
+    job_id = created["job_id"]
+
+    # 预置同键异常行：同 (event_type, aggregate, transition_version) 但指纹不同。
+    with engine.begin() as connection:
+        connection.execute(
+            outbox_event_table.insert().values(
+                event_id=f"evt_ingestion_ingestion_failed_{job_id}_1",
+                event_type="ingestion_failed",
+                schema_version=1,
+                aggregate_type="ingestion_job",
+                aggregate_id=job_id,
+                transition_version=1,
+                occurred_at_utc=datetime(2026, 1, 1, tzinfo=UTC),
+                payload_json={"job_id": job_id, "legacy": True},
+                payload_fingerprint="legacy-tampered-row",
+                created_at_utc=datetime(2026, 1, 1, tzinfo=UTC),
+                storage_state="full",
+            )
+        )
+
+    lease = service.claim_job(worker_id="worker-zombie", job_id=job_id)
+    with caplog.at_level(logging.WARNING, logger="app.outbox.publisher"):
+        failed = service.fail_job(
+            job_id=job_id,
+            reason="processing boom",
+            retryable=False,
+            attempt_id=lease.attempt_id,
+            fencing_token=lease.fencing_token,
+        )
+
+    # 终态迁移照常提交：job 不再停留 running 成为僵尸。
+    assert failed["state"] == "failed"
+    skipped = [
+        record
+        for record in caplog.records
+        if "ingestion terminal notification skipped" in record.message
+    ]
+    assert len(skipped) == 1
+    assert "code=outbox_fingerprint_conflict" in skipped[0].getMessage()
+    with engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(ingestion_jobs_table).where(ingestion_jobs_table.c.id == job_id)
+            )
+            .mappings()
+            .one()
+        )
+    assert row["state"] == "failed"
+    assert row["notification_event_ids_json"] == []

@@ -18,7 +18,7 @@ from app.platform.config import (
 def test_model_family_registry_covers_current_deployments() -> None:
     assert model_family(provider="bailian", model="qwen3.7-plus") == "qwen"
     assert model_family(provider="dashscope", model="qwen-vl-plus") == "qwen"
-    assert model_family(provider="dashscope", model="ds-v4-flash") == "deepseek"
+    assert model_family(provider="dashscope", model="deepseek-v4-flash-0731") == "deepseek"
     assert model_family(provider="deepseek", model="deepseek-chat") == "deepseek"
     # 自名厂商可按 provider 判族；多族网关（dashscope）不得整体映射。
     assert model_family(provider="deepseek") == "deepseek"
@@ -41,7 +41,7 @@ def test_judge_family_isolation_rejects_same_family_only() -> None:
             judge_model="qwen3.7-plus",
             pipeline_models={
                 "generation": ("deepseek", "deepseek-chat"),
-                "contextual_retrieval": ("dashscope", "ds-v4-flash"),
+                "contextual_retrieval": ("dashscope", "deepseek-v4-flash-0731"),
             },
         )
         is None
@@ -108,7 +108,7 @@ def test_production_startup_rejects_same_family_generation_provider() -> None:
 
 
 def test_production_startup_accepts_distinct_family_pipeline() -> None:
-    # 生成 provider 自名 deepseek、CR 固定 ds-v4-flash（deepseek）与判官 qwen 不同族。
+    # 生成 provider 自名 deepseek、CR 固定 deepseek-v4-flash-0731（deepseek）与判官 qwen 不同族。
     settings = load_platform_settings(
         _production_environment(
             RAG_PROVIDER_NAME="deepseek",

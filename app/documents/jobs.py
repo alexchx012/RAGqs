@@ -518,20 +518,24 @@ class DocumentsJobCoordinator:
                 .values(
                     state="expired",
                     lease_expires_at_utc=None,
+                    # 解除对 staged publication 的引用，随后的删除才满足外键。
+                    publication_id=None,
                     failure_class="lease_expired",
                     failure_reason="lease_expired",
                     updated_at_utc=now,
                 )
             )
+            # Staged 行只属于本 attempt：直接删除而非转入 discarded——
+            # uq_publications_version_generation_status 只允许同键一行 discarded，
+            # 重试 attempt 二次回收会撞唯一约束（异常从 claim 冒泡，摄取 worker
+            # 全循环崩溃）。
             connection.execute(
-                update(publications_table)
-                .where(
+                publications_table.delete().where(
                     and_(
                         publications_table.c.job_id == expired_job["id"],
                         publications_table.c.status == PublicationState.STAGED.value,
                     )
                 )
-                .values(status=PublicationState.DISCARDED.value, discarded_at_utc=now)
             )
             connection.execute(
                 update(ingestion_jobs_table)

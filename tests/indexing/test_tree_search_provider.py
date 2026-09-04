@@ -67,7 +67,7 @@ def test_search_document_posts_chat_completion_and_maps_answer() -> None:
     assert str(seen[0].url).endswith("/chat/completions")
     assert seen[0].headers["authorization"] == "Bearer test-key"
     body = json.loads(seen[0].content.decode("utf-8"))
-    assert body["model"] == "ds-v4-flash"
+    assert body["model"] == "deepseek-v4-flash-0731"
     assert any("user question" in str(m.get("content", "")) for m in body["messages"])
     assert any("document text doc_9" in str(m.get("content", "")) for m in body["messages"])
     provider.close()
@@ -75,9 +75,9 @@ def test_search_document_posts_chat_completion_and_maps_answer() -> None:
 
 def test_provider_identity_is_the_remote_model_only() -> None:
     provider = _provider(lambda request: httpx.Response(200, json={}))
-    assert provider.provider_name == "ds-v4-flash"
+    assert provider.provider_name == "deepseek-v4-flash-0731"
     provider.close()
-    with pytest.raises(ValueError, match="ds-v4-flash"):
+    with pytest.raises(ValueError, match="deepseek-v4-flash-0731"):
         _provider(
             lambda request: httpx.Response(200, json={}),
             model="local-model",

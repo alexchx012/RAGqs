@@ -35,7 +35,7 @@ def _hit(
 
 
 class RecordingProvider:
-    provider_name = "ds-v4-flash"
+    provider_name = "deepseek-v4-flash-0731"
 
     def __init__(self, fail_documents: set[str] | None = None) -> None:
         self.calls: list[str] = []

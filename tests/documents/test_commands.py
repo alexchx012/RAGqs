@@ -575,7 +575,7 @@ def test_replace_publish_claim_conflict_fails_job_and_preserves_active_claim(
                 )
             )
             .mappings()
-            .one()
+            .one_or_none()
         )
         claim = (
             connection.execute(
@@ -594,7 +594,8 @@ def test_replace_publish_claim_conflict_fails_job_and_preserves_active_claim(
     assert document["active_operation_job_id"] is None
     assert job["state"] == "failed"
     assert job["failure_reason"] == "duplicate_document"
-    assert publication["status"] == "discarded"
+    # 失败回收删除 staged publication（幂等回收，不再产出同键第二行 discarded）。
+    assert publication is None
     assert claim["document_version_id"] == target["document_version_id"]
 
 

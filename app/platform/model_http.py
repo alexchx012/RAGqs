@@ -12,6 +12,7 @@ contextual retrieval、图片 VLM、prompt-enhance、评测判官、chat 生成�
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -30,8 +31,11 @@ from .provider import (
     call_with_policy,
 )
 
+_logger = logging.getLogger(__name__)
+
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 502, 503, 504})
 _TIMEOUT_ERROR_CLASSES = frozenset({"timeout", "deadline_exceeded"})
+_FAILURE_BODY_LOG_LIMIT = 500
 
 
 class ModelHttpError(RuntimeError):
@@ -155,6 +159,12 @@ class ModelHttpTransport:
             raise ProviderFailure("network_error", retryable=True, sent=True) from exc
         status = response.status_code
         if status >= 400:
+            if status not in _RETRYABLE_HTTP_STATUSES:
+                # 不可重试失败必然终态：记录 provider 自身的错误原文（截断），
+                # 否则 model_http_post 只上抛 http_<code>，404/422 的真实原因
+                # （模型不存在、路径错误等）对运维不可见。best-effort 观测，
+                # 读取失败不影响异常分类。
+                _log_http_failure(context, status, response)
             raise ProviderFailure(
                 f"http_{status}",
                 status_code=status,
@@ -162,6 +172,27 @@ class ModelHttpTransport:
                 sent=True,
             )
         return response
+
+
+def _log_http_failure(context: ProviderCallContext, status: int, response: httpx.Response) -> None:
+    try:
+        body: str = response.text
+    except Exception as exc:  # noqa: BLE001 - 观测失败不改变异常语义
+        _logger.warning(
+            "model http failure: provider=%s operation=%s status=%s " "body_read_error=%s",
+            context.provider,
+            context.operation,
+            status,
+            exc,
+        )
+        return
+    _logger.warning(
+        "model http failure: provider=%s operation=%s status=%s body=%s",
+        context.provider,
+        context.operation,
+        status,
+        body[:_FAILURE_BODY_LOG_LIMIT],
+    )
 
 
 def _default_request_id(provider: str, operation: str, now: datetime) -> str:

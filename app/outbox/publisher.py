@@ -45,6 +45,12 @@ from .schema import (
 
 _logger = logging.getLogger(__name__)
 
+# 终态通知（ingestion failed/cancelled 铃铛）可容忍的 outbox 键冲突：
+# 通知是 best-effort 观测，冲突只跳过该事件，不得回滚终态迁移。
+_TERMINAL_NOTIFICATION_TOLERATED_CONFLICTS = frozenset(
+    {"outbox_fingerprint_conflict", "event_id_conflict"}
+)
+
 # event_type -> (allowed caller principals, required aggregate_type)
 SUPPORTED_EVENT_SCHEMA_VERSION = 1
 
@@ -1385,6 +1391,17 @@ class SqlAlchemyIngestionOutboxAdapter:
             except PlatformError as error:
                 if error.code == "recipient_account_inactive":
                     return ()
+                if error.code in _TERMINAL_NOTIFICATION_TOLERATED_CONFLICTS:
+                    # 通知键冲突不得把终态迁移整个打回（job 会卡死在 running）：
+                    # 指纹冲突已由发布器发过告警事件，这里补定位日志后按"不通知"继续。
+                    _logger.warning(
+                        "ingestion terminal notification skipped job_id=%s "
+                        "event_type=%s code=%s",
+                        job_id,
+                        event_type,
+                        error.code,
+                    )
+                    continue
                 raise
             event_ids.append(command.event_id)
         return tuple(event_ids)

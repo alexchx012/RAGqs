@@ -1,4 +1,4 @@
-"""Remote PageIndex tree-search transport (``ds-v4-flash``).
+"""Remote PageIndex tree-search transport (``deepseek-v4-flash-0731``).
 
 ``PageIndexTreeRouter`` only accepts the configured remote provider, so the
 transport identity is the model name itself. Physical sends go through the
@@ -25,7 +25,7 @@ from app.platform.provider import CircuitOpen
 
 from .models import RetrievalHit
 
-TREE_SEARCH_MODEL = "ds-v4-flash"
+TREE_SEARCH_MODEL = "deepseek-v4-flash-0731"
 TREE_SEARCH_OPERATION = "indexing.tree_search"
 TREE_SEARCH_DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -58,7 +58,7 @@ class DashScopeTreeSearchProvider:
         sleep: Callable[[float], None] | None = None,
     ) -> None:
         if model != TREE_SEARCH_MODEL:
-            raise ValueError("tree search model must be ds-v4-flash")
+            raise ValueError("tree search model must be deepseek-v4-flash-0731")
         self._model = model
         self._timeout_seconds = float(timeout_seconds)
         self._now = now

@@ -312,7 +312,7 @@ def test_cache_keys_are_scoped_and_only_changed_prefix_entries_invalidate() -> N
         key.document_id,
         key.document_version_id,
         key.unit_id,
-        "ds-v4-flash@revision-2",
+        "deepseek-v4-flash-0731@revision-2",
         key.prompt_schema_version,
         key.metadata_version,
         key.tokenization_config_version,

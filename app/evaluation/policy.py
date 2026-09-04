@@ -34,7 +34,7 @@ DEFAULT_POLICY_VERSION = "eval-v1"
 _MODEL_PREFIX_FAMILIES: tuple[tuple[str, str, str], ...] = (
     ("bailian", "qwen", "qwen"),
     ("dashscope", "qwen", "qwen"),
-    ("dashscope", "ds", "deepseek"),
+    ("dashscope", "deepseek", "deepseek"),
     ("deepseek", "deepseek", "deepseek"),
     ("deepseek", "ds", "deepseek"),
 )

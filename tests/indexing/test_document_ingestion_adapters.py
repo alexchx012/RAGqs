@@ -234,7 +234,7 @@ def test_a3_structure_classification_fixtures_are_mutually_exclusive() -> None:
 
 def test_processing_identity_exposes_configured_model_and_prompt_identity() -> None:
     class _ContextualModel:
-        model = "ds-v4-flash"
+        model = "deepseek-v4-flash-0731"
 
     configured = ContentProcessor(
         contextual_provider=_ContextualModel(),  # type: ignore[arg-type]
@@ -244,7 +244,7 @@ def test_processing_identity_exposes_configured_model_and_prompt_identity() -> N
     assert configured.processing_identity() == {
         "model_version": "doc-model-v2",
         "prompt_version": "doc-prompt-v2",
-        "cr_model": "ds-v4-flash",
+        "cr_model": "deepseek-v4-flash-0731",
     }
     assert ContentProcessor().processing_identity() == {
         "model_version": "none",

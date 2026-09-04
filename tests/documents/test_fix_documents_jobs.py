@@ -905,7 +905,7 @@ class _IdentityHandoff(NoopIndexingHandoff):
         self.identity = {
             "model_version": "frozen-model-v2",
             "prompt_version": "frozen-prompt-v2",
-            "cr_model": "ds-v4-flash",
+            "cr_model": "deepseek-v4-flash-0731",
         }
 
     def processing_identity(self) -> dict[str, str]:
@@ -960,7 +960,7 @@ def test_replay_freezes_model_and_prompt_identity_across_generation_attempts(
     # 重放事务把模型 ID/版本与 prompt 版本随处理画像一并冻结。
     assert stored["model_version"] == "frozen-model-v2"
     assert stored["prompt_version"] == "frozen-prompt-v2"
-    assert stored["cr_model"] == "ds-v4-flash"
+    assert stored["cr_model"] == "deepseek-v4-flash-0731"
     assert stored["config_version"] == "document-profile:text:v1"
 
     # 同代两次 claim（重试路径）的 staging request 携带完全一致的冻结身份。
@@ -990,7 +990,7 @@ def test_replay_freezes_model_and_prompt_identity_across_generation_attempts(
     for snapshot in snapshots:
         assert snapshot["model_version"] == "frozen-model-v2"
         assert snapshot["prompt_version"] == "frozen-prompt-v2"
-        assert snapshot["cr_model"] == "ds-v4-flash"
+        assert snapshot["cr_model"] == "deepseek-v4-flash-0731"
 
 
 class _LifecycleIdentity:
@@ -1221,3 +1221,45 @@ def test_duplicate_review_and_idempotent_replay_create_no_second_grant_or_job(
     assert error.value.status_code == 409
     assert error.value.details == {"status": "approved"}
     assert counts() == (1, 1)
+
+
+def test_worker_logs_original_exception_when_fail_job_fails(caplog) -> None:
+    """fail_job 自身失败时，告警必须携带原始处理异常，不再无声丢失。"""
+
+    import logging
+
+    engine, docs, spy, worker_runtime = _worker_runtime(_LifecycleIdentity({"u1": "active"}))
+    owner = AuthPrincipal("u1", "s1", "alice", "user", None)
+    created = docs.create_initial_upload(
+        principal=owner,
+        space_id="personal:u1",
+        files=[_upload(name="original-err.txt", content=b"original-err")],
+        idempotency_key="upload-original-err-1",
+    )["items"][0]
+    del created
+
+    def broken_process_and_stage(request, *args, **kwargs):
+        del request, args, kwargs
+        raise PlatformError("processing_boom", "the original failure", {}, 500, True)
+
+    def broken_fail_job(**kwargs):
+        del kwargs
+        raise PlatformError("job_not_failable", "fence lost", {}, 409)
+
+    spy.process_and_stage = broken_process_and_stage
+    docs.fail_job = broken_fail_job  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="app.documents.worker"):
+        stats = IngestionWorker(worker_runtime).run_once(
+            owner="ingestion:test:original-err", limit=2
+        )
+
+    assert stats.deferred == 1
+    fenced = [
+        record
+        for record in caplog.records
+        if "ingestion failure could not be fenced" in record.message
+    ]
+    assert len(fenced) == 1
+    message = fenced[0].getMessage()
+    assert "original=PlatformError: the original failure" in message

@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from app.platform.errors import PlatformError
-from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
+from app.usage.ledger import LocalMeasurement, OwnershipSnapshot, ProviderMeasurement
 from app.usage.ports import UsageSubmissionPort
 
 
@@ -199,6 +199,31 @@ class UsageLedgerSubmissionAdapter:
 
     def mark_unknown(self, provider_call_id: str) -> None:
         self._ledger.mark_unknown(provider_call_id)
+
+    def submit_local_usage(
+        self,
+        *,
+        execution_kind: str,
+        execution_id: str,
+        stage: str,
+        resource_kind: str,
+        measurement: LocalMeasurement,
+        ownership: OwnershipSnapshot,
+        result: str,
+        started_at_utc: datetime,
+        replay_generation: int = 0,
+    ) -> str:
+        return self._ledger.submit_local_usage(
+            execution_kind=execution_kind,
+            execution_id=execution_id,
+            stage=stage,
+            resource_kind=resource_kind,
+            measurement=measurement,
+            ownership=ownership,
+            result=result,
+            started_at_utc=started_at_utc,
+            replay_generation=replay_generation,
+        )
 
 
 __all__ = ["GraphUsageRecorder", "UsageLedgerSubmissionAdapter"]

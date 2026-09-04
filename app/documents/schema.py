@@ -334,7 +334,7 @@ ingestion_attempts_table = Table(
     Column("lease_owner", String(128), nullable=True),
     Column("lease_expires_at_utc", DateTime(timezone=True), nullable=True),
     Column("fencing_token", BigInteger, nullable=False),
-    Column("publication_id", String(128), ForeignKey("publications.id"), nullable=False),
+    Column("publication_id", String(128), ForeignKey("publications.id"), nullable=True),
     Column("staging_request_json", JSON, nullable=False),
     Column("processing_receipt_json", JSON, nullable=True),
     Column("failure_class", String(64), nullable=True),

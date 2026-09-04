@@ -11,7 +11,7 @@ from .models import RetrievalHit
 
 
 class TreeSearchProviderPort(Protocol):
-    """Remote PageIndex tree-search transport (for example ds-v4-flash)."""
+    """Remote PageIndex tree-search transport (for example deepseek-v4-flash-0731)."""
 
     provider_name: str
 
@@ -42,7 +42,7 @@ class PageIndexTreeRouter:
         provider: TreeSearchProviderPort,
         *,
         max_workers: int = 4,
-        allowed_provider: str = "ds-v4-flash",
+        allowed_provider: str = "deepseek-v4-flash-0731",
     ) -> None:
         if provider.provider_name != allowed_provider:
             raise PlatformError(

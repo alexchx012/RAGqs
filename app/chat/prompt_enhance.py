@@ -67,7 +67,8 @@ class DashScopePromptEnhanceProvider:
             egress = model_http_post(
                 provider=self.provider,
                 operation="chat.prompt_enhance",
-                url=f"{self._client.base_url}/chat/completions",
+                # httpx 把 base_url 规范化为带尾斜杠；先去尾斜杠避免 `//` 双斜杠路径。
+                url=f"{str(self._client.base_url).rstrip('/')}/chat/completions",
                 headers=self._client.headers,
                 payload={
                     "model": self._model,
