@@ -91,7 +91,7 @@ The deployment must not share a PostgreSQL database, object prefix, index collec
 | Hierarchy, graph, and cache stores | Derived data | They never contain the only copy of business facts. They are rebuilt in the documented recovery order and may be disabled while stale. |
 | Transactional outbox | Reliable notification submission | V1 uses PostgreSQL transactional outbox. Kafka, RabbitMQ, and an in-memory event bus are not required dependencies. |
 | Secret manager | Credential and signing-key delivery | Use workload identity or an equivalent external secret reference. Secret values never appear in images, profiles, logs, audits, or API responses. |
-| Observability backend | Traces, structured logs, metrics, and alerts | Use OpenTelemetry-compatible traces/logs and Prometheus-compatible metrics. The vendor is a platform-profile choice; correlation fields and alert semantics are fixed here. |
+| Observability backend | Traces, structured logs, metrics, and alerts | Use OpenTelemetry-compatible traces/logs and Prometheus-compatible metrics. The vendor is a platform-profile choice; correlation fields and alert semantics are fixed here. Structured-log and trace collection and export are performed by the platform observability sidecar; the application keeps `logging.basicConfig` plus the `X-Request-Id` correlation field and ships no exporter of its own. |
 
 ### 3.1 Facts, derived data, and visibility
 
@@ -328,7 +328,7 @@ The API workload exposes `GET /v1/ready` as the runtime readiness probe: it veri
 7. Run generation, embedding, reranker, image-VLM, and judge capability probes using their profile credentials and deadlines. Production `none` providers fail the gate.
 8. Verify at least one active administrator in the resolved manifest and confirm the manifest is not exposed through static or object download paths.
 9. Verify the business calendar timezone and reject a mismatch with any already-recorded ledger calendar.
-10. Verify OpenTelemetry/metrics export, redaction, alert routing, and release correlation fields before accepting traffic.
+10. Verify OpenTelemetry/metrics export, redaction, alert routing, and release correlation fields before accepting traffic. Export is exercised through the platform observability sidecar; the application itself only emits basic-configured logs carrying `X-Request-Id` and owns no trace exporter.
 11. Verify provider resilience limits, circuit-breaker scope, and persisted worker-policy references; reject a profile whose values bypass the backend contract.
 
 ### 7.2 First deployment

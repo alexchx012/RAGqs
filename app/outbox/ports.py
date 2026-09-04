@@ -26,6 +26,7 @@ EventType = Literal[
     "calibration_window_suggested",
     "graph_build_completed",
     "evaluation_judge_configuration_missing",
+    "usage_ledger_invariant_conflict",
     "public_graph_source_changed",
     "retrieval_context_hard_gate_exceeded",
 ]
@@ -45,6 +46,7 @@ NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
         "calibration_window_suggested",
         "graph_build_completed",
         "evaluation_judge_configuration_missing",
+        "usage_ledger_invariant_conflict",
     }
 )
 ACKNOWLEDGEABLE_EVENT_TYPES: frozenset[str] = frozenset(

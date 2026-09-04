@@ -41,6 +41,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import uuid
 from collections.abc import Callable, Mapping
@@ -60,6 +61,8 @@ from ._sql import _insert_do_nothing
 from .calendar import BusinessCalendarService
 from .price import CostStatus, PriceCatalogService, PriceVersion, normalize_currency_code
 from .schema import provider_call_table, usage_event_table, usage_reconciliation_table
+
+_logger = logging.getLogger(__name__)
 
 _SOURCE_WHITELIST = frozenset({"provider_reported", "client_measured", "estimated"})
 _PROVIDER_METER_FIELDS = (
@@ -235,16 +238,41 @@ class UsageLedger:
         clock: Clock,
         calendar: BusinessCalendarService,
         prices: PriceCatalogService,
+        *,
+        invariant_alert_port: Any | None = None,
     ) -> None:
         self._engine = engine
         self.clock = clock
         self.calendar = calendar
         self.prices = prices
+        self._invariant_alert_port = invariant_alert_port
 
     # ---- 内部 connection 方法（H7：供调用方业务事务内联） ----
 
     def _event_fingerprint(self, kind: str, payload: Mapping) -> str:
         return ledger_fingerprint(kind, dict(payload))
+
+    def _alert_usage_invariant_conflict(
+        self, exc: PlatformError, *, provider_call_id: str | None = None
+    ) -> None:
+        """A45：唯一键异指纹冲突的回滚后 best-effort ops 告警。
+
+        只能在 wrapper 边界（engine.begin 已回滚、连接已归还）调用：adapter 用独立
+        短事务发布，失败仅记日志——绝不掩盖原 409，也绝不影响回滚语义。只对
+        {"index": [...]} 形状的 usage_event 指纹冲突告警（state/id-reuse 冲突除外）。
+        """
+        if self._invariant_alert_port is None or exc.code != "ledger_invariant_conflict":
+            return
+        index = exc.details.get("index")
+        if not isinstance(index, list) or not index:
+            return
+        try:
+            self._invariant_alert_port.publish_usage_ledger_invariant_conflict(
+                unique_key_fields=[str(name) for name in index],
+                provider_call_id=provider_call_id,
+            )
+        except Exception:
+            _logger.warning("usage ledger invariant alert could not be published", exc_info=True)
 
     def _require_call(self, connection: Connection, provider_call_id: str) -> dict[str, Any]:
         row = (
@@ -979,18 +1007,22 @@ class UsageLedger:
                 result=result,
                 extra_values=extra_values,
             )
-        with self._engine.begin() as owned_connection:
-            return self._append_adjustment_in_transaction(
-                owned_connection,
-                event_kind=event_kind,
-                referenced_event_id=referenced_event_id,
-                adjustment_source_namespace=adjustment_source_namespace,
-                adjustment_source_id=adjustment_source_id,
-                adjustment_allocation_key=adjustment_allocation_key,
-                ownership=ownership,
-                result=result,
-                extra_values=extra_values,
-            )
+        try:
+            with self._engine.begin() as owned_connection:
+                return self._append_adjustment_in_transaction(
+                    owned_connection,
+                    event_kind=event_kind,
+                    referenced_event_id=referenced_event_id,
+                    adjustment_source_namespace=adjustment_source_namespace,
+                    adjustment_source_id=adjustment_source_id,
+                    adjustment_allocation_key=adjustment_allocation_key,
+                    ownership=ownership,
+                    result=result,
+                    extra_values=extra_values,
+                )
+        except PlatformError as exc:
+            self._alert_usage_invariant_conflict(exc)
+            raise
 
     def _append_adjustment_in_transaction(
         self,
@@ -1370,16 +1402,20 @@ class UsageLedger:
         started_at_utc: datetime | None = None,
     ) -> str:
         """结果已知（成功或已收到 4xx/503 等失败）：原子 completed + provider_usage。"""
-        with self._engine.begin() as connection:
-            return self.complete_provider_call_in_transaction(
-                connection,
-                provider_call_id=provider_call_id,
-                measurement=measurement,
-                ownership=ownership,
-                result=result,
-                provider_request_id=provider_request_id,
-                started_at_utc=started_at_utc,
-            )
+        try:
+            with self._engine.begin() as connection:
+                return self.complete_provider_call_in_transaction(
+                    connection,
+                    provider_call_id=provider_call_id,
+                    measurement=measurement,
+                    ownership=ownership,
+                    result=result,
+                    provider_request_id=provider_request_id,
+                    started_at_utc=started_at_utc,
+                )
+        except PlatformError as exc:
+            self._alert_usage_invariant_conflict(exc, provider_call_id=provider_call_id)
+            raise
 
     def mark_not_sent(self, provider_call_id: str) -> None:
         """确定未发送：not_sent，无 usage；已 not_sent 幂等 no-op。"""
@@ -1451,16 +1487,20 @@ class UsageLedger:
         started_at_utc: datetime | None = None,
     ) -> str:
         """对账恢复：unknown → completed + usage（幂等，同指纹复用 persisted ID）。"""
-        with self._engine.begin() as connection:
-            return self.complete_provider_call_in_transaction(
-                connection,
-                provider_call_id=provider_call_id,
-                measurement=measurement,
-                ownership=ownership,
-                result=result,
-                provider_request_id=provider_request_id,
-                started_at_utc=started_at_utc,
-            )
+        try:
+            with self._engine.begin() as connection:
+                return self.complete_provider_call_in_transaction(
+                    connection,
+                    provider_call_id=provider_call_id,
+                    measurement=measurement,
+                    ownership=ownership,
+                    result=result,
+                    provider_request_id=provider_request_id,
+                    started_at_utc=started_at_utc,
+                )
+        except PlatformError as exc:
+            self._alert_usage_invariant_conflict(exc, provider_call_id=provider_call_id)
+            raise
 
     def submit_local_usage(
         self,
@@ -1489,60 +1529,64 @@ class UsageLedger:
         self._validate_ownership(ownership)
         self._validate_local_measurement(measurement)
         started = _as_utc(started_at_utc, "started_at_utc")
-        with self._engine.begin() as connection:
-            now = self.clock.now_utc(connection)
-            lock = self.calendar.lock_or_verify(connection)
-            lock_period = self.calendar.period_for(lock, started)
-            recorded_period = self.calendar.period_for(lock, now)
-            measurement_payload = asdict(measurement)
-            measurement_sources = measurement_payload.pop("measurement_sources", {})
-            fingerprint_payload = {
-                "scope": (execution_kind, execution_id, stage, resource_kind),
-                "ownership": _ownership_json(ownership),
-                "started_at_utc": started,
-                "measurement": measurement_payload,
-                "result": result,
-                "effective_period": lock_period,
-            }
-            if measurement_sources:
-                fingerprint_payload["measurement_sources"] = measurement_sources
-            if replay_generation:
-                fingerprint_payload["replay_generation"] = replay_generation
-            fingerprint = self._event_fingerprint("local_usage", fingerprint_payload)
-            event_id = f"ue_{secrets.token_urlsafe(9)}"
-            persisted_id = self._insert_usage_once(
-                connection,
-                index_elements=["execution_kind", "execution_id", "stage", "resource_kind"],
-                values={
-                    "usage_event_id": event_id,
-                    "event_kind": "local_usage",
-                    "execution_kind": execution_kind,
-                    "execution_id": execution_id,
-                    "stage": stage,
-                    "resource_kind": resource_kind,
-                    "replay_generation": replay_generation,
-                    "cost_center_key": ownership.cost_center_key,
-                    "item_count": measurement.item_count,
-                    "page_count": measurement.page_count,
-                    "input_bytes": measurement.input_bytes,
-                    "gpu_milliseconds": measurement.gpu_milliseconds,
-                    "cpu_milliseconds": measurement.cpu_milliseconds,
-                    "peak_vram_bytes": measurement.peak_vram_bytes,
-                    "result": result,
-                    "event_fingerprint": fingerprint,
-                    "ownership_json": _ownership_json(ownership),
+        try:
+            with self._engine.begin() as connection:
+                now = self.clock.now_utc(connection)
+                lock = self.calendar.lock_or_verify(connection)
+                lock_period = self.calendar.period_for(lock, started)
+                recorded_period = self.calendar.period_for(lock, now)
+                measurement_payload = asdict(measurement)
+                measurement_sources = measurement_payload.pop("measurement_sources", {})
+                fingerprint_payload = {
+                    "scope": (execution_kind, execution_id, stage, resource_kind),
+                    "ownership": _ownership_json(ownership),
                     "started_at_utc": started,
-                    "completed_at_utc": now,
-                    "effective_calendar_version_id": lock.version_id,
-                    "effective_at_utc": started,
+                    "measurement": measurement_payload,
+                    "result": result,
                     "effective_period": lock_period,
-                    "recorded_calendar_version_id": lock.version_id,
-                    "recorded_at_utc": now,
-                    "recorded_period": recorded_period,
-                    "created_at_utc": now,
-                },
-            )
-            return persisted_id
+                }
+                if measurement_sources:
+                    fingerprint_payload["measurement_sources"] = measurement_sources
+                if replay_generation:
+                    fingerprint_payload["replay_generation"] = replay_generation
+                fingerprint = self._event_fingerprint("local_usage", fingerprint_payload)
+                event_id = f"ue_{secrets.token_urlsafe(9)}"
+                persisted_id = self._insert_usage_once(
+                    connection,
+                    index_elements=["execution_kind", "execution_id", "stage", "resource_kind"],
+                    values={
+                        "usage_event_id": event_id,
+                        "event_kind": "local_usage",
+                        "execution_kind": execution_kind,
+                        "execution_id": execution_id,
+                        "stage": stage,
+                        "resource_kind": resource_kind,
+                        "replay_generation": replay_generation,
+                        "cost_center_key": ownership.cost_center_key,
+                        "item_count": measurement.item_count,
+                        "page_count": measurement.page_count,
+                        "input_bytes": measurement.input_bytes,
+                        "gpu_milliseconds": measurement.gpu_milliseconds,
+                        "cpu_milliseconds": measurement.cpu_milliseconds,
+                        "peak_vram_bytes": measurement.peak_vram_bytes,
+                        "result": result,
+                        "event_fingerprint": fingerprint,
+                        "ownership_json": _ownership_json(ownership),
+                        "started_at_utc": started,
+                        "completed_at_utc": now,
+                        "effective_calendar_version_id": lock.version_id,
+                        "effective_at_utc": started,
+                        "effective_period": lock_period,
+                        "recorded_calendar_version_id": lock.version_id,
+                        "recorded_at_utc": now,
+                        "recorded_period": recorded_period,
+                        "created_at_utc": now,
+                    },
+                )
+                return persisted_id
+        except PlatformError as exc:
+            self._alert_usage_invariant_conflict(exc)
+            raise
 
     def append_usage_adjustment(
         self,

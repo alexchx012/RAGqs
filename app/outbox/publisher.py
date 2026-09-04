@@ -68,6 +68,7 @@ PRODUCER_MATRIX: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"startup_configuration"}),
         "startup_invocation",
     ),
+    "usage_ledger_invariant_conflict": (frozenset({"usage"}), "usage_ledger_row"),
     "public_graph_source_changed": (frozenset({"documents"}), "public_graph_source"),
     "retrieval_context_hard_gate_exceeded": (frozenset({"retrieval"}), "retrieval_context"),
 }
@@ -126,6 +127,11 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
         "occurred_at": str,
     },
     "evaluation_judge_configuration_missing": {"missing_variable_names": list},
+    # 唯一键冲突告警只带列名与可选 provider_call_id，绝不携带指纹值或业务事实。
+    "usage_ledger_invariant_conflict": {
+        "unique_key_fields": list,
+        "provider_call_id": (str, None),
+    },
     "public_graph_source_changed": {
         "source_revision": int,
         "source_manifest_id": str,
@@ -145,7 +151,11 @@ PAYLOAD_SCHEMAS: dict[str, dict[str, type | tuple[type, None]]] = {
 # Recipient rules: active-ops alert events take all active ops as role snapshots;
 # graph events notify exactly one identity (the run initiator).
 ROLE_SNAPSHOT_EVENT_TYPES: frozenset[str] = frozenset(
-    {"calibration_window_suggested", "evaluation_judge_configuration_missing"}
+    {
+        "calibration_window_suggested",
+        "evaluation_judge_configuration_missing",
+        "usage_ledger_invariant_conflict",
+    }
 )
 SINGLE_RECIPIENT_EVENT_TYPES: frozenset[str] = frozenset({"graph_build_completed"})
 
@@ -367,6 +377,22 @@ def _validate_payload(event_type: str, schema_version: int, payload: Mapping[str
             raise PlatformError(
                 "invalid_event_payload",
                 "Evaluation judge alerts may contain only unique missing variable names",
+                {"event_type": event_type},
+                422,
+            )
+    if event_type == "usage_ledger_invariant_conflict":
+        fields = payload.get("unique_key_fields")
+        provider_call_id = payload.get("provider_call_id")
+        if (
+            not isinstance(fields, list)
+            or not fields
+            or any(not isinstance(name, str) or not name for name in fields)
+            or len(set(fields)) != len(fields)
+            or (provider_call_id is not None and not isinstance(provider_call_id, str))
+        ):
+            raise PlatformError(
+                "invalid_event_payload",
+                "Usage invariant alerts require unique key field names",
                 {"event_type": event_type},
                 422,
             )
@@ -1070,6 +1096,53 @@ class SqlAlchemyStartupConfigurationAlertAdapter:
             caller="startup_configuration",
         )
         return command.event_id
+
+
+class SqlAlchemyUsageInvariantAlertAdapter:
+    """Usage-scoped, no-token facade for ledger unique-key fingerprint conflicts.
+
+    Owns its short transaction: callers invoke it only after the failing ledger
+    transaction has already rolled back, so the alert commits independently of
+    that rollback and a publish failure can never mask the original 409.
+    """
+
+    def __init__(self, engine: Engine, publisher: SqlAlchemyOutboxPublisher) -> None:
+        self._engine = engine
+        self._publisher = publisher
+
+    def publish_usage_ledger_invariant_conflict(
+        self,
+        *,
+        unique_key_fields: Sequence[str],
+        provider_call_id: str | None = None,
+    ) -> str:
+        invocation_id = secrets.token_urlsafe(18)
+        context = current_context()
+        command = OutboxPublishCommand(
+            event_id=f"evt_usage_invariant_{invocation_id}",
+            caller_principal="usage",
+            event_type="usage_ledger_invariant_conflict",
+            schema_version=SUPPORTED_EVENT_SCHEMA_VERSION,
+            aggregate_type="usage_ledger_row",
+            aggregate_id=provider_call_id or f"usage_invariant_{invocation_id}",
+            transition_version=1,
+            occurred_at=datetime.now(UTC),
+            payload={
+                "unique_key_fields": sorted({str(name) for name in unique_key_fields}),
+                "provider_call_id": provider_call_id,
+            },
+            recipients=(),
+            trace_id=context.trace_id if context is not None else None,
+        )
+        with self._engine.begin() as connection:
+            receipt = self._publisher._publish_authorized(
+                command,
+                connection=connection,
+                caller="usage",
+            )
+        # 指纹相同的重复冲突按 (aggregate, transition) 唯一键复用既有事件：
+        # 返回实际持久化的 event_id，而不是本次生成的临时 id。
+        return receipt.event_id
 
 
 class SqlAlchemyPublicGraphSourceOutboxAdapter:
