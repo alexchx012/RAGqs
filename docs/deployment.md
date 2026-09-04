@@ -84,7 +84,7 @@ The deployment must not share a PostgreSQL database, object prefix, index collec
 | Component | Role in the system | Production rule |
 | --- | --- | --- |
 | PostgreSQL | Business and relationship fact source: users, ACLs, documents, versions, jobs, publications, sessions, usage, quotas, evaluations, outbox, notifications, and audit | One authoritative database per deployment. Use a managed or HA PostgreSQL service with PITR/WAL support. SQLite is development-only and is not a production fallback. |
-| Object storage | Originals, archives, `middle.json`, `model.json`, parser intermediates, and deletion archives | Private S3-compatible namespace with encryption, versioning or equivalent snapshot support, checksum validation, and no static/direct-read exposure. |
+| Object storage | Originals, archives, `model.json`, parser intermediates, and deletion archives | Private S3-compatible namespace with encryption, versioning or equivalent snapshot support, checksum validation, and no static/direct-read exposure. |
 | Milvus | Derived vector index | Collection names include the registered embedding dimension/model generation. Never auto-drop a collection during startup or provider changes. |
 | Meilisearch | Default derived sparse index | Persistent volume, authentication, health probe, and the configured jieba/pre-tokenized field are required. Switches to OpenSearch require a new index generation and full rebuild. |
 | OpenSearch + IK | Optional sparse provider | TLS, authentication, JVM baseline, IK plugin, and real analyzer probe are required when selected. It is not a runtime fallback for a failed Meilisearch instance. |

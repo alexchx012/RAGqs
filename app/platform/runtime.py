@@ -682,6 +682,8 @@ def build_runtime(
         contextual_concurrency=settings.index.contextual_retrieval_concurrency,
         contextual_prefix_token_limit=(settings.index.contextual_retrieval_prefix_token_limit),
         contextual_token_counter=token_counter,
+        model_version=settings.index.model_version,
+        prompt_version=settings.index.prompt_version,
     )
     configured.setdefault("indexing_processor", processor)
     embedding = configured.get("indexing_embedding")
@@ -801,7 +803,9 @@ def build_runtime(
     provider_billing = configured.get("provider_billing") or ProviderBillingService(
         ledger, clock, usage_metrics
     )
-    quota_service = configured.get("quota_service") or QuotaService(engine, clock, calendar)
+    quota_service = configured.get("quota_service") or QuotaService(
+        engine, clock, calendar, invariant_alert_port=usage_invariant_alert_port
+    )
     outbox_port = configured.get("outbox_enqueue_port") or (
         SqlAlchemyQuotaOutboxEnqueueAdapter(outbox_publisher)
     )

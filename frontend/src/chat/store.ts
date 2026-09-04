@@ -148,7 +148,8 @@ interface MessageOverlay {
   terminalHandled: boolean;
 }
 
-const DEFAULT_SERVER_SEARCH_THRESHOLD = 500;
+// 上限 200（CONVERSATIONS_MAX_LIMIT）内可达：超过阈值即转服务端 q 搜索以触达未加载的更早会话。
+const DEFAULT_SERVER_SEARCH_THRESHOLD = 150;
 /** A25 分页：首页与「加载更多」单次递增量；后端 le=200 上限，达到后不再展示加载更多。 */
 const CONVERSATIONS_PAGE_SIZE = 50;
 const CONVERSATIONS_MAX_LIMIT = 200;

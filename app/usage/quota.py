@@ -58,6 +58,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from collections.abc import Sequence
@@ -76,6 +77,8 @@ from .calendar import BusinessCalendarService, CalendarLock
 from .ledger import OwnershipSnapshot, _ownership_json
 from .ports import PublicationTerminalStatus
 from .schema import quota_debit_table, quota_projection_table
+
+_logger = logging.getLogger(__name__)
 
 _UNLIMITED_ROLES = frozenset({"ops", "admin"})
 _EXEMPT_REASON = "shared_library_submission"
@@ -252,11 +255,13 @@ class QuotaService:
         clock: Clock,
         calendar: BusinessCalendarService,
         base_limit: int = 500,
+        invariant_alert_port: Any | None = None,
     ) -> None:
         self._engine = engine
         self._clock = clock
         self.calendar = calendar
         self._base_limit = base_limit
+        self._invariant_alert_port = invariant_alert_port
 
     @staticmethod
     def unlimited_role(role: str) -> bool:
@@ -284,8 +289,36 @@ class QuotaService:
         if ownership.quota_subject_user_id is not None:
             _require_text(ownership.quota_subject_user_id, "quota_subject_user_id", 64)
 
+    def _alert_usage_invariant_conflict(self, exc: PlatformError) -> None:
+        """分录唯一键异指纹冲突的回滚后 best-effort ops 告警（usage ledger A45 同型）。
+
+        只能在调用方事务边界（事务已回滚、连接已归还）之后调用：adapter 用独立
+        短事务发布，失败仅记日志——绝不掩盖原 409。只对 {"index": [...]} 形状的
+        指纹冲突告警；累计超量反转等其余 409 无 index，不发。
+        """
+        if self._invariant_alert_port is None or exc.code != "ledger_invariant_conflict":
+            return
+        index = exc.details.get("index")
+        if not isinstance(index, list) or not index:
+            return
+        try:
+            self._invariant_alert_port.publish_usage_ledger_invariant_conflict(
+                unique_key_fields=[str(name) for name in index]
+            )
+        except Exception:
+            _logger.warning("quota invariant alert could not be published", exc_info=True)
+
+    def publish_invariant_alert(self, exc: PlatformError) -> None:
+        """caller-owned 事务路径回滚后的公开告警入口（documents 发布 debit、审批 credit）。"""
+        self._alert_usage_invariant_conflict(exc)
+
     def _existing_entry(
-        self, connection: Connection, *, unique_where: Any, entry_fingerprint: str
+        self,
+        connection: Connection,
+        *,
+        unique_where: Any,
+        entry_fingerprint: str,
+        conflict_index: list[str],
     ) -> str | None:
         """按唯一键回读既有行：同 fingerprint 复用 persisted ID；异 fingerprint 409。"""
         existing = (
@@ -299,7 +332,7 @@ class QuotaService:
             raise PlatformError(
                 "ledger_invariant_conflict",
                 "Quota entry fingerprint does not match the existing ledger row",
-                {},
+                {"index": list(conflict_index)},
                 409,
             )
         return str(existing["quota_debit_id"])
@@ -321,7 +354,10 @@ class QuotaService:
         """
         entry_fingerprint = values["entry_fingerprint"]
         existing_id = self._existing_entry(
-            connection, unique_where=unique_where, entry_fingerprint=entry_fingerprint
+            connection,
+            unique_where=unique_where,
+            entry_fingerprint=entry_fingerprint,
+            conflict_index=conflict_index,
         )
         if existing_id is not None:
             return existing_id, False
@@ -330,13 +366,16 @@ class QuotaService:
         if inserted:
             return entry_id, True
         existing_id = self._existing_entry(
-            connection, unique_where=unique_where, entry_fingerprint=entry_fingerprint
+            connection,
+            unique_where=unique_where,
+            entry_fingerprint=entry_fingerprint,
+            conflict_index=conflict_index,
         )
         if existing_id is None:
             raise PlatformError(
                 "ledger_invariant_conflict",
                 "Quota entry insert race lost; no persisted row to reuse",
-                {},
+                {"index": list(conflict_index)},
                 409,
             )
         return existing_id, False
@@ -551,6 +590,7 @@ class QuotaService:
             connection,
             unique_where=unique_where,
             entry_fingerprint=str(values["entry_fingerprint"]),
+            conflict_index=["quota_operation_id"],
         )
         if existing_id is not None:
             return existing_id
@@ -566,6 +606,7 @@ class QuotaService:
             connection,
             unique_where=unique_where,
             entry_fingerprint=str(values["entry_fingerprint"]),
+            conflict_index=["quota_operation_id"],
         )
         if existing_id is not None:
             return existing_id
@@ -726,6 +767,7 @@ class QuotaService:
             connection,
             unique_where=unique_where,
             entry_fingerprint=fingerprint,
+            conflict_index=["entry_kind", "adjustment_source_namespace", "adjustment_source_id"],
         )
         if existing_id is not None:
             return existing_id  # 幂等重放：不更新投影
@@ -735,6 +777,7 @@ class QuotaService:
             connection,
             unique_where=unique_where,
             entry_fingerprint=fingerprint,
+            conflict_index=["entry_kind", "adjustment_source_namespace", "adjustment_source_id"],
         )
         if existing_id is not None:
             return existing_id
@@ -836,6 +879,7 @@ class QuotaService:
             connection,
             unique_where=unique_where,
             entry_fingerprint=self._entry_fingerprint("supplement", fingerprint_payload),
+            conflict_index=["entry_kind", "adjustment_source_namespace", "adjustment_source_id"],
         )
         if existing_id is not None:
             return existing_id  # 幂等重放：不更新投影
@@ -941,6 +985,7 @@ class QuotaService:
             connection,
             unique_where=unique_where,
             entry_fingerprint=self._entry_fingerprint("credit", fingerprint_payload),
+            conflict_index=["entry_kind", "adjustment_source_namespace", "adjustment_source_id"],
         )
         if existing_id is not None:
             return existing_id  # 幂等重放：不更新投影

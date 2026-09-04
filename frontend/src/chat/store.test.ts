@@ -126,6 +126,28 @@ describe('会话状态机（ChatStore）', () => {
       expect(visible.every((item) => item.title.includes('甲'))).toBe(true);
     });
 
+    it('默认阈值 150（< 上限 200）：加载 151 条后搜索转服务端 q，死分支消除（A6）', async () => {
+      const seen: Array<string | undefined> = [];
+      const items = Array.from({ length: 151 }, (_, index) => summary(`c_${index}`, `会话${index}`));
+      const api = {
+        listConversations: (q?: string) => {
+          seen.push(q);
+          const hit = q ? items.filter((item) => item.title.includes(q)) : items;
+          return Promise.resolve({ items: hit, groups: [] as never[] });
+        },
+      } as unknown as ChatApi;
+      const { store } = makeStore({ api });
+
+      await store.loadConversationList();
+      expect(store.getState().conversations).toHaveLength(151);
+      expect(seen).toEqual([undefined]); // 首屏加载不带 q
+
+      store.setSearchQuery('会话1');
+      await waitFor(() => store.getState().serverFiltered === true);
+      expect(seen.at(-1)).toBe('会话1'); // 超默认阈值：q 显式传给服务端
+      expect(store.getState().visibleConversations.length).toBeGreaterThan(0);
+    });
+
     /* ---------- 列表加载竞态（评审 #14）：旧响应不得覆盖新结果 ---------- */
 
     function summary(id: string, title: string): ConversationSummary {

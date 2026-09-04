@@ -137,6 +137,10 @@ class IndexSettings(_StrictModel):
     image_vlm_concurrency: int = Field(default=4, ge=1, le=32)
     image_vlm_max_input_bytes: int | None = Field(default=None, ge=1)
     generation_rollback_days: int = Field(default=7, ge=1, le=365)
+    # ContentProcessor 主处理身份（A7）：注入冻结快照（processing_identity），
+    # 未配置保持 "none"。
+    model_version: str = Field(default="none", min_length=1, max_length=128)
+    prompt_version: str = Field(default="none", min_length=1, max_length=128)
     embedding_provider: Literal["openai-compatible", "memory"] = "memory"
     embedding_base_url: str | None = None
     embedding_api_key: SecretStr | None = None
@@ -391,6 +395,8 @@ _ENV_KEYS = {
     "RAG_INDEX_IMAGE_VLM_CONCURRENCY",
     "RAG_INDEX_IMAGE_VLM_MAX_INPUT_BYTES",
     "RAG_INDEX_GENERATION_ROLLBACK_DAYS",
+    "RAG_INDEX_MODEL_VERSION",
+    "RAG_INDEX_PROMPT_VERSION",
     "RAG_INDEX_EMBEDDING_PROVIDER",
     "RAG_INDEX_EMBEDDING_BASE_URL",
     "RAG_INDEX_EMBEDDING_API_KEY",
@@ -659,6 +665,9 @@ def load_platform_settings(
                 "image_vlm_concurrency": _int(env, "RAG_INDEX_IMAGE_VLM_CONCURRENCY"),
                 "image_vlm_max_input_bytes": _int(env, "RAG_INDEX_IMAGE_VLM_MAX_INPUT_BYTES"),
                 "generation_rollback_days": _int(env, "RAG_INDEX_GENERATION_ROLLBACK_DAYS") or 7,
+                # ContentProcessor 主处理身份（A7）：注入冻结快照，未配置保持 "none"。
+                "model_version": _optional(env, "RAG_INDEX_MODEL_VERSION") or "none",
+                "prompt_version": _optional(env, "RAG_INDEX_PROMPT_VERSION") or "none",
                 "embedding_provider": _optional(env, "RAG_INDEX_EMBEDDING_PROVIDER") or "memory",
                 "embedding_base_url": _optional(env, "RAG_INDEX_EMBEDDING_BASE_URL"),
                 "embedding_api_key": _optional_secret(env, "RAG_INDEX_EMBEDDING_API_KEY"),
