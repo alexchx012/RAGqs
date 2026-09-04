@@ -3121,6 +3121,11 @@ class DocumentsService:
                 internal_worker=internal_worker,
             )
         except PlatformError as exc:
+            if exc.code == "ledger_invariant_conflict":
+                # A2：发布 debit 指纹冲突——事务已回滚，best-effort 告警（适配器独立短事务）。
+                publisher = getattr(self._quota_service, "publish_invariant_alert", None)
+                if callable(publisher):
+                    publisher(exc)
             # §9.3 审计事实：执行中授权失效（部门停用/调动导致），越过回滚落库。
             if exc.code in {"authorization_changed", "submission_grant_invalid"}:
                 self._audit_best_effort(

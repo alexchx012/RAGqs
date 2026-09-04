@@ -647,3 +647,19 @@ def test_chat_enhance_numeric_settings_reject_invalid_values(key: str) -> None:
 def test_chat_enhance_rejects_unknown_enhance_keys() -> None:
     with pytest.raises(ValueError, match="unknown|legacy"):
         load_platform_settings(development_environment(RAG_CHAT_ENHANCE_RETRIES="2"))
+
+
+def test_index_identity_version_keys_optional_with_none_default() -> None:
+    """A7：ContentProcessor 主身份版本键可选，未配置保持 "none"，配置后透传。"""
+    defaults = load_platform_settings(development_environment()).index
+    assert defaults.model_version == "none"
+    assert defaults.prompt_version == "none"
+
+    configured = load_platform_settings(
+        development_environment(
+            RAG_INDEX_MODEL_VERSION="m-v2",
+            RAG_INDEX_PROMPT_VERSION="p-v2",
+        )
+    ).index
+    assert configured.model_version == "m-v2"
+    assert configured.prompt_version == "p-v2"

@@ -72,6 +72,30 @@ class _RejectingQuota:
         raise PlatformError("quota_exceeded", "Quota is exhausted", {}, 409)
 
 
+class _ConflictingQuota:
+    """A2：发布 debit 指纹冲突——record 抛 409，记录回滚后的告警调用。"""
+
+    calendar = _Calendar()
+
+    def __init__(self) -> None:
+        self.alerts: list[PlatformError] = []
+
+    def check(self, connection, **values) -> None:
+        del connection, values
+
+    def record(self, connection, **values) -> str:
+        del connection, values
+        raise PlatformError(
+            "ledger_invariant_conflict",
+            "Quota entry fingerprint does not match the existing ledger row",
+            {"index": ["quota_operation_id"]},
+            409,
+        )
+
+    def publish_invariant_alert(self, exc: PlatformError) -> None:
+        self.alerts.append(exc)
+
+
 class _IngestionNotifications:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -532,6 +556,51 @@ def test_receipt_requires_current_lease_and_generation(service, principal) -> No
         )
     assert job_row["failure_reason"] == "generation_conflict"
     assert job_row["next_attempt_at_utc"] is not None
+
+
+def test_receipt_quota_fingerprint_conflict_publishes_alert_after_rollback(
+    service, principal
+) -> None:
+    """A2：发布 debit 指纹冲突——发布事务回滚、409 照常冒泡，回滚后 best-effort 告警。"""
+    created = service.create_initial_upload(
+        principal=principal,
+        space_id="space_1",
+        files=[_upload()],
+        idempotency_key="upload-alert-1",
+    )
+    item = created["items"][0]
+    lease = service.claim_job(worker_id="worker_1", job_id=item["job_id"])
+    quota = _ConflictingQuota()
+    service._quota_service = quota
+    receipt = {
+        "job_id": item["job_id"],
+        "attempt_id": lease.attempt_id,
+        "fencing_token": lease.fencing_token,
+        "publication_id": lease.publication_id,
+        "generation_id": lease.expected_generation_id,
+        "document_id": item["document_id"],
+        "document_version_id": item["document_version_id"],
+        "input_content_hash": hashlib.sha256(b"hello").hexdigest(),
+        "stage_resources": [],
+        "processing_config_version": "v1",
+        "authorization_fence": dict(lease.authorization_fence),
+        **_receipt_request_echoes(service, lease.attempt_id),
+        **_receipt_contract_fields(),
+    }
+    receipt["processing_summary"]["processing_list"] = {
+        "processing_list_id": "pl-1",
+        "frozen": True,
+    }
+    with pytest.raises(PlatformError) as error:
+        service.accept_processing_receipt(
+            principal=principal,
+            job_id=item["job_id"],
+            receipt=receipt,
+        )
+    assert error.value.code == "ledger_invariant_conflict"
+    assert error.value.status_code == 409
+    # 回滚后恰发布一次告警，index 与冲突唯一键一致
+    assert [exc.details["index"] for exc in quota.alerts] == [["quota_operation_id"]]
 
 
 def test_receipt_requires_complete_contract_before_publication(service, principal) -> None:

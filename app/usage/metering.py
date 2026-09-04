@@ -286,61 +286,68 @@ class LocalUsageMeterService:
         values = _measurement_values(measurement)
         sources = _measurement_sources(measurement)
         self.ledger._validate_ownership(ownership)
-        with self.engine.begin() as connection:
-            existing = self._row(connection, scope, lock=True)
-            if existing is None:
-                raise PlatformError("local_usage_meter_not_found", "Meter was not found", {}, 404)
-            if existing["status"] != "running":
-                return dict(existing)
-            _assert_monotonic(existing, values)
-            event_id, calendar_version, effective_period, recorded_period = (
-                self._insert_local_usage(
+        try:
+            with self.engine.begin() as connection:
+                existing = self._row(connection, scope, lock=True)
+                if existing is None:
+                    raise PlatformError(
+                        "local_usage_meter_not_found", "Meter was not found", {}, 404
+                    )
+                if existing["status"] != "running":
+                    return dict(existing)
+                _assert_monotonic(existing, values)
+                event_id, calendar_version, effective_period, recorded_period = (
+                    self._insert_local_usage(
+                        connection,
+                        scope=scope,
+                        measurement=measurement,
+                        values=values,
+                        ownership=ownership,
+                        result=result,
+                        started_at_utc=_utc(started_at_utc),
+                        replay_generation=replay_generation,
+                    )
+                )
+                now = self.clock.now_utc(connection)
+                update_values = {
+                    **values,
+                    "checkpoint_sequence": int(existing["checkpoint_sequence"]) + 1,
+                    "status": "completed" if result != "abandoned" else "abandoned",
+                    "completed_at_utc": now if result != "abandoned" else None,
+                    "abandoned_at_utc": now if result == "abandoned" else None,
+                    "tail_estimated": int(tail_estimated),
+                    "result": result,
+                    "error_code": error_code,
+                    "measurement_sources": sources,
+                    "usage_event_id": event_id,
+                    "updated_at_utc": now,
+                }
+                connection.execute(
+                    local_usage_meter_table.update()
+                    .where(local_usage_meter_table.c.meter_id == existing["meter_id"])
+                    .values(**update_values)
+                )
+                self._upsert_local_projection(
                     connection,
                     scope=scope,
-                    measurement=measurement,
                     values=values,
-                    ownership=ownership,
                     result=result,
-                    started_at_utc=_utc(started_at_utc),
-                    replay_generation=replay_generation,
+                    error_code=error_code,
+                    tail_estimated=tail_estimated,
+                    sources=sources,
+                    ownership=ownership,
+                    event_id=event_id,
+                    calendar_version=calendar_version,
+                    effective_period=effective_period,
+                    recorded_period=recorded_period,
+                    now=now,
                 )
-            )
-            now = self.clock.now_utc(connection)
-            update_values = {
-                **values,
-                "checkpoint_sequence": int(existing["checkpoint_sequence"]) + 1,
-                "status": "completed" if result != "abandoned" else "abandoned",
-                "completed_at_utc": now if result != "abandoned" else None,
-                "abandoned_at_utc": now if result == "abandoned" else None,
-                "tail_estimated": int(tail_estimated),
-                "result": result,
-                "error_code": error_code,
-                "measurement_sources": sources,
-                "usage_event_id": event_id,
-                "updated_at_utc": now,
-            }
-            connection.execute(
-                local_usage_meter_table.update()
-                .where(local_usage_meter_table.c.meter_id == existing["meter_id"])
-                .values(**update_values)
-            )
-            self._upsert_local_projection(
-                connection,
-                scope=scope,
-                values=values,
-                result=result,
-                error_code=error_code,
-                tail_estimated=tail_estimated,
-                sources=sources,
-                ownership=ownership,
-                event_id=event_id,
-                calendar_version=calendar_version,
-                effective_period=effective_period,
-                recorded_period=recorded_period,
-                now=now,
-            )
-            self.metrics.increment("local_usage_meter_finalize", outcome=result)
-            return {**dict(existing), **update_values, "usage_event_id": event_id}
+                self.metrics.increment("local_usage_meter_finalize", outcome=result)
+                return {**dict(existing), **update_values, "usage_event_id": event_id}
+        except PlatformError as exc:
+            # A4：本地用量落账指纹冲突——事务已回滚，best-effort 告警后原 409 照常冒泡。
+            self.ledger._alert_usage_invariant_conflict(exc)
+            raise
 
     def recover_expired(self, *, now_utc: datetime | None = None) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
