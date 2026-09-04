@@ -107,6 +107,71 @@ def test_provider_usage_uses_creation_time_generation_ownership_snapshot() -> No
     assert ownership.space_id is None
 
 
+def test_provider_success_records_provider_reported_measurement_sources() -> None:
+    """非空 meter 必须带白名单来源，否则真实账本 _availability 直接 validation_error。"""
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id, key="ask-sources-1")
+
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    completion = env["usage"].completion_requests[-1]
+    assert completion["result"] == "succeeded"
+    measurement = completion["measurement"]
+    assert measurement.measurement_sources == {
+        "input_tokens": "provider_reported",
+        "output_tokens": "provider_reported",
+    }
+    assert measurement.input_tokens == 10
+    assert measurement.output_tokens == 20
+    with env["engine"].connect() as connection:
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert generation["status"] == "completed"
+
+
+def test_provider_failure_keeps_all_null_measurement_without_sources() -> None:
+    env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
+    env["provider"].fail_next = True
+    token, _ = provision_and_login(env["identity"], "alice")
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation_id = env["client"].post("/v1/conversations", json={}, headers=headers).json()["id"]
+    principal = env["identity"].authenticate_access_token(token)
+    result = _ask(env, principal, conversation_id, key="ask-sources-failed-1")
+
+    env["runtime"].resolve("chat_generation_worker").run_once()
+
+    completion = env["usage"].completion_requests[-1]
+    assert completion["result"] == "failed"
+    measurement = completion["measurement"]
+    assert measurement.measurement_sources == {}
+    assert measurement.input_tokens is None
+    assert measurement.output_tokens is None
+    assert measurement.reasoning_tokens is None
+    with env["engine"].connect() as connection:
+        generation = (
+            connection.execute(
+                select(chat_generation_table).where(
+                    chat_generation_table.c.id == result.generation_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert generation["status"] == "failed"
+    assert generation["last_error_code"] == "provider_failed"
+
+
 def test_session_revocation_converges_running_generation_to_stopped() -> None:
     env = build_test_env(outcomes={"hello": RetrievalOutcome(hits=())})
     token, session_id = provision_and_login(env["identity"], "alice")

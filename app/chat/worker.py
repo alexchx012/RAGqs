@@ -1945,7 +1945,11 @@ class ChatGenerationWorker:
             visual_input_tokens=None,
             embedding_input_tokens=None,
             vector_count=None,
-            measurement_sources={},
+            measurement_sources={
+                field: "provider_reported"
+                for field in ("input_tokens", "output_tokens", "reasoning_tokens")
+                if getattr(response, field, None) is not None
+            },
         )
         provider_request_id = getattr(response, "provider_request_id", None)
         actual_tokens = (

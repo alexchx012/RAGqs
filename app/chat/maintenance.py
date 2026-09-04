@@ -9,10 +9,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from typing import NoReturn
 
 from app.platform.config import PlatformSettings, load_platform_settings
+from app.platform.errors import PlatformError
 from app.platform.runtime import PlatformRuntime, build_runtime
 
 _logger = logging.getLogger(__name__)
@@ -60,8 +62,18 @@ class _SafeArgumentParser(argparse.ArgumentParser):
 
 def main(argv: list[str] | None = None) -> None:
     parser = _SafeArgumentParser(prog="ragqs-chat-maintenance")
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="run maintenance passes until interrupted (resident generation driver)",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=2.0,
+        help="seconds between passes in --loop mode (default: 2)",
+    )
     args = parser.parse_args(argv)
-    del args
     try:
         settings = load_platform_settings()
     except ValueError:
@@ -72,12 +84,38 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError:
         print("ragqs-chat-maintenance: RAG_MAINTENANCE_KEY is required", file=sys.stderr)
         raise SystemExit(2) from None
-    stats = run_chat_maintenance_once(settings)
-    _logger.info(
-        "chat maintenance executions=%s maintenance=%s",
-        stats.executions_claimed,
-        stats.maintenance,
-    )
+    if args.interval < 0:
+        print("ragqs-chat-maintenance: --interval must be non-negative", file=sys.stderr)
+        raise SystemExit(2) from None
+    if not args.loop:
+        stats = run_chat_maintenance_once(settings)
+        _logger.info(
+            "chat maintenance executions=%s maintenance=%s",
+            stats.executions_claimed,
+            stats.maintenance,
+        )
+        return
+    runtime = build_runtime(settings)
+    try:
+        while True:
+            try:
+                stats = run_chat_maintenance_once(settings, runtime=runtime)
+            except PlatformError as error:
+                # Transient infrastructure failures must not kill the resident
+                # driver; the next pass retries claimed/retry_wait executions.
+                _logger.warning("chat maintenance pass failed: %s", error.code)
+            else:
+                if stats.executions_claimed:
+                    _logger.info(
+                        "chat maintenance executions=%s maintenance=%s",
+                        stats.executions_claimed,
+                        stats.maintenance,
+                    )
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        runtime.close()
 
 
 if __name__ == "__main__":

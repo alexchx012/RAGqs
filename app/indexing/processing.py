@@ -1521,7 +1521,7 @@ class ContentProcessor:
             embedding_input_tokens=None,
             vector_count=None,
             measurement_sources={
-                field: "provider"
+                field: "provider_reported"
                 for field in (
                     "input_tokens",
                     "prompt_cache_hit_tokens",
