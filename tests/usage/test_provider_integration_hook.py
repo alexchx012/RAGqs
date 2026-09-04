@@ -26,13 +26,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.platform.database import SqlAlchemyDatabaseClock
 from app.platform.errors import PlatformError
-from app.platform.ports import ProviderPort
 from app.platform.provider import (
     CircuitBreakerRegistry,
     CircuitOpen,
     InMemoryProviderTelemetry,
     ProviderCallContext,
     ProviderFailure,
+    ProviderPort,
     ProviderResult,
     RetryPolicy,
     _physical_provider_call_id,

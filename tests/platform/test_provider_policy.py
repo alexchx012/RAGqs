@@ -6,13 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.platform.ports import ProviderPort
 from app.platform.provider import (
     CircuitBreakerRegistry,
     CircuitOpen,
     InMemoryProviderTelemetry,
     ProviderCallContext,
     ProviderFailure,
+    ProviderPort,
     ProviderPreSendDeadlineExceeded,
     ProviderResult,
     RetryPolicy,
