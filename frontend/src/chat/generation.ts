@@ -642,6 +642,20 @@ export class GenerationSession {
           ab: { status: 'pending', pair_id: event.data.pair_id, candidates: [], choice: null },
         });
         break;
+      case 'delta':
+        // 渐进正文（仅 quick 非 A/B 后端会发送）：追加显示；answer 事件随后以权威全文覆盖。
+        // A/B 候选不经 delta 渲染（后端不发送，防御 ab 状态被渐进内容污染）。
+        if (this.view.ab.pair_id !== null) break;
+        this.update({
+          answer: {
+            content: (this.view.answer?.content ?? '') + event.data.content,
+            citations: this.view.answer?.citations ?? [],
+            answer_mode: this.view.answer?.answer_mode ?? 'grounded',
+            effort_level: this.view.answer?.effort_level ?? null,
+            upgraded_from: this.view.answer?.upgraded_from ?? null,
+          },
+        });
+        break;
       case 'answer':
         this.applyAnswer(event.data);
         break;

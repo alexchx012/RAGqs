@@ -10,7 +10,7 @@ to a single stopped terminal.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol, cast
@@ -48,6 +48,10 @@ class ChatProviderRequest:
     candidate: int | None
     context_items: tuple[Mapping[str, Any], ...]
     source_conflict_contract: Mapping[str, Any] | None = None
+    # Optional streaming sink: invoked per content chunk when the caller can
+    # pass provider deltas through; the returned ChatProviderResponse stays
+    # the single authoritative answer.
+    on_delta: Callable[[str], None] | None = None
     purpose: Literal["answer", "deep_retrieval_plan"] = "answer"
 
     def __post_init__(self) -> None:

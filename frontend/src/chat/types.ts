@@ -280,6 +280,12 @@ export interface SseAbStartEventData {
   readonly candidates: readonly [0, 1];
 }
 
+/** delta：quick 非 A/B 生成的渐进正文段（顺序拼接为最终全文前缀）；answer 事件仍为权威全文。 */
+export interface SseDeltaEventData {
+  readonly candidate: 0 | 1;
+  readonly content: string;
+}
+
 /** answer：一次性携带完整稳定答案；普通回答 candidate=0，A/B 按候选各发布一次。 */
 export interface SseAnswerEventData {
   readonly candidate: 0 | 1;
@@ -318,6 +324,7 @@ export type SseGenerationEvent =
   | { readonly event: 'step'; readonly data: SseStepEventData }
   | { readonly event: 'notice'; readonly data: Notice }
   | { readonly event: 'ab_start'; readonly data: SseAbStartEventData }
+  | { readonly event: 'delta'; readonly data: SseDeltaEventData }
   | { readonly event: 'answer'; readonly data: SseAnswerEventData }
   | { readonly event: 'done'; readonly data: SseDoneEventData }
   | { readonly event: 'error'; readonly data: SseErrorEventData }

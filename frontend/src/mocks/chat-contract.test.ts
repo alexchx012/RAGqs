@@ -53,13 +53,13 @@ function createAbPair(auth: string): { conversationId: string; messageId: string
 
 describe('会话与问答契约 mock', () => {
   describe('§3.7 提问 SSE 事件序列', () => {
-    it('quick：start→answer→done，event_seq 从 1 单调递增', () => {
+    it('quick：start→delta×2→answer→done，event_seq 从 1 单调递增', () => {
       const auth = bearerOf('zhangsan');
       const result = mockChat.ask(auth, 'c_1', { ...ASK_BODY }, 'k-quick');
       expect(result.events[0]?.seq).toBe(1);
       expect(result.events[0]?.event).toBe('start');
       const names = result.events.map((event) => event.event);
-      expect(names).toEqual(['start', 'answer', 'done']);
+      expect(names).toEqual(['start', 'delta', 'delta', 'answer', 'done']);
       for (let index = 0; index < result.events.length; index += 1) {
         expect(result.events[index]?.seq).toBe(index + 1);
       }

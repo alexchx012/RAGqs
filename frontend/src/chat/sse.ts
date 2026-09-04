@@ -60,6 +60,7 @@ export function isGenerationEvent(event: EventSourceMessage): boolean {
     event.event === 'step' ||
     event.event === 'notice' ||
     event.event === 'ab_start' ||
+    event.event === 'delta' ||
     event.event === 'answer' ||
     event.event === 'done' ||
     event.event === 'error' ||

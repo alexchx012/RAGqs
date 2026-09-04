@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import uuid
@@ -59,6 +60,8 @@ from .schema import (
     chat_message_table,
 )
 
+_logger = logging.getLogger(__name__)
+
 EXECUTION_LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 MAX_PHYSICAL_EXECUTIONS = 3
@@ -72,6 +75,40 @@ def _utc(value: Any) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+# Delta events aggregate provider chunks before each durable write: one DB
+# write per chunk would dominate worker latency, so flush on either threshold.
+_DELTA_FLUSH_CHARS = 240
+_DELTA_FLUSH_SECONDS = 0.4
+
+
+class _DeltaStreamSink:
+    """Aggregates provider stream chunks into best-effort delta event writes."""
+
+    def __init__(self, *, emit: Callable[[str], None], clock: Callable[[], datetime]) -> None:
+        self._emit = emit
+        self._clock = clock
+        self._parts: list[str] = []
+        self._length = 0
+        self._last_flush = clock()
+
+    def __call__(self, text: str) -> None:
+        self._parts.append(text)
+        self._length += len(text)
+        if self._length >= _DELTA_FLUSH_CHARS or (
+            (self._clock() - self._last_flush).total_seconds() >= _DELTA_FLUSH_SECONDS
+        ):
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._parts:
+            return
+        text = "".join(self._parts)
+        self._parts = []
+        self._length = 0
+        self._last_flush = self._clock()
+        self._emit(text)
 
 
 def _source_identity(item: Mapping[str, Any]) -> tuple[str, str, str, str]:
@@ -1204,18 +1241,30 @@ class ChatGenerationWorker:
             else self._self_evaluator
         )
         while True:
-            candidates = self._produce_candidates(
+            delta_sink = self._open_delta_sink(
                 generation=generation,
                 execution_id=execution_id,
                 fencing_token=fencing_token,
                 control_version=control_version,
-                hits=hits,
-                citations=citations,
                 candidate_config_versions=candidate_config_versions,
-                retrieval_budget=rag_budget_meter,
-                query=effective_query,
-                logical_budget=rag_budget_meter,
             )
+            try:
+                candidates = self._produce_candidates(
+                    generation=generation,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    hits=hits,
+                    citations=citations,
+                    candidate_config_versions=candidate_config_versions,
+                    retrieval_budget=rag_budget_meter,
+                    query=effective_query,
+                    logical_budget=rag_budget_meter,
+                    on_delta=delta_sink,
+                )
+            finally:
+                if delta_sink is not None:
+                    delta_sink.flush()
             try:
                 evaluation = evaluator.evaluate(
                     query=effective_query,
@@ -1616,6 +1665,7 @@ class ChatGenerationWorker:
         retrieval_budget: Any | None = None,
         query: str | None = None,
         logical_budget: BudgetMeter | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> list[dict[str, Any]]:
         pair = self._pair_for_generation(generation_id=str(generation["id"]))
         candidate_numbers = (0, 1) if pair is not None else (0,)
@@ -1687,6 +1737,7 @@ class ChatGenerationWorker:
                 candidate=None if pair is None else candidate,
                 context_items=context,
                 source_conflict_contract=source_conflict_contract(),
+                on_delta=on_delta,
             )
             answer_mode = _answer_mode(candidate_hits, candidate_citations)
             pending_checkpoint = {
@@ -2539,6 +2590,71 @@ class ChatGenerationWorker:
             and int(generation["control_version"]) == control_version
             and str(generation["status"]) in {"running", "stop_requested"}
         )
+
+    def _open_delta_sink(
+        self,
+        *,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        candidate_config_versions: tuple[str, str] | None,
+    ) -> _DeltaStreamSink | None:
+        """Streaming pass-through only where the draft is the published answer.
+
+        The quick tier skips self-evaluation entirely and A/B candidates must
+        stay blind before publication; think/deep drafts can be discarded by
+        the rewrite loop, so they keep the buffered answer path.
+        """
+
+        if str(generation["effective_effort_level"]) != "quick":
+            return None
+        if candidate_config_versions is not None:
+            return None
+        return _DeltaStreamSink(
+            emit=lambda text: self._emit_delta(
+                generation_id=str(generation["id"]),
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                content=text,
+            ),
+            clock=self._now,
+        )
+
+    def _emit_delta(
+        self,
+        *,
+        generation_id: str,
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        content: str,
+    ) -> None:
+        """Best-effort progressive rendering: a dropped delta must never fail
+        the generation; the answer event stays the single authoritative text."""
+
+        try:
+            with self._engine.begin() as connection:
+                if not self._fence_current(
+                    connection,
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                ):
+                    return
+                self._append_terminal(
+                    connection,
+                    generation_id=generation_id,
+                    event_type="delta",
+                    data={"candidate": 0, "content": content},
+                    now=self._now(connection),
+                )
+        except Exception:
+            _logger.warning(
+                "chat delta event dropped generation_id=%s", generation_id, exc_info=True
+            )
 
     def _emit_stage(
         self,

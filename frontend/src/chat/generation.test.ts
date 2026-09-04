@@ -212,6 +212,22 @@ describe('生成控制器（spec §7）', () => {
     expect(session.getView().phase).toBe('completed');
   });
 
+  it('delta：渐进追加正文，answer 以权威全文覆盖', async () => {
+    const api = makeStubApi();
+    const session = GenerationSession.launchAsk(makeDeps(api), 'c_1', { content: 'q', effort_level: 'quick', overrides: null });
+    const stream = api.streams[0];
+    stream?.push(1, startEvt());
+    stream?.push(2, { event: 'delta', data: { candidate: 0, content: '部分' } });
+    expect(session.getView().answer?.content).toBe('部分');
+    stream?.push(3, { event: 'delta', data: { candidate: 0, content: '正文' } });
+    expect(session.getView().answer?.content).toBe('部分正文');
+    stream?.push(4, answerEvt('权威全文'));
+    expect(session.getView().answer?.content).toBe('权威全文');
+    expect(session.getView().answer?.effort_level).toBe('quick');
+    stream?.push(5, doneEvt());
+    expect(session.getView().terminal?.kind).toBe('done');
+  });
+
   it('事件去重：忽略 ≤ 已应用 event_seq 的重复事件', async () => {
     const api = makeStubApi();
     const session = GenerationSession.launchAsk(makeDeps(api), 'c_1', { content: 'q', effort_level: 'quick', overrides: null });

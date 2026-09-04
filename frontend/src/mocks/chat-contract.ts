@@ -1258,9 +1258,11 @@ export class MockChatController {
         { event: 'done', data: { generation_id: generationId, message_id: messageId, status: 'completed' } },
       ];
     }
-    // quick
+    // quick：quick 非 A/B 生成走流式透传——delta 渐进段先到，answer 仍为权威全文。
     return [
       { event: 'start', data: base },
+      { event: 'delta', data: { candidate: 0, content: plainContent.slice(0, 24) } },
+      { event: 'delta', data: { candidate: 0, content: plainContent.slice(24) } },
       { event: 'answer', data: answer(0, plainContent, [citationA, citationSecond]) },
       { event: 'done', data: { generation_id: generationId, message_id: messageId, status: 'completed' } },
     ];

@@ -339,7 +339,7 @@ describe('会话与问答域 API 封装（SSE 端点，经 MSW）', () => {
       );
     });
     await firstDone;
-    expect(events.map((event) => event.event)).toEqual(['start', 'answer', 'done']);
+    expect(events.map((event) => event.event)).toEqual(['start', 'delta', 'delta', 'answer', 'done']);
     const start = events[0];
     expect(start?.event).toBe('start');
     if (start?.event === 'start') {
