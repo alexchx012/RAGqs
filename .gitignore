@@ -27,7 +27,5 @@ frontend/test-results/
 data/user-deletion-archives/
 
 # >>> Comet managed project state >>>
-!/.comet/
-/.comet/*
-!/.comet/config.yaml
+/.comet/
 # <<< Comet managed project state <<<
