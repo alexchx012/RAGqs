@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -273,42 +273,52 @@ describe('输入区（Composer）', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('「+」菜单：添加图片/文件/技能在场；选文件出附件 chip，点 × 后退场移除', async () => {
+  it('「+」菜单：附件假发送入口已移除（决策 D6）——无添加图片/文件项与 file input，技能/范围/档位在场', async () => {
     const user = userEvent.setup();
     renderComposer();
     await user.click(screen.getByRole('button', { name: copy.chat.composer.addMenuAria }));
-    expect(
-      screen.getByRole('menuitem', { name: copy.chat.composer.addPhotos }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('menuitem', { name: copy.chat.composer.attachFiles }),
-    ).toBeInTheDocument();
+    // 菜单只剩技能与检索范围两行 menuitem（努力档位为分段开关）
+    expect(screen.getAllByRole('menuitem')).toHaveLength(2);
     expect(
       screen.getByRole('menuitem', { name: copy.chat.composer.skillsLabel }),
     ).toBeInTheDocument();
-    // 检索范围行与努力档位分段开关同在「+」菜单内
     expect(
       screen.getByRole('menuitem', { name: copy.chat.composer.scopeAria }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('radiogroup', { name: copy.chat.composer.effortAria }),
     ).toBeInTheDocument();
+    // 附件选择链路（hidden file input）与 chips 全部移除
+    expect(document.querySelector('input[type="file"]')).toBeNull();
+    expect(document.querySelector('.chat-composer-chips')).toBeNull();
+  });
 
-    await user.click(screen.getByRole('menuitem', { name: copy.chat.composer.attachFiles }));
-    // jsdom 无文件选择对话框：直接打 hidden file input（user.upload 无可见性检查）
-    const fileInput = document.querySelector('input[type="file"]');
-    expect(fileInput).not.toBeNull();
-    await user.upload(
-      fileInput as HTMLInputElement,
-      new File(['x'], '报告.pdf', { type: 'application/pdf' }),
-    );
-    expect(await screen.findByText('报告.pdf')).toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole('button', { name: copy.chat.composer.removeItemAria('报告.pdf') }),
-    );
-    // 退场动画 200ms：jsdom 不触发 CSS 动画事件，组件内 setTimeout 兜底后移除
-    await waitFor(() => expect(screen.queryByText('报告.pdf')).not.toBeInTheDocument());
+  it('A19：粘贴只插纯文本并保留换行——发送内容含 \\n，富文本/二进制不进编辑器', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    renderComposer({ onSend });
+    const editor = screen.getByRole('textbox', { name: copy.chat.composer.inputPlaceholder });
+    editor.focus();
+    // 光标落编辑器末尾（jsdom 粘贴前置位）
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    // 富文本剪贴板：text/plain 与 text/html 并存，只采纳纯文本（多行换行保留）
+    fireEvent.paste(editor, {
+      clipboardData: {
+        getData: (type: string) =>
+          type === 'text/plain' ? '第一行\n第二行' : '<p>第一行</p><p>第二行</p>',
+      },
+    });
+    expect(editor.textContent).toContain('第一行');
+    expect(editor.textContent).toContain('第二行');
+    // 无纯文本的剪贴板（如图片）：不插入任何内容
+    fireEvent.paste(editor, { clipboardData: { getData: () => '' } });
+    expect(editor.textContent).toContain('第一行');
+    await user.keyboard('{Enter}');
+    expect(onSend).toHaveBeenCalledWith('第一行\n第二行');
   });
 });
 

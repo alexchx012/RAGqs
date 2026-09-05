@@ -24,9 +24,18 @@ export interface AbCompareProps {
   readonly onVote: (messageId: string, choice: AbChoice) => void;
   /** m2：投票提交中锁定（禁连击同键不同请求体）。 */
   readonly disabled?: boolean;
+  /** 引用点击上报（§8.4 弱信号；A27：对比列此前漏接，候选引用点击不上报）。 */
+  readonly onCitationClick?: (messageId: string, citation: Citation, index: number) => void;
 }
 
-export function AbCompare({ messageId, candidates, leftCandidate, onVote, disabled = false }: AbCompareProps) {
+export function AbCompare({
+  messageId,
+  candidates,
+  leftCandidate,
+  onVote,
+  disabled = false,
+  onCitationClick,
+}: AbCompareProps) {
   const left = candidates.find((candidate) => candidate.candidate === leftCandidate);
   const right = candidates.find((candidate) => candidate.candidate === (leftCandidate === 0 ? 1 : 0));
   const vote = useCallback(
@@ -55,7 +64,11 @@ export function AbCompare({ messageId, candidates, leftCandidate, onVote, disabl
           >
             <div className="chat-body-text leading-[var(--leading-body)] text-ink-black">
               <Markdown markdown={candidate.content} />
-              <CitationBadges citations={candidate.citations} messageId={messageId} />
+              <CitationBadges
+                citations={candidate.citations}
+                messageId={messageId}
+                onCitationClick={onCitationClick}
+              />
             </div>
             <div className="mt-4 flex justify-center">
               <button
@@ -76,7 +89,7 @@ export function AbCompare({ messageId, candidates, leftCandidate, onVote, disabl
           type="button"
           disabled={disabled}
           onClick={() => onVote(messageId, 'neither')}
-          className="text-[15px] text-slate-gray underline-offset-2 transition-colors duration-[var(--duration-fast)] hover:underline hover:text-ink-black disabled:text-smoke-gray disabled:hover:no-underline"
+          className="text-[15px] text-slate-strong underline-offset-2 transition-colors duration-[var(--duration-fast)] hover:underline hover:text-ink-black disabled:text-smoke-gray disabled:hover:no-underline"
         >
           {copy.chat.abChoiceNeither}
         </button>

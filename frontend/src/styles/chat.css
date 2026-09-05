@@ -1,13 +1,235 @@
 /* 聊天主页（fe-chat-home）动效与布局补充。只使用设计 token；reduced-motion 由 base.css 全局降级为直出。 */
 
-/* 外观设置的对话字号：只挂在用户/assistant/A-B 正文，不影响聊天 chrome 或设置抽屉。 */
+/* 外观设置的对话字号：只挂在用户/assistant/A-B 正文，不影响聊天 chrome 或设置抽屉。
+ * 正文行高 ≥1.6（审查 A24）：覆盖正文包装上的 leading-[var(--leading-body)]（1.35），
+ * 不改全局 token。 */
 .chat-body-text {
   font-size: var(--text-body);
+  line-height: 1.6;
   transition: font-size var(--duration-base) var(--ease-in-out);
 }
 
 :root[data-chat-font-size='large'] .chat-body-text {
   font-size: var(--text-body-lg);
+}
+
+/* ===== Markdown 正文基础样式（审查 A17）=====
+ * 颜色一律 token（暗色经 [data-theme='dark'] token 换值自动适配）；
+ * pre / table 横向滚动，不撑破 760px 对话列。hljs 配色按语义映射 Steep token：
+ * 注释 smoke、关键字 danger、字符串 success、数值 warning、标题 ink、其余次级 token。 */
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p {
+  margin: 0.6em 0;
+}
+
+/* 行高 ≥1.6（审查 A24） */
+.chat-markdown p,
+.chat-markdown li,
+.chat-markdown blockquote {
+  line-height: 1.6;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  margin: 1.2em 0 0.5em;
+  font-weight: 480;
+  line-height: 1.4;
+  color: var(--color-ink-black);
+}
+
+.chat-markdown h1 {
+  font-size: 1.25em;
+}
+
+.chat-markdown h2 {
+  font-size: 1.15em;
+}
+
+.chat-markdown h3,
+.chat-markdown h4 {
+  font-size: 1.05em;
+}
+
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-size: 1em;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.6em 0;
+  padding-left: 1.5em;
+}
+
+.chat-markdown ul {
+  list-style: disc;
+}
+
+.chat-markdown ol {
+  list-style: decimal;
+}
+
+.chat-markdown li {
+  margin: 0.25em 0;
+}
+
+.chat-markdown li::marker {
+  color: var(--color-slate-gray);
+}
+
+.chat-markdown blockquote {
+  margin: 0.8em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--color-hairline);
+  color: var(--color-slate-strong);
+}
+
+.chat-markdown blockquote p {
+  margin: 0.4em 0;
+}
+
+.chat-markdown a {
+  color: var(--color-ink-black);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-markdown img {
+  max-width: 100%;
+  border-radius: var(--radius-images);
+}
+
+.chat-markdown hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 0.5px solid var(--color-hairline);
+}
+
+.chat-markdown code {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 行内 code（pre 外） */
+.chat-markdown :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: 6px;
+  background: var(--color-mist-gray);
+  font-size: 0.9em;
+}
+
+/* 代码块：token 面底 + 发丝边，横向滚动不撑破列宽 */
+.chat-markdown pre {
+  max-width: 100%;
+  margin: 0.8em 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  background: var(--color-fog-white);
+  border: 0.5px solid var(--color-hairline);
+  border-radius: 10px;
+}
+
+.chat-markdown pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+/* 表格：宽表横向滚动（block 化），不撑破 760px 列 */
+.chat-markdown table {
+  display: block;
+  max-width: 100%;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  padding: 6px 10px;
+  border: 0.5px solid var(--color-hairline);
+  line-height: 1.6;
+  text-align: left;
+  vertical-align: top;
+}
+
+.chat-markdown th {
+  background: var(--color-fog-white);
+  font-weight: 480;
+}
+
+/* hljs 配色（语义 → Steep token，亮暗双主题自动适配） */
+.chat-markdown .hljs-comment,
+.chat-markdown .hljs-quote {
+  color: var(--color-slate-gray);
+  font-style: italic;
+}
+
+.chat-markdown .hljs-keyword,
+.chat-markdown .hljs-selector-tag,
+.chat-markdown .hljs-deletion {
+  color: var(--color-danger);
+}
+
+.chat-markdown .hljs-string,
+.chat-markdown .hljs-regexp,
+.chat-markdown .hljs-addition {
+  color: var(--color-success);
+}
+
+.chat-markdown .hljs-number,
+.chat-markdown .hljs-literal,
+.chat-markdown .hljs-symbol,
+.chat-markdown .hljs-bullet,
+.chat-markdown .hljs-link {
+  color: var(--color-warning);
+}
+
+.chat-markdown .hljs-title,
+.chat-markdown .hljs-section,
+.chat-markdown .hljs-name {
+  color: var(--color-ink-black);
+  font-weight: 480;
+}
+
+.chat-markdown .hljs-attr,
+.chat-markdown .hljs-attribute,
+.chat-markdown .hljs-variable,
+.chat-markdown .hljs-template-variable,
+.chat-markdown .hljs-type,
+.chat-markdown .hljs-class .hljs-title,
+.chat-markdown .hljs-built_in,
+.chat-markdown .hljs-selector-class,
+.chat-markdown .hljs-selector-id,
+.chat-markdown .hljs-tag {
+  color: var(--color-slate-strong);
+}
+
+.chat-markdown .hljs-meta,
+.chat-markdown .hljs-doctag {
+  color: var(--color-slate-gray);
+}
+
+.chat-markdown .hljs-emphasis {
+  font-style: italic;
+}
+
+.chat-markdown .hljs-strong {
+  font-weight: 600;
 }
 
 /* 打字光标（动效 Streaming Text）：文末 8px×1.05em 墨色方块，流式期间常亮跟随写头。
@@ -95,16 +317,24 @@
   box-shadow: var(--shadow-subtle);
 }
 
-/* 侧边栏窄屏滑出抽屉：280px 自左滑入 --duration-slow --ease-out，反向回放 --ease-in-out（§3.1）。 */
+/* 侧边栏窄屏滑出抽屉：280px 自左滑入 --duration-slow --ease-out，反向回放 --ease-in-out（§3.1）。
+ * A13：关闭态 visibility:hidden（过渡延迟到滑出动画结束后生效）+ React inert——
+ * 抽屉不可被 Tab 聚焦 / 辅助技术遍历；打开帧立即恢复可见，不影响滑入。 */
 .chat-drawer-panel {
   transform: translateX(-100%);
-  transition: transform var(--duration-slow) var(--ease-in-out);
+  visibility: hidden;
+  transition:
+    transform var(--duration-slow) var(--ease-in-out),
+    visibility 0s linear var(--duration-slow);
   will-change: transform;
 }
 
 .chat-drawer-panel[data-open='true'] {
   transform: translateX(0);
-  transition-timing-function: var(--ease-out);
+  visibility: visible;
+  transition:
+    transform var(--duration-slow) var(--ease-out),
+    visibility 0s;
 }
 
 /* 遮罩：--color-ink-black 24% 透明度同步淡入（§3.1）。 */
@@ -299,9 +529,14 @@
     opacity var(--duration-base) var(--ease-in-out);
 }
 
-/* 触屏（hover: none）：会话条目 ⋯ 操作入口常显可发现（D1；基座 §3.2），并关闭长按时的系统 callout/文本选择。 */
+/* 触屏（hover: none）：会话条目 ⋯ 操作入口常显可发现（D1；基座 §3.2），并关闭长按时的系统 callout/文本选择；
+ * 消息相对时间常显（审查 A21）——触屏到不了 hover 态，hover 淡入的时间戳将永久不可见。 */
 @media (hover: none) {
   .chat-item-menu-trigger {
+    opacity: 1;
+  }
+
+  .chat-time-reveal {
     opacity: 1;
   }
 
@@ -342,11 +577,6 @@
     0 0 0 0.5px rgba(0, 0, 0, 0.08),
     0 1px 2px rgba(0, 0, 0, 0.05),
     0 2px 4px rgba(0, 0, 0, 0.02);
-}
-
-/* 有附件 chips 时，顶 padding 与两侧 10px 对齐 */
-.chat-composer-frame:has(.chat-composer-chips) {
-  padding-top: 10px;
 }
 
 /* 增强中：conic 渐变环沿边框扫转（彩色素例外，硬编码） */
@@ -532,15 +762,15 @@
 
 .chat-composer-slash-label {
   padding: 4px 8px 2px;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 425;
-  color: var(--color-smoke-gray);
+  color: var(--color-slate-strong);
 }
 
 .chat-composer-slash-empty {
   padding: 6px 8px;
-  font-size: 12px;
-  color: var(--color-smoke-gray);
+  font-size: 15px;
+  color: var(--color-slate-strong);
 }
 
 /* 增强中：当前文本 shimmer，模型正在改写 */
@@ -574,86 +804,6 @@
   82%,
   100% {
     background-position: 0% 0;
-  }
-}
-
-/* 附件 chips —— 与 frame 同白纸面 + 发丝描边 */
-.chat-composer-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  /* 只收紧 chips→文本间距（frame gap 为 12px），不动 文本→按钮行 间距 */
-  margin-bottom: -6px;
-}
-
-.chat-composer-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  padding: 3px 4px 3px 5px;
-  border-radius: 999px;
-  background: var(--color-paper-white);
-  border: 0.5px solid var(--color-hairline);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
-  color: var(--color-ink-black);
-  font-size: 12px;
-  line-height: 16px;
-  animation: chat-composer-chip-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-/* 与技能药丸同样的柔和淡出/缩放退场 */
-.chat-composer-chip[data-exit] {
-  animation: chat-composer-pill-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  pointer-events: none;
-}
-
-.chat-composer-chip-icon {
-  display: inline-flex;
-  flex: none;
-  color: var(--color-smoke-gray);
-}
-
-.chat-composer-chip-name {
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-composer-chip-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* 向文件名拉近 2px，不改变 图标→文本 间距 */
-  margin-left: -2px;
-  width: 15px;
-  height: 15px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--color-smoke-gray);
-  cursor: pointer;
-  transition:
-    background 150ms cubic-bezier(0.22, 1, 0.36, 1),
-    color 150ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.chat-composer-chip-remove:hover {
-  background: color-mix(in srgb, var(--color-ink-black) 8%, transparent);
-  color: var(--color-ink-black);
-}
-
-@keyframes chat-composer-chip-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-    filter: blur(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-    filter: blur(0);
   }
 }
 
@@ -959,9 +1109,9 @@
 
 .chat-composer-menu-label {
   padding: 5px 8px 3px;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 425;
-  color: var(--color-smoke-gray);
+  color: var(--color-slate-strong);
 }
 
 /* 努力档位区块：分段开关入菜单，铺满菜单宽度 */
@@ -969,13 +1119,14 @@
   padding: 2px 4px 7px;
 }
 
-/* 检索范围行：摘要小字右对齐截断；非默认态左侧 6px 墨点（与 ScopeChip 触发器同规则） */
+/* 检索范围行：摘要小字右对齐截断；非默认态左侧 6px 墨点（与 ScopeChip 触发器同规则）。
+ * 摘要是选中空间名（有意义文字，审查 A26）：次级文字 token。 */
 .chat-composer-scope-summary {
   max-width: 84px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-smoke-gray);
+  color: var(--color-slate-strong);
 }
 
 .chat-composer-scope-dot {
@@ -991,6 +1142,31 @@
   width: 280px;
   max-height: 360px;
   overflow-y: auto;
+}
+
+/* 窄屏（<768px）：菜单内横向空间不足，子弹层（技能/检索范围）不再向右侧外挂——
+ * 改为菜单内全宽展开（in-flow），375px 视口完整可见、无横向滚动（审查 A18）。 */
+@media (max-width: 767.98px) {
+  .chat-composer-menu {
+    width: min(280px, calc(100vw - 32px));
+    max-height: min(60vh, 420px);
+    overflow-y: auto;
+  }
+
+  .chat-composer-menu-flyout {
+    position: static;
+    width: 100%;
+    margin-top: 2px;
+  }
+
+  /* hover 桥只服务桌面外挂形态 */
+  .chat-composer-menu-flyout::before {
+    display: none;
+  }
+
+  .chat-composer-scope-flyout {
+    max-height: 240px;
+  }
 }
 
 @keyframes chat-composer-menu-in {

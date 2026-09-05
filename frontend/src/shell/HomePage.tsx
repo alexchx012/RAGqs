@@ -149,10 +149,14 @@ function ChatHomeInner({
   const authStore = useAuthStore();
   const state = useChatState();
   const [spaces, setSpaces] = useState<readonly import('../chat/types').SpaceItem[]>([]);
+  // A22：检索空间加载失败——错误态 + 重试（不再静默空列表）
+  const [spacesLoadFailed, setSpacesLoadFailed] = useState(false);
   // 优化输入失败轻提示（HeaderNotice 3s 自动淡出；seq 递增加 key 重挂载，连续失败重新计时）
   const [enhanceFailedSeq, setEnhanceFailedSeq] = useState(0);
   // 侧栏会话/分组 patch·delete 失败轻提示（A38：store 返回 false 时，不再静默吞错）
   const [sidebarActionFailedSeq, setSidebarActionFailedSeq] = useState(0);
+  // A22：反馈 / A/B 投票提交失败轻提示（store rethrow 的网络失败，此前被 void 丢弃成未处理拒绝）
+  const [voteFailedSeq, setVoteFailedSeq] = useState(0);
   // 优化输入（prompt-enhance §3.2）：无条件真实端点；失败弹提示后 rethrow（composer 还原原文），
   // 用户中止（还原/卸载）静默。setState 函数引用稳定，handler 每渲染新建无妨
   const onEnhance = createPromptEnhanceHandler(chatApi, () => setEnhanceFailedSeq((seq) => seq + 1));
@@ -163,13 +167,22 @@ function ChatHomeInner({
     }
   };
 
+  // A22：拉取检索空间（失败置错误态，可重试；成功清除错误）
+  const fetchSpaces = useCallback(async () => {
+    setSpacesLoadFailed(false);
+    const items = await store.fetchSpaces();
+    if (items === null) {
+      setSpacesLoadFailed(true);
+      return;
+    }
+    setSpaces(items);
+  }, [store]);
+
   // 首次挂载：拉会话列表 + 检索空间；随后自动打开最近会话（登录落地恢复）
   useEffect(() => {
     void store.loadConversationList();
-    void store.fetchSpaces().then((items) => {
-      if (items !== null) setSpaces(items);
-    });
-  }, []);
+    void fetchSpaces();
+  }, [store, fetchSpaces]);
 
   // 新登录落地（每次新登录主页即新会话界面）：有未命名新会话则指向它，否则创建一个；
   // 全局限一、禁止重复创建。一次性消费（本挂载内不再重放）；消费时清除 auth store 标记。
@@ -265,14 +278,32 @@ function ChatHomeInner({
 
   // A28：消息回调稳定引用（store 单例，天然稳定）——配合 AssistantMessage memo 生效
   const onRetry = useCallback((messageId: string) => void store.retry(messageId), [store]);
+  // A22：投票提交失败（网络失败 store rethrow）捕获后弹 HeaderNotice，不再 void 丢弃成未处理拒绝
   const onFeedback = useCallback(
-    (messageId: string, vote: FeedbackVoteRequest) => void store.submitFeedback(messageId, vote),
+    async (messageId: string, vote: FeedbackVoteRequest) => {
+      try {
+        await store.submitFeedback(messageId, vote);
+      } catch {
+        setVoteFailedSeq((seq) => seq + 1);
+      }
+    },
     [store],
   );
   const onAbVote = useCallback(
-    (messageId: string, choice: AbChoice) => void store.submitAbVote(messageId, choice),
+    async (messageId: string, choice: AbChoice) => {
+      try {
+        await store.submitAbVote(messageId, choice);
+      } catch {
+        setVoteFailedSeq((seq) => seq + 1);
+      }
+    },
     [store],
   );
+  // A22：会话打开失败——错误态由 MessageList 呈现，重试重新 openConversation
+  const onOpenRetry = useCallback(() => {
+    const id = store.getState().conversationId;
+    if (id !== null) void store.openConversation(id);
+  }, [store]);
   const onCitationClick = useCallback(
     (messageId: string, citation: Citation, index: number) =>
       store.reportCitationClick(messageId, citation, index),
@@ -313,42 +344,61 @@ function ChatHomeInner({
         <ChatMenuButton onOpen={() => onDrawerOpenChange(true)} />
         <main className="flex min-h-0 flex-1 flex-col">
           <div className="relative mx-auto flex w-full max-w-[760px] flex-1 flex-col px-6">
-            {state.actionNotice !== null && (
-              <div className="chat-notice-enter mt-4 flex items-center gap-2 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2">
-                <p className="text-[15px] text-slate-gray">
-                  {state.actionNotice.type === 'feedback_conflict'
-                    ? copy.chat.feedbackConflict
-                    : copy.chat.abConflict}
-                </p>
-              </div>
-            )}
-            {/* 轻提示层（悬浮于对话上层，不推挤布局；各自 3s 后淡出）：
-                优化输入失败 + 侧栏会话/分组操作失败（A38） */}
-            {(enhanceFailedSeq > 0 || sidebarActionFailedSeq > 0) && (
-              <div
-                key={`${enhanceFailedSeq}:${sidebarActionFailedSeq}`}
-                className="chat-notice-enter pointer-events-none absolute inset-x-0 top-4 z-20 flex flex-col items-center gap-2"
-              >
-                {enhanceFailedSeq > 0 && (
+            {/* 轻提示层（悬浮于对话上层，不推挤布局；chat-notice-enter 进入动效）：
+                优化输入失败 + 侧栏会话/分组操作失败（A38）+ 投票提交失败（A22）danger 驻留 8s 可手动关闭；
+                反馈/A-B 冲突（A23）neutral 3s 自动消失（原常驻内联条推挤布局，浮层化）。
+                各条以 seq/type+messageId 为 key 重挂载重计时；wrapper pointer-events-auto
+                兑现 danger 关闭钮（容器本身不拦截对话区点击）。 */}
+            <div className="pointer-events-none absolute inset-x-0 top-4 z-20 flex flex-col items-center gap-2">
+              {state.actionNotice !== null && (
+                <div
+                  key={`${state.actionNotice.type}:${state.actionNotice.messageId}`}
+                  className="chat-notice-enter pointer-events-auto"
+                >
+                  <HeaderNotice
+                    intent="neutral"
+                    message={
+                      state.actionNotice.type === 'feedback_conflict'
+                        ? copy.chat.feedbackConflict
+                        : copy.chat.abConflict
+                    }
+                    onDismiss={() => store.dismissActionNotice()}
+                  />
+                </div>
+              )}
+              {enhanceFailedSeq > 0 && (
+                <div key={`enhance:${enhanceFailedSeq}`} className="chat-notice-enter pointer-events-auto">
                   <HeaderNotice
                     intent="danger"
                     message={copy.chat.composer.enhanceFailed}
                     onDismiss={() => setEnhanceFailedSeq(0)}
                   />
-                )}
-                {sidebarActionFailedSeq > 0 && (
+                </div>
+              )}
+              {sidebarActionFailedSeq > 0 && (
+                <div key={`sidebar:${sidebarActionFailedSeq}`} className="chat-notice-enter pointer-events-auto">
                   <HeaderNotice
                     intent="danger"
                     message={copy.chat.sidebar.actionFailed}
                     onDismiss={() => setSidebarActionFailedSeq(0)}
                   />
-                )}
-              </div>
-            )}
+                </div>
+              )}
+              {voteFailedSeq > 0 && (
+                <div key={`vote:${voteFailedSeq}`} className="chat-notice-enter pointer-events-auto">
+                  <HeaderNotice
+                    intent="danger"
+                    message={copy.chat.voteFailed}
+                    onDismiss={() => setVoteFailedSeq(0)}
+                  />
+                </div>
+              )}
+            </div>
             <MessageList
               conversationId={state.conversationId}
               conversationStatus={state.conversationStatus}
               messages={state.messages}
+              onOpenRetry={onOpenRetry}
               onRetry={onRetry}
               onFeedback={onFeedback}
               onAbVote={onAbVote}
@@ -368,6 +418,8 @@ function ChatHomeInner({
                   onSend={send}
                   onStop={() => store.stop()}
                   onEnhance={onEnhance}
+                  spacesLoadFailed={spacesLoadFailed}
+                  onSpacesRetry={() => void fetchSpaces()}
                 />
               }
             />

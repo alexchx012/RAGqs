@@ -39,7 +39,8 @@ export function Feedback({ messageId, feedback, disabled = false, onVote }: Feed
         disabled={disabled || locked}
         onClick={() => onVote(messageId, { vote: 'up' })}
         className={
-          'inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] ' +
+          'ui-touch-target inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] ' +
+          '[--touch-expand:-10px] ' +
           'transition-colors duration-[var(--duration-fast)] ' +
           (upActive ? 'text-ink-black' : 'hover:text-ink-black disabled:text-smoke-gray')
         }
@@ -53,7 +54,8 @@ export function Feedback({ messageId, feedback, disabled = false, onVote }: Feed
             aria-label={copy.chat.feedbackDownAria}
             disabled={disabled || locked}
             className={
-              'inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] ' +
+              'ui-touch-target inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] ' +
+              '[--touch-expand:-10px] ' +
               'transition-colors duration-[var(--duration-fast)] ' +
               (downActive ? 'text-ink-black' : 'hover:text-ink-black disabled:text-smoke-gray')
             }
@@ -68,7 +70,8 @@ export function Feedback({ messageId, feedback, disabled = false, onVote }: Feed
             align="start"
             className="ui-menu-content w-[200px] rounded-[var(--radius-elevatedcards)] bg-paper-white p-1 shadow-[var(--shadow-subtle)]"
           >
-            <p className="px-3 pt-2 text-[15px] font-w480 text-ink-black" aria-label={copy.chat.feedbackDownMenuAria}>
+            {/* A27：aria-label 与可见文本重复（p 上无效冗余），正文即语义 */}
+            <p className="px-3 pt-2 text-[15px] font-w480 text-ink-black">
               {copy.chat.feedbackDownMenuAria}
             </p>
             <Popover.Close asChild>

@@ -148,6 +148,33 @@ describe('会话状态机（ChatStore）', () => {
       expect(store.getState().visibleConversations.length).toBeGreaterThan(0);
     });
 
+    it('A27：服务端搜索 300ms 防抖——防抖窗内不重拉，停顿后只发最后一次', async () => {
+      const seen: Array<string | undefined> = [];
+      const items = Array.from({ length: 151 }, (_, index) => summary(`c_${index}`, `会话${index}`));
+      const api = {
+        listConversations: (q?: string) => {
+          seen.push(q);
+          const hit = q ? items.filter((item) => item.title.includes(q)) : items;
+          return Promise.resolve({ items: hit, groups: [] as never[] });
+        },
+      } as unknown as ChatApi;
+      const { store } = makeStore({ api });
+
+      await store.loadConversationList();
+      expect(seen).toEqual([undefined]); // 首屏加载不带 q
+
+      // 连续输入：每次键入都重置防抖计时器，窗口内不发请求
+      store.setSearchQuery('会话');
+      store.setSearchQuery('会话1');
+      store.setSearchQuery('会话12');
+      expect(seen).toEqual([undefined]);
+
+      // 停顿超过 300ms：只按最后一次关键词发一次服务端 q
+      await waitFor(() => store.getState().serverFiltered === true);
+      expect(seen).toEqual([undefined, '会话12']);
+      expect(store.getState().visibleConversations.every((item) => item.title.includes('会话12'))).toBe(true);
+    });
+
     /* ---------- 列表加载竞态（评审 #14）：旧响应不得覆盖新结果 ---------- */
 
     function summary(id: string, title: string): ConversationSummary {
@@ -185,10 +212,12 @@ describe('会话状态机（ChatStore）', () => {
       take().resolve({ items: [summary('a', 'A'), summary('b', 'B')], groups: [] });
       await p0;
 
-      // 快速连续输入两个关键词：'甲'（旧，慢）与 '乙'（新，快）各触发一次服务端加载
+      // 两次服务端搜索（间隔超过 300ms 防抖窗，各触发一次）：'甲'（旧，慢）与 '乙'（新，快）
       store.setSearchQuery('甲');
-      store.setSearchQuery('乙');
+      await new Promise((resolve) => setTimeout(resolve, 350));
       const staleReq = take(); // '甲' 的请求（先入队，后到）
+      store.setSearchQuery('乙');
+      await new Promise((resolve) => setTimeout(resolve, 350));
       const newReq = take(); // '乙' 的请求（新，先回）
 
       newReq.resolve({ items: [summary('s_yi', '乙会话')], groups: [] });

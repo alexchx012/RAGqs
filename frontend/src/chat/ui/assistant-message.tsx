@@ -103,6 +103,7 @@ function AssistantMessageBody({
         leftCandidate={leftCandidate}
         onVote={onAbVote}
         disabled={isAbVotePending}
+        onCitationClick={onCitationClick}
       />
     );
   } else if (isAb && ab?.status === 'pending') {
@@ -124,7 +125,7 @@ function AssistantMessageBody({
           <>
             <span className="chat-caret" aria-hidden="true" />
             {generation.stage !== null && (
-              <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-gray">
+              <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-strong">
                 <Orb size={16} className="text-ink-black" />
                 {STAGE_TEXT[generation.stage]}
               </div>
@@ -155,7 +156,7 @@ function AssistantMessageBody({
         />
         {generating && <span className="chat-caret" aria-hidden="true" />}
         {generating && message.content === '' && generation.stage !== null && (
-          <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-gray">
+          <div className="chat-stage-swap mt-1 flex items-center gap-2 text-[15px] text-slate-strong">
             <Orb size={16} className="text-ink-black" />
             {STAGE_TEXT[generation.stage]}
           </div>
@@ -169,7 +170,7 @@ function AssistantMessageBody({
           />
         )}
         {status === 'stopped' && stop_reason !== null && (
-          <p className="mt-1 text-[15px] text-smoke-gray">{stopReasonText(stop_reason)}</p>
+          <p className="mt-1 text-[15px] text-slate-strong">{stopReasonText(stop_reason)}</p>
         )}
         {status === 'failed' && (
           <div className="mt-2 flex items-center gap-2">
@@ -195,7 +196,7 @@ function AssistantMessageBody({
               className="chat-notice-enter flex w-fit items-center gap-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2"
             >
               <Info aria-hidden="true" className="h-4 w-4 shrink-0 text-slate-gray" />
-              <p className="text-[15px] text-slate-gray">{noticeText(notice)}</p>
+              <p className="text-[15px] text-slate-strong">{noticeText(notice)}</p>
             </div>
           ))}
         </div>
@@ -209,8 +210,9 @@ function AssistantMessageBody({
           onVote={onFeedback}
         />
       )}
-      {/* hover 回答下方淡入相对时间（基座 §3.4，与用户气泡一致；reduced-motion 由 base.css 全局直出） */}
-      <span className="mt-1 block text-[15px] text-slate-gray opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">
+      {/* hover 回答下方淡入相对时间（基座 §3.4，与用户气泡一致；触屏常显 A21；
+          A26：有意义文字迁次级 token）；reduced-motion 由 base.css 全局直出 */}
+      <span className="chat-time-reveal mt-1 block text-[15px] text-slate-strong opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">
         {formatRelativeTime(message.created_at)}
       </span>
     </div>
@@ -261,7 +263,7 @@ function DeepSteps({
           onClick={onToggle}
           aria-expanded={open}
           aria-label={open ? copy.chat.stepsCollapseAria : copy.chat.stepsExpandAria}
-          className="flex items-center gap-2 text-[15px] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black"
+          className="flex items-center gap-2 text-[15px] text-slate-strong transition-colors duration-[var(--duration-fast)] hover:text-ink-black"
         >
           <span className="inline-flex h-3 w-3 items-center justify-center">
             <ChevronDown className="chat-steps-collapse-chevron" data-open={open} />
@@ -308,7 +310,7 @@ function StepRow({ step }: { step: DeepStep }) {
       {step.state === 'active' ? (
         <span className="chat-step-label-active">{copy.chat.stepLabel(step.label)}</span>
       ) : (
-        <span className="text-slate-gray">{copy.chat.stepLabel(step.label)}</span>
+        <span className="text-slate-strong">{copy.chat.stepLabel(step.label)}</span>
       )}
     </div>
   );
@@ -323,6 +325,30 @@ const MERIDIAN = {
 };
 
 function Globe() {
+  // A27：SMIL 动画不受 prefers-reduced-motion 约束——减弱动态时渲染静态经线球（无 <animate>）
+  const reduced =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) {
+    return (
+      <svg
+        viewBox="0 0 12 12"
+        width="12"
+        height="12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="0.85"
+        strokeLinecap="round"
+        style={{ overflow: 'visible' }}
+        aria-hidden="true"
+      >
+        <circle cx="6" cy="6" r="5.7" opacity="0.9" />
+        <line x1="0.3" y1="6" x2="11.7" y2="6" opacity="0.9" />
+        <path d={MERIDIAN.ML} opacity="0.9" />
+        <path d={MERIDIAN.MR} opacity="0.9" />
+      </svg>
+    );
+  }
   const values = [MERIDIAN.L, MERIDIAN.ML, MERIDIAN.MR, MERIDIAN.R, MERIDIAN.L].join(';');
   return (
     <svg
