@@ -324,14 +324,16 @@ describe('AssistantMessage', () => {
 
   // R9/A2：hover AI 回答时其下方淡入相对时间（与用户气泡同一规格）。
   // jsdom 不计算 CSS，断言淡入机制：时间行存在、默认隐藏、由 group-hover 驱动、规格类名与用户气泡一致。
+  // A21/A26：触屏（hover:none）经 chat-time-reveal 常显；颜色为次级文字 token slate-strong。
   it('hover 相对时间：回答下方渲染相对时间行，默认 opacity-0、group-hover 淡入（同用户气泡规格）', () => {
     const message = makeMessage();
     renderMessage(message);
     const time = screen.getByText(formatRelativeTime(message.created_at));
     expect(time).toHaveClass(
+      'chat-time-reveal',
       'mt-1',
       'text-[15px]',
-      'text-slate-gray',
+      'text-slate-strong',
       'opacity-0',
       'transition-opacity',
       'duration-[var(--duration-fast)]',

@@ -68,14 +68,14 @@ export function ConversationList({
           <LoadingRows count={5} />
         ) : listStatus === 'error' ? (
           <div className="flex items-center gap-2 px-1 py-4">
-            <p className="text-[15px] text-slate-gray">{copy.chat.sidebar.listError}</p>
+            <p className="text-[15px] text-slate-strong">{copy.chat.sidebar.listError}</p>
             <TextLink onClick={onRetryLoad}>{copy.states.retry}</TextLink>
           </div>
         ) : items.length === 0 && searchQuery.trim() === '' ? (
-          <p className="py-10 text-center text-[15px] text-smoke-gray">{copy.chat.sidebar.emptyList}</p>
+          <p className="py-10 text-center text-[15px] text-slate-strong">{copy.chat.sidebar.emptyList}</p>
         ) : items.length === 0 ? (
           // m11：过滤无结果与无任何会话是两条独立措辞（§3.2）
-          <p className="py-10 text-center text-[15px] text-smoke-gray">{copy.chat.sidebar.emptySearch}</p>
+          <p className="py-10 text-center text-[15px] text-slate-strong">{copy.chat.sidebar.emptySearch}</p>
         ) : (
           <>
             <SidebarSections
@@ -203,11 +203,12 @@ function Section({
             aria-label={copy.chat.sidebar.groupSectionAria(title)}
             className="flex min-w-0 flex-1 items-center gap-1 text-left"
           >
+            {/* A26：分组标题是有意义文字——ash 达标不了 4.5:1，迁次级文字 token；chevron 装饰豁免 */}
             <ChevronDown aria-hidden="true" className="chat-group-chevron h-3.5 w-3.5 text-ash-gray" data-open={!collapsed} />
-            <span className="truncate text-[14px] font-normal text-ash-gray">{title}</span>
+            <span className="truncate text-[14px] font-normal text-slate-strong">{title}</span>
           </button>
         ) : (
-          <p className="flex-1 truncate px-2 text-[14px] font-normal text-ash-gray">{title}</p>
+          <p className="flex-1 truncate px-2 text-[14px] font-normal text-slate-strong">{title}</p>
         )}
         {isGroup && section.group !== null && (
           <GroupMenu
@@ -290,7 +291,7 @@ function GroupMenu({
           <button
             type="button"
             aria-label={copy.chat.sidebar.groupSectionAria(group.name)}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] text-ink-black transition-opacity duration-[var(--duration-fast)] data-[state=open]:opacity-100 hover:bg-mist-gray"
+            className="ui-touch-target inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] [--touch-expand:-10px] text-ink-black transition-opacity duration-[var(--duration-fast)] data-[state=open]:opacity-100 hover:bg-mist-gray"
           >
             <Ellipsis aria-hidden="true" className="h-4 w-4" />
           </button>
@@ -419,8 +420,8 @@ function ConversationItem({
         }
       >
         <span className="min-w-0 flex-1 truncate text-[15px] font-normal text-ink-black">{displayTitle(item.title)}</span>
-        {/* M4：会话条目相对时间（§3.2 标题+相对时间） */}
-        <span className="ml-2 shrink-0 text-[13px] text-ash-gray">{formatRelativeTime(item.last_active_at)}</span>
+        {/* M4：会话条目相对时间（§3.2 标题+相对时间；A26：有意义文字迁次级 token） */}
+        <span className="ml-2 shrink-0 text-[13px] text-slate-strong">{formatRelativeTime(item.last_active_at)}</span>
       </button>
       {/* ⋯ 入口垂直居中对齐条目（40px）hover/选中态背景高度 */}
       <div className="absolute top-1/2 right-1 -translate-y-1/2">
@@ -429,7 +430,7 @@ function ConversationItem({
             <button
               type="button"
               aria-label={copy.chat.sidebar.itemMenuAria(displayTitle(item.title))}
-              className="chat-item-menu-trigger inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] text-ink-black transition-opacity duration-[var(--duration-fast)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+              className="chat-item-menu-trigger ui-touch-target inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] [--touch-expand:-10px] text-ink-black transition-opacity duration-[var(--duration-fast)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
             >
               <Ellipsis aria-hidden="true" className="h-4 w-4" />
             </button>
@@ -472,7 +473,7 @@ function ConversationItem({
                     ))}
                     <DropdownMenu.Item
                       onSelect={(event) => event.preventDefault()}
-                      className="flex h-9 cursor-default items-center rounded-[var(--radius-images)] px-3 text-[15px] text-slate-gray outline-none select-none"
+                      className="flex h-9 cursor-default items-center rounded-[var(--radius-images)] px-3 text-[15px] text-slate-strong outline-none select-none"
                     >
                       {copy.chat.sidebar.newGroupPlaceholder}
                     </DropdownMenu.Item>

@@ -6,10 +6,11 @@
  */
 
 import { Menu, Plus } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useLocation } from 'react-router';
 import { copy } from '../../copy';
 import type { User } from '../../auth/types';
+import { useEscLayer } from '../../lib/esc-stack-provider';
 import { ConversationList } from './conversation-list';
 import type { ConversationGroup, ConversationSummary } from '../types';
 
@@ -88,7 +89,7 @@ function SidebarContent({
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={copy.chat.sidebar.searchPlaceholder}
           aria-label={copy.chat.sidebar.searchPlaceholder}
-          className="h-9 min-w-0 flex-1 rounded-[var(--radius-inputs)] border border-hairline bg-paper-white px-3 text-[15px] text-ink-black outline-none placeholder:text-smoke-gray focus:border-ink-black"
+          className="h-9 min-w-0 flex-1 rounded-[var(--radius-inputs)] border border-hairline bg-paper-white px-3 text-[15px] text-ink-black outline-none placeholder:text-slate-strong focus:border-ink-black"
         />
         <button
           type="button"
@@ -137,24 +138,24 @@ function SidebarContent({
 }
 
 /** 窄屏汉堡按钮（20px 图标 40px 触控区）。 */
-export function ChatMenuButton({ onOpen, hidden }: { onOpen: () => void; hidden?: boolean }) {
+export function ChatMenuButton({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
       aria-label={copy.chat.sidebar.openSidebarAria}
       onClick={onOpen}
-      className={
-        'absolute left-6 top-5 z-10 flex h-10 w-10 items-center justify-center rounded-full ' +
-        'text-ink-black transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray ' +
-        (hidden === true ? 'md:hidden' : 'md:hidden')
-      }
+      className="absolute left-6 top-5 z-10 flex h-10 w-10 items-center justify-center rounded-full text-ink-black transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray md:hidden"
     >
       <Menu aria-hidden="true" className="h-5 w-5" />
     </button>
   );
 }
 
-/** 窄屏滑出抽屉：280px 自左滑入 + 遮罩；Esc / 点遮罩 / 选中会话后关闭。 */
+/**
+ * 窄屏滑出抽屉：280px 自左滑入 + 遮罩；Esc（全局栈只关最上层）/ 点遮罩 / 选中会话后关闭。
+ * A13：关闭态面板 inert + visibility:hidden（chat.css 延迟到滑出动画结束），不可被 Tab 聚焦；
+ * 关闭时若焦点在面板内则移出。
+ */
 function NarrowDrawer({
   user,
   conversations,
@@ -181,6 +182,7 @@ function NarrowDrawer({
   onOpenDrawer,
 }: ChatSidebarProps) {
   const location = useLocation();
+  const panelRef = useRef<HTMLDivElement>(null);
   // 路径变化（选中会话 / 抽屉跳转）后关闭抽屉
   useEffect(() => {
     if (drawerOpen) {
@@ -188,16 +190,19 @@ function NarrowDrawer({
     }
   }, [location.pathname]);
 
+  // A14：Esc 走全局栈（只关最上层）——抽屉内打开 ⋯ 菜单/确认框时 Radix 自身消费 Esc 并挂空盾，
+  // 抽屉层只有在栈顶时才收到 Esc；替代原先裸 window 监听（会同时穿透关闭抽屉）。
+  useEscLayer(() => onDrawerOpenChange(false), drawerOpen);
+
+  // A13：关闭时焦点仍在抽屉内则移出（面板随即 inert + visibility:hidden，焦点元素不得残留其中）
   useEffect(() => {
-    if (!drawerOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onDrawerOpenChange(false);
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [drawerOpen, onDrawerOpenChange]);
+    if (drawerOpen) return;
+    const panel = panelRef.current;
+    const active = document.activeElement;
+    if (panel !== null && active instanceof Node && panel.contains(active)) {
+      (active instanceof HTMLElement ? active : panel).blur();
+    }
+  }, [drawerOpen]);
 
   return (
     <div className="md:hidden">
@@ -209,8 +214,10 @@ function NarrowDrawer({
         />
       )}
       <div
+        ref={panelRef}
         data-open={drawerOpen}
         aria-hidden={!drawerOpen}
+        inert={!drawerOpen}
         className="chat-drawer-panel fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col border-r border-hairline bg-fog-white"
       >
         <div className="flex h-16 shrink-0 items-center justify-end border-b border-hairline px-3">

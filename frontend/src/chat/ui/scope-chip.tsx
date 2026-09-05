@@ -217,7 +217,7 @@ export function ScopeSelector({
                     type="button"
                     aria-label={copy.chat.composer.scopeDocumentDrillAria}
                     onClick={() => toggleDrill(space.id)}
-                    className="ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-images)] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black"
+                    className="ui-touch-target ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-images)] [--touch-expand:-10px] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black"
                   >
                     <ChevronRight
                       aria-hidden="true"
@@ -242,7 +242,7 @@ export function ScopeSelector({
                     />
                   </div>
                   {visibleDocuments.length === 0 ? (
-                    <p className="px-3 py-2 text-[14px] text-smoke-gray">{copy.states.empty}</p>
+                    <p className="px-3 py-2 text-[14px] text-slate-strong">{copy.states.empty}</p>
                   ) : (
                     visibleDocuments.map((doc) => {
                       const docChecked = selection.document_ids.includes(doc.id);
@@ -267,7 +267,7 @@ export function ScopeSelector({
           );
         })}
         {visibleSpaces.length === 0 && (
-          <p className="px-3 py-4 text-center text-[15px] text-smoke-gray">{copy.states.empty}</p>
+          <p className="px-3 py-4 text-center text-[15px] text-slate-strong">{copy.states.empty}</p>
         )}
       </div>
     </>

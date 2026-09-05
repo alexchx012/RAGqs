@@ -5,8 +5,11 @@
  * 复用 scope-chip.tsx 的 ScopeSelector/scopeSummary，与 ScopeChip 浮层同一事实源）。
  * - 编辑器为 contentEditable div（技能药丸 inline 流式排布）；placeholder 走 data-placeholder ::before。
  *   Enter 发送、Shift+Enter 换行；isComposing 守卫中文 IME 组合输入误发（设计稿无此守卫，必须保留）。
- * - 「+」菜单：添加图片/添加文件 → 附件 chips；技能 flyout → 插入药丸。「/」斜杠面板同一技能集
+ * - 「+」菜单：技能 flyout → 插入药丸。「/」斜杠面板同一技能集
  *   （打开/过滤/方向键/Enter/Tab/Esc/鼠标照设计稿）。设计稿 Model 区块对应努力档位，已入菜单。
+ *   附件假发送入口已移除（supervisor 决策 D6）：「+」菜单无添加图片/文件项，附件 chips 全删。
+ * - 粘贴（A19）只插纯文本（text/plain，多行换行保留）；编辑器取值按 <br>/块级边界转 \n，
+ *   用户气泡 whitespace-pre-wrap 渲染多行。
  * - 增强药丸（优化输入）仅注入 onEnhance 时显示；增强中播 conic 渐变描边旋转环 + 正文 shimmer，
  *   完成后药丸变「还原」；AbortSignal 中止 / 失败均还原原文；高度变化走 FLIP。生成中隐藏增强药丸。
  * - 发送键 28px 圆形（22px 设计稿几何经 UI 审查放大；不沿用旧 40px）：空输入禁用；生成中变停止键（Square 图标，
@@ -21,24 +24,23 @@ import {
   BookOpen,
   ChevronRight,
   Database,
-  Image as ImageIcon,
   LoaderCircle,
-  Paperclip,
   Plus,
   Square,
-  X,
 } from 'lucide-react';
 import {
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { copy } from '../../copy';
 import { useEscShield } from '../../lib/esc-stack-provider';
 import { SegmentedControl } from '../../ui/SegmentedControl';
+import { ErrorState } from '../../ui/states';
 import type { EffortLevel, SpaceItem } from '../types';
 import { ScopeSelector, scopeSummary, type ScopeDocument, type ScopeSelection } from './scope-chip';
 
@@ -59,6 +61,10 @@ export interface ComposerProps {
   readonly onStop: () => void;
   /** 输入优化接缝（动效 AI Agent Input）：注入才显示「优化输入」药丸；须兑现 AbortSignal 中止。 */
   readonly onEnhance?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+  /** A22：检索空间加载失败（「+」菜单检索范围 flyout 错误态 + 重试，替代静默空列表）。 */
+  readonly spacesLoadFailed?: boolean;
+  /** A22：检索空间重试（重新 fetchSpaces）。 */
+  readonly onSpacesRetry?: () => void;
 }
 
 const EFFORT_OPTIONS = [
@@ -80,8 +86,23 @@ const skillName = (id: string) => SKILLS.find((sk) => sk.id === id)?.name ?? id;
 const escapeHtml = (str: string) =>
   str.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c);
 
+/** 设备具备 hover 能力（桌面鼠标）；触屏（hover: none）tap 也会派发合成 mouseenter，需区分。 */
+const hoverCapable = (): boolean =>
+  typeof window.matchMedia === 'function' && window.matchMedia('(hover: hover)').matches;
+
 type Phase = 'idle' | 'enhancing' | 'enhanced';
-type Attachment = { id: number; name: string; kind: 'image' | 'file' };
+
+/**
+ * A19：编辑器文本提取——textContent 丢换行，按 <br>/块级边界（div/p）转 \n 后再取文本。
+ * 技能药丸贡献其 label（与既有 value 口径一致）。
+ */
+function editorText(editor: HTMLElement): string {
+  const container = document.createElement('div');
+  container.innerHTML = editor.innerHTML
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(div|p)>/gi, '\n');
+  return container.textContent ?? '';
+}
 
 export function Composer({
   effortLevel,
@@ -96,6 +117,8 @@ export function Composer({
   onSend,
   onStop,
   onEnhance,
+  spacesLoadFailed = false,
+  onSpacesRetry,
 }: ComposerProps) {
   // value 镜像编辑器纯文本（技能药丸贡献其 label），驱动空态/placeholder 与增强/发送逻辑
   const [value, setValue] = useState('');
@@ -105,9 +128,6 @@ export function Composer({
   const [skillsOpen, setSkillsOpen] = useState(false);
   // 检索范围 flyout（「+」菜单内，点击切换；菜单关闭时收起）
   const [scopeOpen, setScopeOpen] = useState(false);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  // 正在播放退场动画、待移除的 chip id
-  const [exitingAtt, setExitingAtt] = useState<number[]>([]);
 
   // 增强药丸退场期间保持挂载，以来时同样的柔和方式离开（chat-composer-pill-in/out 镜像）
   const [pillMounted, setPillMounted] = useState(false);
@@ -122,14 +142,12 @@ export function Composer({
   const editorRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const preEnhanceHTML = useRef('');
   const pendingHTML = useRef<string | null>(null);
   // 增强/还原替换前捕获的 frame 高度，供 FLIP 从旧高度动画到新高度而不是跳变
   const flipFrom = useRef<number | null>(null);
   const savedRange = useRef<Range | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const nextId = useRef(1);
   const slashOpenRef = useRef(false);
   const slashIndexRef = useRef(0);
   const slashResultsRef = useRef<typeof SKILLS>([]);
@@ -173,7 +191,8 @@ export function Composer({
   const syncFromEditor = () => {
     const editor = editorRef.current;
     if (!editor) return;
-    setValue(editor.textContent ?? '');
+    // A19：textContent 丢换行——按 <br>/块级边界转 \n 后取值，发送与回显保留多行
+    setValue(editorText(editor));
     // 标记位于最开头（之前只有空白）的药丸，CSS 据此去掉左 margin —— :first-child 看不见文本节点
     editor.querySelectorAll<HTMLElement>('.chat-composer-skill-pill').forEach((pill) => {
       let atStart = true;
@@ -331,6 +350,28 @@ export function Composer({
   };
 
   const onEditorInput = () => {
+    syncFromEditor();
+    if (phase === 'enhanced') setPhase('idle');
+    detectSlash();
+  };
+
+  // A19：粘贴只插纯文本（text/plain，多行换行保留）；其余剪贴板内容（图片/富文本 HTML）不进入编辑器
+  const onEditorPaste = (e: ReactClipboardEvent<HTMLDivElement>) => {
+    const text = e.clipboardData.getData('text/plain');
+    e.preventDefault();
+    if (text === '') return;
+    const sel = window.getSelection();
+    const editor = editorRef.current;
+    if (sel === null || sel.rangeCount === 0 || editor === null || !editor.contains(sel.anchorNode)) {
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(document.createTextNode(text));
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    // 手动插入不触发 input 事件：镜像 onEditorInput 的同步逻辑
     syncFromEditor();
     if (phase === 'enhanced') setPhase('idle');
     detectSlash();
@@ -580,12 +621,11 @@ export function Composer({
     try {
       const accepted = await onSend(trimmed);
       const editor = editorRef.current;
-      if (accepted !== false && editor !== null && (editor.textContent ?? '').trim() === trimmed) {
+      // A19：比较口径与取值一致（editorText），多行稿件在异步发送期间未被改动才清空
+      if (accepted !== false && editor !== null && editorText(editor).trim() === trimmed) {
         editor.innerHTML = '';
         setValue('');
         setPhase('idle');
-        setAttachments([]);
-        setExitingAtt([]);
         closeSlash();
         requestAnimationFrame(() => editorRef.current?.focus());
       }
@@ -596,77 +636,10 @@ export function Composer({
     }
   };
 
-  // 与技能药丸同样的柔和淡出/缩放退场，然后摘除 chip
-  const removeAttachment = (id: number) => {
-    setExitingAtt((e) => (e.includes(id) ? e : [...e, id]));
-    // jsdom 不触发 CSS 动画事件：200ms 定时即移除路径，必须保留
-    window.setTimeout(() => {
-      setAttachments((a) => a.filter((x) => x.id !== id));
-      setExitingAtt((e) => e.filter((x) => x !== id));
-    }, 200);
-  };
-
-  const openPicker = (kind: Attachment['kind']) => {
-    const input = fileRef.current;
-    if (!input) return;
-    input.accept = kind === 'image' ? 'image/*' : '';
-    input.value = '';
-    input.dataset.kind = kind;
-    input.click();
-    setMenuOpen(false);
-  };
-
   return (
     <div>
       <div className="chat-composer">
-        <input
-          ref={fileRef}
-          type="file"
-          multiple
-          hidden
-          onChange={(e) => {
-            const files = Array.from(e.target.files ?? []);
-            if (!files.length) return;
-            const fallback = (e.target.dataset.kind as Attachment['kind']) ?? 'file';
-            setAttachments((a) => [
-              ...a,
-              ...files.map((f) => ({
-                id: nextId.current++,
-                name: f.name,
-                kind: f.type.startsWith('image/') ? ('image' as const) : fallback,
-              })),
-            ]);
-            e.target.value = '';
-            requestAnimationFrame(() => editorRef.current?.focus());
-          }}
-        />
-
         <div ref={frameRef} className="chat-composer-frame" data-enhancing={enhancing || undefined}>
-          {attachments.length > 0 && (
-            <div className="chat-composer-chips">
-              {attachments.map((att) => (
-                <span
-                  key={att.id}
-                  className="chat-composer-chip"
-                  data-exit={exitingAtt.includes(att.id) || undefined}
-                >
-                  <span className="chat-composer-chip-icon">
-                    {att.kind === 'image' ? <ImageIcon size={13} /> : <Paperclip size={13} />}
-                  </span>
-                  <span className="chat-composer-chip-name">{att.name}</span>
-                  <button
-                    type="button"
-                    className="chat-composer-chip-remove"
-                    aria-label={copy.chat.composer.removeItemAria(att.name)}
-                    onClick={() => removeAttachment(att.id)}
-                  >
-                    <X size={11} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
           <div className="chat-composer-editor-wrap">
             {enhancing ? (
               <div className="chat-composer-enhancing-text" aria-live="polite">
@@ -684,6 +657,7 @@ export function Composer({
                 data-empty={!hasText || undefined}
                 data-placeholder={copy.chat.composer.inputPlaceholder}
                 onInput={onEditorInput}
+                onPaste={onEditorPaste}
                 onKeyDown={onEditorKeyDown}
                 onKeyUp={saveSelection}
                 onMouseUp={saveSelection}
@@ -753,33 +727,14 @@ export function Composer({
 
               {menuOpen && (
                 <div className="chat-composer-menu" role="menu">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="chat-composer-menu-item"
-                    onClick={() => openPicker('image')}
-                  >
-                    <span className="chat-composer-menu-icon">
-                      <ImageIcon size={16} />
-                    </span>
-                    <span className="chat-composer-menu-name">{copy.chat.composer.addPhotos}</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="chat-composer-menu-item"
-                    onClick={() => openPicker('file')}
-                  >
-                    <span className="chat-composer-menu-icon">
-                      <Paperclip size={16} />
-                    </span>
-                    <span className="chat-composer-menu-name">{copy.chat.composer.attachFiles}</span>
-                  </button>
-                  <div className="chat-composer-menu-divider" />
                   <div
                     className="chat-composer-menu-sub"
-                    onMouseEnter={() => setSkillsOpen(true)}
-                    onMouseLeave={() => setSkillsOpen(false)}
+                    onMouseEnter={() => {
+                      if (hoverCapable()) setSkillsOpen(true);
+                    }}
+                    onMouseLeave={() => {
+                      if (hoverCapable()) setSkillsOpen(false);
+                    }}
                   >
                     <button
                       type="button"
@@ -787,7 +742,11 @@ export function Composer({
                       className="chat-composer-menu-item"
                       aria-haspopup="menu"
                       aria-expanded={skillsOpen}
-                      onClick={() => setSkillsOpen(true)}
+                      onClick={() => {
+                        // A27：触屏（无 hover 能力）点按切换开合；桌面 hover 语义不变
+                        if (hoverCapable()) setSkillsOpen(true);
+                        else setSkillsOpen((open) => !open);
+                      }}
                     >
                       <span className="chat-composer-menu-icon">
                         <BookOpen size={16} />
@@ -841,12 +800,20 @@ export function Composer({
                     </button>
                     {scopeOpen && (
                       <div className="chat-composer-menu-flyout chat-composer-scope-flyout">
-                        <ScopeSelector
-                          spaces={spaces}
-                          onFetchDocuments={onFetchDocuments}
-                          selection={selection}
-                          onSelectionChange={onSelectionChange}
-                        />
+                        {/* A22：检索空间加载失败——错误态 + 重试，替代静默空列表 */}
+                        {spacesLoadFailed ? (
+                          <ErrorState
+                            text={copy.chat.spacesLoadFailed}
+                            onRetry={onSpacesRetry}
+                          />
+                        ) : (
+                          <ScopeSelector
+                            spaces={spaces}
+                            onFetchDocuments={onFetchDocuments}
+                            selection={selection}
+                            onSelectionChange={onSelectionChange}
+                          />
+                        )}
                       </div>
                     )}
                   </div>

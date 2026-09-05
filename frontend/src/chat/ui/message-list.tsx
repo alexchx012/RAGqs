@@ -1,15 +1,17 @@
 /*
  * 消息流（共用基座 §3.4；spec §4）：用户右对齐气泡 + AI 全宽；相邻 24px；新消息进入动效；
- * hover 淡入相对时间；生成中可滚动不强制吸底，用户上翻后浮出「回到底部」40px 圆钮。
+ * hover 淡入相对时间；流式吸底（A15）：距底 <120px 自动跟随、上翻释放，浮出「回到底部」40px 圆钮。
  * 空态（新会话）：对话列垂直居中 Signifier 44px 问候语 + 输入区；首条消息后问候语淡出、输入区落底 400ms。
  * R10/D2：仅「空会话发出首条消息」播放问候语收拢动画；首次挂载/切换到非空会话初始即隐藏（data-instant 直出）。
  * N4：Composer 单一宿主位，空态/消息态切换不跨分支重挂载（草稿/焦点由父级 HomePage 保持）。
+ * A22：会话打开失败（error）渲染错误态 + 重试，清除旧消息残留。
  */
 
 import { ArrowDown } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type UIEvent } from 'react';
 import { copy } from '../../copy';
 import { formatRelativeTime } from '../../notifications/relative-time';
+import { ErrorState } from '../../ui/states';
 import type { ChatConversationStatus } from '../store';
 import type { AbChoice, Citation, FeedbackVoteRequest } from '../types';
 import { AssistantMessage } from './assistant-message';
@@ -19,6 +21,8 @@ export interface MessageListProps {
   /** 会话加载状态（R10/D2）：加载期间不算空态，问候语不展示，避免进入非空会话时闪出后收拢残影。 */
   readonly conversationStatus: ChatConversationStatus;
   readonly messages: readonly import('../store').ChatMessageView[];
+  /** A22：会话打开失败时重试（重新 openConversation）。 */
+  readonly onOpenRetry: () => void;
   readonly onRetry: (messageId: string) => void;
   readonly onFeedback: (messageId: string, vote: FeedbackVoteRequest) => void;
   readonly onAbVote: (messageId: string, choice: AbChoice) => void;
@@ -34,6 +38,7 @@ export function MessageList({
   conversationId,
   conversationStatus,
   messages,
+  onOpenRetry,
   onRetry,
   onFeedback,
   onAbVote,
@@ -43,10 +48,12 @@ export function MessageList({
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  // A15：是否吸附底部（视口距底 <120px）。流式 tick / 消息追加时据此自动跟底，用户上翻即释放
+  const pinnedRef = useRef(true);
   const isEmpty = messages.length === 0;
   // R10/D2：问候语收拢动画只在「空会话发出首条消息」播放。问候语仅在空会话且非加载中展示；
-  // 其余路径（首次挂载/切换进入非空会话、加载中）初始即隐藏——data-instant 直出，不播动画。
-  const showGreeting = isEmpty && conversationStatus !== 'loading';
+  // 加载失败走错误态（A22），问候语同样不展示；其余路径初始即隐藏——data-instant 直出，不播动画。
+  const showGreeting = isEmpty && conversationStatus !== 'loading' && conversationStatus !== 'error';
   const [greetingHidden, setGreetingHidden] = useState(!showGreeting);
   const [greetingInstant, setGreetingInstant] = useState(!showGreeting);
   const greetingShownRef = useRef(false);
@@ -73,13 +80,23 @@ export function MessageList({
   useLayoutEffect(() => {
     const target = scrollRef.current;
     if (target === null || isEmpty) return;
+    pinnedRef.current = true;
     target.scrollTop = target.scrollHeight;
     setShowScrollBottom(false);
   }, [conversationId, isEmpty]);
 
+  // A15：流式吸底——tick/消息追加时若视口距底 <120px 自动跟底；用户上翻（>120px，onScroll 释放
+  // pinnedRef）后不再拖拽视口，仅浮出「回到底部」圆钮。跟随用瞬时 scrollTop，不与 smooth 动画叠加。
+  useLayoutEffect(() => {
+    const target = scrollRef.current;
+    if (target === null || isEmpty || !pinnedRef.current) return;
+    target.scrollTop = target.scrollHeight;
+  }, [messages, isEmpty]);
+
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
     const distance = target.scrollHeight - target.scrollTop - target.clientHeight;
+    pinnedRef.current = distance < 120;
     setShowScrollBottom(distance > 120);
   };
 
@@ -107,8 +124,21 @@ export function MessageList({
         </h1>
       </div>
 
+      {/* A22：会话打开失败——错误态 + 重试（旧消息残留已由 store 清除） */}
+      {conversationStatus === 'error' && (
+        <div className="flex min-h-0 flex-1 items-center justify-center">
+          <ErrorState text={copy.chat.conversationLoadFailed} onRetry={onOpenRetry} />
+        </div>
+      )}
+
       {!isEmpty && (
-        <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          role="log"
+          aria-live="polite"
+          className="hide-scrollbar min-h-0 flex-1 overflow-y-auto"
+        >
           <div className="flex flex-col gap-6 px-6 py-6">
             {messages.map((message) =>
               message.role === 'user' ? (
@@ -159,10 +189,12 @@ function UserBubble({ content, createdAt }: { content: string; createdAt: string
   return (
     <div className="chat-message-enter flex justify-end">
       <div className="group flex max-w-[70%] flex-col items-end">
-        <div className="chat-body-text rounded-[var(--radius-smallcards)] bg-mist-gray px-4 py-3 text-ink-black">
+        {/* A19：whitespace-pre-wrap 保留多行提问的换行（composer 粘贴/换行提取后 content 含 \n） */}
+        <div className="chat-body-text whitespace-pre-wrap rounded-[var(--radius-smallcards)] bg-mist-gray px-4 py-3 text-ink-black">
           {content}
         </div>
-        <span className="mt-1 text-[15px] text-slate-gray opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">
+        {/* A21：触屏 hover 淡入不可达——chat-time-reveal 常显；A26：相对时间是有意义文字 */}
+        <span className="chat-time-reveal mt-1 text-[15px] text-slate-strong opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100">
           {formatRelativeTime(createdAt)}
         </span>
       </div>

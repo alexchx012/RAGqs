@@ -153,6 +153,8 @@ const DEFAULT_SERVER_SEARCH_THRESHOLD = 150;
 /** A25 分页：首页与「加载更多」单次递增量；后端 le=200 上限，达到后不再展示加载更多。 */
 const CONVERSATIONS_PAGE_SIZE = 50;
 const CONVERSATIONS_MAX_LIMIT = 200;
+/** A27：服务端 q 搜索防抖（ms）——停止输入 300ms 后才重拉全量。 */
+const SERVER_SEARCH_DEBOUNCE_MS = 300;
 
 const INITIAL_STATE: ChatStoreState = {
   listStatus: 'idle',
@@ -197,6 +199,8 @@ export class ChatStore {
   private listSeq = 0;
   /** 新会话入口单飞（openOrCreateNewConversation）：连点/多入口并发共享同一在飞请求，禁止重复创建。 */
   private newConversationInflight: Promise<ConversationSummary | null> | null = null;
+  /** A27：服务端 q 搜索防抖计时器。 */
+  private serverSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: ChatStoreDeps) {
     this.serverSearchThreshold = deps.serverSearchThreshold ?? DEFAULT_SERVER_SEARCH_THRESHOLD;
@@ -219,6 +223,10 @@ export class ChatStore {
   }
 
   dispose(): void {
+    if (this.serverSearchTimer !== null) {
+      clearTimeout(this.serverSearchTimer);
+      this.serverSearchTimer = null;
+    }
     for (const session of this.sessions.values()) {
       session.dispose();
     }
@@ -294,15 +302,23 @@ export class ChatStore {
   setSearchQuery(query: string): void {
     this.setState({ searchQuery: query });
     // M8：服务端过滤模式下，关键词清空/变化时重新全量拉取（子集不能当全量）
-    if (this.state.serverFiltered) {
-      void this.loadConversationList();
+    const serverSearch = this.state.serverFiltered || this.shouldServerSearch(query);
+    if (!serverSearch) {
+      if (this.serverSearchTimer !== null) {
+        clearTimeout(this.serverSearchTimer);
+        this.serverSearchTimer = null;
+      }
+      this.recomputeVisible();
       return;
     }
-    if (this.shouldServerSearch(query)) {
-      void this.loadConversationList();
-    } else {
-      this.recomputeVisible();
+    // A27：服务端搜索 300ms 防抖——逐键重拉全量列表没有必要，停顿 300ms 才发出
+    if (this.serverSearchTimer !== null) {
+      clearTimeout(this.serverSearchTimer);
     }
+    this.serverSearchTimer = setTimeout(() => {
+      this.serverSearchTimer = null;
+      void this.loadConversationList();
+    }, SERVER_SEARCH_DEBOUNCE_MS);
   }
 
   private shouldServerSearch(query: string): boolean {
@@ -452,8 +468,15 @@ export class ChatStore {
       this.recomputeMessages();
     } catch {
       if (seq !== this.openSeq) return;
-      this.setState({ conversationStatus: 'error' });
+      // A22：失败可见——error 态由消息区渲染错误行 + 重试；conversation 置空以清除旧会话消息残留
+      this.setState({ conversationStatus: 'error', conversation: null });
+      this.recomputeMessages();
     }
+  }
+
+  /** A23：冲突轻提示由 UI 3s 自动消失后回调清除（HeaderNotice 驱动，亦可手动关闭）。 */
+  dismissActionNotice(): void {
+    this.setState({ actionNotice: null });
   }
 
   /** 刷新读模型（409 反馈/A-B 冲突、终态后权威收敛、UI 主动刷新）。 */

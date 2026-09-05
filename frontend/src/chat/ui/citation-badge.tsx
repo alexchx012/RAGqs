@@ -78,7 +78,7 @@ export function CitationBadges({ citations, messageId, onCitationClick }: Citati
                 type="button"
                 aria-label={copy.chat.message.citeOpenAria}
                 onClick={() => openPreview(citation, index)}
-                className="text-[12px] font-medium text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black focus-visible:text-ink-black"
+                className="ui-touch-target inline-block [--touch-expand-x:-8px] [--touch-expand-y:-16px] text-[12px] font-medium text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-ink-black focus-visible:text-ink-black"
               >
                 {label}
               </button>

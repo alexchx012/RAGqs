@@ -987,6 +987,10 @@ export const zhCN = {
     // 反馈 / A/B 冲突：刷新读模型保留服务端首次结果（spec §5/§6）
     feedbackConflict: '已按首次反馈结果处理', // 措辞后定
     abConflict: '已按首次投票结果处理', // 措辞后定
+    // 失败可见（审查 A22）：投票提交失败轻提示 / 会话打开失败错误态 / 检索空间加载失败
+    voteFailed: '投票提交失败，请稍后重试', // 措辞后定
+    conversationLoadFailed: '会话加载失败，请稍后重试', // 措辞后定
+    spacesLoadFailed: '检索空间加载失败', // 措辞后定：检索范围选择器错误态（可重试）
     feedbackSubmitted: '反馈已提交', // 措辞后定
     abVoted: '已投票', // 措辞后定
     feedbackNoGrounding: '这个答案没依据', // 措辞后定：👎 轻量选项
@@ -1052,10 +1056,8 @@ export const zhCN = {
       stopAria: '停止生成', // 措辞后定
       stoppingAria: '正在停止', // 措辞后定
       inputPlaceholder: '输入你的问题…', // 措辞后定
-      // 「+」菜单：附件与技能（动效 AI Agent Input）
-      addMenuAria: '添加附件或技能', // 措辞后定
-      addPhotos: '添加图片', // 措辞后定
-      attachFiles: '添加文件', // 措辞后定
+      // 「+」菜单：技能与检索范围（动效 AI Agent Input；附件假发送入口已移除，supervisor 决策 D6）
+      addMenuAria: '添加技能', // 措辞后定
       skillsLabel: '技能', // 措辞后定
       skillDeepResearch: '深度研究', // 措辞后定
       skillCodeReview: '代码评审', // 措辞后定
