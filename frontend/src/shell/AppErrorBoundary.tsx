@@ -40,9 +40,9 @@ export interface ErrorBoundaryFallbackProps {
 /** 降级 UI 独立导出：boundary 行为与提示渲染可分别测试。 */
 export function ErrorBoundaryFallback({ onReload }: ErrorBoundaryFallbackProps) {
   return (
-    <div role="alert" className="flex min-h-screen flex-col items-center justify-center gap-3 bg-paper-white px-6 text-center">
+    <div role="alert" className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-paper-white px-6 text-center">
       <h1 className="text-[20px] font-medium text-ink-black">{copy.shell.errorBoundary.title}</h1>
-      <p className="max-w-[480px] text-[15px] text-slate-gray">{copy.shell.errorBoundary.description}</p>
+      <p className="max-w-[480px] text-[15px] text-slate-strong">{copy.shell.errorBoundary.description}</p>
       <Pill size="sm" className="mt-2" onClick={onReload}>
         {copy.shell.errorBoundary.reload}
       </Pill>

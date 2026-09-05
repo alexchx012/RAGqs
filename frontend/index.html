@@ -2,17 +2,22 @@
 <html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
     <title>RAGqs</title>
     <script>
-      // 首屏防闪烁：CSS 生效前按系统偏好设定 data-theme（默认偏好为跟随系统，与 src/theme/theme.ts 一致）
+      // 首屏防闪烁（与 src/theme/theme.ts 一致）：CSS 生效前优先读 localStorage 显式偏好
+      // （THEME_STORAGE_KEY），缺省回退系统 prefers-color-scheme——存「深色」而系统亮色的
+      // 用户刷新首帧即为深色，无先亮后暗闪烁。
       (function () {
         try {
-          var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var stored = window.localStorage.getItem('ragqs-theme-preference');
+          var dark =
+            stored === 'dark' ||
+            (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
           document.documentElement.dataset.theme = dark ? 'dark' : 'light';
         } catch (e) {
-          /* matchMedia 不可用时保持 light */
+          /* localStorage/matchMedia 不可用时保持 light */
         }
       })();
     </script>

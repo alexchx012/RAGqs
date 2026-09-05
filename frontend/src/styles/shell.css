@@ -7,6 +7,9 @@
   transition:
     transform var(--duration-slow) var(--ease-in-out);
   will-change: transform;
+  /* 下滑手势（审查 P2#20）：声明 pan-y 保垂直滚动；置顶下拉由 DrawerHost 的非 passive
+     touchmove preventDefault 阻止浏览器接管（滚动容器另声明 overscroll-behavior: contain）。 */
+  touch-action: pan-y;
 }
 
 .drawer-panel[data-slide='enter'] {

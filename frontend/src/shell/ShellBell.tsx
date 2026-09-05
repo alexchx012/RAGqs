@@ -12,14 +12,17 @@ export function ShellBell({ store }: { store: NotificationsStore }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   return (
-    <NotificationBell
-      open={open}
-      onOpenChange={setOpen}
-      onNavigate={(path) => {
-        setOpen(false);
-        navigate(path);
-      }}
-      store={store}
-    />
+    // 底衬托底（审查 P2#17）：bg-paper-white 圆形托底，消息滚过与 375px 下铃铛不与内容重叠
+    <div className="inline-flex rounded-full bg-paper-white">
+      <NotificationBell
+        open={open}
+        onOpenChange={setOpen}
+        onNavigate={(path) => {
+          setOpen(false);
+          navigate(path);
+        }}
+        store={store}
+      />
+    </div>
   );
 }

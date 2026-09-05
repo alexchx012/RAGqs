@@ -18,10 +18,10 @@ export function AppShell() {
     return () => notifications.stop();
   }, [notifications]);
   return (
-    <div className="min-h-screen bg-paper-white text-ink-black">
+    <div className="min-h-dvh bg-paper-white text-ink-black">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-[var(--radius-images)] focus:bg-paper-white focus:px-4 focus:py-2 focus:shadow-[var(--shadow-subtle-2)]"
       >
         {copy.shell.skipToContent}
       </a>

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Route, Routes } from 'react-router';
@@ -238,6 +238,21 @@ describe('PreviewPage Sheet 深链', () => {
   });
 });
 
+describe('PreviewPage 关闭按钮归宿（审查 P3）', () => {
+  it('window.close() 无效（非脚本打开的窗口）时回退 history.back()', async () => {
+    const api = fakeApi();
+    await renderPage(api, '/preview/doc_md?message_id=m_1');
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('年假政策.md'));
+    const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
+    const backSpy = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    // 非 jsdom 初始页（history.length === 1）形态：pushState 一次模拟从站内进入
+    window.history.pushState({}, '');
+    await userEvent.setup().click(screen.getByRole('button', { name: copy.preview.closeAria }));
+    await waitFor(() => expect(backSpy).toHaveBeenCalledTimes(1));
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('PreviewPage 窄屏（<768px）', () => {
   function stubNarrow(matches: boolean) {
     vi.stubGlobal(
@@ -273,10 +288,11 @@ describe('PreviewPage 窄屏（<768px）', () => {
 
     await user.click(toggle);
     const panel = await screen.findByRole('dialog');
-    expect(panel.querySelectorAll('button')).toHaveLength(2);
+    // 标题行（含关闭钮）+ 两条命中
+    expect(panel.querySelectorAll('button')).toHaveLength(3);
 
-    // 面板内点击第二条：切换当前并关闭面板
-    await user.click(panel.querySelectorAll('button')[1] as HTMLElement);
+    // 面板内点击第二条命中：切换当前并关闭面板
+    await user.click(panel.querySelectorAll('button')[2] as HTMLElement);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(container.querySelector('[data-hit-anchor="1"]')).toHaveClass('preview-hit--current');
 
@@ -285,6 +301,37 @@ describe('PreviewPage 窄屏（<768px）', () => {
     await screen.findByRole('dialog');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('面板打开移焦入面板、Esc/关闭钮可关且焦点归还；popstate 关闭面板而非退出预览页', async () => {
+    stubNarrow(true);
+    const user = userEvent.setup();
+    const api = fakeApi();
+    const { container } = await renderPage(api, '/preview/doc_md?message_id=m_1');
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('年假政策.md'));
+    const toggle = screen.getByRole('button', { name: copy.preview.navTitle(2) });
+
+    await user.click(toggle);
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(toggle).toHaveFocus();
+
+    // 关闭钮可关
+    await user.click(toggle);
+    const reopened = await screen.findByRole('dialog');
+    await user.click(within(reopened).getByRole('button', { name: copy.preview.closeAria }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    // 系统返回手势（popstate）：关面板，预览页保持
+    await user.click(toggle);
+    await screen.findByRole('dialog');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('年假政策.md');
+    expect(container.querySelector('[data-hit-anchor]')).not.toBeNull();
   });
 });
 

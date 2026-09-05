@@ -7,7 +7,7 @@
  * jsdom 无 canvas：组件测以 vi.mock 替身 react-pdf 验证跳页与文本匹配接线（PdfRenderer.test.tsx）。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Document, Page } from 'react-pdf';
 import { copy } from '../../copy';
 import { TextLink } from '../../ui/TextLink';
@@ -63,9 +63,35 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
   const [retryNonce, setRetryNonce] = useState(0);
   const [windowCenter, setWindowCenter] = useState(1);
   const [pendingTargetPage, setPendingTargetPage] = useState<number | null>(null);
+  /** 页面渲染宽度：容器实测（审查 P1#16），null 时回退桌面限宽。 */
+  const [pageWidth, setPageWidth] = useState<number | null>(null);
   /** pageNumber → 文本层 items（onGetTextSuccess 捕获）。 */
   const [pageItems, setPageItems] = useState<ReadonlyMap<number, readonly PdfTextItem[]>>(new Map());
   const pageNodesRef = useRef(new Map<number, HTMLDivElement>());
+
+  // 以容器实测宽度作为 Page width（ResizeObserver）：pdfjs 按 width 缩放文本层，
+  // 窄屏文本选择、命中 <mark> 高亮与视觉页面对齐，不再被固定 880px 溢出裁切。
+  // 容器宽度由父级布局决定、与渲染结果无关，ResizeObserver 不会形成回环。
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (root === null) {
+      return undefined;
+    }
+    const measure = (width: number) => {
+      if (width > 0) {
+        setPageWidth(Math.floor(width));
+      }
+    };
+    if (typeof ResizeObserver === 'undefined') {
+      measure(root.clientWidth);
+      return undefined;
+    }
+    const observer = new ResizeObserver((entries) => {
+      measure(entries[entries.length - 1]?.contentRect.width ?? 0);
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
 
   const file = useMemo(
     () => ({
@@ -244,7 +270,7 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
   if (loadFailed) {
     return (
       <div className="flex flex-col items-center gap-2 py-20">
-        <p className="text-[15px] text-slate-gray">{copy.preview.error}</p>
+        <p className="text-[15px] text-slate-strong">{copy.preview.error}</p>
         <TextLink onClick={() => { setLoadFailed(false); setNumPages(null); setPageItems(new Map()); setRetryNonce((nonce) => nonce + 1); }}>
           {copy.preview.retry}
         </TextLink>
@@ -272,7 +298,7 @@ export function PdfRenderer({ fileUrl, token, hasTextLayer, hits, currentHit }: 
           >
             <Page
               pageNumber={pageNumber}
-              width={PDF_PAGE_WIDTH}
+              width={pageWidth ?? PDF_PAGE_WIDTH}
               renderAnnotationLayer={false}
               onGetTextSuccess={(textContent: PdfTextContent) => onGetTextSuccess(pageNumber, textContent)}
               customTextRenderer={customTextRenderer}

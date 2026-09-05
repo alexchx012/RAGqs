@@ -311,7 +311,7 @@ function ChatHomeInner({
   );
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-dvh">
       <ChatSidebar
         user={user}
         conversations={state.visibleConversations}

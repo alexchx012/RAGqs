@@ -28,6 +28,7 @@ export const zhCN = {
       adminSegmentLabel: '管理', // 措辞后定
       backAria: (layerName: string) => `返回${layerName}`, // 措辞后定
       closeAria: '关闭', // 措辞后定
+      navAria: '模块导航', // 措辞后定：抽屉左栏导航区 aria-label（与 dialog 标题区分）
       topPlaceholderBody: '从左侧选择要查看的模块。', // 措辞后定
       modules: {
         profile: '个人资料', // 措辞后定
@@ -1098,6 +1099,7 @@ export const zhCN = {
     loadingAria: '正在加载预览', // 措辞后定
     navAria: '命中导航', // 措辞后定
     navTitle: (count: number) => `命中点 ${count}`, // 措辞后定：窄屏收起按钮与面板标题
+    hitPosition: (current: number, total: number) => `第 ${current} / ${total} 处`, // 措辞后定：命中导航当前位置/总数
     navEmpty: '暂无命中点', // 措辞后定：无 message_id 管理侧只读形态 / 错误态导航空态
     hitLocatorPage: (page: number) => `第 ${page} 页`, // 措辞后定
     hitLocatorSection: (path: readonly string[], paragraph?: number) =>
