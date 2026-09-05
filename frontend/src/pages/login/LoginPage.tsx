@@ -56,6 +56,13 @@ export function LoginPage() {
     return () => clearInterval(timer);
   }, [retryAfter > 0]);
 
+  // A45：限流倒计时归零后清除「请稍后再试」错误行（按钮已恢复，提示失效）
+  useEffect(() => {
+    if (retryAfter === 0 && errorKind === 'throttled') {
+      setErrorKind(null);
+    }
+  }, [retryAfter, errorKind]);
+
   const disabled = username === '' || password === '' || submitting || retryAfter > 0 || leaving;
 
   function clearInvalid(): void {
@@ -139,11 +146,11 @@ export function LoginPage() {
             <p className="mt-6 font-signifier text-heading leading-heading tracking-heading">
               {copy.appName}
             </p>
-            <p className="mt-2 text-body text-slate-gray">{copy.login.tagline}</p>
+            <p className="mt-2 text-body text-slate-strong">{copy.login.tagline}</p>
           </div>
         </div>
         {copy.login.brandFooter !== '' && (
-          <p className="absolute inset-x-0 bottom-6 text-center text-[14px] text-ash-gray">
+          <p className="absolute inset-x-0 bottom-6 text-center text-[14px] text-slate-strong">
             {copy.login.brandFooter}
           </p>
         )}
@@ -166,7 +173,7 @@ export function LoginPage() {
             </h1>
             <form className="mt-10" onSubmit={(event) => void onSubmit(event)} noValidate>
               <div>
-                <label htmlFor="login-username" className="mb-2 block text-caption text-slate-gray">
+                <label htmlFor="login-username" className="mb-2 block text-caption text-slate-strong">
                   {copy.login.usernameLabel}
                 </label>
                 <div
@@ -180,12 +187,13 @@ export function LoginPage() {
                     aria-invalid={errorKind === 'invalid'}
                     value={username}
                     onChange={onUsernameChange}
+                    autoFocus
                     className="w-full bg-transparent text-body text-ink-black"
                   />
                 </div>
               </div>
               <div className="mt-5">
-                <label htmlFor="login-password" className="mb-2 block text-caption text-slate-gray">
+                <label htmlFor="login-password" className="mb-2 block text-caption text-slate-strong">
                   {copy.login.passwordLabel}
                 </label>
                 <div
@@ -205,7 +213,7 @@ export function LoginPage() {
                     aria-label={showPassword ? copy.login.hidePassword : copy.login.showPassword}
                     aria-pressed={showPassword}
                     onClick={() => setShowPassword((value) => !value)}
-                    className="absolute top-1/2 right-3 -translate-y-1/2 text-slate-gray transition-colors duration-150 hover:text-ink-black"
+                    className="ui-touch-target absolute top-1/2 right-3 -translate-y-1/2 text-slate-gray transition-colors duration-150 hover:text-ink-black [--touch-expand:-14px]"
                   >
                     <span key={showPassword ? 'hide' : 'show'} className="login-eye-icon block h-4 w-4">
                       {showPassword ? <EyeOffIcon /> : <EyeIcon />}
@@ -235,7 +243,7 @@ export function LoginPage() {
                   copy.login.submit
                 )}
               </button>
-              <p className="mt-4 text-center text-caption text-smoke-gray">{copy.login.guide}</p>
+              <p className="mt-4 text-center text-caption text-slate-strong">{copy.login.guide}</p>
             </form>
           </div>
         </div>

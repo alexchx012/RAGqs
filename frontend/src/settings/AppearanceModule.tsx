@@ -46,7 +46,7 @@ export function AppearanceModule() {
       className="pb-10"
     >
       {loading && (
-        <p role="status" className="text-caption text-smoke-gray">
+        <p role="status" className="text-caption text-slate-strong">
           {copy.settings.appearance.loading}
         </p>
       )}
@@ -70,7 +70,7 @@ export function AppearanceModule() {
             <h2 id="settings-appearance-theme" className="text-subheading font-medium text-ink-black">
               {copy.settings.appearance.themeTitle}
             </h2>
-            <p className="mt-2 text-caption text-smoke-gray">{copy.settings.appearance.themeDescription}</p>
+            <p className="mt-2 text-caption text-slate-strong">{copy.settings.appearance.themeDescription}</p>
             <fieldset disabled={saving} className="mt-4 min-w-0 border-0 p-0">
               <SegmentedControl
                 options={THEME_OPTIONS}
@@ -85,7 +85,7 @@ export function AppearanceModule() {
             <h2 id="settings-appearance-font-size" className="text-subheading font-medium text-ink-black">
               {copy.settings.appearance.fontSizeTitle}
             </h2>
-            <p className="mt-2 text-caption text-smoke-gray">{copy.settings.appearance.fontSizeDescription}</p>
+            <p className="mt-2 text-caption text-slate-strong">{copy.settings.appearance.fontSizeDescription}</p>
             <fieldset disabled={saving} className="mt-4 min-w-0 border-0 p-0">
               <SegmentedControl
                 options={FONT_SIZE_OPTIONS}

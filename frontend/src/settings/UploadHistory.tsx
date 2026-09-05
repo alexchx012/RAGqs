@@ -32,7 +32,7 @@ export function UploadHistorySection({ sessionKey }: { readonly sessionKey: stri
         <h3 className="text-subheading font-medium text-ink-black">
           {copy.settings.knowledge.uploads.historyTitle}
         </h3>
-        <p className="text-caption text-smoke-gray">
+        <p className="text-caption text-slate-strong">
           {entry.target !== null
             ? `${copy.settings.knowledge.uploads.historyTarget(entry.target.name)} · ${copy.settings.knowledge.uploads.historyAt(formatTime(entry.at))}`
             : copy.settings.knowledge.uploads.historyAt(formatTime(entry.at))}
@@ -43,7 +43,7 @@ export function UploadHistorySection({ sessionKey }: { readonly sessionKey: stri
           <UploadHistoryItemRow key={`${uploadItemKey(item)}:${index}`} item={item} />
         ))}
       </ul>
-      <p className="mt-2 text-caption text-slate-gray">
+      <p className="mt-2 text-caption text-slate-strong">
         {copy.settings.knowledge.upload.resultSummary(acceptedCount, failedCount)}
       </p>
     </section>
@@ -64,22 +64,23 @@ function UploadHistoryItemRow({ item }: { item: UploadItem }) {
     );
   }
   if ('submission_id' in item) {
+    // A48：status 非 pending 的机读值不回显，统一「未知状态」兜底
     return (
-      <li className="text-caption text-slate-gray">
-        {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : item.status}`}
+      <li className="text-caption text-slate-strong">
+        {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : copy.settings.knowledge.uploads.unknownState}`}
       </li>
     );
   }
   if (item.deduplicated) {
     return (
-      <li className="text-caption text-slate-gray">
+      <li className="text-caption text-slate-strong">
         {`${item.name} · ${copy.settings.knowledge.upload.deduplicated}`}
       </li>
     );
   }
   return (
     <li className="text-caption text-success">
-      {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : item.status}`}
+      {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : copy.settings.knowledge.uploads.unknownState}`}
     </li>
   );
 }

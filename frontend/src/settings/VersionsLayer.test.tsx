@@ -151,18 +151,21 @@ describe('VersionsLayer documentId 代际（review Medium 2）', () => {
     await waitFor(() => expect(restoreVersion).toHaveBeenCalledTimes(1));
 
     // documentId A→B（真实 React rerender；effect 作废旧 operation）
+    const nextStore = await createAuthedStore();
     await act(async () => {
       result.rerender(
         <MemoryRouter initialEntries={['/settings/knowledge/versions/docB']}>
           <EscStackProvider>
-            <SettingsProvider
-              api={api}
-              authStore={await createAuthedStore()}
-              theme={{ setPreference: vi.fn() } as unknown as ThemeController}
-              notifications={{} as NotificationsStore}
-            >
-              <VersionsLayer path={['knowledge', 'versions', 'docB']} />
-            </SettingsProvider>
+            <AuthProvider store={nextStore}>
+              <SettingsProvider
+                api={api}
+                authStore={nextStore}
+                theme={{ setPreference: vi.fn() } as unknown as ThemeController}
+                notifications={{} as NotificationsStore}
+              >
+                <VersionsLayer path={['knowledge', 'versions', 'docB']} />
+              </SettingsProvider>
+            </AuthProvider>
           </EscStackProvider>
         </MemoryRouter>,
       );

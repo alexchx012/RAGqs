@@ -13,12 +13,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ApiError } from '../api/errors';
+import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import { copy } from '../copy';
 import { formatDrawerLocation } from '../router/drawer-params';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { Pill } from '../ui/Pill';
 import { useSettings } from './SettingsProvider';
+import { setLayerNotice } from './layer-notice';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
 import type { DocumentVersionItem } from './types';
 
@@ -30,6 +32,12 @@ function formatDateTime(value: string): string {
 /** 版本记录层：documentId 来自抽屉下钻路径（/settings/knowledge/versions/<documentId>）。 */
 export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
   const { api } = useSettings();
+  const { user } = useAuthState();
+  const authStore = useAuthStore();
+  const authSessionId = authStore.getAuthSessionId();
+  // 恢复成功的轻提示由目标层（uploads）展示（A43）：经 session 作用域的跨层 notice 传递
+  const sessionKey =
+    user !== null && authSessionId !== null ? `${authSessionId}:${user.id}` : null;
   const navigate = useNavigate();
   const documentId = path[2] ?? '';
   const [versions, setVersions] = useState<readonly DocumentVersionItem[]>([]);
@@ -39,7 +47,6 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
   const [pendingRestore, setPendingRestore] = useState<DocumentVersionItem | null>(null);
   const [confirmingRestore, setConfirmingRestore] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const restoreIdem = useRef(createIdempotencyScope());
   // 恢复操作 token（review A3）：确认 A 飞行中关闭/切换 document 后打开 B，A completion 不得导航/关 B
   const restoreTokenRef = useRef(0);
@@ -86,7 +93,6 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
     setConfirmingRestore(false);
     setPendingRestore(null);
     setActionError(null);
-    setNotice(null);
     setVersions([]);
     setRowVersion(0);
     restoreIdem.current.clear();
@@ -126,7 +132,8 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
       }
       restoreIdem.current.clear();
       setPendingRestore(null);
-      setNotice(copy.settings.knowledge.versions.restoreSuccess);
+      // 成功提示在目标层（uploads）展示：先落跨层 notice，再下钻（A43）
+      setLayerNotice(sessionKey, copy.settings.knowledge.versions.restoreSuccess);
       // 恢复任务进上传结果层跟踪
       navigate(formatDrawerLocation({ open: true, segment: 'personal', drill: ['knowledge', 'uploads'] }));
     } catch (error) {
@@ -198,16 +205,16 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
                       {copy.settings.knowledge.versions.versionNumber(version.version_number)}
                     </p>
                     {version.status === 'active' && (
-                      <span className="rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-0.5 text-caption text-slate-gray">
+                      <span className="rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-0.5 text-caption text-slate-strong">
                         {copy.settings.knowledge.versions.active}
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-caption text-smoke-gray">
+                  <p className="mt-1 text-caption text-slate-strong">
                     {copy.settings.knowledge.versions.createdAt(formatDateTime(version.created_at))}
                   </p>
                   {contentUnavailable(version) && (
-                    <p className="mt-1 text-caption text-smoke-gray">
+                    <p className="mt-1 text-caption text-slate-strong">
                       {copy.settings.knowledge.versions.contentUnavailable}
                     </p>
                   )}
@@ -230,11 +237,6 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
             </li>
           ))}
         </ul>
-      )}
-      {notice !== null && (
-        <p role="status" className="mt-4 text-caption text-success">
-          {notice}
-        </p>
       )}
       {actionError !== null && (
         <p role="alert" className="mt-4 text-caption text-danger">
@@ -262,10 +264,14 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
 
   function openPreview(version: DocumentVersionItem) {
     // 原文预览页（fe-doc-preview）：新窗口打开，不携带 message_id = 管理侧只读形态（hits 为空）
-    window.open(
+    const popup = window.open(
       `/preview/${encodeURIComponent(documentId)}?document_version_id=${encodeURIComponent(version.document_version_id)}`,
       '_blank',
       'noopener,noreferrer',
     );
+    // A43：浏览器拦截弹窗时（返回 null）就地提示，不静默失败
+    if (popup === null) {
+      setActionError(copy.settings.knowledge.submissions.contentOpenBlocked);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/errors';
@@ -8,6 +8,7 @@ import { createMemoryAuthHub } from '../auth/channel';
 import { AuthSessionStore } from '../auth/session';
 import type { DeviceSession, User } from '../auth/types';
 import { copy } from '../copy';
+import { EscStackProvider } from '../lib/esc-stack-provider';
 import type { NotificationsStore } from '../notifications/store';
 import type { ThemeController } from '../theme/theme';
 import type { SettingsApi } from './api';
@@ -46,19 +47,22 @@ async function createAuthedStore(
 
 function renderSecurity(store: AuthSessionStore, api: SettingsApi) {
   return render(
-    <AuthProvider store={store}>
-      <SettingsProvider
-        api={Object.assign(
-          { getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })) },
-          api,
-        ) as SettingsApi}
-        authStore={store}
-        theme={{ setPreference: vi.fn() } as unknown as ThemeController}
-        notifications={{} as NotificationsStore}
-      >
-        <SecurityModule />
-      </SettingsProvider>
-    </AuthProvider>,
+    // A38：退出全部设备的 ConfirmDialog 依赖 EscStackProvider（useEscShield）
+    <EscStackProvider>
+      <AuthProvider store={store}>
+        <SettingsProvider
+          api={Object.assign(
+            { getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })) },
+            api,
+          ) as SettingsApi}
+          authStore={store}
+          theme={{ setPreference: vi.fn() } as unknown as ThemeController}
+          notifications={{} as NotificationsStore}
+        >
+          <SecurityModule />
+        </SettingsProvider>
+      </AuthProvider>
+    </EscStackProvider>,
   );
 }
 
@@ -163,7 +167,7 @@ describe('SecurityModule', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('logs out all devices directly through the existing all-session store action without a dialog', async () => {
+  it('logs out all devices only after a danger ConfirmDialog (A38)', async () => {
     const { store, api: authApi } = await createAuthedStore({
       listSessions: vi.fn(async () => [CURRENT_SESSION]),
     });
@@ -173,11 +177,39 @@ describe('SecurityModule', () => {
 
     renderSecurity(store, settingsApi);
     await screen.findByText(CURRENT_SESSION.device);
+
     await user.click(screen.getByRole('button', { name: copy.settings.security.logoutAll }));
+    // 未确认前不执行
+    expect(revokeAllSessions).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole('dialog', {
+      name: copy.settings.security.logoutAllConfirmTitle,
+    });
+    expect(within(dialog).getByText(copy.settings.security.logoutAllConfirmDescription)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: copy.settings.security.logoutAll }));
 
     await waitFor(() => expect(revokeAllSessions).toHaveBeenCalledOnce());
     expect(authApi.revokeAllSessions).toHaveBeenCalledOnce();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('cancels the logout-all ConfirmDialog with Esc without revoking anything (A38 Esc=取消)', async () => {
+    const { store } = await createAuthedStore({
+      listSessions: vi.fn(async () => [CURRENT_SESSION]),
+    });
+    const revokeAllSessions = vi.spyOn(store, 'revokeAllSessions');
+    const settingsApi = { changePassword: vi.fn(async () => {}) } as unknown as SettingsApi;
+    const user = userEvent.setup();
+
+    renderSecurity(store, settingsApi);
+    await screen.findByText(CURRENT_SESSION.device);
+    await user.click(screen.getByRole('button', { name: copy.settings.security.logoutAll }));
+    expect(await screen.findByRole('dialog', { name: copy.settings.security.logoutAllConfirmTitle })).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(revokeAllSessions).not.toHaveBeenCalled();
+    expect(store.getState().status).toBe('authenticated');
   });
 
   it('shows an accessible error and does not forge logout when revoke-all fails', async () => {
@@ -195,13 +227,50 @@ describe('SecurityModule', () => {
     expect(screen.getByText(OTHER_SESSION.device)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: copy.settings.security.logoutAll }));
+    const dialog = await screen.findByRole('dialog', { name: copy.settings.security.logoutAllConfirmTitle });
+    await user.click(within(dialog).getByRole('button', { name: copy.settings.security.logoutAll }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(copy.settings.security.sessionActionError);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(store.getState().status).toBe('authenticated');
     expect(screen.getByText(CURRENT_SESSION.device)).toBeInTheDocument();
     expect(screen.getByText(OTHER_SESSION.device)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: copy.settings.security.logoutAll })).toBeEnabled();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('shows the all-devices sign-out note next to the submit action (A37)', async () => {
+    const { store } = await createAuthedStore();
+    const settingsApi = { changePassword: vi.fn(async () => {}) } as unknown as SettingsApi;
+    renderSecurity(store, settingsApi);
+
+    expect(await screen.findByText(copy.settings.security.passwordSessionNote)).toBeInTheDocument();
+  });
+
+  it('toggles password visibility on the old and new password fields (A37)', async () => {
+    const { store } = await createAuthedStore();
+    const settingsApi = { changePassword: vi.fn(async () => {}) } as unknown as SettingsApi;
+    const user = userEvent.setup();
+
+    renderSecurity(store, settingsApi);
+
+    const oldInput = screen.getByLabelText(copy.settings.security.oldPasswordLabel);
+    const oldField = oldInput.closest('div') as HTMLElement;
+    await user.type(oldInput, 'password123');
+    await user.click(within(oldField).getByRole('button', { name: copy.login.showPassword }));
+    expect(oldInput).toHaveAttribute('type', 'text');
+    expect(within(oldField).getByRole('button', { name: copy.login.hidePassword })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    const newInput = screen.getByLabelText(copy.settings.security.newPasswordLabel);
+    const newField = newInput.closest('div') as HTMLElement;
+    await user.type(newInput, 'newpassword1');
+    await user.click(within(newField).getByRole('button', { name: copy.login.showPassword }));
+    expect(newInput).toHaveAttribute('type', 'text');
+    // 再次点击恢复掩码
+    await user.click(within(newField).getByRole('button', { name: copy.login.hidePassword }));
+    expect(newInput).toHaveAttribute('type', 'password');
   });
 
   it('rejects a locally invalid new password with the exact rule before sending a request', async () => {

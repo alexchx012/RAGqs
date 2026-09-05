@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
+import { ApiError } from '../api/errors';
 import { AuthProvider } from '../auth/AuthProvider';
 import { createMemoryAuthHub } from '../auth/channel';
 import { AuthSessionStore } from '../auth/session';
@@ -14,6 +15,7 @@ import type { ThemeController } from '../theme/theme';
 import type { SettingsApi } from './api';
 import { SettingsProvider } from './SettingsProvider';
 import { UploadDialog } from './UploadDialog';
+import { clearUploadHistory, readUploadHistory } from './upload-history';
 
 function testUser(): User {
   return {
@@ -86,6 +88,7 @@ async function renderUpload(api: SettingsApi) {
               theme={{ setPreference: vi.fn() } as unknown as ThemeController}
               notifications={{} as NotificationsStore}
             >
+              <LocationProbe />
               <UploadDialog open onOpenChange={() => {}} sessionKey="sess:u_user" />
             </SettingsProvider>
           </EscStackProvider>
@@ -97,13 +100,20 @@ async function renderUpload(api: SettingsApi) {
   return result;
 }
 
+/** 上传成功后对话框自动下钻（A43）：经 location 探针断言导航目标。 */
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="upload-location">{location.pathname}</output>;
+}
+
 afterEach(() => {
   mockKnowledge.reset();
   mockAuth.reset();
+  clearUploadHistory(null);
 });
 
 describe('UploadDialog 上传对话框（经契约 mock）', () => {
-  it('列出 upload 目标（manage/contribute 分支提示），多文件上传后逐文件呈现结果', async () => {
+  it('列出 upload 目标（manage/contribute 分支提示），上传成功后下钻上传结果层', async () => {
     const api = createContractApi();
     const user = userEvent.setup();
     await renderUpload(api);
@@ -122,62 +132,74 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
 
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
 
-    // 逐文件结果：两个不同文件名均 accepted。
+    // A43：成功即下钻上传结果层（默认 manage 目标），不在对话框内呈现逐文件结果
     await waitFor(() =>
-      expect(screen.getAllByText(/新文档\.pdf/).length).toBeGreaterThan(0),
+      expect(screen.getByTestId('upload-location').textContent).toBe('/settings/knowledge/uploads'),
     );
-    expect(screen.getAllByText(/已接收/)).toHaveLength(2);
-    expect(screen.queryByText(/内容重复，未新增任务/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/已接收/)).not.toBeInTheDocument();
+    // 结果经上传历史稳定承载（会话内档）
+    const history = readUploadHistory('sess:u_user');
+    expect(history).not.toBeNull();
+    expect(history!.response.items.filter((item) => item.accepted)).toHaveLength(2);
   });
 
-  it('混合批次逐文件呈现成败：失败项走错误对象，failedCount 正确', async () => {
+  it('拖拽区固定注明允许类型与大小上限（A40）', async () => {
     const api = createContractApi();
-    mockKnowledge.setNextUploadFailure('bad', 'malware_detected');
-    const user = userEvent.setup();
     await renderUpload(api);
 
-    const good = new File(['%PDF-1.4'], 'good-doc.pdf', { type: 'application/pdf' });
-    const bad = new File(['%PDF-1.4'], 'bad-name.pdf', { type: 'application/pdf' });
-    const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
-      selector: 'input',
-    }) as HTMLInputElement;
-    await user.upload(input, [good, bad]);
-    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
-
-    // 逐文件结果：成功项与失败项（服务端错误对象按 code 映射文案）各占一行
-    await waitFor(() =>
-      expect(screen.getByText(`${'good-doc.pdf'} · ${copy.settings.knowledge.upload.accepted}`)).toBeInTheDocument(),
-    );
     expect(
-      screen.getByText(`${'bad-name.pdf'} · ${copy.settings.knowledge.upload.itemError('malware_detected')}`),
+      await screen.findByText(copy.settings.knowledge.upload.dropHintConstraints),
     ).toBeInTheDocument();
-    // 汇总行 failedCount 正确（成功 1 项，失败 1 项）；请求级错误段落不出现
-    expect(
-      screen.getByText(copy.settings.knowledge.upload.resultSummary(1, 1)),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('成功路径保留结果态：上传 Pill 复位可点、结果汇总常驻（A37）', async () => {
+  it('重复选择/拖入同一文件（name+size+lastModified）去重为一条（A40）', async () => {
     const api = createContractApi();
     const user = userEvent.setup();
     await renderUpload(api);
 
-    const file = new File(['%PDF-1.4'], '完成文档.pdf', { type: 'application/pdf' });
+    await screen.findByText(copy.settings.knowledge.upload.manageTargetHint);
     const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
       selector: 'input',
     }) as HTMLInputElement;
+    const file = new File(['%PDF-1.4'], '重复文档.pdf', { type: 'application/pdf' });
     await user.upload(input, [file]);
+    await user.upload(input, [file]);
+
+    const list = screen.getByLabelText(copy.settings.knowledge.upload.fileListAria);
+    expect(list.querySelectorAll('li')).toHaveLength(1);
+    expect(screen.getAllByText('重复文档.pdf')).toHaveLength(1);
+  });
+
+  it('409 quota_exceeded 整批拒绝：错误行指向知识库页申请增加页数（A40）', async () => {
+    const api = {
+      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
+      listUploadSpaces: vi.fn(async () => ({
+        items: [
+          { id: 'personal:u_user', kind: 'personal', name: '个人库', permission: 'manage', document_count: 0 },
+        ],
+      })),
+      uploadDocuments: vi.fn(async () => {
+        throw new ApiError({
+          status: 409,
+          code: 'quota_exceeded',
+          message: '',
+          details: {},
+          requestId: null,
+        });
+      }),
+    } as unknown as SettingsApi;
+    const user = userEvent.setup();
+    await renderUpload(api);
+
+    await screen.findByText(copy.settings.knowledge.upload.manageTargetHint);
+    const input = screen.getByLabelText(copy.settings.knowledge.upload.chooseFiles, {
+      selector: 'input',
+    }) as HTMLInputElement;
+    await user.upload(input, [new File(['%PDF-1.4'], '配额文档.pdf', { type: 'application/pdf' })]);
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload }));
 
-    // 成功后：Pill 回到「上传」可点（phase 不再被 finally 覆盖；done 持续至文件变更/重开），
-    // 逐文件结果与汇总常驻展示
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: copy.settings.knowledge.upload.upload })).toBeEnabled(),
-    );
-    expect(screen.getByText(copy.settings.knowledge.upload.resultSummary(1, 0))).toBeInTheDocument();
-    expect(screen.getByText(/已接收/)).toBeInTheDocument();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.settings.knowledge.upload.quotaExceeded);
+    expect(screen.getByRole('alert').textContent).toContain('可在知识库页申请增加页数');
   });
 });
 

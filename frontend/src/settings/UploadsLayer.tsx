@@ -13,20 +13,25 @@
  * - 上传结果历史（Major3）：本层顶部呈现最近一次上传响应的逐文件结果（会话内存档）。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import { useSettings } from './SettingsProvider';
 import { ApiError } from '../api/errors';
 import { copy } from '../copy';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingCards } from '../ui/states';
+import { Paginator } from '../ui/Paginator';
 import { Pill } from '../ui/Pill';
 import type { IngestionJob } from './types';
 import { UploadHistorySection } from './UploadHistory';
+import { clearLayerNotices, takeLayerNotice } from './layer-notice';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
 
 const POLL_INTERVAL_MS = 2000;
 const JOB_LIMIT = 50;
+
+/** A47：任务列表整窗拉取（JOB_LIMIT），前端分页每页 ≤20，避免全量渲染长列表。 */
+const UPLOADS_PAGE_SIZE = 20;
 
 function stageLabel(stage: string | null): string | null {
   switch (stage) {
@@ -55,6 +60,8 @@ export function UploadsLayer() {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  // A47：前端分页页码（1 起）
+  const [page, setPage] = useState(1);
   const [batchSummaries, setBatchSummaries] = useState<Map<string, string>>(new Map());
   const [pendingCancel, setPendingCancel] = useState<IngestionJob | null>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
@@ -65,6 +72,8 @@ export function UploadsLayer() {
     cancelTokenRef.current += 1;
   };
   const [actionError, setActionError] = useState<string | null>(null);
+  // A43：来自其他下钻层的一次性成功提示（如版本恢复），挂载/会话切换时读取（take 语义）
+  const [layerNotice, setLayerNotice] = useState<string | null>(null);
   const replayIdem = useRef(createIdempotencyScope());
   // 空间 ID → 名称（上传结果显示空间名而非内部 ID）
   const [spaceNames, setSpaceNames] = useState<Map<string, string>>(new Map());
@@ -74,6 +83,15 @@ export function UploadsLayer() {
   // 最新 jobs 快照（replay 收敛轮询读取；render 期同步）。
   const jobsRef = useRef<readonly IngestionJob[]>([]);
   jobsRef.current = jobs;
+
+  // A47：本地切片分页；轮询刷新/列表缩短后越界页自动收敛到最后一页。
+  // useMemo 稳定引用：ack 登记效果依赖 pageJobs，避免每次渲染新数组造成 effect 反复触发。
+  const jobsTotalPages = Math.max(1, Math.ceil(jobs.length / UPLOADS_PAGE_SIZE));
+  const safePage = Math.min(page, jobsTotalPages);
+  const pageJobs = useMemo(
+    () => jobs.slice((safePage - 1) * UPLOADS_PAGE_SIZE, safePage * UPLOADS_PAGE_SIZE),
+    [jobs, safePage],
+  );
 
   // ---- ack 时序（Major7）：仅对已真实渲染 commit 的事件 ack ----
   /** 已渲染 commit 的事件 ID（render effect 登记；空数组/渲染失败不登记）。 */
@@ -94,11 +112,18 @@ export function UploadsLayer() {
     };
   }, []);
 
+  // A43：读取跨层一次性提示（版本恢复成功等）；读即清，仅本层挂载期间展示
+  useEffect(() => {
+    setLayerNotice(takeLayerNotice(sessionKey));
+    return () => clearLayerNotices(sessionKey);
+  }, [sessionKey]);
+
   // 任务卡渲染后登记 succeeded 任务的 event ids（结果/用量/低置信信息已 commit 到 DOM）。
-  // fail-closed（B9）：succeeded 但 usage 缺失（结果未渲染）时不登记、不 ack。
+  // fail-closed（B9）：succeeded 但 usage 缺失（结果未渲染）时不登记、不 ack；
+  // 仅登记当前页实际渲染的任务（A47 分页后非当前页未上屏，不提前 ack）。
   useEffect(() => {
     const next: string[] = [];
-    for (const job of jobs) {
+    for (const job of pageJobs) {
       if (
         job.state === 'succeeded' &&
         job.usage !== null &&
@@ -110,7 +135,7 @@ export function UploadsLayer() {
     if (next.length > 0) {
       setRenderedEventIds(next);
     }
-  }, [jobs]);
+  }, [pageJobs]);
 
   // 已渲染事件的 ack：离开本层（卸载）不再 ack；去重；失败下轮重试。
   useEffect(() => {
@@ -200,6 +225,7 @@ export function UploadsLayer() {
     setHasMore(false);
     setLoading(true);
     setLoadError(false);
+    setPage(1); // A47：会话/视图重置回第一页
     setBatchSummaries(new Map());
     ackedEventIdsRef.current = new Set();
     ackTerminalFailedRef.current = new Set();
@@ -334,8 +360,13 @@ export function UploadsLayer() {
 
   return (
     <section aria-label={copy.settings.knowledge.uploads.title} className="pb-10">
+      {layerNotice !== null && (
+        <p role="status" className="mb-4 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-strong">
+          {layerNotice}
+        </p>
+      )}
       {hasMore && (
-        <p className="mb-4 text-caption text-smoke-gray">{copy.settings.knowledge.uploads.recentWindow}</p>
+        <p className="mb-4 text-caption text-slate-strong">{copy.settings.knowledge.uploads.recentWindow}</p>
       )}
       {/* 上传结果历史：最近一次上传响应逐文件结果（不随上传对话框卸载丢失） */}
       <UploadHistorySection sessionKey={sessionKey} />
@@ -347,7 +378,7 @@ export function UploadsLayer() {
         <EmptyState text={copy.settings.knowledge.uploads.empty} />
       ) : (
         <ul className="mt-4 flex flex-col gap-3">
-          {jobs.map((job) => (
+          {pageJobs.map((job) => (
             <JobCard
               key={job.job_id}
               job={job}
@@ -359,6 +390,11 @@ export function UploadsLayer() {
             />
           ))}
         </ul>
+      )}
+      {!loading && !loadError && jobsTotalPages > 1 && (
+        <div className="mt-6">
+          <Paginator page={safePage} totalPages={jobsTotalPages} onChange={setPage} />
+        </div>
       )}
       {actionError !== null && (
         <p role="alert" className="mt-4 text-caption text-danger">
@@ -404,11 +440,11 @@ function JobCard({ job, batchHint, spaceName, replaying, onCancel, onReplay }: J
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="truncate text-body text-ink-black">{job.name}</p>
-          <p className="mt-1 text-caption text-smoke-gray">
+          <p className="mt-1 text-caption text-slate-strong">
             {copy.settings.knowledge.uploads.enteringAt(formatDateTime(job.created_at))}
             {spaceName !== '' && ` · ${copy.settings.knowledge.uploads.targetSpace(spaceName)}`}
           </p>
-          {batchHint !== null && <p className="mt-1 text-caption text-slate-gray">{batchHint}</p>}
+          {batchHint !== null && <p className="mt-1 text-caption text-slate-strong">{batchHint}</p>}
         </div>
         <span className="shrink-0 rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-1 text-caption text-ink-black">
           {copy.settings.knowledge.uploads.stateLabel(job.state)}
@@ -416,10 +452,10 @@ function JobCard({ job, batchHint, spaceName, replaying, onCancel, onReplay }: J
       </div>
 
       {stage !== null && (
-        <p className="mt-3 text-caption text-slate-gray">{stage}</p>
+        <p className="mt-3 text-caption text-slate-strong">{stage}</p>
       )}
       {job.state === 'retry_wait' && job.next_attempt_at !== null && (
-        <p className="mt-1 text-caption text-slate-gray">
+        <p className="mt-1 text-caption text-slate-strong">
           {copy.settings.knowledge.uploads.nextAttemptAt(formatDateTime(job.next_attempt_at))}
         </p>
       )}

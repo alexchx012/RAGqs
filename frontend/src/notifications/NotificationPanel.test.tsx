@@ -148,6 +148,48 @@ describe('提醒下拉面板', () => {
     });
   });
 
+  it('单条标已读失败：就地错误行 + 重试，不再静默吞（A41）', async () => {
+    const items = [makeItem({ id: 'ntf_err', title: 'title-err', read: false })];
+    const markRead = vi
+      .fn<(id: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(undefined);
+    const api = fakeNotificationsApi({ list: vi.fn(async () => ({ items })), markRead });
+    await renderPanel(api);
+    const user = userEvent.setup();
+    await user.click(await screen.findByText('title-err'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.notifications.readActionError);
+
+    await user.click(screen.getByRole('button', { name: copy.notifications.retry }));
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('title-err')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  });
+
+  it('全部已读失败：就地错误行 + 重试成功后不再显示（A41）', async () => {
+    const items = [makeItem({ id: 'a', title: 'title-x', read: false })];
+    const markAllRead = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(undefined);
+    const api = fakeNotificationsApi({
+      list: vi.fn(async () => ({ items })),
+      markAllRead,
+      unreadCount: vi.fn(async () => ({ count: 0 })),
+    });
+    await renderPanel(api);
+    await screen.findByText('title-x');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: copy.notifications.readAll }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.notifications.readActionError);
+
+    await user.click(screen.getByRole('button', { name: copy.notifications.retry }));
+    await waitFor(() => expect(markAllRead).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  });
+
   it('空列表显示空态文案', async () => {
     const api = fakeNotificationsApi();
     await renderPanel(api);

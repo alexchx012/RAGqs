@@ -43,6 +43,9 @@ function formatDateTime(value: string): string {
 
 const PAGE_SIZE = 10;
 
+/** A47：审核列表整单返回，前端分页每页 ≤20，避免全量渲染长列表。 */
+const APPROVALS_PAGE_SIZE = 20;
+
 /** 部长部门库入口：严格为 kind=department && permission=manage 的服务端返回项。 */
 export function ManageLayer(_props: { readonly path: readonly string[] }) {
   const { api } = useSettings();
@@ -132,7 +135,10 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
           <span className="flex items-center gap-2">
             {copy.settings.knowledge.manage.approvals}
             {pendingApprovals !== null && pendingApprovals > 0 && (
-              <span className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black">
+              <span
+                aria-label={copy.settings.knowledge.manage.approvalsBadgeAria(pendingApprovals)}
+                className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black"
+              >
                 {pendingApprovals}
               </span>
             )}
@@ -523,6 +529,8 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
   const [pendingReject, setPendingReject] = useState<ApprovalListItem | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
+  // A44：「通过」的 pending 以 submission_id 记行（行内 loading），不再全行共享 rejecting
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Map<string, string>>(new Map());
@@ -530,6 +538,8 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
   const decisionIdem = useRef(createIdempotencyScope());
   const [versionByRow, setVersionByRow] = useState<Map<string, number>>(new Map());
   const approvalsSeqRef = useRef(0);
+  // A47：前端分页页码（1 起）；行淡出移除后越界页经 safePage 收敛
+  const [page, setPage] = useState(1);
 
   const loadApprovals = useCallback(async () => {
     const seq = ++approvalsSeqRef.current;
@@ -581,11 +591,16 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
   };
 
   const decide = async (approval: ApprovalListItem, approved: boolean) => {
-    if (rejecting) {
+    // single-flight 保持：任一决策在飞时不再发起新决策（A44）
+    if (approvingId !== null || rejecting) {
       return;
     }
-    setRejecting(true);
     setActionError(null);
+    if (approved) {
+      setApprovingId(approval.submission_id);
+    } else {
+      setRejecting(true);
+    }
     const version = versionByRow.get(approval.submission_id) ?? approval.version;
     // key 绑定 operation+target+expected_version+payload（reject 的 reason 纳入 payload，
     // 理由变化自动换键，不会把上次驳回结果重放到新理由；review Major 3）
@@ -657,7 +672,11 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
         setActionError(copy.settings.knowledge.manage.actionError);
       }
     } finally {
-      setRejecting(false);
+      if (approved) {
+        setApprovingId(null);
+      } else {
+        setRejecting(false);
+      }
     }
   };
 
@@ -668,19 +687,27 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
     );
   };
 
+  // A47：本地切片分页；列表刷新/行移除后越界页自动收敛到最后一页
+  const approvalsTotalPages = Math.max(1, Math.ceil(approvals.length / APPROVALS_PAGE_SIZE));
+  const approvalsSafePage = Math.min(page, approvalsTotalPages);
+  const approvalsPageItems = approvals.slice(
+    (approvalsSafePage - 1) * APPROVALS_PAGE_SIZE,
+    approvalsSafePage * APPROVALS_PAGE_SIZE,
+  );
+
   return (
     <section aria-label={copy.settings.knowledge.manage.approvals} className="pb-10">
       <button
         type="button"
         onClick={goBackToManage}
-        className="mb-3 flex items-center gap-1 text-caption text-slate-gray transition-colors duration-150 hover:text-ink-black"
+        className="mb-3 flex items-center gap-1 text-caption text-slate-strong transition-colors duration-150 hover:text-ink-black"
       >
         <ChevronRight size={14} className="rotate-180" aria-hidden />
         {copy.shell.drawer.modules.manage}
       </button>
       <h2 className="text-subheading font-medium text-ink-black">{copy.settings.knowledge.manage.approvals}</h2>
       {notice !== null && (
-        <p role="status" className="mt-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-gray">
+        <p role="status" className="mt-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-strong">
           {notice}
         </p>
       )}
@@ -698,7 +725,7 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
           <EmptyState text={copy.settings.knowledge.manage.approvalsEmpty} />
         ) : (
           <ul className="divide-y divide-[var(--color-hairline)]">
-            {approvals.map((approval) => (
+            {approvalsPageItems.map((approval) => (
               <li
                 key={approval.submission_id}
                 data-approval-id={approval.submission_id}
@@ -709,7 +736,7 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[15px] font-w450 text-ink-black">{approval.name}</p>
-                    <p className="mt-1 text-caption text-slate-gray">
+                    <p className="mt-1 text-caption text-slate-strong">
                       {approval.submitter.display_name}
                       {approval.submitter.department !== null ? ` · ${approval.submitter.department.name}` : ''} ·{' '}
                       {approval.media_kind} / {formatFileSize(approval.size_bytes)} ·{' '}
@@ -717,7 +744,7 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
                       {copy.settings.knowledge.manage.submittedAt(formatDateTime(approval.created_at))}
                     </p>
                     {rowErrors.get(approval.submission_id) !== undefined && (
-                      <p className="mt-1 text-caption text-danger">
+                      <p role="alert" className="mt-1 text-caption text-danger">
                         {rowErrors.get(approval.submission_id)}
                       </p>
                     )}
@@ -726,10 +753,21 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
                     <TextLink onClick={() => void openContent(approval)}>
                       {copy.settings.knowledge.manage.viewContent}
                     </TextLink>
-                    <Pill size="sm" loading={rejecting} onClick={() => void decide(approval, true)}>
+                    {/* A44：通过 loading 只落在对应行；决策在飞时行内操作统一禁用 */}
+                    <Pill
+                      size="sm"
+                      loading={approvingId === approval.submission_id}
+                      disabled={approvingId !== null || rejecting}
+                      onClick={() => void decide(approval, true)}
+                    >
                       {copy.settings.knowledge.manage.approve}
                     </Pill>
-                    <Pill variant="ghost" size="sm" disabled={rejecting} onClick={() => setPendingReject(approval)}>
+                    <Pill
+                      variant="ghost"
+                      size="sm"
+                      disabled={approvingId !== null || rejecting}
+                      onClick={() => setPendingReject(approval)}
+                    >
                       {copy.settings.knowledge.manage.reject}
                     </Pill>
                   </div>
@@ -737,6 +775,15 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
               </li>
             ))}
           </ul>
+        )}
+        {!loading && !loadError && approvalsTotalPages > 1 && (
+          <div className="mt-6">
+            <Paginator
+              page={approvalsSafePage}
+              totalPages={approvalsTotalPages}
+              onChange={setPage}
+            />
+          </div>
         )}
       </div>
 
@@ -796,7 +843,7 @@ function RejectDialog({ open, onOpenChange, reason, onReasonChange, pending, onC
         }}
       >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.manage.rejectDialogTitle}</h2>
-        <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.manage.rejectDialogDescription}</p>
+        <p className="mt-2 text-[15px] text-slate-strong">{copy.settings.knowledge.manage.rejectDialogDescription}</p>
         <input
           type="text"
           value={reason}

@@ -3,6 +3,8 @@ import { ApiError } from '../api/errors';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import type { DeviceSession } from '../auth/types';
 import { copy } from '../copy';
+import { EyeIcon, EyeOffIcon } from '../pages/login/LoginPage';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Pill } from '../ui/Pill';
 import { Switch } from '../ui/Switch';
 import { TextLink } from '../ui/TextLink';
@@ -26,6 +28,31 @@ function sessionTime(value: string): string {
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString('zh-CN');
 }
 
+/** 密码框可见性切换（A37）：24px 视觉钮 + ui-touch-target 外扩至 44px 命中区（A49）。 */
+function PasswordVisibilityToggle({
+  visible,
+  onToggle,
+}: {
+  readonly visible: boolean;
+  readonly onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={visible ? copy.login.hidePassword : copy.login.showPassword}
+      aria-pressed={visible}
+      onClick={onToggle}
+      className="ui-touch-target absolute top-1/2 right-2 flex h-6 w-6 -translate-y-1/2 items-center
+        justify-center rounded-[var(--radius-images)] text-slate-gray transition-colors
+        duration-[var(--duration-fast)] hover:text-ink-black [--touch-expand:-10px]"
+    >
+      <span key={visible ? 'hide' : 'show'} className="block h-4 w-4">
+        {visible ? <EyeOffIcon /> : <EyeIcon />}
+      </span>
+    </button>
+  );
+}
+
 export function SecurityModule() {
   const { api } = useSettings();
   const authStore = useAuthStore();
@@ -42,6 +69,12 @@ export function SecurityModule() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordErrors, setPasswordErrors] = useState<PasswordErrors>(EMPTY_PASSWORD_ERRORS);
   const [submittingPassword, setSubmittingPassword] = useState(false);
+  // A37：新旧密码框可见性切换
+  const [showOldPassword, setShowOldPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  // A38：「退出全部设备」二次确认（danger ConfirmDialog）
+  const [pendingLogoutAll, setPendingLogoutAll] = useState(false);
 
   // 会话 fence：capture 发起时的逻辑会话，响应落地时仍为当前会话才提交（A 的列表不在 B 显示）。
   const sessionsSeqRef = useRef(0);
@@ -189,6 +222,8 @@ export function SecurityModule() {
       setSessionActionError(copy.settings.security.sessionActionError);
     } finally {
       setSessionActionPending(null);
+      // A38：确认后无论成败都收起确认框（失败错误行在本层展示，不被确认框遮盖）
+      setPendingLogoutAll(false);
     }
   }
 
@@ -208,18 +243,24 @@ export function SecurityModule() {
       <form onSubmit={(event) => void changePassword(event)} noValidate>
         <h2 className="text-subheading font-medium text-ink-black">{copy.settings.security.passwordTitle}</h2>
         <div className="mt-5">
-          <label htmlFor="settings-old-password" className="mb-2 block text-caption text-slate-gray">
+          <label htmlFor="settings-old-password" className="mb-2 block text-caption text-slate-strong">
             {copy.settings.security.oldPasswordLabel}
           </label>
-          <input
-            id="settings-old-password"
-            type="password"
-            autoComplete="current-password"
-            value={oldPassword}
-            onChange={onOldPasswordChange}
-            aria-invalid={passwordErrors.oldPassword !== null}
-            className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
-          />
+          <div className="relative">
+            <input
+              id="settings-old-password"
+              type={showOldPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              value={oldPassword}
+              onChange={onOldPasswordChange}
+              aria-invalid={passwordErrors.oldPassword !== null}
+              className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 pr-10 text-body text-ink-black focus:border-ink-black"
+            />
+            <PasswordVisibilityToggle
+              visible={showOldPassword}
+              onToggle={() => setShowOldPassword((value) => !value)}
+            />
+          </div>
           {passwordErrors.oldPassword !== null && (
             <p role="alert" className="mt-2 text-caption text-danger">
               {passwordErrors.oldPassword}
@@ -227,19 +268,25 @@ export function SecurityModule() {
           )}
         </div>
         <div className="mt-5">
-          <label htmlFor="settings-new-password" className="mb-2 block text-caption text-slate-gray">
+          <label htmlFor="settings-new-password" className="mb-2 block text-caption text-slate-strong">
             {copy.settings.security.newPasswordLabel}
           </label>
-          <input
-            id="settings-new-password"
-            type="password"
-            autoComplete="new-password"
-            value={newPassword}
-            onChange={onNewPasswordChange}
-            aria-invalid={passwordErrors.newPassword !== null}
-            className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
-          />
-          <p className="mt-2 text-caption text-smoke-gray">{copy.settings.security.passwordRule}</p>
+          <div className="relative">
+            <input
+              id="settings-new-password"
+              type={showNewPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={onNewPasswordChange}
+              aria-invalid={passwordErrors.newPassword !== null}
+              className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 pr-10 text-body text-ink-black focus:border-ink-black"
+            />
+            <PasswordVisibilityToggle
+              visible={showNewPassword}
+              onToggle={() => setShowNewPassword((value) => !value)}
+            />
+          </div>
+          <p className="mt-2 text-caption text-slate-strong">{copy.settings.security.passwordRule}</p>
           {passwordErrors.newPassword !== null && (
             <p role="alert" className="mt-2 text-caption text-danger">
               {passwordErrors.newPassword}
@@ -247,18 +294,24 @@ export function SecurityModule() {
           )}
         </div>
         <div className="mt-5">
-          <label htmlFor="settings-confirm-password" className="mb-2 block text-caption text-slate-gray">
+          <label htmlFor="settings-confirm-password" className="mb-2 block text-caption text-slate-strong">
             {copy.settings.security.confirmPasswordLabel}
           </label>
-          <input
-            id="settings-confirm-password"
-            type="password"
-            autoComplete="new-password"
-            value={confirmPassword}
-            onChange={onConfirmPasswordChange}
-            aria-invalid={passwordErrors.confirmPassword !== null}
-            className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
-          />
+          <div className="relative">
+            <input
+              id="settings-confirm-password"
+              type={showConfirmPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={onConfirmPasswordChange}
+              aria-invalid={passwordErrors.confirmPassword !== null}
+              className="h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 pr-10 text-body text-ink-black focus:border-ink-black"
+            />
+            <PasswordVisibilityToggle
+              visible={showConfirmPassword}
+              onToggle={() => setShowConfirmPassword((value) => !value)}
+            />
+          </div>
           {passwordErrors.confirmPassword !== null && (
             <p role="alert" className="mt-2 text-caption text-danger">
               {passwordErrors.confirmPassword}
@@ -268,6 +321,10 @@ export function SecurityModule() {
         <Pill type="submit" loading={submittingPassword} className="mt-5">
           {copy.settings.security.changePassword}
         </Pill>
+        {/* A37：提交区固定注明全设备退出（与改密的服务端行为一致） */}
+        <p className="mt-3 text-caption text-slate-strong">
+          {copy.settings.security.passwordSessionNote}
+        </p>
       </form>
 
       <div className="mt-12">
@@ -277,18 +334,33 @@ export function SecurityModule() {
             disabled={sessionActionsDisabled}
             danger
             aria-busy={sessionActionPending === 'all' || undefined}
-            onClick={() => void logoutAllDevices()}
+            onClick={() => setPendingLogoutAll(true)}
           >
             {copy.settings.security.logoutAll}
           </TextLink>
         </div>
+        {/* A38：退出全部设备 = 撤销含当前设备在内的全部会话，danger 二次确认后再执行 */}
+        <ConfirmDialog
+          open={pendingLogoutAll}
+          confirming={sessionActionPending === 'all'}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingLogoutAll(false);
+            }
+          }}
+          title={copy.settings.security.logoutAllConfirmTitle}
+          description={copy.settings.security.logoutAllConfirmDescription}
+          confirmLabel={copy.settings.security.logoutAll}
+          danger
+          onConfirm={() => void logoutAllDevices()}
+        />
         {sessionActionError !== null && (
           <p role="alert" className="mt-4 text-caption text-danger">
             {sessionActionError}
           </p>
         )}
         {sessionsLoading ? (
-          <p className="mt-4 text-caption text-smoke-gray">{copy.settings.security.sessionsLoading}</p>
+          <p className="mt-4 text-caption text-slate-strong">{copy.settings.security.sessionsLoading}</p>
         ) : sessionsError ? (
           <div className="mt-4">
             <p role="alert" className="text-caption text-danger">
@@ -304,7 +376,7 @@ export function SecurityModule() {
               <li key={session.id} className="flex items-center justify-between gap-4 py-4">
                 <div>
                   <p className="text-body text-ink-black">{session.device}</p>
-                  <p className="mt-1 text-caption text-slate-gray">
+                  <p className="mt-1 text-caption text-slate-strong">
                     {copy.settings.security.lastActiveAt(sessionTime(session.last_active_at))}
                   </p>
                   {session.current && (
@@ -344,7 +416,7 @@ export function SecurityModule() {
           {copy.settings.security.privacyTitle}
         </h2>
         {preferencesSync.loading ? (
-          <p role="status" className="mt-4 text-caption text-smoke-gray">
+          <p role="status" className="mt-4 text-caption text-slate-strong">
             {copy.settings.security.preferencesLoading}
           </p>
         ) : preferencesSync.loadError ? (
@@ -359,7 +431,7 @@ export function SecurityModule() {
             <div className="mt-4 flex items-start justify-between gap-6">
               <div>
                 <p className="text-body text-ink-black">{copy.settings.security.abOptOutLabel}</p>
-                <p className="mt-2 max-w-[520px] text-caption text-smoke-gray">
+                <p className="mt-2 max-w-[520px] text-caption text-slate-strong">
                   {copy.settings.security.abOptOutDescription}
                 </p>
               </div>

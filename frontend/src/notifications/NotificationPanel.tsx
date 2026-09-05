@@ -15,7 +15,7 @@
 
 import * as Popover from '@radix-ui/react-popover';
 import { BellOff } from 'lucide-react';
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { copy } from '../copy';
 import { NOTIFICATION_INTENT_CLASS, resolveNotificationMapping } from './mapping';
 import { formatRelativeTime } from './relative-time';
@@ -26,6 +26,9 @@ export interface NotificationPanelProps {
   readonly store: NotificationsStore;
   readonly onNavigate: (path: string) => void;
 }
+
+/** A41：标已读操作失败的就地记录（单条带 id / 全部已读），附重试。 */
+type ReadActionError = { kind: 'row'; id: string } | { kind: 'all' } | null;
 
 function SkeletonRows() {
   return (
@@ -47,7 +50,7 @@ function EmptyState() {
   return (
     <div className="flex flex-col items-center gap-2 px-4 py-10">
       <BellOff size={24} aria-hidden className="text-smoke-gray" />
-      <p className="text-caption text-smoke-gray">{copy.notifications.empty}</p>
+      <p className="text-caption text-slate-strong">{copy.notifications.empty}</p>
     </div>
   );
 }
@@ -55,11 +58,11 @@ function EmptyState() {
 function ErrorState({ onRetry }: { readonly onRetry: () => void }) {
   return (
     <div className="flex flex-col items-center gap-2 px-4 py-8">
-      <p className="text-caption text-slate-gray">{copy.notifications.error}</p>
+      <p className="text-caption text-slate-strong">{copy.notifications.error}</p>
       <button
         type="button"
         onClick={onRetry}
-        className="text-caption text-slate-gray transition-colors duration-(--duration-fast) hover:underline"
+        className="text-caption text-slate-strong transition-colors duration-(--duration-fast) hover:underline"
       >
         {copy.notifications.retry}
       </button>
@@ -69,11 +72,11 @@ function ErrorState({ onRetry }: { readonly onRetry: () => void }) {
 
 interface NotificationRowProps {
   readonly item: NotificationItem;
-  readonly store: NotificationsStore;
+  readonly onMarkRead: (id: string) => void;
   readonly onNavigate: (path: string) => void;
 }
 
-function NotificationRow({ item, store, onNavigate }: NotificationRowProps) {
+function NotificationRow({ item, onMarkRead, onNavigate }: NotificationRowProps) {
   const mapping = resolveNotificationMapping(item);
   const Icon = mapping.icon;
   return (
@@ -83,7 +86,7 @@ function NotificationRow({ item, store, onNavigate }: NotificationRowProps) {
         onClick={() => {
           // 标已读（红点 / 底色经 token 过渡淡出）并跳转目标；target 为 null（未知 type）不导航
           if (!item.read) {
-            void store.markRead(item.id).catch(() => undefined);
+            onMarkRead(item.id);
           }
           if (mapping.target !== null) {
             onNavigate(mapping.target);
@@ -107,7 +110,7 @@ function NotificationRow({ item, store, onNavigate }: NotificationRowProps) {
             />
             <span className="truncate text-caption text-ink-black">{item.title}</span>
           </span>
-          <span className="mt-0.5 block truncate text-caption text-slate-gray">
+          <span className="mt-0.5 block truncate text-caption text-slate-strong">
             {formatRelativeTime(item.event_occurred_at, new Date())}
           </span>
         </span>
@@ -119,6 +122,29 @@ function NotificationRow({ item, store, onNavigate }: NotificationRowProps) {
 export function NotificationPanel({ store, onNavigate }: NotificationPanelProps) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const state = useSyncExternalStore(subscribe, () => store.getState());
+  // A41：单条/全部已读失败不再静默吞——就地错误行 + 重试
+  const [readError, setReadError] = useState<ReadActionError>(null);
+
+  const markRead = (id: string) => {
+    setReadError(null);
+    void store.markRead(id).catch(() => setReadError({ kind: 'row', id }));
+  };
+
+  const markAllRead = () => {
+    setReadError(null);
+    void store.markAllRead().catch(() => setReadError({ kind: 'all' }));
+  };
+
+  const retryReadAction = () => {
+    if (readError === null) {
+      return;
+    }
+    if (readError.kind === 'row') {
+      markRead(readError.id);
+    } else {
+      markAllRead();
+    }
+  };
 
   // 打开即拉列表：Content 仅在 open 时挂载
   useEffect(() => {
@@ -136,7 +162,7 @@ export function NotificationPanel({ store, onNavigate }: NotificationPanelProps)
     body = (
       <ul>
         {state.items.map((item) => (
-          <NotificationRow key={item.id} item={item} store={store} onNavigate={onNavigate} />
+          <NotificationRow key={item.id} item={item} onMarkRead={markRead} onNavigate={onNavigate} />
         ))}
       </ul>
     );
@@ -156,12 +182,27 @@ export function NotificationPanel({ store, onNavigate }: NotificationPanelProps)
           <h2 className="text-[16px] font-w480 text-ink-black">{copy.notifications.title}</h2>
           <button
             type="button"
-            onClick={() => void store.markAllRead().catch(() => undefined)}
-            className="text-caption text-slate-gray transition-colors duration-(--duration-fast) hover:underline"
+            onClick={markAllRead}
+            className="text-caption text-slate-strong transition-colors duration-(--duration-fast) hover:underline"
           >
             {copy.notifications.readAll}
           </button>
         </div>
+        {/* A41：标已读失败（单条/全部）就地错误行 + 重试，不静默吞 */}
+        {readError !== null && (
+          <div className="flex items-center justify-between gap-3 px-4 pb-2">
+            <p role="alert" className="text-caption text-danger">
+              {copy.notifications.readActionError}
+            </p>
+            <button
+              type="button"
+              onClick={retryReadAction}
+              className="text-caption text-danger underline transition-colors duration-(--duration-fast)"
+            >
+              {copy.notifications.retry}
+            </button>
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">{body}</div>
       </Popover.Content>
     </Popover.Portal>
