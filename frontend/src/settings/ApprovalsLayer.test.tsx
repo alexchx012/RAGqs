@@ -114,7 +114,8 @@ describe('ApprovalsLayer submission content download', () => {
     );
     expect(openSpy).not.toHaveBeenCalled();
     expect(createSpy).toHaveBeenCalledTimes(1);
-    expect(revokeSpy).toHaveBeenCalledWith('blob:approval-download');
+    // A48：revoke 延迟到首帧之后（rAF），断言等待其发生
+    await waitFor(() => expect(revokeSpy).toHaveBeenCalledWith('blob:approval-download'));
     clickSpy.mockRestore();
   });
 });

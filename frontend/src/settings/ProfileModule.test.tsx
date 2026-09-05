@@ -1,12 +1,14 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { MemoryRouter, useLocation } from 'react-router';
 import type { AuthApi } from '../auth/api';
 import { AuthProvider } from '../auth/AuthProvider';
 import { createMemoryAuthHub } from '../auth/channel';
 import { AuthSessionStore } from '../auth/session';
 import type { User } from '../auth/types';
 import { copy } from '../copy';
+import { EscStackProvider } from '../lib/esc-stack-provider';
 import type { NotificationsStore } from '../notifications/store';
 import type { ThemeController } from '../theme/theme';
 import type { SettingsApi } from './api';
@@ -43,20 +45,35 @@ async function createAuthedStore(user: User): Promise<AuthSessionStore> {
 
 function renderProfile(store: AuthSessionStore, api: SettingsApi) {
   return render(
-    <AuthProvider store={store}>
-      <SettingsProvider
-        api={Object.assign(
-          { getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })) },
-          api,
-        ) as SettingsApi}
-        authStore={store}
-        theme={{ setPreference: vi.fn() } as unknown as ThemeController}
-        notifications={{} as NotificationsStore}
-      >
-        <ProfileModule />
-      </SettingsProvider>
-    </AuthProvider>,
+    // A39：未保存更改的关闭拦截经 URL 关闭抽屉（useNavigate），测试以 MemoryRouter 承载
+    <MemoryRouter initialEntries={['/settings']}>
+      <EscStackProvider>
+        <AuthProvider store={store}>
+          <SettingsProvider
+            api={Object.assign(
+              { getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })) },
+              api,
+            ) as SettingsApi}
+            authStore={store}
+            theme={{ setPreference: vi.fn() } as unknown as ThemeController}
+            notifications={{} as NotificationsStore}
+          >
+            <LocationProbe />
+            <button type="button" aria-label={copy.shell.drawer.closeAria}>
+              drawer-close
+            </button>
+            <ProfileModule />
+          </SettingsProvider>
+        </AuthProvider>
+      </EscStackProvider>
+    </MemoryRouter>,
   );
+}
+
+/** location 探针（A39：确认放弃后断言抽屉关闭导航到根路径）。 */
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="profile-location">{location.pathname}</output>;
 }
 
 describe('ProfileModule', () => {
@@ -218,5 +235,135 @@ describe('ProfileModule 保存交互（共用基座 §5.3）', () => {
     const saveButton = screen.getByRole('button', { name: copy.settings.profile.save });
     await waitFor(() => expect(saveButton).toBeEnabled());
     expect(screen.queryByText(copy.settings.profile.saved)).not.toBeInTheDocument();
+  });
+});
+
+describe('ProfileModule 关闭拦截与头像（A39）', () => {
+  it('显示名有未保存更改时按 Esc 弹「放弃未保存的更改」确认；取消保留修改', async () => {
+    const user = userEvent.setup();
+    const store = await createAuthedStore(testUser());
+    const api = {
+      updateProfile: vi.fn(),
+      uploadAvatar: vi.fn(),
+    } as unknown as SettingsApi;
+
+    renderProfile(store, api);
+    const input = await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    await user.clear(input);
+    await user.type(input, '未保存名字');
+
+    await user.keyboard('{Escape}');
+    const dialog = await screen.findByRole('dialog', {
+      name: copy.settings.profile.unsavedConfirmTitle,
+    });
+    expect(dialog.textContent).toContain(copy.settings.profile.unsavedConfirmDescription);
+
+    // 取消：留在模块，修改保留
+    await user.click(screen.getByRole('button', { name: copy.controls.cancel }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByLabelText(copy.settings.profile.displayNameLabel)).toHaveValue('未保存名字');
+    expect(api.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('确认放弃：回退显示名并关闭抽屉（导航到根路径）', async () => {
+    const user = userEvent.setup();
+    const store = await createAuthedStore(testUser());
+    const api = {
+      updateProfile: vi.fn(),
+      uploadAvatar: vi.fn(),
+    } as unknown as SettingsApi;
+
+    renderProfile(store, api);
+    const input = await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    await user.clear(input);
+    await user.type(input, '未保存名字');
+
+    await user.keyboard('{Escape}');
+    await screen.findByRole('dialog', { name: copy.settings.profile.unsavedConfirmTitle });
+    await user.click(screen.getByRole('button', { name: copy.settings.profile.unsavedConfirm }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByLabelText(copy.settings.profile.displayNameLabel)).toHaveValue('张三');
+    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(screen.getByTestId('profile-location').textContent).toBe('/');
+  });
+
+  it('显示名有未保存更改时点抽屉页头关闭钮弹确认，取消后不关闭（A39）', async () => {
+    const user = userEvent.setup();
+    const store = await createAuthedStore(testUser());
+    const api = {
+      updateProfile: vi.fn(),
+      uploadAvatar: vi.fn(),
+    } as unknown as SettingsApi;
+
+    renderProfile(store, api);
+    const input = await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    await user.clear(input);
+    await user.type(input, '未保存名字');
+
+    // 页头关闭钮（壳层 DrawerHost 同款 aria-label）被拦截：不直接关闭，先弹确认
+    await user.click(screen.getByRole('button', { name: copy.shell.drawer.closeAria }));
+    const dialog = await screen.findByRole('dialog', {
+      name: copy.settings.profile.unsavedConfirmTitle,
+    });
+    expect(dialog.textContent).toContain(copy.settings.profile.unsavedConfirmDescription);
+
+    // 取消：留在本层，location 不变（抽屉未关闭），修改保留
+    await user.click(screen.getByRole('button', { name: copy.controls.cancel }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByTestId('profile-location').textContent).toBe('/settings');
+    expect(screen.getByLabelText(copy.settings.profile.displayNameLabel)).toHaveValue('未保存名字');
+    expect(api.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('无未保存更改时按 Esc 不弹确认', async () => {
+    const user = userEvent.setup();
+    const store = await createAuthedStore(testUser());
+    const api = {
+      updateProfile: vi.fn(),
+      uploadAvatar: vi.fn(),
+    } as unknown as SettingsApi;
+
+    renderProfile(store, api);
+    await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('头像上传后重置 input：重选同一文件可再次上传；上传中 label 显示加载反馈', async () => {
+    const user = userEvent.setup();
+    let resolveUpload!: () => void;
+    const uploadAvatar = vi.fn(
+      (_file: File) =>
+        new Promise<{ avatar_url: string }>((resolve) => {
+          resolveUpload = () => resolve({ avatar_url: '/avatars/after.png' });
+        }),
+    );
+    const api = {
+      updateProfile: vi.fn(),
+      uploadAvatar,
+    } as unknown as SettingsApi;
+    const store = await createAuthedStore(testUser());
+
+    renderProfile(store, api);
+    const file = new File(['avatar'], 'same-avatar.png', { type: 'image/png' });
+    const input = screen.getByLabelText(copy.settings.profile.avatarInputLabel) as HTMLInputElement;
+    await user.upload(input, file);
+    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(1));
+
+    // 上传中：label 文案切换为「上传中…」
+    expect(screen.getByText(copy.settings.profile.avatarUploading)).toBeInTheDocument();
+
+    await act(async () => {
+      resolveUpload();
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.queryByText(copy.settings.profile.avatarUploading)).not.toBeInTheDocument(),
+    );
+
+    // A39：onChange 后 input value 已重置 → 重选同一文件再次触发上传
+    await user.upload(input, file);
+    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(2));
   });
 });

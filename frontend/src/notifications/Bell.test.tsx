@@ -51,10 +51,31 @@ describe('铃铛未读徽标', () => {
 });
 
 describe('铃铛按钮', () => {
-  it('触发按钮存在且可达性名称来自文案常量', () => {
+  it('触发按钮存在且可达性名称来自文案常量（无未读时不带数量）', () => {
     const store = new NotificationsStore(fakeNotificationsApi());
     render(<Bell store={store} />);
     expect(screen.getByRole('button', { name: copy.notifications.bellAria })).toBeInTheDocument();
+  });
+
+  it('有未读时把未读数并入按钮可访问名（A42）', async () => {
+    const store = await storeWithUnread(3);
+    render(<Bell store={store} />);
+    const button = screen.getByRole('button', { name: copy.notifications.bellAriaUnread(3) });
+    expect(button).toHaveTextContent('3');
+  });
+
+  it('未读清零后可访问名回落为「提醒」（A42）', async () => {
+    const unreadCount = vi
+      .fn<() => Promise<{ count: number }>>()
+      .mockResolvedValueOnce({ count: 2 })
+      .mockResolvedValueOnce({ count: 0 });
+    const store = new NotificationsStore(fakeNotificationsApi({ unreadCount }));
+    await store.refreshUnread();
+    render(<Bell store={store} />);
+    expect(screen.getByRole('button', { name: copy.notifications.bellAriaUnread(2) })).toBeInTheDocument();
+
+    await store.refreshUnread();
+    expect(await screen.findByRole('button', { name: copy.notifications.bellAria })).toBeInTheDocument();
   });
 });
 

@@ -97,13 +97,18 @@ export const Bell = forwardRef<HTMLButtonElement, BellProps>(function Bell(
 ) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const unreadCount = useSyncExternalStore(subscribe, () => store.getState().unreadCount);
+  // A42：未读数并入按钮可访问名（有未读时报数，无未读/未拉取时为「提醒」）
+  const ariaLabel =
+    unreadCount !== null && unreadCount > 0
+      ? copy.notifications.bellAriaUnread(unreadCount)
+      : copy.notifications.bellAria;
   return (
     <button
       // Popover.Trigger asChild 约定：子组件必须转发注入的事件 / aria props，否则触发器失效
       {...buttonProps}
       ref={ref}
       type="button"
-      aria-label={copy.notifications.bellAria}
+      aria-label={ariaLabel}
       className="relative flex h-10 w-10 items-center justify-center rounded-full text-ink-black
         transition-colors duration-(--duration-fast) hover:bg-mist-gray"
     >

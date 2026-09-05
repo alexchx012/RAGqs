@@ -676,7 +676,8 @@ describe('投稿审核（§8.4–8.5）', () => {
       );
       expect(openSpy).not.toHaveBeenCalled();
       expect(createSpy).toHaveBeenCalledTimes(1);
-      expect(revokeSpy).toHaveBeenCalledWith('blob:mock-0');
+      // A48：revoke 延迟到首帧之后（rAF），断言等待其发生
+      await waitFor(() => expect(revokeSpy).toHaveBeenCalledWith('blob:mock-0'));
     } finally {
       openSpy.mockRestore();
       createSpy.mockRestore();

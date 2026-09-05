@@ -2,8 +2,9 @@
  * 上传对话框（settings-personal §5，全角色唯一上传入口；review A2/A3/D16）。
  * - 目标空间单选列表：GET /spaces?usage=upload；manage 目标 = 直接写入、contribute 目标 =
  *   需审核分支提示；任何子界面不提供独立上传按钮、不预填目标、不直接调用上传接口。
- * - 多文件上传：逐文件结果呈现（accepted 含 deduplicated / 投稿项含 submission_id 与
- *   quota_exempt / 失败项按服务端错误对象），前端不以浏览器解码结果预拒文件。
+ * - 多文件上传：确认成功即自动下钻结果层（manage → 上传结果层、contribute → 我的投稿），
+ *   逐文件结果由上传结果层 / 上传结果历史稳定承载；前端不以浏览器解码结果预拒文件。
+ *   批次级失败就地提示：409 quota_exceeded 指向知识库页申请增加页数，其余按服务端错误对象（A40）。
  * - 409 quota_exceeded 整批拒绝提示（不预扣不冻结）；投稿创建不检查页额度。
  * - 确认后：manage 目标自动下钻上传结果层；contribute 目标自动下钻「我的投稿」层。
  * - Idempotency-Key 绑定 target(space)+payload(文件指纹)：未知网络/超时复用同键同体，
@@ -21,7 +22,7 @@ import { Pill } from '../ui/Pill';
 import { useSettings } from './SettingsProvider';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
 import { useModalDialog, useModalPresence } from './use-modal-dialog';
-import type { SpaceItem, UploadItem, UploadResponse } from './types';
+import type { SpaceItem } from './types';
 import { recordUploadHistory } from './upload-history';
 
 export interface UploadDialogProps {
@@ -31,7 +32,7 @@ export interface UploadDialogProps {
   readonly sessionKey: string | null;
 }
 
-type UploadPhase = 'idle' | 'uploading' | 'done';
+type UploadPhase = 'idle' | 'uploading';
 
 /** 已选文件行/审核列表的大小显示（KB/MB 简单呈现，避免引入格式化依赖）。 */
 export function formatFileSize(bytes: number): string {
@@ -42,6 +43,11 @@ export function formatFileSize(bytes: number): string {
     return `${(bytes / 1024).toFixed(0)} KB`;
   }
   return `${bytes} B`;
+}
+
+/** 已选文件行的去重键：name+size+lastModified（A40，重复选择/拖入同一文件只保留一份）。 */
+function fileKey(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogProps) {
@@ -59,7 +65,6 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
   const [files, setFiles] = useState<readonly File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [phase, setPhase] = useState<UploadPhase>('idle');
-  const [result, setResult] = useState<UploadResponse | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const idem = useRef(createIdempotencyScope());
@@ -97,7 +102,6 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
       // 重开：旧 operation 失效（A 的迟到 completion 不得清 B 的 key/状态）
       invalidateOperation();
       setPhase('idle');
-      setResult(null);
       setQuotaError(null);
       setSubmitError(null);
       setFiles([]);
@@ -124,8 +128,19 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
     }
     // 文件变更：旧 operation 失效（A 迟到 completion 不得清 B 的 key/写 A 结果）
     invalidateOperation();
-    setFiles((current) => [...current, ...next]);
-    setResult(null);
+    // A40：name+size+lastModified 去重，重复选择/拖入同一文件只保留一份
+    setFiles((current) => {
+      const seen = new Set(current.map(fileKey));
+      const merged = [...current];
+      for (const file of next) {
+        const key = fileKey(file);
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(file);
+        }
+      }
+      return merged;
+    });
     setPhase('idle');
     setQuotaError(null);
     setSubmitError(null);
@@ -150,9 +165,8 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
         return; // 已关闭/重开/切换：旧上传 completion no-op（不清 B 的 key、不污染状态、不导航）
       }
       idem.current.clear();
-      setResult(response);
-      setPhase('done');
-      // 上传结果历史：按会话隔离写入（旧会话回调返回 false 被拒，不落库）
+      // 逐文件结果不在本对话框呈现：确认成功即下钻（manage → 上传结果层 / contribute →
+      // 我的投稿层），结果行由上传结果层与上传结果历史稳定承载（A43 删除死路径结果区块）
       recordUploadHistory(
         { response, target: selectedSpace, at: new Date().toISOString() },
         sessionKey,
@@ -186,18 +200,13 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
         setPhase('idle');
       }
     }
-    // 无 finally 重置（A37）：成功路径保留 done 状态（结果行常驻，phase 由文件变更/重开复位），
-    // 失败路径各分支已显式回 idle；恒真 wasUploading 守卫删除。
+    // 无 finally 重置：失败路径各分支已显式回 idle（A37）
   };
 
   const requestClose = () => {
     invalidateOperation();
     onOpenChange(false);
   };
-
-  const resultItems = result?.items ?? [];
-  const acceptedCount = resultItems.filter((item) => item.accepted).length;
-  const failedCount = resultItems.length - acceptedCount;
 
   if (!presence.mounted) {
     return null;
@@ -227,11 +236,11 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
         data-state={presence.state}
       >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.upload.dialogTitle}</h2>
-        <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.upload.dialogDescription}</p>
+        <p className="mt-2 text-[15px] text-slate-strong">{copy.settings.knowledge.upload.dialogDescription}</p>
 
         {/* 目标空间单选列表 */}
         <fieldset className="mt-4">
-          <legend className="mb-2 text-caption text-slate-gray">{copy.settings.knowledge.upload.targetLabel}</legend>
+          <legend className="mb-2 text-caption text-slate-strong">{copy.settings.knowledge.upload.targetLabel}</legend>
           {spacesError ? (
             <div className="flex items-center gap-3">
               <p className="text-caption text-danger">{copy.states.error}</p>
@@ -240,7 +249,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
               </Pill>
             </div>
           ) : spaces.length === 0 ? (
-            <p className="text-caption text-smoke-gray">{copy.states.empty}</p>
+            <p className="text-caption text-slate-strong">{copy.states.empty}</p>
           ) : (
             <>
               {spaceListScrollable && (
@@ -254,7 +263,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
                 />
               )}
               {visibleSpaces.length === 0 ? (
-                <p className="text-caption text-smoke-gray">
+                <p className="text-caption text-slate-strong">
                   {copy.settings.knowledge.upload.spaceSearchEmpty}
                 </p>
               ) : (
@@ -288,7 +297,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
                         />
                         <span className="min-w-0">
                           <span className="block truncate text-body text-ink-black">{space.name}</span>
-                          <span className="block text-caption text-smoke-gray">
+                          <span className="block text-caption text-slate-strong">
                             {space.permission === 'manage'
                               ? copy.settings.knowledge.upload.manageTargetHint
                               : copy.settings.knowledge.upload.contributeTargetHint}
@@ -355,7 +364,7 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
               }
             }}
             className={
-              'flex h-[120px] cursor-pointer items-center justify-center rounded-[var(--radius-inputs)] bg-mist-gray text-[15px] text-slate-gray outline-none transition-colors duration-[var(--duration-fast)] ' +
+              'flex h-[120px] cursor-pointer items-center justify-center rounded-[var(--radius-inputs)] bg-mist-gray text-[15px] text-slate-strong outline-none transition-colors duration-[var(--duration-fast)] ' +
               (dragActive
                 ? 'border border-solid border-ink-black'
                 : 'border border-dashed border-smoke-gray hover:text-ink-black')
@@ -363,12 +372,16 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
           >
             {copy.settings.knowledge.upload.dropHint}
           </div>
+          {/* A40：拖拽区固定注明允许类型与大小上限 */}
+          <p className="mt-2 text-caption text-slate-strong">
+            {copy.settings.knowledge.upload.dropHintConstraints}
+          </p>
           {files.length > 0 && (
             <ul aria-label={copy.settings.knowledge.upload.fileListAria} className="mt-3 flex max-h-40 flex-col gap-1 overflow-y-auto">
               {files.map((file) => (
-                <li key={`${file.name}:${file.size}`} className="flex items-center gap-2">
+                <li key={fileKey(file)} className="flex items-center gap-2">
                   <span className="min-w-0 flex-1 truncate text-caption text-ink-black">{file.name}</span>
-                  <span className="shrink-0 text-caption text-slate-gray">{formatFileSize(file.size)}</span>
+                  <span className="shrink-0 text-caption text-slate-strong">{formatFileSize(file.size)}</span>
                   <button
                     type="button"
                     aria-label={copy.settings.knowledge.upload.removeFile}
@@ -378,13 +391,14 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
                         return;
                       }
                       invalidateOperation();
-                      setFiles((current) => current.filter((item) => !(item.name === file.name && item.size === file.size)));
-                      setResult(null);
+                      // A40：按 name+size+lastModified 精确移除
+                      const key = fileKey(file);
+                      setFiles((current) => current.filter((item) => fileKey(item) !== key));
                       setPhase('idle');
                       setQuotaError(null);
                       setSubmitError(null);
                     }}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-images)] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-danger disabled:text-smoke-gray"
+                    className="ui-touch-target flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-images)] text-slate-gray transition-colors duration-[var(--duration-fast)] hover:text-danger disabled:text-smoke-gray [--touch-expand:-10px]"
                   >
                     <X aria-hidden="true" className="h-4 w-4" />
                   </button>
@@ -393,20 +407,6 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
             </ul>
           )}
         </div>
-
-        {/* 逐文件结果呈现（服务端错误对象，不以浏览器解码预拒） */}
-        {result !== null && (
-          <div className="mt-4">
-            <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto" aria-live="polite">
-              {result.items.map((item, index) => (
-                <UploadItemRow key={`${uploadItemKey(item)}:${index}`} item={item} />
-              ))}
-            </ul>
-            <p className="mt-2 text-caption text-slate-gray">
-              {copy.settings.knowledge.upload.resultSummary(acceptedCount, failedCount)}
-            </p>
-          </div>
-        )}
 
         {quotaError !== null && (
           <p role="alert" className="mt-3 text-[15px] text-danger">
@@ -435,41 +435,4 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
       </div>
     </div>
   );
-}
-
-function UploadItemRow({ item }: { item: UploadItem }) {
-  // 拒绝项：逐文件错误对象（name/accepted/error 契约），前端按 code 映射文案。
-  if (!item.accepted) {
-    return (
-      <li className="text-caption text-danger">
-        {`${item.name} · ${copy.settings.knowledge.upload.itemError(item.error.code)}`}
-      </li>
-    );
-  }
-  if ('submission_id' in item) {
-    return (
-      <li className="text-caption text-slate-gray">
-        {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.submissionCreated : item.status}`}
-      </li>
-    );
-  }
-  if (item.deduplicated) {
-    return (
-      <li className="text-caption text-slate-gray">
-        {`${item.name} · ${copy.settings.knowledge.upload.deduplicated}`}
-      </li>
-    );
-  }
-  return (
-    <li className="text-caption text-success">
-      {`${item.name} · ${item.status === 'pending' ? copy.settings.knowledge.upload.accepted : item.status}`}
-    </li>
-  );
-}
-
-function uploadItemKey(item: UploadItem): string {
-  if (!item.accepted) {
-    return `rejected:${item.name}`;
-  }
-  return 'submission_id' in item ? item.submission_id : item.document_id;
 }

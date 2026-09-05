@@ -137,9 +137,11 @@ describe('登录页（规格 §5）', () => {
     const countdown = screen.getByRole('button', { name: copy.login.retryCountdown(2) });
     expect(countdown).toBeDisabled();
 
+    // A45：倒计时归零后登录键恢复，且「请稍后再试」错误行一并清除
     expect(
       await screen.findByRole('button', { name: copy.login.submit }, { timeout: 4000 }),
     ).toBeEnabled();
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   }, 10_000);
 
   it('5xx：服务不可用错误行，登录键恢复可点', async () => {

@@ -440,13 +440,13 @@ export function KnowledgeModule() {
             </div>
           ) : quota !== null ? (
             quota.unlimited ? (
-              <p className="text-[15px] text-slate-gray">{copy.settings.knowledge.quota.unlimited}</p>
+              <p className="text-[15px] text-slate-strong">{copy.settings.knowledge.quota.unlimited}</p>
             ) : (
               // 耗尽整行变危险红：150ms 变色（共用基座 §5.6），不瞬时跳色
               <p
                 className={
                   'text-[15px] transition-colors duration-[var(--duration-fast)] ' +
-                  (quota.used >= quota.effective_limit ? 'text-danger' : 'text-slate-gray')
+                  (quota.used >= quota.effective_limit ? 'text-danger' : 'text-slate-strong')
                 }
               >
                 {copy.settings.knowledge.quota.usedOfLimit(quota.used, quota.effective_limit)}
@@ -465,7 +465,7 @@ export function KnowledgeModule() {
             </Pill>
           )}
           {quota !== null && quota.pending_request !== null && (
-            <p className="mt-2 text-caption text-slate-gray">{copy.settings.knowledge.quota.pendingRequest}</p>
+            <p className="mt-2 text-caption text-slate-strong">{copy.settings.knowledge.quota.pendingRequest}</p>
           )}
         </div>
       </div>
@@ -652,6 +652,10 @@ export function KnowledgeDocumentRow({ doc, manage, onUploadNewVersion, onVersio
   const statusText = updating
     ? copy.settings.knowledge.documents.updating
     : copy.settings.knowledge.documents.stored;
+  // A50：触屏（无 hover 能力）到不了 hover 态，⋯ 菜单在行级常显；桌面 hover 行为不变
+  const [coarsePointer] = useState(
+    () => typeof window.matchMedia === 'function' && window.matchMedia('(hover: none)').matches,
+  );
   return (
     // 共用基座 §5.6 行形态：桌面=行高 56px 四列（文档名｜状态｜上传时间｜用量）+ hover 底 mist；
     // 窄屏单栏化：文档名整行 + 元信息第二行，避免固定列把文件名挤没
@@ -661,14 +665,14 @@ export function KnowledgeDocumentRow({ doc, manage, onUploadNewVersion, onVersio
         <span className="flex shrink-0 items-center gap-2">
           {updating ? <StatusDot intent="slate" pulse /> : <StatusDot intent="success" />}
           {/* 状态文字就地切换时重挂载播 150ms 淡入（共用基座 §5.6 交叉淡化的进入半程） */}
-          <span key={statusText} className="ui-fade-enter-fast text-[15px] text-slate-gray">{statusText}</span>
+          <span key={statusText} className="ui-fade-enter-fast text-[15px] text-slate-strong">{statusText}</span>
         </span>
-        <span className="min-w-0 flex-1 truncate text-[15px] text-slate-gray md:w-40 md:flex-none">
+        <span className="min-w-0 flex-1 truncate text-[15px] text-slate-strong md:w-40 md:flex-none">
           {formatDateTime(doc.uploaded_at)}
         </span>
         <span
           title={copy.settings.knowledge.documents.usageDetail(doc.usage.pages, doc.usage.images)}
-          className="min-w-0 shrink-0 truncate text-[15px] text-slate-gray md:w-44 md:flex-none"
+          className="min-w-0 shrink-0 truncate text-[15px] text-slate-strong md:w-44 md:flex-none"
         >
           {copy.settings.knowledge.documents.usageDetail(doc.usage.pages, doc.usage.images)}
         </span>
@@ -676,6 +680,7 @@ export function KnowledgeDocumentRow({ doc, manage, onUploadNewVersion, onVersio
       {manage && !updating && (
         <MeatballMenu
           ariaLabel={copy.settings.knowledge.documents.rowMenuAria(doc.name)}
+          alwaysVisible={coarsePointer}
           items={[
             { key: 'upload-new-version', label: copy.settings.knowledge.documents.uploadNewVersion, onSelect: onUploadNewVersion },
             { key: 'versions', label: copy.settings.knowledge.documents.versions, onSelect: onVersions },
@@ -739,9 +744,9 @@ function QuotaRequestDialog({
         data-state={presence.state}
       >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.quota.requestDialogTitle}</h2>
-        <p className="mt-2 text-[15px] text-slate-gray">{copy.settings.knowledge.quota.requestDescription}</p>
+        <p className="mt-2 text-[15px] text-slate-strong">{copy.settings.knowledge.quota.requestDescription}</p>
         <div className="mt-4">
-          <label htmlFor="quota-request-pages" className="mb-2 block text-caption text-slate-gray">
+          <label htmlFor="quota-request-pages" className="mb-2 block text-caption text-slate-strong">
             {copy.settings.knowledge.quota.requestedPagesLabel}
           </label>
           <input

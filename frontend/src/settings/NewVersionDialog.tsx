@@ -151,7 +151,7 @@ export function NewVersionDialog({ target, onClose, onSubmitted, onConflictRefre
         data-state={presence.state}
       >
         <h2 className="text-[20px] font-medium text-ink-black">{copy.settings.knowledge.upload.newVersionDialogTitle}</h2>
-        <p className="mt-2 text-[15px] text-slate-gray">
+        <p className="mt-2 text-[15px] text-slate-strong">
           {copy.settings.knowledge.upload.newVersionDescription(shownTarget.name)}
         </p>
         <div className="mt-4">
@@ -172,10 +172,10 @@ export function NewVersionDialog({ target, onClose, onSubmitted, onConflictRefre
           <Pill variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} disabled={submitting}>
             {copy.settings.knowledge.upload.chooseFiles}
           </Pill>
-          {file !== null && <p className="mt-2 truncate text-caption text-slate-gray">{file.name}</p>}
+          {file !== null && <p className="mt-2 truncate text-caption text-slate-strong">{file.name}</p>}
         </div>
         {notice !== null && (
-          <p role="status" className="mt-3 text-[15px] text-slate-gray">
+          <p role="status" className="mt-3 text-[15px] text-slate-strong">
             {notice}
           </p>
         )}

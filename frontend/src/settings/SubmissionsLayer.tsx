@@ -17,6 +17,7 @@ import { ApiError } from '../api/errors';
 import { copy } from '../copy';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
+import { Paginator } from '../ui/Paginator';
 import { TextLink } from '../ui/TextLink';
 import { useSettings } from './SettingsProvider';
 import { downloadSubmissionContent } from './download-submission-content';
@@ -27,6 +28,9 @@ function formatDateTime(value: string): string {
   const parsed = new Date(value);
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString('zh-CN');
 }
+
+/** A47：投稿/审核列表为整单返回，前端分页每页 ≤20。 */
+const SUBMISSIONS_PAGE_SIZE = 20;
 
 const FILTERS: readonly { readonly value: SubmissionStatus | 'all'; readonly label: string }[] = [
   { value: 'all', label: copy.settings.knowledge.submissions.filters.all },
@@ -43,17 +47,18 @@ const STATUS_FADE_MS = 200;
 /** 筛选切换退出动画时长（= --duration-fast）：计时结束后提交暂存的新视图并转入进入动画。 */
 const SWITCH_EXIT_MS = 150;
 
-/** 五态 tag 着色（pending ash-gray / approved 成功绿 / rejected 危险红 / withdrawn slate-gray / invalidated 警告琥珀）。 */
+/** 五态 tag 着色（pending ash 底 + 达标文字 / approved 成功绿 / rejected 危险红 / withdrawn slate-gray / invalidated 警告琥珀）。 */
 function statusClass(status: SubmissionStatus): string {
   switch (status) {
     case 'pending':
-      return 'bg-ash-gray/20 text-ash-gray';
+      // A46：ash 底上的文字是有意义状态，迁移到 text-slate-strong（亮 6.21:1 / 暗 8.66:1）
+      return 'bg-ash-gray/20 text-slate-strong';
     case 'approved':
       return 'bg-success/15 text-success';
     case 'rejected':
       return 'bg-danger/15 text-danger';
     case 'withdrawn':
-      return 'bg-slate-gray/15 text-slate-gray';
+      return 'bg-slate-gray/15 text-slate-strong';
     case 'invalidated':
       return 'bg-warning/15 text-warning';
   }
@@ -63,6 +68,8 @@ export function SubmissionsLayer() {
   const { api } = useSettings();
   const [filter, setFilter] = useState<SubmissionStatus | 'all'>('all');
   const [submissions, setSubmissions] = useState<readonly Submission[]>([]);
+  // A47：前端分页页码（1 起）；筛选切换时重置
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   /** 筛选切换动效阶段：exit=当前视图向上滑出渐隐；enter=新视图自下滑入渐显。 */
@@ -419,6 +426,14 @@ export function SubmissionsLayer() {
     await runDelete(submission);
   };
 
+  // A47：前端分页（整单返回 + 本地切片）；行删除后越界页自动收敛到最后一页
+  const totalPages = Math.max(1, Math.ceil(submissions.length / SUBMISSIONS_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageItems = submissions.slice(
+    (safePage - 1) * SUBMISSIONS_PAGE_SIZE,
+    safePage * SUBMISSIONS_PAGE_SIZE,
+  );
+
   return (
     <section aria-label={copy.settings.knowledge.submissions.title} className="pb-10">
       {/* 六档筛选 chip（超出分段控件合理宽度故用 chip；切换即重新请求） */}
@@ -434,6 +449,7 @@ export function SubmissionsLayer() {
               // 视图切换：释放旧 mutation 的 confirming（受控 Dialog 不会自动回调 onOpenChange）
               setConfirmingWithdraw(false);
               setConfirmingDelete(false);
+              setPage(1); // A47：筛选切换重置页码
               if (entry.value !== filter && !loading) {
                 // 切换动效：当前视图向上滑出渐隐（SWITCH_EXIT_MS），数据就绪后提交新视图滑入
                 animatedSwitchRef.current = true;
@@ -475,19 +491,26 @@ export function SubmissionsLayer() {
             <EmptyState text={copy.settings.knowledge.submissions.empty} />
           </div>
         ) : (
-          <ul className="mt-4 divide-y divide-[var(--color-hairline)]">
-            {submissions.map((submission) => (
-              <SubmissionRow
-                key={submission.submission_id}
-                submission={submission}
-                error={rowErrors.get(submission.submission_id) ?? null}
-                statusChanged={statusChangedIds.has(submission.submission_id)}
-                onView={() => void openContent(submission)}
-                onWithdraw={() => setPendingWithdraw(submission)}
-                onDelete={() => setPendingDelete(submission)}
-              />
-            ))}
-          </ul>
+          <>
+            <ul className="mt-4 divide-y divide-[var(--color-hairline)]">
+              {pageItems.map((submission) => (
+                <SubmissionRow
+                  key={submission.submission_id}
+                  submission={submission}
+                  error={rowErrors.get(submission.submission_id) ?? null}
+                  statusChanged={statusChangedIds.has(submission.submission_id)}
+                  onView={() => void openContent(submission)}
+                  onWithdraw={() => setPendingWithdraw(submission)}
+                  onDelete={() => setPendingDelete(submission)}
+                />
+              ))}
+            </ul>
+            {totalPages > 1 && (
+              <div className="mt-6">
+                <Paginator page={safePage} totalPages={totalPages} onChange={setPage} />
+              </div>
+            )}
+          </>
         )}
       </div>
       {actionError !== null && (
@@ -548,7 +571,7 @@ function SubmissionRow({ submission, error, statusChanged, onView, onWithdraw, o
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="truncate text-body text-ink-black">{submission.name}</p>
-          <p className="mt-1 text-caption text-smoke-gray">
+          <p className="mt-1 text-caption text-slate-strong">
             <span>{copy.settings.knowledge.submissions.targetSpace(submission.target_space_name)}</span> · {submission.media_kind} ·{' '}
             {copy.settings.knowledge.submissions.submittedAt(formatDateTime(submission.created_at))}
           </p>
@@ -569,7 +592,7 @@ function SubmissionRow({ submission, error, statusChanged, onView, onWithdraw, o
             </p>
           )}
           {error !== null && (
-            <p className="mt-2 text-caption text-danger">
+            <p role="alert" className="mt-2 text-caption text-danger">
               {error.message}
               <TextLink className="ml-2" onClick={error.retry}>
                 {copy.settings.knowledge.submissions.retry}

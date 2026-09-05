@@ -1,7 +1,9 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useNavigate } from 'react-router';
 import { useAuthState } from '../auth/AuthProvider';
 import type { Role } from '../auth/types';
 import { copy } from '../copy';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Pill } from '../ui/Pill';
 import { useSettings } from './SettingsProvider';
 
@@ -29,6 +31,7 @@ type SavedFeedback = 'idle' | 'visible' | 'fading';
 export function ProfileModule() {
   const { api, beginCurrentUserPresentationSync } = useSettings();
   const { user } = useAuthState();
+  const navigate = useNavigate();
   const [displayName, setDisplayName] = useState(user?.display_name ?? '');
   const [savingProfile, setSavingProfile] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -36,6 +39,10 @@ export function ProfileModule() {
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [savedFeedback, setSavedFeedback] = useState<SavedFeedback>('idle');
+  // A39：显示名有未保存更改时，从模块内拦截抽屉关闭入口（Esc / 刷新）并确认放弃
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const discardConfirmOpenRef = useRef(false);
+  discardConfirmOpenRef.current = discardConfirmOpen;
 
   useEffect(() => {
     setDisplayName(user?.display_name ?? '');
@@ -55,6 +62,69 @@ export function ProfileModule() {
 
   const committedDisplayName = user?.display_name ?? '';
   const hasUnsavedChanges = displayName !== committedDisplayName;
+
+  // A39（beforeunload 语义）：有未保存更改时拦截刷新 / 关闭标签页，交给浏览器原生确认。
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return;
+    }
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // Chromium 需要 returnValue 才会展示原生「更改未保存」确认
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  // A39（Esc 入口）：Esc 关抽屉是 URL 驱动的模块外行为，模块内以 window capture 监听
+  // 先于 esc-stack（document 冒泡）拦截，弹「放弃未保存的更改」确认；确认框打开期间
+  // 让路（Radix 自身处理 Esc = 取消，符合 ConfirmDialog 的 settings 契约）。
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || discardConfirmOpenRef.current) {
+        return;
+      }
+      event.stopPropagation();
+      event.preventDefault();
+      setDiscardConfirmOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [hasUnsavedChanges]);
+
+  // A39（页头关闭钮入口）：关闭钮渲染在壳层（DrawerHost），模块内以 document capture 监听
+  // 拦截（React 17+ 事件委托在根容器，document capture 先于根容器触发），转为本模块的
+  // 放弃确认；确认框打开期间让路（Radix 处理 Esc/遮罩 = 取消）。
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return;
+    }
+    const closeSelector = `button[aria-label="${copy.shell.drawer.closeAria}"]`;
+    const onClickCapture = (event: MouseEvent) => {
+      if (discardConfirmOpenRef.current) {
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest(closeSelector) !== null) {
+        event.stopPropagation();
+        event.preventDefault();
+        setDiscardConfirmOpen(true);
+      }
+    };
+    document.addEventListener('click', onClickCapture, true);
+    return () => document.removeEventListener('click', onClickCapture, true);
+  }, [hasUnsavedChanges]);
+
+  /** 确认放弃：回退显示名并关闭抽屉（Esc 的原始意图）。 */
+  function discardChangesAndClose(): void {
+    setDisplayName(committedDisplayName);
+    setProfileError(null);
+    setDiscardConfirmOpen(false);
+    navigate('/');
+  }
 
   async function saveProfile(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -86,6 +156,8 @@ export function ProfileModule() {
 
   async function uploadAvatar(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = event.target.files?.item(0) ?? null;
+    // A39：立即重置 input value，使重复选择同一文件也能再次触发 onChange
+    event.target.value = '';
     if (file === null || uploadingAvatar) {
       return;
     }
@@ -122,11 +194,16 @@ export function ProfileModule() {
           />
         )}
         <div>
+          {/* A39：上传中 label 禁用样式 + 行内加载反馈（input 同步 disabled） */}
           <label
             htmlFor="settings-avatar"
-            className="inline-flex h-8 cursor-pointer items-center rounded-[var(--radius-buttons)] border border-ink-black px-3 text-[14px] text-ink-black transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
+            className={`inline-flex h-8 items-center rounded-[var(--radius-buttons)] border border-ink-black px-3 text-[14px] text-ink-black transition-colors duration-[var(--duration-fast)] ${
+              uploadingAvatar ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-mist-gray'
+            }`}
           >
-            {copy.settings.profile.avatarInputLabel}
+            {uploadingAvatar
+              ? copy.settings.profile.avatarUploading
+              : copy.settings.profile.avatarInputLabel}
           </label>
           <input
             id="settings-avatar"
@@ -145,7 +222,7 @@ export function ProfileModule() {
       </div>
 
       <form className="mt-8" onSubmit={(event) => void saveProfile(event)} noValidate>
-        <label htmlFor="settings-display-name" className="mb-2 block text-caption text-slate-gray">
+        <label htmlFor="settings-display-name" className="mb-2 block text-caption text-slate-strong">
           {copy.settings.profile.displayNameLabel}
         </label>
         <input
@@ -198,6 +275,21 @@ export function ProfileModule() {
           value={roleLabel(user?.role)}
         />
       </dl>
+
+      {/* A39：关闭抽屉入口（Esc / 刷新）拦截确认；Esc=取消由 ConfirmDialog 承担 */}
+      <ConfirmDialog
+        open={discardConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDiscardConfirmOpen(false);
+          }
+        }}
+        title={copy.settings.profile.unsavedConfirmTitle}
+        description={copy.settings.profile.unsavedConfirmDescription}
+        confirmLabel={copy.settings.profile.unsavedConfirm}
+        danger
+        onConfirm={discardChangesAndClose}
+      />
     </section>
   );
 }
@@ -205,9 +297,9 @@ export function ProfileModule() {
 function ReadOnlyProfileRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="py-4">
-      <dt className="text-caption text-slate-gray">{label}</dt>
+      <dt className="text-caption text-slate-strong">{label}</dt>
       <dd className="mt-1 text-body text-ink-black">{value}</dd>
-      <p className="mt-1 text-caption text-smoke-gray">{copy.settings.profile.adminManaged}</p>
+      <p className="mt-1 text-caption text-slate-strong">{copy.settings.profile.adminManaged}</p>
     </div>
   );
 }

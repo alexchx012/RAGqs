@@ -400,7 +400,8 @@ describe('SubmissionsLayer 查看内容下载行为', () => {
     );
     expect(openSpy).not.toHaveBeenCalled();
     expect(createSpy).toHaveBeenCalledTimes(1);
-    expect(revokeSpy).toHaveBeenCalledWith('blob:submission-download');
+    // A48：revoke 延迟到首帧之后（rAF），断言等待其发生
+    await waitFor(() => expect(revokeSpy).toHaveBeenCalledWith('blob:submission-download'));
 
     openSpy.mockRestore();
     createSpy.mockRestore();

@@ -5,6 +5,9 @@
  */
 import type { Role } from '../auth/types';
 
+/** A48：未知状态统一兜底文案（uploads.stateLabel 与上传条目 status 共用，不回显机读原串）。 */
+const unknownStateLabel = '未知状态';
+
 export const zhCN = {
   appName: 'RAGqs',
   shell: {
@@ -63,7 +66,9 @@ export const zhCN = {
   notifications: {
     title: '提醒', // 措辞后定
     bellAria: '提醒', // 措辞后定
+    bellAriaUnread: (count: number) => `提醒，未读 ${count} 条`, // 措辞后定：未读数并入按钮可访问名（A42）
     unreadBadgeAria: (count: number) => `未读提醒 ${count} 条`, // 措辞后定
+    readActionError: '标记已读失败，请稍后重试', // 措辞后定：单条/全部已读失败就地提示（A41）
     readAll: '全部已读', // 措辞后定
     empty: '暂无提醒', // 措辞后定
     error: '提醒加载失败，请稍后重试', // 措辞后定
@@ -97,6 +102,10 @@ export const zhCN = {
       saved: '已保存', // 措辞后定：保存成功小字（15px 成功绿，约 2s 后淡出）
       saveError: '保存失败，请稍后重试', // 措辞后定
       avatarError: '头像上传失败，请稍后重试', // 措辞后定
+      avatarUploading: '上传中…', // 措辞后定：头像上传进行中的 label 反馈（A39）
+      unsavedConfirmTitle: '放弃未保存的更改？', // 措辞后定：显示名有未保存更改时关闭抽屉拦截（A39）
+      unsavedConfirmDescription: '显示名的修改尚未保存，关闭后将丢失这些更改。', // 措辞后定
+      unsavedConfirm: '放弃更改', // 措辞后定：危险确认键（A39）
       realNameLabel: '姓名', // 措辞后定
       departmentLabel: '部门', // 措辞后定
       roleLabel: '角色', // 措辞后定
@@ -116,6 +125,9 @@ export const zhCN = {
       changePassword: '修改密码', // 措辞后定
       passwordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
       invalidPasswordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
+      passwordSessionNote: '修改密码成功后，所有设备将退出登录', // 措辞后定：提交区固定注明（A37）
+      logoutAllConfirmTitle: '退出全部设备？', // 措辞后定：退出全部设备二次确认（A38）
+      logoutAllConfirmDescription: '将撤销本账号全部设备的会话，包括当前使用的这台设备，之后需重新登录。', // 措辞后定
       wrongOldPassword: '当前密码不正确', // 措辞后定
       passwordChangeError: '密码修改失败，请稍后重试', // 措辞后定
       sessionsTitle: '活跃会话', // 措辞后定
@@ -155,13 +167,8 @@ export const zhCN = {
     knowledge: {
       sectionLabel: '知识库', // 措辞后定
       quota: {
-        title: '本月配额', // 措辞后定
         usedOfLimit: (used: number, limit: number) => `${used} / ${limit} 页`, // 措辞后定
         unlimited: '不限', // 措辞后定
-        unlimitedHint: '当前角色不设页面上限', // 措辞后定
-        resetsAt: (value: string) => `重置时间：${value}`, // 措辞后定：按 reset_at 倒计时
-        days: (count: number) => `${count} 天`, // 措辞后定：倒计时天数单位
-        timezone: (value: string) => `以业务时区 ${value} 为准`, // 措辞后定
         pendingRequest: '申请已提交，等待处理', // 措辞后定：常驻行
         requestMore: '申请增加页数', // 措辞后定
         requestDialogTitle: '申请增加页数', // 措辞后定
@@ -204,21 +211,22 @@ export const zhCN = {
         contributeTargetHint: '需审核后才能发布，先进入「我的投稿」', // 措辞后定：contribute 分支提示
         chooseFiles: '选择文件', // 措辞后定
         dropHint: '拖拽文件到此处，或点击选择', // 措辞后定：拖拽区说明
+        dropHintConstraints:
+          '支持 PDF、Office 文档、文本、Markdown、CSV、JSON、图片等常见格式，单个文件不超过 25 MB', // 措辞后定：拖拽区允许类型与大小上限（A40）
         removeFile: '移除文件', // 措辞后定：已选文件行尾 × 的 aria
-        noFiles: '尚未选择文件', // 措辞后定
         fileListAria: '已选文件', // 措辞后定
         upload: '上传', // 措辞后定
         uploading: '正在上传', // 措辞后定
         accepted: '已接收', // 措辞后定
         deduplicated: '内容重复，未新增任务', // 措辞后定：deduplicated 提示
         submissionCreated: '已创建投稿', // 措辞后定：投稿项
-        quotaExceeded: '配额已达上限，本次上传已整批拒绝', // 措辞后定：409
+        quotaExceeded: '配额已达上限，本次上传已整批拒绝；可在知识库页申请增加页数', // 措辞后定：409（A40 补「怎么办」去向）
         itemError: (code: string) => {
           switch (code) {
             case 'upload_too_large':
-              return '文件过大，超出上传上限';
+              return '文件过大，超出单个文件大小上限，请压缩或拆分后再上传'; // 措辞后定：A40 补「怎么办」
             case 'unsupported_media_type':
-              return '不支持该文件类型';
+              return '不支持该文件类型，请转换为 PDF、Word 等受支持的格式后重试'; // 措辞后定：A40 补「怎么办」
             case 'upload_content_type_mismatch':
               return '文件内容与声明类型不符';
             case 'upload_media_mismatch':
@@ -233,10 +241,8 @@ export const zhCN = {
         }, // 措辞后定：服务端错误对象映射，未知 code 通用兜底
         resultSummary: (accepted: number, failed: number) =>
           `成功 ${accepted} 项${failed > 0 ? `，失败 ${failed} 项` : ''}`, // 措辞后定
-        noSpaceSelected: '请选择目标空间', // 措辞后定
         newVersionDialogTitle: '上传新版本', // 措辞后定：固定目标对话框
         newVersionDescription: (name: string) => `为「${name}」上传新版本，处理完成后替换当前版本`, // 措辞后定
-        newVersionSingle: '新版本上传为单文件', // 措辞后定
       },
       uploads: {
         title: '上传结果', // 措辞后定
@@ -244,7 +250,6 @@ export const zhCN = {
         loadError: '上传任务加载失败，请稍后重试', // 措辞后定
         empty: '暂无上传任务', // 措辞后定
         historyTitle: '最近一次上传结果', // 措辞后定：上传结果历史入口（不随对话框卸载丢失）
-        historyEmpty: '本次会话还没有上传记录', // 措辞后定
         historyEntry: '上传结果', // 措辞后定：知识库首页工具行入口按钮
         historyAt: (value: string) => `上传于 ${value}`, // 措辞后定
         historyTarget: (name: string) => `目标：${name}`, // 措辞后定
@@ -283,9 +288,10 @@ export const zhCN = {
             case 'cancelled':
               return '已取消';
             default:
-              return state;
+              return unknownStateLabel;
           }
-        }, // 措辞后定：§1 完整 job 状态集标签
+        }, // 措辞后定：§1 完整 job 状态集标签；未知状态统一兜底，不回显机读原串（A48）
+        unknownState: unknownStateLabel, // 措辞后定：item.status 非已知值统一回显（A48）
         actionConflict: '状态已变化，已刷新', // 措辞后定：竞态 409/403 刷新提示
       },
       versions: {
@@ -372,7 +378,6 @@ export const zhCN = {
         approvalsLoading: '正在加载待审核投稿', // 措辞后定
         approvalsError: '待审核投稿加载失败，请稍后重试', // 措辞后定
         approvalsEmpty: '暂无待审核投稿', // 措辞后定
-        submitter: (name: string) => `投稿人：${name}`, // 措辞后定
         submittedAt: (value: string) => `投稿于 ${value}`, // 措辞后定
         fileMeta: (kind: string, size: string) => `${kind} · ${size}`, // 措辞后定
         approve: '通过', // 措辞后定：filled 小 pill
@@ -384,7 +389,7 @@ export const zhCN = {
         rejectedNotice: '已驳回，原因将随通知送达投稿人', // 措辞后定
         duplicateDocument: '该文件已存在，投稿人需处理后重新提交', // 措辞后定：duplicate_document 行内提示
         versionConflict: '投稿内容已变化，已刷新，请确认后重试', // 措辞后定：version_conflict
-        scopeChanged: '投稿状态已变化，已刷新', // 措辞后定：submission_scope_changed / already_reviewed
+        scopeChanged: '投稿状态已变化，已刷新', // 措辞后定：submission_scope_changed / already_reviewed（admin 投稿审核复用）
         actionError: '操作失败，请稍后重试', // 措辞后定
         viewContent: '查看内容', // 措辞后定
         contentUnavailable: '内容已不可用', // 措辞后定：404
