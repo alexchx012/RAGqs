@@ -8,11 +8,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { TextLink } from './TextLink';
 
 describe('TextLink', () => {
-  it('默认 slate-gray，点击触发 onClick', async () => {
+  it('默认 slate-strong（审查 A6 达标次级文字），点击触发 onClick', async () => {
     const onClick = vi.fn();
     render(<TextLink onClick={onClick}>retry</TextLink>);
     const link = screen.getByRole('button', { name: 'retry' });
-    expect(link.className).toContain('text-slate-gray');
+    expect(link.className).toContain('text-slate-strong');
     await userEvent.setup().click(link);
     expect(onClick).toHaveBeenCalledTimes(1);
   });
@@ -34,5 +34,10 @@ describe('TextLink', () => {
     expect(link.className).toContain('disabled:text-smoke-gray');
     await userEvent.setup().click(link);
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('触控热区（审查 A4）：纯文字钮 ui-touch-target 外扩命中区', () => {
+    render(<TextLink>retry</TextLink>);
+    expect(screen.getByRole('button', { name: 'retry' }).className).toContain('ui-touch-target');
   });
 });

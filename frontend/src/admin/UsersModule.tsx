@@ -521,10 +521,9 @@ export function UsersModule() {
       ) : loadError ? (
         <ErrorState text={copyUsers.loadError} onRetry={() => void loadUsers()} />
       ) : items.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 py-10">
-          <p className="text-[15px] text-smoke-gray">{copyUsers.empty}</p>
+        <EmptyState text={copyUsers.empty}>
           <TextLink onClick={clearFilters}>{copyUsers.clearFilters}</TextLink>
-        </div>
+        </EmptyState>
       ) : (
         <div role="table" aria-label={copy.shell.drawer.modules.usersOps}>
           <div

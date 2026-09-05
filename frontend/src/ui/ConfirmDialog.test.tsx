@@ -3,7 +3,7 @@
  * 焦点圈定与关闭后焦点返回触发元素（Radix 自带）。组件内 useEscShield 需要 EscStackProvider。
  */
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -55,7 +55,7 @@ describe('ConfirmDialog', () => {
     expect(dialog).toBeInTheDocument();
     expect(screen.getByText('Delete document?').className).toContain('text-[20px]');
     expect(screen.getByText('This action cannot be undone.').className).toContain(
-      'text-slate-gray',
+      'text-slate-strong',
     );
     expect(screen.getByRole('button', { name: 'Delete' }).className).toContain('bg-danger');
   });
@@ -112,5 +112,51 @@ describe('ConfirmDialog', () => {
     expect(confirm).toHaveFocus();
     await user.tab({ shift: true });
     expect(cancel).toHaveFocus();
+  });
+
+  it('confirming 期间：取消/确认键禁用 + 确认键 aria-busy；Esc 关闭请求转发 onOpenChange（review A2）', async () => {
+    // 契约（与 settings 模块流程一致）：confirming 只锁按钮；Esc/遮罩关闭请求不拦截，
+    // 由调用方决定取消语义（关闭时作废 in-flight mutation 并释放 confirming）。
+    const onOpenChange = vi.fn();
+    function ConfirmingHarness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <EscStackProvider>
+          <button type="button" onClick={() => setOpen(true)}>
+            open dialog
+          </button>
+          <ConfirmDialog
+            open={open}
+            onOpenChange={(next) => {
+              onOpenChange(next);
+              setOpen(next);
+            }}
+            title="Delete document?"
+            description="This action cannot be undone."
+            confirming
+            onConfirm={() => {}}
+          />
+        </EscStackProvider>
+      );
+    }
+    render(<ConfirmingHarness />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'open dialog' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+
+    expect(screen.getByRole('button', { name: copy.controls.cancel })).toBeDisabled();
+    // confirming 时确认键 loading（内容替换为加载点，accessible name 变化），按 aria-busy 定位
+    const confirm = screen
+      .getAllByRole('button')
+      .find((button) => button.getAttribute('aria-busy') === 'true');
+    expect(confirm).toBeDefined();
+    expect(confirm).toBeDisabled();
+    expect(within(confirm as HTMLElement).getByRole('status')).toHaveClass('loading-dots');
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });

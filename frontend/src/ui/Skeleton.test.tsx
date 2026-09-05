@@ -15,6 +15,19 @@ describe('Skeleton', () => {
     expect(row?.className).toContain('ui-skeleton');
   });
 
+  it('SkeletonRow.rowHeight（审查 A9）：默认 h-10 不变，传入后内联高度（admin 对齐 56px）', () => {
+    const { container, rerender } = render(<SkeletonRow />);
+    expect(container.firstElementChild?.className).toContain('h-10');
+
+    rerender(<SkeletonRow rowHeight={56} />);
+    const row = container.firstElementChild as HTMLElement;
+    expect(row).toHaveStyle({ height: '56px' });
+    expect(row.className).not.toContain('h-10');
+
+    rerender(<SkeletonRow rowHeight="45px" />);
+    expect(container.firstElementChild).toHaveStyle({ height: '45px' });
+  });
+
   it('SkeletonText：按 width 渲染行条', () => {
     const { container } = render(<SkeletonText width="60%" />);
     expect(container.firstElementChild).toHaveStyle({ width: '60%' });

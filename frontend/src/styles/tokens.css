@@ -81,6 +81,7 @@
   --color-mist-gray: var(--color-mist-gray);
   --color-fog-white: var(--color-fog-white);
   --color-slate-gray: var(--color-slate-gray);
+  --color-slate-strong: var(--color-slate-strong);
   --color-ash-gray: var(--color-ash-gray);
   --color-smoke-gray: var(--color-smoke-gray);
   --color-blush-peach: var(--color-blush-peach);
@@ -99,6 +100,9 @@
   --color-mist-gray: #f2f2f3;
   --color-fog-white: #fafafb;
   --color-slate-gray: #777b86;
+  /* 次级文字（审查 A6）：有意义文字的灰在浅底上需 ≥4.5:1（WCAG 相对亮度公式核算），
+   * 对 #ffffff / #fafafb / #f2f2f3 三种底分别为 6.21 / 5.95 / 5.55。 */
+  --color-slate-strong: #5c616c;
   --color-ash-gray: #979799;
   --color-smoke-gray: #a3a6af;
   --color-blush-peach: #fbe1d1;
@@ -141,6 +145,8 @@
   --color-fog-white: #23262c;
   --color-mist-gray: #2c3038;
   --color-slate-gray: #9aa0ab;
+  /* 次级文字（审查 A6）：暗色对 #1c1f24 / #23262c / #2c3038 三种底分别为 8.66 / 7.95 / 6.94（≥4.5:1）。 */
+  --color-slate-strong: #b6bcc7;
   --color-ash-gray: #7d828c;
   --color-smoke-gray: #6b7079;
   --color-blush-peach: #3a2d25;

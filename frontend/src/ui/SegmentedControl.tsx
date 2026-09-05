@@ -94,7 +94,7 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
             className={
               'relative z-10 flex-1 rounded-[var(--radius-buttons)] px-2 text-[14px] ' +
               `whitespace-nowrap transition-colors duration-[var(--duration-base)] ${
-                active ? 'text-ink-black' : 'text-slate-gray hover:text-ink-black'
+                active ? 'text-ink-black' : 'text-slate-strong hover:text-ink-black'
               }`
             }
           >

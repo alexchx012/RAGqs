@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { FileWarning } from 'lucide-react';
 import { describe, expect, it, vi } from 'vitest';
 import { copy } from '../copy';
+import { TextLink } from './TextLink';
 import { EmptyState, ErrorState, LoadingCards, LoadingRows } from './states';
 
 describe('EmptyState', () => {
@@ -20,6 +21,22 @@ describe('EmptyState', () => {
   it('文案与图标可覆盖', () => {
     render(<EmptyState icon={FileWarning} text="nothing here" />);
     expect(screen.getByText('nothing here')).toBeInTheDocument();
+  });
+
+  it('children 操作区插槽（审查 A11）：渲染在文案下方', () => {
+    render(
+      <EmptyState text="nothing here">
+        <TextLink onClick={() => {}}>clear filters</TextLink>
+      </EmptyState>,
+    );
+    expect(screen.getByRole('button', { name: 'clear filters' })).toBeInTheDocument();
+    expect(screen.getByText('nothing here')).toBeInTheDocument();
+  });
+
+  it('空态文案用次级文字 token（审查 A6），装饰图标保持 smoke', () => {
+    const { container } = render(<EmptyState text="empty" />);
+    expect(screen.getByText('empty').className).toContain('text-slate-strong');
+    expect(container.querySelector('svg')?.classList.contains('text-smoke-gray')).toBe(true);
   });
 });
 
@@ -44,6 +61,15 @@ describe('Loading 骨架组合', () => {
   it('LoadingRows 渲染 n 条骨架行', () => {
     const { container } = render(<LoadingRows count={5} />);
     expect(container.querySelectorAll('.ui-skeleton')).toHaveLength(5);
+  });
+
+  it('LoadingRows 透传 rowHeight（审查 A9）', () => {
+    const { container } = render(<LoadingRows count={2} rowHeight={56} />);
+    const rows = container.querySelectorAll<HTMLElement>('.ui-skeleton');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).toHaveStyle({ height: '56px' });
+    }
   });
 
   it('LoadingCards 渲染 n 张骨架卡', () => {

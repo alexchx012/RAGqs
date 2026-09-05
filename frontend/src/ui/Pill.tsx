@@ -3,6 +3,7 @@
  * - filled：bg-ink-black 白字、hover 不透明度 0.88（--duration-fast）、无阴影、Sohne 16px；
  * - ghost：透明底 + 1px 发丝边（或墨边变体），hover 底 mist-gray；
  * - 尺寸 md 36px / sm 32px / xs 28px；loading 复用 base.css .loading-dots 内联加载点。
+ * - 视觉尺寸不变，::after 外扩触控命中区至 ≥44px（审查 A4，ui-touch-target）。
  */
 
 import { forwardRef, type ButtonHTMLAttributes } from 'react';
@@ -22,9 +23,9 @@ export interface PillProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const SIZE_CLASS: Record<PillSize, string> = {
-  md: 'h-9 px-4 text-[16px]',
-  sm: 'h-8 px-3 text-[15px]',
-  xs: 'h-7 px-3 text-[14px]',
+  md: 'ui-touch-target [--touch-expand:-4px] h-9 px-4 text-[16px]',
+  sm: 'ui-touch-target [--touch-expand:-6px] h-8 px-3 text-[15px]',
+  xs: 'ui-touch-target [--touch-expand:-8px] h-7 px-3 text-[14px]',
 };
 
 export const Pill = forwardRef<HTMLButtonElement, PillProps>(function Pill(

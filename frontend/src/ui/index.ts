@@ -26,7 +26,6 @@ export {
   type EmptyStateProps,
   type ErrorStateProps,
 } from './states';
-export { StatCard, type DistributionItem, type StatCardProps } from './StatCard';
 export { StatusDot, type StatusDotIntent, type StatusDotProps } from './StatusDot';
 export { Switch, type SwitchProps } from './Switch';
 export { TextLink, type TextLinkProps } from './TextLink';

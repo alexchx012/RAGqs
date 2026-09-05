@@ -24,4 +24,13 @@ describe('CountBadge', () => {
     const { container } = render(<CountBadge count={-2} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('warning intent（审查 A10）：警告琥珀徽标，形态与默认一致', () => {
+    render(<CountBadge count={4} intent="warning" />);
+    const badge = screen.getByText('4');
+    expect(badge.className).toContain('bg-warning/15');
+    expect(badge.className).toContain('text-warning');
+    expect(badge.className).toContain('h-[18px]');
+    expect(badge.className).toContain('font-w480');
+  });
 });

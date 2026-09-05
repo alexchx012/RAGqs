@@ -83,9 +83,5 @@ export function OperationsStaleBadge() {
   if (stale === null || stale <= 0) {
     return null;
   }
-  return (
-    <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[var(--radius-buttons)] bg-warning/15 px-1.5 text-[12px] font-w480 text-warning">
-      {stale}
-    </span>
-  );
+  return <CountBadge count={stale} intent="warning" />;
 }

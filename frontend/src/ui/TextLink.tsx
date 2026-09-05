@@ -1,7 +1,8 @@
 /*
  * 文字链（共用基座 §3.2 重试/清除搜索、§4 全部已读、§5.6 预览/恢复）。
- * 15px text-slate-gray，hover 下划线（--duration-fast）；danger 变体 text-danger；
+ * 15px text-slate-strong，hover 下划线（--duration-fast）；danger 变体 text-danger；
  * ink 变体 text-ink-black（用户管理「编辑」、部门管理「刷新 / 改名」文字链，运维端 §7.7 / 超管端 §7.6）。
+ * 纯文字无 padding，::after 外扩命中区至 ≥44px（审查 A4，ui-touch-target），视觉不变。
  */
 
 import type { ButtonHTMLAttributes } from 'react';
@@ -22,13 +23,14 @@ export function TextLink({
   type = 'button',
   ...rest
 }: TextLinkProps) {
-  const toneClass = danger ? 'text-danger' : ink ? 'text-ink-black' : 'text-slate-gray';
+  const toneClass = danger ? 'text-danger' : ink ? 'text-ink-black' : 'text-slate-strong';
   return (
     <button
       type={type}
       disabled={disabled}
       className={
-        `text-[15px] underline-offset-2 transition-colors duration-[var(--duration-fast)] ` +
+        `ui-touch-target [--touch-expand:-11px] text-[15px] underline-offset-2 ` +
+        `transition-colors duration-[var(--duration-fast)] ` +
         `${toneClass} enabled:hover:underline disabled:text-smoke-gray ${className}`
       }
       {...rest}

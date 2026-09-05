@@ -41,6 +41,13 @@ describe('Pill', () => {
     expect(button.className).toContain('h-7');
   });
 
+  it('触控热区（审查 A4）：ui-touch-target 外扩命中区，视觉高度类不变', () => {
+    render(<Pill>save</Pill>);
+    const button = screen.getByRole('button', { name: 'save' });
+    expect(button.className).toContain('ui-touch-target');
+    expect(button.className).toContain('h-9');
+  });
+
   it('disabled：禁用态样式且不可点击', async () => {
     const onClick = vi.fn();
     render(
