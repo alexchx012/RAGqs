@@ -45,7 +45,7 @@ export function ErrorState({
 }: ErrorStateProps) {
   return (
     <div className="flex items-center gap-2 py-4">
-      <p className="text-[15px] text-slate-gray">{text}</p>
+      <p className="text-[15px] text-slate-strong">{text}</p>
       {onRetry !== undefined && <TextLink onClick={onRetry}>{retryLabel}</TextLink>}
     </div>
   );
