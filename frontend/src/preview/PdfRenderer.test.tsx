@@ -18,6 +18,7 @@ const fixtures = vi.hoisted(() => ({
     [1, ['Employee Handbook', 'Annual leave: 5 days per year for service under 10 years.']],
     [2, ['Sick leave requires a medical certificate.']],
   ]),
+  lastPageWidth: null as number | null,
 }));
 
 vi.mock('./scroll', () => ({ scrollToCenter: vi.fn() }));
@@ -36,10 +37,12 @@ vi.mock('react-pdf', async () => {
   }
   interface PageProps {
     readonly pageNumber: number;
+    readonly width?: number;
     readonly onGetTextSuccess?: (textContent: { items: readonly { str: string }[] }) => void;
     readonly customTextRenderer?: (layer: { pageNumber: number; itemIndex: number; str: string }) => string;
   }
-  function Page({ pageNumber, onGetTextSuccess, customTextRenderer }: PageProps) {
+  function Page({ pageNumber, width, onGetTextSuccess, customTextRenderer }: PageProps) {
+    fixtures.lastPageWidth = width ?? null;
     const items = (fixtures.pageItems.get(pageNumber) ?? []).map((str) => ({ str }));
     React.useEffect(() => {
       onGetTextSuccess?.({ items });
@@ -81,10 +84,43 @@ function renderPdf(props: Partial<Parameters<typeof PdfRenderer>[0]> = {}) {
 
 beforeEach(() => {
   fixtures.numPages = 2;
+  fixtures.lastPageWidth = null;
   vi.mocked(scrollToCenter).mockClear();
 });
 
 describe('PdfRenderer 有文本层', () => {
+  it('以 ResizeObserver 实测容器宽度作为 Page width（窄屏文本层与视觉页对齐，P1#16）', async () => {
+    class FakeResizeObserver {
+      private readonly callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+      }
+      observe(target: Element): void {
+        // observe 即回调实测宽度（模拟窄屏容器 295px）
+        this.callback(
+          [{ target, contentRect: { width: 295 } } as unknown as ResizeObserverEntry],
+          this as unknown as ResizeObserver,
+        );
+      }
+      disconnect(): void {}
+      unobserve(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    try {
+      const { container } = renderPdf();
+      await waitFor(() => expect(container.querySelectorAll('[data-page-number]')).toHaveLength(2));
+      expect(fixtures.lastPageWidth).toBe(295);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('无 ResizeObserver 环境（jsdom 兜底）回退桌面限宽 880', async () => {
+    const { container } = renderPdf();
+    await waitFor(() => expect(container.querySelectorAll('[data-page-number]')).toHaveLength(2));
+    expect(fixtures.lastPageWidth).toBe(880);
+  });
+
   it('逐页渲染 + snippet 文本匹配高亮（当前 100%、其余浅标）', async () => {
     const { container } = renderPdf();
     await waitFor(() => expect(container.querySelectorAll('[data-page-number]')).toHaveLength(2));

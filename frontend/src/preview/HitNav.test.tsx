@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { copy } from '../copy';
@@ -6,7 +6,8 @@ import { HitNav } from './HitNav';
 import type { PreviewHit } from './types';
 
 /*
- * 命中导航（fe-doc-preview）：条目三行（序号 / 摘要 / 定位小字）、当前态、点击切换、空态。
+ * 命中导航（fe-doc-preview）：条目三行（序号 / 摘要 / 定位小字）、当前态、点击切换、空态、
+ * 位置指示与 ↑/↓ 方向键导航（审查 P3）。
  */
 
 const HITS: readonly PreviewHit[] = [
@@ -44,6 +45,37 @@ describe('HitNav', () => {
     render(<HitNav hits={HITS} current={0} onSelect={onSelect} />);
     await user.click(screen.getAllByRole('button')[2] as HTMLElement);
     expect(onSelect).toHaveBeenCalledWith(2);
+  });
+
+  it('提供当前位置/总数指示（aria-live polite；无当前项不显示）', () => {
+    const { rerender } = render(<HitNav hits={HITS} current={1} onSelect={() => {}} />);
+    const indicator = screen.getByText(copy.preview.hitPosition(2, HITS.length));
+    expect(indicator).toHaveAttribute('aria-live', 'polite');
+    rerender(<HitNav hits={HITS} current={null} onSelect={() => {}} />);
+    expect(screen.queryByText(copy.preview.hitPosition(0, HITS.length))).not.toBeInTheDocument();
+  });
+
+  it('↑/↓ 方向键在命中间循环移动并选中（焦点跟随）', () => {
+    const onSelect = vi.fn();
+    render(<HitNav hits={HITS} current={0} onSelect={onSelect} />);
+    const list = screen.getByRole('list');
+    fireEvent.keyDown(list, { key: 'ArrowDown' });
+    expect(onSelect).toHaveBeenLastCalledWith(1);
+    expect(screen.getAllByRole('button')[1]).toHaveFocus();
+    // 循环：current=0 上移 → 最后一项
+    fireEvent.keyDown(list, { key: 'ArrowUp' });
+    expect(onSelect).toHaveBeenLastCalledWith(HITS.length - 1);
+    expect(screen.getAllByRole('button')[HITS.length - 1]).toHaveFocus();
+    // 无关按键不干预
+    fireEvent.keyDown(list, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it('无当前项时 ↓ 从第一条开始', () => {
+    const onSelect = vi.fn();
+    render(<HitNav hits={HITS} current={null} onSelect={onSelect} />);
+    fireEvent.keyDown(screen.getByRole('list'), { key: 'ArrowDown' });
+    expect(onSelect).toHaveBeenLastCalledWith(0);
   });
 
   it('空态（无 message_id 只读形态）', () => {

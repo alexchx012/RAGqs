@@ -11,7 +11,16 @@
  */
 
 import { X } from 'lucide-react';
-import { lazy, Suspense, useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import { useSearchParams, useParams } from 'react-router';
 import { ApiError } from '../api/errors';
 import { copy } from '../copy';
@@ -115,9 +124,46 @@ export function PreviewPage({ api }: PreviewPageProps) {
   const [currentHit, setCurrentHit] = useState<number | null>(null);
   const isNarrow = useMediaQuery('(max-width: 767px)');
   const [panelOpen, setPanelOpen] = useState(false);
-  const { panelProps } = useSwipeClose(
-    useCallback(() => setPanelOpen(false), []),
+  /** 窄屏命中面板节点：打开时移焦入面板（审查 P3）。 */
+  const hitPanelRef = useRef<HTMLDivElement | null>(null);
+  /** 面板关闭后焦点归还目标（打开前的触发按钮等）。 */
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+
+  // UI 关闭（Esc / 关闭钮 / 选中命中 / 切换文档）：关面板并弹出打开时压入的历史项，
+  // 与系统返回手势（popstate）保持同一套历史语义
+  const closePanel = useCallback(() => {
+    setPanelOpen(false);
+    if ((window.history.state as { previewNavPanel?: boolean } | null)?.previewNavPanel === true) {
+      window.history.back();
+    }
+  }, []);
+
+  const { panelProps } = useSwipeClose(closePanel);
+  // 面板双 ref 组合（useSwipeClose 手势节点 + 焦点锚点）：必须稳定引用，
+  // 内联箭头每次渲染重调 ref 会把进行中的手势状态清零（setPanelNode 的复位语义）
+  const setHitPanelNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      panelProps.ref(node);
+      hitPanelRef.current = node;
+    },
+    [panelProps.ref],
   );
+
+  // 关闭按钮（审查 P3）：window.close() 仅对脚本打开的窗口生效；一拍之后仍未关闭
+  // （非脚本窗口）则回退历史，无历史可退（直开深链）跳主页——关闭总有可见效果。
+  const closePreview = useCallback(() => {
+    window.close();
+    window.setTimeout(() => {
+      if (window.closed) {
+        return;
+      }
+      if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        window.location.assign('/');
+      }
+    }, 0);
+  }, []);
 
   // 加载预览元数据（重试经 retryNonce；竞态以 nonce 作废旧响应）
   useEffect(() => {
@@ -143,11 +189,11 @@ export function PreviewPage({ api }: PreviewPageProps) {
 
   const hits = state.status === 'ready' ? state.preview.hits : [];
 
-  // 文档 / 消息 / 版本切换：清空当前命中（渲染器锚点随内容重建）
+  // 文档 / 消息 / 版本切换：清空当前命中（渲染器锚点随内容重建），面板随 UI 关闭路径弹出历史项
   useEffect(() => {
     setCurrentHit(null);
-    setPanelOpen(false);
-  }, [documentId, messageId, documentVersionId]);
+    closePanel();
+  }, [documentId, messageId, documentVersionId, closePanel]);
 
   // 打开自动定位第一处命中（渲染器负责平滑滚动至视口中央）
   useEffect(() => {
@@ -163,11 +209,30 @@ export function PreviewPage({ api }: PreviewPageProps) {
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setPanelOpen(false);
+        closePanel();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+  }, [panelOpen, closePanel]);
+
+  // 窄屏面板打开：移焦入面板、关闭后归还焦点；压入历史项让系统返回手势关闭面板
+  // 而非直接退出预览页（审查 P3）。popstate 只关面板不回退历史（历史项已被系统消费）。
+  useEffect(() => {
+    if (!panelOpen) {
+      return undefined;
+    }
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    window.history.pushState({ previewNavPanel: true }, '');
+    hitPanelRef.current?.focus();
+    const onPopState = () => setPanelOpen(false);
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      restoreFocusRef.current?.focus();
+      restoreFocusRef.current = null;
+    };
   }, [panelOpen]);
 
   const onSheetChange = useCallback(
@@ -216,7 +281,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
   } else if (state.status === 'error') {
     body = (
       <div className="flex flex-col items-center gap-2 py-20">
-        <p className="text-[15px] text-slate-gray">{copy.preview.error}</p>
+        <p className="text-[15px] text-slate-strong">{copy.preview.error}</p>
         <TextLink onClick={retry}>{copy.preview.retry}</TextLink>
       </div>
     );
@@ -319,14 +384,14 @@ export function PreviewPage({ api }: PreviewPageProps) {
                 >
                   {state.preview.name}
                 </h1>
-                <p className="mt-1 text-[14px] text-ash-gray">{mediaKindLabel(state.preview.media_kind)}</p>
+                <p className="mt-1 text-[14px] text-slate-strong">{mediaKindLabel(state.preview.media_kind)}</p>
               </>
             )}
           </div>
           <button
             type="button"
             aria-label={copy.preview.closeAria}
-            onClick={() => window.close()}
+            onClick={closePreview}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
           >
             <X aria-hidden="true" className="h-5 w-5" />
@@ -337,7 +402,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
 
       {state.status === 'unavailable' ? (
         <main className="flex flex-1 items-center justify-center px-10">
-          <p className="text-[15px] text-slate-gray">{copy.preview.unavailable}</p>
+          <p className="text-[15px] text-slate-strong">{copy.preview.unavailable}</p>
         </main>
       ) : (
         <>
@@ -348,7 +413,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
                 aria-haspopup="dialog"
                 aria-expanded={panelOpen}
                 onClick={() => setPanelOpen(true)}
-                className="flex h-9 items-center text-[15px] text-slate-gray"
+                className="flex h-9 items-center text-[15px] text-slate-strong"
               >
                 {copy.preview.navTitle(hits.length)}
               </button>
@@ -372,11 +437,21 @@ export function PreviewPage({ api }: PreviewPageProps) {
               role="dialog"
               aria-modal="true"
               aria-label={copy.preview.navTitle(hits.length)}
-              className="preview-nav-panel fixed inset-x-0 bottom-0 z-50 flex h-[50vh] flex-col rounded-t-[var(--radius-cards)] bg-paper-white shadow-[var(--shadow-subtle-3)]"
+              tabIndex={-1}
+              className="preview-nav-panel fixed inset-x-0 bottom-0 z-50 flex h-[50vh] flex-col rounded-t-[var(--radius-cards)] bg-paper-white shadow-[var(--shadow-subtle-3)] outline-none"
               {...panelProps}
+              ref={setHitPanelNode}
             >
-              <div className="shrink-0 touch-none border-b border-hairline px-4 py-2 text-[15px] text-slate-gray">
+              <div className="flex shrink-0 touch-none items-center justify-between border-b border-hairline py-2 pl-4 text-[15px] text-slate-strong">
                 {copy.preview.navTitle(hits.length)}
+                <button
+                  type="button"
+                  aria-label={copy.preview.closeAria}
+                  onClick={closePanel}
+                  className="mr-2 flex h-8 w-8 items-center justify-center rounded-full transition-colors duration-150 hover:bg-mist-gray"
+                >
+                  <X aria-hidden="true" className="h-4 w-4" />
+                </button>
               </div>
               <div data-swipe-scroll="" className="min-h-0 flex-1 overflow-y-auto">
                 <HitNav
@@ -384,7 +459,7 @@ export function PreviewPage({ api }: PreviewPageProps) {
                   current={currentHit}
                   onSelect={(index) => {
                     setCurrentHit(index);
-                    setPanelOpen(false);
+                    closePanel();
                   }}
                 />
               </div>

@@ -258,6 +258,55 @@ describe('下钻、返回与 Esc 逐层', () => {
     fireEvent.pointerUp(panel as Element, { clientY: 400 });
     await waitFor(() => expect(probe.textContent).toBe('/'));
   });
+
+  it('置顶下拉 touchmove preventDefault：浏览器不接管，跟手关闭不被 pointercancel 中断（P2#20）', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    const panel = dialog.querySelector('.drawer-panel') as HTMLElement;
+    const { fireEvent } = await import('@testing-library/react');
+    // jsdom 无 TouchEvent：以 Event 子类最小 polyfill（touches 携带 clientY，cancelable 有效）
+    class FakeTouch {
+      identifier: number;
+      target: EventTarget | null;
+      clientY: number;
+      constructor(init: { identifier: number; target: EventTarget | null; clientY: number }) {
+        this.identifier = init.identifier;
+        this.target = init.target;
+        this.clientY = init.clientY;
+      }
+    }
+    class FakeTouchEvent extends Event {
+      touches: FakeTouch[];
+      constructor(type: string, init: { touches?: FakeTouch[] } & EventInit) {
+        super(type, init);
+        this.touches = init.touches ?? [];
+      }
+    }
+    const originalTouchEvent = window.TouchEvent;
+    (window as unknown as { TouchEvent?: unknown }).TouchEvent = FakeTouchEvent;
+    (window as unknown as { Touch?: unknown }).Touch = FakeTouch;
+    try {
+      fireEvent.pointerDown(panel, { clientY: 40 });
+      const pulling = new FakeTouchEvent('touchmove', {
+        bubbles: true,
+        cancelable: true,
+        touches: [new FakeTouch({ identifier: 1, target: panel, clientY: 120 })],
+      });
+      panel.dispatchEvent(pulling);
+      expect(pulling.defaultPrevented).toBe(true);
+      // 向上滑动：放行原生滚动
+      const pushing = new FakeTouchEvent('touchmove', {
+        bubbles: true,
+        cancelable: true,
+        touches: [new FakeTouch({ identifier: 1, target: panel, clientY: 10 })],
+      });
+      panel.dispatchEvent(pushing);
+      expect(pushing.defaultPrevented).toBe(false);
+    } finally {
+      (window as unknown as { TouchEvent?: unknown }).TouchEvent = originalTouchEvent;
+      delete (window as unknown as { Touch?: unknown }).Touch;
+    }
+  });
 });
 
 describe('抽屉页头铃铛与窄屏单栏化', () => {
@@ -267,6 +316,35 @@ describe('抽屉页头铃铛与窄屏单栏化', () => {
     expect(
       within(dialog).getByRole('button', { name: copy.notifications.bellAria }),
     ).toBeInTheDocument();
+  });
+
+  it('抽屉内打开通知面板后 Tab 放行浮层：不被陷阱拽回；抽屉内陷阱照常（P0#2/P2#34）', async () => {
+    await renderApp('/settings');
+    const user = userEvent.setup();
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    await user.click(within(dialog).getByRole('button', { name: copy.notifications.bellAria }));
+    // 通知面板 portal 到抽屉外（popper 包装器）
+    const popper = await waitFor(() => {
+      const wrapper = document.querySelector('[data-radix-popper-content-wrapper]');
+      expect(wrapper).not.toBeNull();
+      return wrapper as HTMLElement;
+    });
+    // 焦点在浮层内（jsdom 无自动聚焦布局，显式给面板内容挂 tabindex 后聚焦）：
+    // Tab 不被抽屉陷阱 preventDefault（Radix 自管循环/焦点流）
+    const inside = popper.firstElementChild as HTMLElement;
+    inside.setAttribute('tabindex', '-1');
+    inside.focus();
+    expect(popper.contains(document.activeElement)).toBe(true);
+    const forwarded = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    inside.dispatchEvent(forwarded);
+    expect(forwarded.defaultPrevented).toBe(false);
+    // 对照：焦点在抽屉内最后一个可聚焦元素时陷阱照常圈定（Tab 被 preventDefault 拽回）
+    const focusable = within(dialog).getAllByRole('button');
+    const last = focusable[focusable.length - 1] as HTMLElement;
+    last.focus();
+    const trapped = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    last.dispatchEvent(trapped);
+    expect(trapped.defaultPrevented).toBe(true);
   });
 
   it('窄屏（<768px）：首屏模块名单栏整页，点模块整页下钻', async () => {
@@ -291,6 +369,39 @@ describe('抽屉页头铃铛与窄屏单栏化', () => {
       await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
       expect(await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
       expect(probe.textContent).toBe('/settings/knowledge');
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it('窄屏下钻后页头出现返回控件且页头标题显示当前层级名（P1#9）', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('max-width'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+    try {
+      const probe = await renderApp('/settings');
+      const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+      // 顶层无返回控件
+      expect(
+        within(dialog).queryByRole('button', { name: drawerCopy.backAria(drawerCopy.personalTitle) }),
+      ).not.toBeInTheDocument();
+      const user = userEvent.setup();
+      await user.click(within(dialog).getByRole('button', { name: modules.knowledge }));
+      // 页头标题显示当前层级名，页头返回控件逐级回退（触屏无 Esc）
+      expect(await screen.findByRole('heading', { name: modules.knowledge })).toBeInTheDocument();
+      await user.click(
+        screen.getByRole('button', { name: drawerCopy.backAria(drawerCopy.personalTitle) }),
+      );
+      expect(await screen.findByRole('heading', { name: drawerCopy.personalTitle })).toBeInTheDocument();
+      expect(probe.textContent).toBe('/settings');
     } finally {
       window.matchMedia = original;
     }

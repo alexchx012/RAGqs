@@ -7,7 +7,7 @@ import { copy } from '../copy';
 
 export function FullPageLoading() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-paper-white">
+    <div className="flex min-h-dvh items-center justify-center bg-paper-white">
       <span className="loading-dots" role="status" aria-label={copy.shell.loading}>
         <span />
         <span />

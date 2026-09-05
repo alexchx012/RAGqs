@@ -50,6 +50,8 @@ describe('resolveTheme', () => {
 describe('ThemeController', () => {
   afterEach(() => {
     vi.useRealTimers();
+    // localStorage 跨测试共享：clear 防止显式偏好泄入后续用例的构造读取
+    window.localStorage.clear();
   });
 
   it('默认偏好为 system：未登录页面跟随系统 prefers-color-scheme', () => {
@@ -87,9 +89,36 @@ describe('ThemeController', () => {
     vi.useFakeTimers();
     const { media, target, classes } = createHarness(false);
     const controller = new ThemeController(target, media);
+    controller.setPreference('dark');
     expect(classes.has('theme-switching')).toBe(true);
     vi.advanceTimersByTime(400);
     expect(classes.has('theme-switching')).toBe(false);
+    controller.dispose();
+  });
+
+  it('同一 resolved 主题不会重复挂载切换过渡', () => {
+    const { media, target, classes } = createHarness(false);
+    const controller = new ThemeController(target, media);
+    classes.delete('theme-switching');
+    controller.setPreference('light');
+    expect(classes.has('theme-switching')).toBe(false);
+    controller.dispose();
+  });
+
+  it('构造时从 localStorage 恢复显式偏好（首屏与运行时同键）', () => {
+    const { media, target } = createHarness(false);
+    window.localStorage.setItem('ragqs-theme-preference', 'dark');
+    const controller = new ThemeController(target, media);
+    expect(controller.getPreference()).toBe('dark');
+    expect(target.dataset.theme).toBe('dark');
+    controller.dispose();
+  });
+
+  it('显式主题偏好写入 localStorage 供刷新首屏读取', () => {
+    const { media, target } = createHarness(false);
+    const controller = new ThemeController(target, media);
+    controller.setPreference('dark');
+    expect(window.localStorage.getItem('ragqs-theme-preference')).toBe('dark');
     controller.dispose();
   });
 

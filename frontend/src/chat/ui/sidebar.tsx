@@ -144,7 +144,7 @@ export function ChatMenuButton({ onOpen }: { onOpen: () => void }) {
       type="button"
       aria-label={copy.chat.sidebar.openSidebarAria}
       onClick={onOpen}
-      className="absolute left-6 top-5 z-10 flex h-10 w-10 items-center justify-center rounded-full text-ink-black transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray md:hidden"
+      className="absolute left-6 top-5 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-paper-white text-ink-black transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray md:hidden"
     >
       <Menu aria-hidden="true" className="h-5 w-5" />
     </button>

@@ -103,8 +103,31 @@ function isPrefix(prefix: readonly string[], path: readonly string[]): boolean {
 
 function focusableIn(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => element.offsetParent !== null || element === document.activeElement,
+    (element) =>
+      (element.offsetParent !== null || element === document.activeElement) &&
+      // visibility:hidden 元素（含 drill-hidden 隐藏渲染的过渡节点）不可聚焦
+      getComputedStyle(element).visibility !== 'hidden',
   );
+}
+
+/** 焦点是否在活跃浮层内：Radix 把浮层内容 portal 到 body 末尾（抽屉容器之外），
+ *  浮层自身 role 或 popper 包装器可识别；Tab 循环由 Radix 自管，抽屉陷阱放行（审查 P0#2）。 */
+function insideFloatingLayer(element: Element | null): boolean {
+  let current: Element | null = element;
+  while (current !== null) {
+    const role = current.getAttribute('role');
+    if (
+      current.hasAttribute('data-radix-popper-content-wrapper') ||
+      role === 'dialog' ||
+      role === 'alertdialog' ||
+      role === 'menu' ||
+      role === 'listbox'
+    ) {
+      return true;
+    }
+    current = current.parentElement;
+  }
+  return false;
 }
 
 function useDrawerFocusTrap(open: boolean) {
@@ -140,6 +163,11 @@ function useDrawerFocusTrap(open: boolean) {
       if (event.key !== 'Tab') return;
       const container = dialogRef.current;
       if (container === null) return;
+      const active = document.activeElement;
+      // 焦点在活跃浮层内（通知面板/确认框等 portal 到抽屉外）：Radix 自管 Tab 循环，放行
+      if (!container.contains(active) && insideFloatingLayer(active)) {
+        return;
+      }
       const focusable = focusableIn(container);
       if (focusable.length === 0) {
         event.preventDefault();
@@ -148,7 +176,6 @@ function useDrawerFocusTrap(open: boolean) {
       }
       const first = focusable[0]!;
       const last = focusable[focusable.length - 1]!;
-      const active = document.activeElement;
       if (event.shiftKey) {
         if (active === first || active === container || !container.contains(active)) {
           event.preventDefault();
@@ -488,6 +515,28 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     }
   }, [dragOffset, navigate]);
 
+  // 触屏防接管（审查 P2#20）：置顶向下拖动时 preventDefault 掉浏览器滚动/下拉刷新——
+  // touch-action 只声明 pan-y 不足以保住手势（置顶 pan 无处滚动时浏览器仍会 pointercancel
+  // 中断跟手关闭），需在 touchmove（非 passive）按手势方向拦截；向上滑动放行原生滚动。
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!mounted || panel === null) {
+      return undefined;
+    }
+    const onTouchMove = (event: TouchEvent) => {
+      const start = dragStartRef.current;
+      if (start === null || !start.engaged) {
+        return;
+      }
+      const y = event.touches[0]?.clientY ?? start.y;
+      if (y > start.y && event.cancelable) {
+        event.preventDefault();
+      }
+    };
+    panel.addEventListener('touchmove', onTouchMove, { passive: false });
+    return () => panel.removeEventListener('touchmove', onTouchMove);
+  }, [mounted]);
+
   // ---- 导航 / 关闭 ----
   const close = useCallback(() => navigate('/'), [navigate]);
   const drillTo = useCallback(
@@ -516,18 +565,24 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
   const drawerCopy = copy.shell.drawer;
   const deepest = shownLayers[shownLayers.length - 1];
   const drilled = shownDrill.length >= 2;
-  const title =
+  const segmentTitle =
     shownSegment === 'personal'
       ? drawerCopy.personalTitle
       : (shownLayers[0]?.title ?? drawerCopy.adminSegmentLabel);
+  // 窄屏下钻（drill>0）：页头出现返回控件、标题显示当前层级名（审查 P1#9：触屏无 Esc 也能逐级返回）
+  const narrowDrilled = narrow && shownDrill.length > 0;
+  const currentTitle = narrowDrilled ? (deepest?.title ?? segmentTitle) : segmentTitle;
 
-  // 返回目标：上一层路径与名称
+  // 返回目标：上一层路径与名称（桌面左栏返回按钮）
   const backLabel =
     shownDrill.length >= 2
       ? shownDrill.length === 2
         ? shownLayers[0]?.title ?? ''
         : (shownLayers[shownLayers.length - 2]?.title ?? '')
       : '';
+  // 窄屏页头返回按钮的可达名：首层回段顶层（段名），更深层回上一层级
+  const narrowBackLabel =
+    shownDrill.length === 1 ? segmentTitle : (shownLayers[shownLayers.length - 2]?.title ?? segmentTitle);
   const goBack = () => {
     navigate(
       formatDrawerLocation({
@@ -566,12 +621,12 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         data-nav-variant="modules"
         className={`${phase === 'exit' ? 'drill-exit' : ''} ${phase === 'enter' ? 'drill-content-return' : ''}`}
       >
-        <p className="px-3 pb-1 text-caption text-ash-gray">{drawerCopy.personalSegmentLabel}</p>
+        <p className="px-3 pb-1 text-caption text-slate-strong">{drawerCopy.personalSegmentLabel}</p>
         {list(personalModules, 'personal')}
         {adminModules.length > 0 && (
           <>
             <hr className="my-3 border-0 border-t border-hairline" />
-            <p className="px-3 pb-1 text-caption text-ash-gray">{drawerCopy.adminSegmentLabel}</p>
+            <p className="px-3 pb-1 text-caption text-slate-strong">{drawerCopy.adminSegmentLabel}</p>
             {list(adminModules, 'admin')}
           </>
         )}
@@ -586,7 +641,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
           type="button"
           onClick={goBack}
           aria-label={drawerCopy.backAria(backLabel)}
-          className={`flex h-8 items-center gap-1 text-caption text-slate-gray transition-colors duration-150 hover:text-ink-black ${
+          className={`flex h-8 items-center gap-1 text-caption text-slate-strong transition-colors duration-150 hover:text-ink-black ${
             transition !== null && transition.phase !== 'back-in' && phase !== 'enter'
               ? 'invisible'
               : 'drill-back-enter'
@@ -629,7 +684,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       // 顶层 / 未注册层：抽屉首层占位（规格 §3）
       return (
         <div data-content-variant="placeholder" className={phaseClass}>
-          <p className="text-caption text-smoke-gray">{drawerCopy.topPlaceholderBody}</p>
+          <p className="text-caption text-slate-strong">{drawerCopy.topPlaceholderBody}</p>
         </div>
       );
     }
@@ -793,21 +848,31 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       className="fixed inset-0 z-40 outline-none"
       role="dialog"
       aria-modal="true"
-      aria-label={title}
+      aria-label={segmentTitle}
     >
       <div
         ref={panelRef}
         data-slide={slide}
         data-dragging={dragOffset !== null ? 'true' : undefined}
         data-rebound={rebound ? 'true' : undefined}
-        className="drawer-panel absolute inset-0 bg-paper-white shadow-[var(--shadow-subtle-2)]"
+        className="drawer-panel absolute inset-0 flex flex-col bg-paper-white shadow-[var(--shadow-subtle-2)]"
         style={dragOffset !== null ? { transform: `translateY(${dragOffset}px)` } : undefined}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        <header className="mt-10 flex items-center gap-4 px-5 md:px-10">
+        <header className="mt-10 flex shrink-0 items-center gap-4 px-5 md:px-10">
+          {narrowDrilled && (
+            <button
+              type="button"
+              onClick={goBack}
+              aria-label={drawerCopy.backAria(narrowBackLabel)}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors duration-150 hover:bg-mist-gray"
+            >
+              <ArrowLeft size={20} aria-hidden />
+            </button>
+          )}
           <button
             type="button"
             onClick={close}
@@ -817,15 +882,15 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
             <X size={20} aria-hidden />
           </button>
           <h1 className="font-sohne text-heading-sm font-medium leading-heading-sm tracking-heading-sm md:font-signifier md:text-heading md:font-normal md:leading-heading md:tracking-heading">
-            {title}
+            {currentTitle}
           </h1>
           <div className="ml-auto">{headerRight}</div>
         </header>
-        <div className="mt-10 flex gap-10 px-5 md:px-10" style={{ height: 'calc(100% - 152px)' }}>
+        <div className="mt-10 flex min-h-0 flex-1 gap-10 px-5 md:px-10">
           {!narrowListView && (
             <nav
               className={`${narrow ? 'hidden' : ''} w-60 shrink-0 overflow-y-auto`}
-              aria-label={title}
+              aria-label={drawerCopy.navAria}
             >
               {navArea}
             </nav>
@@ -835,7 +900,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
               内容原位，max-w 同步 +4（720→724）抵消 pl，内容宽度与右缘均不变。 */}
           <div
             ref={contentRef}
-            className={`min-w-0 flex-1 overflow-y-auto pt-1 pl-1 -mt-1 -ml-1 ${narrow ? '' : 'max-w-[724px]'}`}
+            className={`min-w-0 flex-1 overflow-y-auto overscroll-contain pt-1 pl-1 -mt-1 -ml-1 ${narrow ? '' : 'max-w-[724px]'}`}
           >
             {narrowListView ? renderModuleList('idle') : contentArea}
           </div>

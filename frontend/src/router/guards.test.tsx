@@ -1,11 +1,13 @@
 /*
- * 路由守卫与按角色落地（规格 §4）。
+ * 路由守卫与按角色落地（规格 §4；深链回跳 P1#12）。
  */
 
-import { screen } from '@testing-library/react';
-import { Route, Routes, useLocation } from 'react-router';
+import { render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/errors';
+import { AuthProvider } from '../auth/AuthProvider';
 import { copy } from '../copy';
 import { AppRoutes } from './AppRoutes';
 import { RedirectIfAuthenticated, RequireAuth } from './guards';
@@ -22,6 +24,19 @@ import {
 function LandingProbe() {
   const location = useLocation();
   return <output data-testid="landing-state">{JSON.stringify(location.state)}</output>;
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location-path">{location.pathname}</output>;
+}
+
+function renderWithRoutes(ui: ReactElement, store: Parameters<typeof AuthProvider>[0]['store'], initialEntry: Parameters<typeof MemoryRouter>[0]['initialEntries']) {
+  return render(
+    <AuthProvider store={store}>
+      <MemoryRouter initialEntries={initialEntry}>{ui}</MemoryRouter>
+    </AuthProvider>,
+  );
 }
 
 describe('路由守卫（规格 §4）', () => {
@@ -74,5 +89,55 @@ describe('路由守卫（规格 §4）', () => {
     );
     const probe = await screen.findByTestId('landing-state');
     expect(probe.textContent).toContain(`"${AUTO_OPEN_ADMIN_DRAWER_STATE_KEY}":true`);
+  });
+
+  it('未认证访问受保护深链，登录成功后经 parseDrawerLocation 校验回跳原目标', async () => {
+    // refresh 拒绝（401）：store 保持未认证 → 深链重定向 /login（携 from）；
+    // store.login 成功后由 RedirectIfAuthenticated 消费 from 回跳（轻量路由，聚焦守卫行为）
+    const store = createTestStore(
+      fakeAuthApi({
+        refresh: vi.fn(async () =>
+          Promise.reject(
+            new ApiError({ status: 401, code: 'invalid_refresh', message: '', details: {}, requestId: null }),
+          ),
+        ),
+      }),
+    );
+    renderWithAuth(
+      <>
+        <Routes>
+          <Route element={<RequireAuth />}>
+            <Route path="/settings/*" element={<output data-testid="deep-target">deep</output>} />
+          </Route>
+          <Route element={<RedirectIfAuthenticated />}>
+            <Route path="/login" element={<p>login</p>} />
+          </Route>
+        </Routes>
+        <LocationProbe />
+      </>,
+      store,
+      ['/settings/knowledge/uploads'],
+    );
+    await waitFor(() => expect(screen.getByText('login')).toBeInTheDocument());
+    await store.login('zhangsan', 'correct-horse');
+    // from 为合法抽屉路径 → 回原目标（而非角色落地页）
+    expect(await screen.findByTestId('deep-target')).toBeInTheDocument();
+    expect(screen.getByTestId('location-path')).toHaveTextContent('/settings/knowledge/uploads');
+  });
+
+  it('from 为非抽屉路径（非法）时回角色落地页，不回跳', async () => {
+    const store = await createAuthedStore();
+    renderWithRoutes(
+      <Routes>
+        <Route element={<RedirectIfAuthenticated />}>
+          <Route path="/login" element={<p>login</p>} />
+        </Route>
+        <Route path="*" element={<LandingProbe />} />
+      </Routes>,
+      store,
+      [{ pathname: '/login', state: { from: '/preview/doc_1' } }],
+    );
+    expect(await screen.findByTestId('landing-state')).toBeInTheDocument();
+    expect(screen.getByTestId('landing-state').textContent).toBe('null'); // landingTargetFor 默认无 state
   });
 });
