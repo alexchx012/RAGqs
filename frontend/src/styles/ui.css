@@ -74,7 +74,7 @@
 @keyframes ui-row-exit {
   from {
     opacity: 1;
-    max-height: 64px;
+    max-height: 96px;
     padding-top: 12px;
     padding-bottom: 12px;
   }
@@ -212,6 +212,50 @@
 
 .ui-dialog-content[data-state='closed'] {
   animation: ui-dialog-exit var(--duration-fast) var(--ease-in-out) both;
+}
+
+/*
+ * 浮层层级（审查 A1）：设置抽屉根是 fixed inset-0 z-40 的不透明面板，Radix portal 到 body
+ * 的浮层若不显式抬层会被抽屉盖住（表现为「点了没反应」）。菜单/悬停卡 z-50；
+ * 对话框需盖住已打开的菜单，遮罩 z-60、内容 z-61。
+ */
+.ui-menu-content,
+.ui-hovercard-content {
+  z-index: 50;
+}
+
+.ui-dialog-overlay {
+  z-index: 60;
+}
+
+.ui-dialog-content {
+  z-index: 61;
+}
+
+/*
+ * 触控热区扩展（审查 A4）：触控命中区 ≥44×44px，视觉尺寸不变。
+ * ::after 相对控件负向 inset 外扩命中区（伪元素命中归属宿主元素）；
+ * 外扩量 --touch-expand 由控件按视觉尺寸在 className 里声明
+ * （24px → -10px、28px → -8px、32px → -6px、36px → -4px）。
+ * 某一轴已达 44px 时可用 --touch-expand-x / --touch-expand-y 单轴声明（0 表示不外扩）。
+ */
+.ui-touch-target {
+  position: relative;
+}
+
+.ui-touch-target::after {
+  content: '';
+  position: absolute;
+  inset: var(--touch-expand-y, var(--touch-expand, -6px))
+    var(--touch-expand-x, var(--touch-expand, -6px));
+}
+
+/* 触屏常显（审查 A5）：⋯ 触发钮默认随父级 group hover 淡入，触屏（无 hover 能力）
+ * 永远到不了 hover 态会永久不可见；hover: none 下覆盖为常显，桌面行为不变。 */
+@media (hover: none) {
+  .ui-meatball-trigger {
+    opacity: 1;
+  }
 }
 
 /* Orb 状态指示（动效 orbs B2，ui/Orb.tsx）：三圆绕同一轨道旋转，前方清晰后方模糊，

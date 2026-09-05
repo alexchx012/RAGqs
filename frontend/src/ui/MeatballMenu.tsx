@@ -1,9 +1,11 @@
 /*
  * 「⋯」菜单（共用基座 §3.2 会话条目 ⋯ 菜单、§5.6 文档行操作菜单）。
  * 触发钮：16px Ellipsis 图标，默认随父级 group hover/focus 淡入（opacity 0→1 --duration-fast），
- * 触屏常显由父级控制（alwaysVisible）；浮层宽 160px paper-white + radius-elevatedcards +
+ * 触屏常显由父级控制（alwaysVisible）+ ui.css 在 hover: none 下兜底常显（审查 A5）；
+ * 视觉 24px，::after 外扩命中区至 44px（审查 A4，ui-touch-target）；
+ * 浮层宽 160px paper-white + radius-elevatedcards +
  * shadow-subtle；菜单项高 36px 15px，hover/highlighted 底 mist-gray；danger 项危险红文字。
- * 进出动效 keyframes 在 ui.css；Esc 与点外部关闭由 Radix 处理，打开期间 useEscShield 挂空盾。
+ * 进出动效与浮层层级 keyframes 在 ui.css；Esc 与点外部关闭由 Radix 处理，打开期间 useEscShield 挂空盾。
  */
 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
@@ -36,6 +38,7 @@ export function MeatballMenu({ items, ariaLabel, alwaysVisible = false }: Meatba
           type="button"
           aria-label={ariaLabel}
           className={
+            'ui-meatball-trigger ui-touch-target [--touch-expand:-10px] ' +
             'inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-images)] ' +
             'text-ink-black transition-opacity duration-[var(--duration-fast)] ' +
             'data-[state=open]:opacity-100 ' +

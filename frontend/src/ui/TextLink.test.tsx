@@ -35,4 +35,9 @@ describe('TextLink', () => {
     await userEvent.setup().click(link);
     expect(onClick).not.toHaveBeenCalled();
   });
+
+  it('触控热区（审查 A4）：纯文字钮 ui-touch-target 外扩命中区', () => {
+    render(<TextLink>retry</TextLink>);
+    expect(screen.getByRole('button', { name: 'retry' }).className).toContain('ui-touch-target');
+  });
 });

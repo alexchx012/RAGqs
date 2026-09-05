@@ -77,4 +77,11 @@ describe('MeatballMenu', () => {
       expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     });
   });
+
+  it('触发钮：热区外扩锚点（审查 A4）与触屏常显锚点（审查 A5）', () => {
+    renderMenu(createItems());
+    const trigger = screen.getByRole('button', { name: 'row actions' });
+    expect(trigger.className).toContain('ui-touch-target');
+    expect(trigger.className).toContain('ui-meatball-trigger');
+  });
 });

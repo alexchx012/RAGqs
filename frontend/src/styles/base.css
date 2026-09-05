@@ -127,11 +127,31 @@ body {
   }
 }
 
-/* 全站滚动条隐藏（保留滚动能力）：滚动列表不再显示右侧滚动条。 */
+/*
+ * 全站细滚动条（审查 A7）：此前全站隐藏滚动条，长列表没有滚动位置指示；
+ * 恢复 4px 细滚动条（低饱和灰 thumb、透明轨道，暗色经 token 变量适配）。
+ * 沉浸场景（聊天消息流等）用 .hide-scrollbar 豁免。
+ */
 * {
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-smoke-gray) transparent;
 }
 
 *::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background-color: var(--color-smoke-gray);
+}
+
+/* 豁免类：隐藏滚动条（保留滚动能力），由场景自行挂用。 */
+.hide-scrollbar {
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
   display: none;
 }

@@ -58,4 +58,12 @@ describe('Switch', () => {
     await userEvent.setup().click(screen.getByRole('switch'));
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('触控热区（审查 A4）：纵向单轴外扩（宽向已是 44px）', () => {
+    render(<Switch checked={false} onCheckedChange={() => {}} ariaLabel="privacy" />);
+    const control = screen.getByRole('switch');
+    expect(control.className).toContain('ui-touch-target');
+    expect(control.className).toContain('[--touch-expand-y:-10px]');
+    expect(control.className).toContain('[--touch-expand-x:0px]');
+  });
 });

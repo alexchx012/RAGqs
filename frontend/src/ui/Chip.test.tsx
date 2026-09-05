@@ -30,4 +30,17 @@ describe('Chip', () => {
     expect(dot).not.toBeNull();
     expect(dot?.className).toContain('rounded-full');
   });
+
+  it('截断兜底（审查 A8）：文本 span 携带 title 全文', () => {
+    render(<Chip>a very long scope label</Chip>);
+    const label = screen.getByText('a very long scope label');
+    expect(label).toHaveAttribute('title', 'a very long scope label');
+  });
+
+  it('触控热区（审查 A4）：ui-touch-target 外扩命中区，视觉类不变', () => {
+    render(<Chip>scope</Chip>);
+    const chip = screen.getByRole('button', { name: /scope/ });
+    expect(chip.className).toContain('ui-touch-target');
+    expect(chip.className).toContain('h-8');
+  });
 });

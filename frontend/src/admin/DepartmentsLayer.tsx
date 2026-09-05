@@ -376,12 +376,11 @@ export function DepartmentsLayer() {
       ) : loadError ? (
         <ErrorState text={copyDepartments.loadError} onRetry={() => void loadDepartments()} />
       ) : items.length === 0 ? (
-        <div className="flex flex-col items-center gap-3">
-          <EmptyState text={copyDepartments.empty} />
+        <EmptyState text={copyDepartments.empty}>
           {filter === 'active' && (
             <Pill onClick={() => setCreating(true)}>{copyDepartments.add}</Pill>
           )}
-        </div>
+        </EmptyState>
       ) : (
         <div role="table" aria-label={copy.shell.drawer.modules.departments}>
           <div

@@ -19,7 +19,11 @@ export function formatBytes(bytes: number): string {
   if (kb < 1024) {
     return `${kb.toFixed(1)} KB`;
   }
-  return `${(kb / 1024).toFixed(1)} MB`;
+  const mb = kb / 1024;
+  if (mb < 1024) {
+    return `${mb.toFixed(1)} MB`;
+  }
+  return `${(mb / 1024).toFixed(1)} GB`;
 }
 
 /** 0–1 小数 → 百分比字符串（§11 采样率展示；仅格式化展示，不改变原值）。 */

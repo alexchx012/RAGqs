@@ -27,6 +27,8 @@ const LIGHT_COLORS: Record<string, string> = {
   'mist-gray': '#f2f2f3',
   'fog-white': '#fafafb',
   'slate-gray': '#777b86',
+  /* 次级文字（审查 A6）：对 #ffffff/#fafafb/#f2f2f3 ≥4.5:1（6.21/5.95/5.55）。 */
+  'slate-strong': '#5c616c',
   'ash-gray': '#979799',
   'smoke-gray': '#a3a6af',
   'blush-peach': '#fbe1d1',
@@ -40,6 +42,8 @@ const DARK_COLORS: Record<string, string> = {
   'fog-white': '#23262c',
   'mist-gray': '#2c3038',
   'slate-gray': '#9aa0ab',
+  /* 次级文字（审查 A6）：对 #1c1f24/#23262c/#2c3038 ≥4.5:1（8.66/7.95/6.94）。 */
+  'slate-strong': '#b6bcc7',
   'ash-gray': '#7d828c',
   'smoke-gray': '#6b7079',
   'blush-peach': '#3a2d25',
@@ -88,7 +92,7 @@ describe('设计 token 与 Steep 事实源一致', () => {
     expect(lightScope).toContain(`--color-hairline: ${HAIRLINE[0]};`);
   });
 
-  it('色彩纪律：token 表中不允许 9 色 + 发丝边 + 三功能色之外的任何色值', () => {
+  it('色彩纪律：token 表中不允许 9 色 + 次级文字 slate-strong + 发丝边 + 三功能色之外的任何色值', () => {
     const allowedHexes = new Set(
       [
         ...Object.values(LIGHT_COLORS),

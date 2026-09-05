@@ -5,14 +5,21 @@
 
 export interface SkeletonRowProps {
   className?: string;
+  /** 行高（CSS 长度或数字 px），默认 40px（h-10）；如 admin 列表骨架对齐 56px 行高。 */
+  rowHeight?: string | number;
 }
 
 /** 列表骨架行：高 40px mist-gray 底，圆角 radius-images（共用基座 §3.2/§5.6）。 */
-export function SkeletonRow({ className = '' }: SkeletonRowProps) {
+export function SkeletonRow({ className = '', rowHeight }: SkeletonRowProps) {
   return (
     <div
       aria-hidden="true"
-      className={`ui-skeleton h-10 rounded-[var(--radius-images)] bg-mist-gray ${className}`}
+      className={
+        rowHeight === undefined
+          ? `ui-skeleton h-10 rounded-[var(--radius-images)] bg-mist-gray ${className}`
+          : `ui-skeleton rounded-[var(--radius-images)] bg-mist-gray ${className}`
+      }
+      style={rowHeight === undefined ? undefined : { height: rowHeight }}
     />
   );
 }

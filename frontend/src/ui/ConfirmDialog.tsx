@@ -1,7 +1,7 @@
 /*
  * 二次确认对话框（共用基座 §5.6 删除/恢复确认）：Radix Dialog 承载。
  * 宽 400px paper-white + radius-elevatedcards + shadow-subtle-2；遮罩 ink-black 24% 透明度；
- * 标题 20px 500 + 说明行 15px slate-gray；底部 ghost「取消」+ filled「确认」（danger 变体红底白字）。
+ * 标题 20px 500 + 说明行 15px slate-strong；底部 ghost「取消」+ filled「确认」（danger 变体红底白字）。
  * 进入 opacity 0→1 + scale 0.97→1 --duration-base --ease-out，关闭反向（keyframes 在 ui.css）；
  * Esc / 遮罩 / 取消均关闭；焦点圈定与关闭后焦点返回由 Radix 自带；打开期间 useEscShield 挂空盾。
  */
@@ -23,8 +23,10 @@ export interface ConfirmDialogProps {
   danger?: boolean;
   onConfirm: () => void;
   /**
-   * 确认进行中（single-flight，review A5）：第一次点击后确认键立即 disabled/loading，
-   * 取消/遮罩/Esc 一并禁用，直到当前 operation 完成；旧操作 completion 不会关闭/覆盖新确认框。
+   * 确认进行中（single-flight，review A5）：确认/取消键立即 disabled、确认键 aria-busy，
+   * 直到当前 operation 完成。关闭请求（Esc / 遮罩）不在此拦截，照常转发 onOpenChange，
+   * 由调用方决定取消语义（settings 模块在关闭时作废 in-flight mutation 并释放 confirming，
+   * 见 review A2 讨论记录）。
    */
   confirming?: boolean;
   /** 说明行与按钮行之间的附加内容（如校准开窗方式单选、错误行）；confirming 时由调用方自行禁用。 */
@@ -67,7 +69,7 @@ export function ConfirmDialog({
           }
         >
           <Dialog.Title className="text-[20px] font-medium text-ink-black">{title}</Dialog.Title>
-          <Dialog.Description className="mt-2 text-[15px] text-slate-gray">
+          <Dialog.Description className="mt-2 text-[15px] text-slate-strong">
             {description}
           </Dialog.Description>
           {children !== undefined && <div className="mt-4 flex flex-col gap-3">{children}</div>}
