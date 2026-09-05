@@ -7,6 +7,9 @@
  * - ops 下备份 / 恢复列表 5s 轮询（卸载 / 翻页清除；sequence fence 作废旧响应）；
  *   命令 single-flight + Idempotency-Key；行内状态、HeaderNotice 局部提示、
  *   loading / error / retry 复用既有原语，不新增全局 toast。
+ * - 失败类提示用 HeaderNotice danger 驻留 8s + 手动关闭（审查 A36）；策略表单字段校验错误
+ *   就近显示在对应输入框（aria-invalid + danger 边 + 框下说明，审查 A34）；窄屏 <768px
+ *   备份 / 恢复列表隐藏次要时间列（md 起恢复，审查 A28）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -117,6 +120,18 @@ function BackupsSegment() {
   const createIdem = useRef(createIdempotencyScope());
   const copyBackups = copy.admin.operations.backups;
 
+  /** 初载失败重试：补一次读（轮询由 effect 管，重试成功即恢复链）；代际保护防过期回调收骨架。 */
+  async function retryInitial(): Promise<void> {
+    const gen = generationRef.current;
+    setInitialLoading(true);
+    setLoadFailed(false);
+    await load();
+    if (gen !== generationRef.current) {
+      return;
+    }
+    setInitialLoading(false);
+  }
+
   /** 静默读：成功替换数据（keyed 行复用）；展开中的备份详情随同一读序列刷新。 */
   const load = useCallback(async (): Promise<void> => {
     const gen = generationRef.current;
@@ -178,14 +193,6 @@ function BackupsSegment() {
     };
   }, [load, page]);
 
-  /** 初载失败重试：补一次读（轮询由 effect 管，重试成功即恢复链）。 */
-  async function retryInitial(): Promise<void> {
-    setInitialLoading(true);
-    setLoadFailed(false);
-    await load();
-    setInitialLoading(false);
-  }
-
   async function createBackup(): Promise<void> {
     if (creating) {
       return; // single-flight
@@ -241,8 +248,12 @@ function BackupsSegment() {
       });
   }
 
-  const gridColumns =
-    'grid-cols-[minmax(0,1.2fr)_minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.6fr)_minmax(0,0.6fr)]';
+  // 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）。
+  // 窄屏降级（审查 A28）：<768px 隐藏次要时间列（md 起恢复）；备份表保留 ID / 状态 / 可恢复 /
+  // 操作，恢复表保留恢复 ID / 状态 / 操作（来源备份与时间列窄屏隐藏，详情内仍可见）。
+  const backupGridColumns =
+    'grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,0.6fr)_auto] ' +
+    'md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.6fr)_minmax(0,0.6fr)]';
 
   return (
     <div className="flex flex-col gap-3">
@@ -257,10 +268,9 @@ function BackupsSegment() {
       {notice !== null && (
         <HeaderNotice intent="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
+      {/* 失败类提示：HeaderNotice danger 驻留 8s + 手动关闭（审查 A36），不再一闪而过 */}
       {errorNotice !== null && (
-        <p role="alert" className="text-[15px] text-danger">
-          {errorNotice}
-        </p>
+        <HeaderNotice intent="danger" message={errorNotice} onDismiss={() => setErrorNotice(null)} />
       )}
       {initialLoading && <LoadingRows count={3} />}
       {!initialLoading && loadFailed && data === null && (
@@ -275,13 +285,13 @@ function BackupsSegment() {
             <EmptyState text={copyBackups.emptyBackups} />
           ) : (
             <div role="table" aria-label={copyBackups.backupTableAria}>
-              <div role="row" className={`grid ${gridColumns} items-center gap-x-4 px-4 py-2`}>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colBackupId}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colBackupStatus}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colBackupCreatedAt}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colBackupCompletedAt}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colBackupRestorable}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colBackupActions}</span>
+              <div role="row" className={`grid ${backupGridColumns} items-center gap-x-4 px-4 py-2`}>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyBackups.colBackupId}</span>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyBackups.colBackupStatus}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyBackups.colBackupCreatedAt}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyBackups.colBackupCompletedAt}</span>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyBackups.colBackupRestorable}</span>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyBackups.colBackupActions}</span>
               </div>
               <ul
                 role="rowgroup"
@@ -291,7 +301,7 @@ function BackupsSegment() {
                   <BackupRow
                     key={backup.backup_id}
                     backup={backup}
-                    gridColumns={gridColumns}
+                    gridColumns={backupGridColumns}
                     expanded={expandedId === backup.backup_id}
                     detail={expandedId === backup.backup_id ? detail : null}
                     detailFailed={expandedId === backup.backup_id && detailFailed}
@@ -350,7 +360,7 @@ function BackupRow({
   return (
     <li className="border-t border-[var(--color-hairline)] first:border-t-0">
       <div role="row" className={`grid ${gridColumns} items-center gap-x-4 px-4 py-3`}>
-        <span role="cell" className="min-w-0 truncate font-mono text-[15px] text-ash-gray">
+        <span role="cell" title={backup.backup_id} className="min-w-0 truncate font-mono text-[15px] text-slate-strong">
           {backup.backup_id}
         </span>
         <span role="cell">
@@ -358,10 +368,10 @@ function BackupRow({
             {copyBackups.backupStatus(backup.status)}
           </span>
         </span>
-        <span role="cell" className="text-[15px] text-slate-gray">
+        <span role="cell" className="hidden min-w-0 truncate text-[15px] text-slate-gray md:block">
           {formatDateTime(backup.created_at)}
         </span>
-        <span role="cell" className="text-[15px] text-slate-gray">
+        <span role="cell" className="hidden min-w-0 truncate text-[15px] text-slate-gray md:block">
           {backup.completed_at === null ? '—' : formatDateTime(backup.completed_at)}
         </span>
         <span
@@ -443,6 +453,18 @@ function RestoresSegment() {
   const retryIdem = useRef(createIdempotencyScope());
   const copyBackups = copy.admin.operations.backups;
 
+  /** 初载失败重试：补一次读（轮询由 effect 管，重试成功即恢复链）；代际保护防过期回调收骨架。 */
+  async function retryInitial(): Promise<void> {
+    const gen = generationRef.current;
+    setInitialLoading(true);
+    setLoadFailed(false);
+    await load();
+    if (gen !== generationRef.current) {
+      return;
+    }
+    setInitialLoading(false);
+  }
+
   /** 静默读：恢复记录 + 恢复来源候选同一读序列刷新；展开中的恢复详情随行刷新。 */
   const load = useCallback(async (): Promise<void> => {
     const gen = generationRef.current;
@@ -508,13 +530,6 @@ function RestoresSegment() {
       }
     };
   }, [load, page]);
-
-  async function retryInitial(): Promise<void> {
-    setInitialLoading(true);
-    setLoadFailed(false);
-    await load();
-    setInitialLoading(false);
-  }
 
   async function confirmRestore(): Promise<void> {
     const backup = pendingRestore;
@@ -625,8 +640,9 @@ function RestoresSegment() {
       });
   }
 
-  const gridColumns =
-    'grid-cols-[minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.6fr)]';
+  const restoreGridColumns =
+    'grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)_auto] ' +
+    'md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.6fr)]';
   const selectedBackup = sources.find((backup) => backup.backup_id === selectedBackupId) ?? null;
 
   return (
@@ -674,10 +690,9 @@ function RestoresSegment() {
       {notice !== null && (
         <HeaderNotice intent="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
+      {/* 失败类提示：HeaderNotice danger 驻留 8s + 手动关闭（审查 A36），不再一闪而过 */}
       {errorNotice !== null && (
-        <p role="alert" className="text-[15px] text-danger">
-          {errorNotice}
-        </p>
+        <HeaderNotice intent="danger" message={errorNotice} onDismiss={() => setErrorNotice(null)} />
       )}
       {initialLoading && <LoadingRows count={3} />}
       {!initialLoading && loadFailed && data === null && (
@@ -690,13 +705,13 @@ function RestoresSegment() {
             <EmptyState text={copyBackups.emptyRestores} />
           ) : (
             <div role="table" aria-label={copyBackups.restoreTableAria}>
-              <div role="row" className={`grid ${gridColumns} items-center gap-x-4 px-4 py-2`}>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colRestoreId}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colRestoreBackup}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colRestoreStatus}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colRestoreCreatedAt}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colRestoreCompletedAt}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyBackups.colRestoreActions}</span>
+              <div role="row" className={`grid ${restoreGridColumns} items-center gap-x-4 px-4 py-2`}>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyBackups.colRestoreId}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyBackups.colRestoreBackup}</span>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyBackups.colRestoreStatus}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyBackups.colRestoreCreatedAt}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyBackups.colRestoreCompletedAt}</span>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyBackups.colRestoreActions}</span>
               </div>
               <ul
                 role="rowgroup"
@@ -706,7 +721,7 @@ function RestoresSegment() {
                   <RestoreRow
                     key={restore.restore_id}
                     restore={restore}
-                    gridColumns={gridColumns}
+                    gridColumns={restoreGridColumns}
                     expanded={expandedId === restore.restore_id}
                     detail={expandedId === restore.restore_id ? detail : null}
                     detailFailed={expandedId === restore.restore_id && detailFailed}
@@ -804,10 +819,10 @@ function RestoreRow({
   return (
     <li className="border-t border-[var(--color-hairline)] first:border-t-0">
       <div role="row" className={`grid ${gridColumns} items-center gap-x-4 px-4 py-3`}>
-        <span role="cell" className="min-w-0 truncate font-mono text-[15px] text-ash-gray">
+        <span role="cell" title={restore.restore_id} className="min-w-0 truncate font-mono text-[15px] text-slate-strong">
           {restore.restore_id}
         </span>
-        <span role="cell" className="min-w-0 truncate font-mono text-[15px] text-ash-gray">
+        <span role="cell" title={restore.backup_id} className="hidden min-w-0 truncate font-mono text-[15px] text-slate-strong md:block">
           {restore.backup_id}
         </span>
         <span role="cell">
@@ -815,10 +830,10 @@ function RestoreRow({
             {copyBackups.restoreStatus(restore.status)}
           </span>
         </span>
-        <span role="cell" className="text-[15px] text-slate-gray">
+        <span role="cell" className="hidden min-w-0 truncate text-[15px] text-slate-gray md:block">
           {formatDateTime(restore.created_at)}
         </span>
-        <span role="cell" className="text-[15px] text-slate-gray">
+        <span role="cell" className="hidden min-w-0 truncate text-[15px] text-slate-gray md:block">
           {restore.completed_at === null ? '—' : formatDateTime(restore.completed_at)}
         </span>
         <span role="cell" className="flex items-center justify-end">
@@ -918,6 +933,12 @@ function PolicySegment() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  // 字段级校验错误（审查 A34）：就近显示在对应输入框（aria-invalid + danger 边 + 框下说明），
+  // 不再只在底部整行展示；formError 仅承载表单级错误（版本冲突 / 422 / 维护模式等）。
+  const [localTimeError, setLocalTimeError] = useState<string | null>(null);
+  const [weekdaysError, setWeekdaysError] = useState<string | null>(null);
+  const [keepLastError, setKeepLastError] = useState<string | null>(null);
+  const [retentionDaysError, setRetentionDaysError] = useState<string | null>(null);
   const generationRef = useRef(0);
   const saveIdem = useRef(createIdempotencyScope());
   const copyBackups = copy.admin.operations.backups;
@@ -960,6 +981,18 @@ function PolicySegment() {
   function patchForm(patch: Partial<PolicyFormState>): void {
     setForm((current) => (current === null ? current : { ...current, ...patch }));
     setFormError(null);
+    if ('localTime' in patch) {
+      setLocalTimeError(null);
+    }
+    if ('weekdays' in patch) {
+      setWeekdaysError(null);
+    }
+    if ('keepLast' in patch) {
+      setKeepLastError(null);
+    }
+    if ('retentionDays' in patch) {
+      setRetentionDaysError(null);
+    }
   }
 
   function toggleWeekday(value: number): void {
@@ -979,24 +1012,27 @@ function PolicySegment() {
     if (current === null || draft === null || saving) {
       return;
     }
-    // 客户端校验（服务端 422 兜底）：HH:MM、weekly 至少一天、正整数
+    // 客户端校验（服务端 422 兜底）：HH:MM、weekly 至少一天、正整数——错误就近显示在对应输入框
+    let hasFieldError = false;
     if (!LOCAL_TIME_PATTERN.test(draft.localTime)) {
-      setFormError(copyBackups.policyLocalTimeInvalid);
-      return;
+      setLocalTimeError(copyBackups.policyLocalTimeInvalid);
+      hasFieldError = true;
+    } else {
+      setLocalTimeError(null);
     }
     if (draft.frequency === 'weekly' && draft.weekdays.length === 0) {
-      setFormError(copyBackups.policyWeekdaysRequired);
-      return;
+      setWeekdaysError(copyBackups.policyWeekdaysRequired);
+      hasFieldError = true;
+    } else {
+      setWeekdaysError(null);
     }
     const keepLast = Number(draft.keepLast);
     const retentionDays = Number(draft.retentionDays);
-    if (
-      !Number.isInteger(keepLast) ||
-      keepLast < 1 ||
-      !Number.isInteger(retentionDays) ||
-      retentionDays < 1
-    ) {
-      setFormError(copyBackups.policyPositiveInteger);
+    const keepLastInvalid = !Number.isInteger(keepLast) || keepLast < 1;
+    const retentionDaysInvalid = !Number.isInteger(retentionDays) || retentionDays < 1;
+    setKeepLastError(keepLastInvalid ? copyBackups.policyPositiveInteger : null);
+    setRetentionDaysError(retentionDaysInvalid ? copyBackups.policyPositiveInteger : null);
+    if (hasFieldError || keepLastInvalid || retentionDaysInvalid) {
       return;
     }
     setSaving(true);
@@ -1044,9 +1080,10 @@ function PolicySegment() {
     }
   }
 
-  const inputClass =
-    'h-10 rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white ' +
-    'px-3 text-[15px] text-ink-black placeholder:text-smoke-gray focus:border-ink-black';
+  const inputClass = (invalid: boolean) =>
+    'h-10 rounded-[var(--radius-inputs)] border bg-paper-white ' +
+    'px-3 text-[15px] text-ink-black placeholder:text-smoke-gray focus:border-ink-black ' +
+    (invalid ? 'border-danger' : 'border-[var(--color-hairline)]');
 
   return (
     <div className="flex flex-col gap-3">
@@ -1091,9 +1128,15 @@ function PolicySegment() {
               placeholder="HH:MM"
               value={form.localTime}
               disabled={saving}
+              aria-invalid={localTimeError !== null}
               onChange={(event) => patchForm({ localTime: event.target.value })}
-              className={`${inputClass} w-32`}
+              className={`${inputClass(localTimeError !== null)} w-32`}
             />
+            {localTimeError !== null && (
+              <p role="alert" className="mt-2 text-[15px] text-danger">
+                {localTimeError}
+              </p>
+            )}
           </div>
           {form.frequency === 'weekly' && (
             <div>
@@ -1114,6 +1157,11 @@ function PolicySegment() {
                   </Pill>
                 ))}
               </div>
+              {weekdaysError !== null && (
+                <p role="alert" className="mt-2 text-[15px] text-danger">
+                  {weekdaysError}
+                </p>
+              )}
             </div>
           )}
           <div>
@@ -1128,7 +1176,7 @@ function PolicySegment() {
               value={form.timezone}
               disabled={saving}
               onChange={(event) => patchForm({ timezone: event.target.value })}
-              className={`${inputClass} w-full`}
+              className={`${inputClass(false)} w-full`}
             />
           </div>
           <div className="flex gap-4">
@@ -1143,9 +1191,15 @@ function PolicySegment() {
                 autoComplete="off"
                 value={form.keepLast}
                 disabled={saving}
+                aria-invalid={keepLastError !== null}
                 onChange={(event) => patchForm({ keepLast: event.target.value })}
-                className={`${inputClass} w-24`}
+                className={`${inputClass(keepLastError !== null)} w-24`}
               />
+              {keepLastError !== null && (
+                <p role="alert" className="mt-2 text-[15px] text-danger">
+                  {keepLastError}
+                </p>
+              )}
             </div>
             <div>
               <label htmlFor="backup-policy-retention-days" className="mb-2 block text-[15px] text-slate-gray">
@@ -1158,9 +1212,15 @@ function PolicySegment() {
                 autoComplete="off"
                 value={form.retentionDays}
                 disabled={saving}
+                aria-invalid={retentionDaysError !== null}
                 onChange={(event) => patchForm({ retentionDays: event.target.value })}
-                className={`${inputClass} w-24`}
+                className={`${inputClass(retentionDaysError !== null)} w-24`}
               />
+              {retentionDaysError !== null && (
+                <p role="alert" className="mt-2 text-[15px] text-danger">
+                  {retentionDaysError}
+                </p>
+              )}
             </div>
           </div>
           {/* 规格 §5 保护式 AND：页面固定说明，不得省略 */}

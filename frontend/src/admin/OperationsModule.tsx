@@ -162,11 +162,15 @@ export function OpsJobsLayer() {
     };
   }, [loadJobs, isOps, view]);
 
-  /** 初载失败重试：补一次读（轮询由 effect 管，重试成功即恢复链）。 */
+  /** 初载失败重试：补一次读（轮询由 effect 管，重试成功即恢复链）；代际保护防过期回调收骨架。 */
   async function retryInitial(): Promise<void> {
+    const gen = generationRef.current;
     setInitialLoading(true);
     setLoadFailed(false);
     await loadJobs();
+    if (gen !== generationRef.current) {
+      return;
+    }
     setInitialLoading(false);
   }
 
@@ -260,11 +264,14 @@ export function OpsJobsLayer() {
   }
 
   // 操作列整列不渲染：数据驱动（全部行 allowed_actions 为空，如超管只读视图），非角色分支。
-  // 轨道全部用 minmax(0,Xfr)：表头与各行是独立 grid，auto 轨道会各自按内容求宽导致表头错列
+  // 轨道全部用 minmax(0,Xfr)：表头与各行是独立 grid，auto 轨道会各自按内容求宽导致表头错列。
+  // 窄屏降级（审查 A28）：<768px 全屏抽屉放不下六列——任务 ID / 入队时间 / 停留时长三列
+  // 整列隐藏（md 起恢复），窄屏保留任务名 / 状态 / 操作；对应单元格 hidden md:block，
+  // 截断列 title 悬停兜底。操作列 flex-wrap 兜底，极端窄宽两枚 Pill 换行不互相遮挡。
   const showActions = data !== null && data.items.some((job) => job.allowed_actions.length > 0);
   const gridColumns = showActions
-    ? 'grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,0.9fr)]'
-    : 'grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,1fr)]';
+    ? 'grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)] md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,0.9fr)]'
+    : 'grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,1fr)]';
   // 渲染列表 = 当前数据 + 离开中的行（250ms 淡出收起后由定时器卸载）
   const leavingIds = new Set(leavingItems.map((job) => job.job_id));
   const visibleItems = [...(data?.items ?? []), ...leavingItems];
@@ -297,7 +304,10 @@ export function OpsJobsLayer() {
           )}
         </div>
       </div>
-      {notice !== null && <HeaderNotice message={notice} onDismiss={() => setNotice(null)} />}
+      {/* 本层 notice 只承载失败类提示（冲突 / 操作失败）：danger 驻留 8s + 手动关闭（审查 A36） */}
+      {notice !== null && (
+        <HeaderNotice intent="danger" message={notice} onDismiss={() => setNotice(null)} />
+      )}
       {initialLoading && <LoadingRows count={3} />}
       {!initialLoading && loadFailed && data === null && (
         <ErrorState text={copyOperations.loadError} onRetry={() => void retryInitial()} />
@@ -312,12 +322,12 @@ export function OpsJobsLayer() {
           ) : (
             <div role="table" aria-label={copyOperations.jobs}>
               <div role="row" className={`grid ${gridColumns} items-center gap-x-4 px-4 py-2`}>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colTask}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colJobId}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colQueuedAt}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colWaitDuration}</span>
-                <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colStatus}</span>
-                {showActions && <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyOperations.colActions}</span>}
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyOperations.colTask}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyOperations.colJobId}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyOperations.colQueuedAt}</span>
+                <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyOperations.colWaitDuration}</span>
+                <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyOperations.colStatus}</span>
+                {showActions && <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyOperations.colActions}</span>}
               </div>
               <ul
                 role="rowgroup"
@@ -332,17 +342,37 @@ export function OpsJobsLayer() {
                     `px-4 py-3 first:border-t-0 ${gridColumns} ${job.stale ? 'bg-fog-white' : ''}`
                   }
                 >
-                  <span role="cell" className="min-w-0 truncate text-[15px] text-ink-black">
+                  <span
+                    role="cell"
+                    title={`${copyOperations.taskTypeIngestion} · ${job.document_name}`}
+                    className="min-w-0 truncate text-[15px] text-ink-black"
+                  >
                     {copyOperations.taskTypeIngestion} · {job.document_name}
                   </span>
-                  <span role="cell" className="font-mono text-[15px] text-ash-gray">{job.job_id}</span>
-                  <span role="cell" className="text-[15px] text-slate-gray">
+                  {/* 任务 ID mono 17 字符：1280px 档与入队时间列挤压重叠（审查 A29）→ truncate + title；窄屏整列隐藏 */}
+                  <span
+                    role="cell"
+                    title={job.job_id}
+                    className="hidden min-w-0 truncate font-mono text-[15px] text-slate-strong tabular-nums md:block"
+                  >
+                    {job.job_id}
+                  </span>
+                  <span
+                    role="cell"
+                    title={formatDateTime(job.enqueued_at)}
+                    className="hidden min-w-0 truncate text-[15px] text-slate-gray md:block"
+                  >
                     {formatDateTime(job.enqueued_at)}
                   </span>
-                  <span role="cell" className={`text-[15px] ${job.stale ? 'text-warning' : 'text-slate-gray'}`}>
+                  <span
+                    role="cell"
+                    className={`hidden min-w-0 truncate text-[15px] tabular-nums md:block ${
+                      job.stale ? 'text-warning' : 'text-slate-gray'
+                    }`}
+                  >
                     {copyOperations.waitDuration(job.wait_seconds)}
                   </span>
-                  <span role="cell" className="flex items-center gap-1.5">
+                  <span role="cell" className="flex flex-wrap items-center gap-1.5">
                     {/* stale 是派生标记：琥珀点 + 停留时长琥珀，状态标签仍显示原 state */}
                     {job.stale && <StatusDot intent="warning" />}
                     <span className="rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-1 text-caption text-ink-black">

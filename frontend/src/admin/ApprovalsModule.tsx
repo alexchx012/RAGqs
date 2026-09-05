@@ -35,9 +35,17 @@ import { useAdmin } from './AdminProvider';
 import { formatDateTime } from './format';
 import { formatFileSize } from '../settings/UploadDialog';
 import { SegmentedControl } from '../ui/SegmentedControl';
+import { useRowTimers } from './use-row-timers';
 import type { QuotaRequestItem } from './types';
 
 /* ---------- 配额申请（§8.2–8.3） ---------- */
+
+// 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）。
+// 窄屏降级（审查 A28）：<768px 隐藏「当前用量」次要列（md 起恢复），保留申请人 / 申请量 /
+// 申请时间 / 操作。
+const QUOTA_GRID =
+  'grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] ' +
+  'md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto]';
 
 interface QuotaAction {
   readonly kind: 'approve' | 'reject';
@@ -49,6 +57,8 @@ export function QuotaRequestsLayer() {
   const [items, setItems] = useState<readonly QuotaRequestItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /** 是否已完成首次成功加载：之后刷新一律静默（审查 A32），不再整表替换骨架。 */
+  const [initialized, setInitialized] = useState(false);
   const [pendingAction, setPendingAction] = useState<QuotaAction | null>(null);
   const [approvePages, setApprovePages] = useState('');
   const [confirming, setConfirming] = useState(false);
@@ -60,6 +70,8 @@ export function QuotaRequestsLayer() {
   const [dialogError, setDialogError] = useState<string | null>(null);
   const idem = useRef(createIdempotencyScope());
   const seqRef = useRef(0);
+  // 行淡出定时器：卸载统一清理（审查 A35）
+  const rowTimers = useRowTimers();
   const copyApprovals = copy.admin.approvals;
 
   /** 读序列：generation fence；成功返回最新行（供 409 后定位刷新行），失败/过期返回 null。 */
@@ -73,6 +85,7 @@ export function QuotaRequestsLayer() {
         return null;
       }
       setItems(response.items);
+      setInitialized(true);
       return response.items;
     } catch {
       if (seq === seqRef.current) {
@@ -101,7 +114,7 @@ export function QuotaRequestsLayer() {
   /** 成功流转：行 250ms 淡出收起后移除（--duration-base）。 */
   function fadeAndRemove(requestId: string): void {
     setFading((current) => new Set(current).add(requestId));
-    window.setTimeout(() => {
+    rowTimers(() => {
       setFading((current) => {
         const next = new Set(current);
         next.delete(requestId);
@@ -213,24 +226,31 @@ export function QuotaRequestsLayer() {
       {headerNote !== null && (
         <HeaderNotice message={headerNote} onDismiss={() => setHeaderNote(null)} />
       )}
-      {loading ? (
-        <LoadingRows count={4} />
-      ) : loadError ? (
-        <ErrorState text={copyApprovals.loadError} onRetry={() => void loadRequests()} />
+      {/* 读刷新静默化（审查 A32）：骨架仅首载显示；写后 / 冲突刷新保留旧行 */}
+      {!initialized && loading ? (
+        <LoadingRows count={4} rowHeight={56} />
       ) : items.length === 0 ? (
-        <EmptyState text={copyApprovals.empty} />
+        loadError ? (
+          <ErrorState text={copyApprovals.loadError} onRetry={() => void loadRequests()} />
+        ) : (
+          <EmptyState text={copyApprovals.empty} />
+        )
       ) : (
-        <div role="table" aria-label={copyApprovals.quota}>
-          <div
-            role="row"
-            className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] items-center gap-3 px-4 py-2"
-          >
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colApplicant}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colUsage}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colRequested}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colRequestedAt}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colActions}</span>
-          </div>
+        <>
+          {loadError && (
+            <ErrorState text={copyApprovals.loadError} onRetry={() => void loadRequests()} />
+          )}
+          <div role="table" aria-label={copyApprovals.quota}>
+            <div
+              role="row"
+              className={`grid ${QUOTA_GRID} items-center gap-3 px-4 py-2`}
+            >
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colApplicant}</span>
+              <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyApprovals.colUsage}</span>
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colRequested}</span>
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colRequestedAt}</span>
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colActions}</span>
+            </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
             {items.map((request) => {
               const acting = actingId === request.id;
@@ -246,18 +266,24 @@ export function QuotaRequestsLayer() {
                   <div
                     role="row"
                     aria-busy={acting || undefined}
-                    className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray"
+                    className={`grid ${QUOTA_GRID} items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray`}
                   >
                     <span role="cell" className="truncate text-[15px] text-ink-black">
                       {request.applicant.display_name}
                     </span>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                    <span
+                      role="cell"
+                      className="hidden truncate text-[15px] tabular-nums text-slate-gray md:block"
+                    >
                       {copyApprovals.usageOf(
                         request.current_usage.used,
                         request.current_usage.effective_limit,
                       )}
                     </span>
-                    <span role="cell" className="truncate text-[15px] font-medium text-ink-black">
+                    <span
+                      role="cell"
+                      className="truncate text-[15px] font-medium tabular-nums text-ink-black"
+                    >
                       {copyApprovals.pages(request.requested_pages)}
                     </span>
                     <span role="cell" className="truncate text-[15px] text-slate-gray">
@@ -286,6 +312,7 @@ export function QuotaRequestsLayer() {
             })}
           </ul>
         </div>
+        </>
       )}
 
       <QuotaApproveDialog
@@ -426,6 +453,13 @@ function QuotaApproveDialog({
 
 /* ---------- 投稿审核（§8.4–8.5） ---------- */
 
+// 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）。
+// 窄屏降级（审查 A28）：<768px 隐藏「类型大小」「目标空间」次要列（md 起恢复），保留文件 /
+// 投稿人 / 投稿时间 / 操作。
+const SUBMISSION_GRID =
+  'grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto] ' +
+  'md:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto]';
+
 export function ApprovalSubmissionsLayer() {
   const { api, invalidateSummaries } = useAdmin();
   const { api: settingsApi } = useSettings();
@@ -433,6 +467,8 @@ export function ApprovalSubmissionsLayer() {
   const [versionByRow, setVersionByRow] = useState<ReadonlyMap<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /** 是否已完成首次成功加载：之后刷新一律静默（审查 A32），不再整表替换骨架。 */
+  const [initialized, setInitialized] = useState(false);
   const [pendingReject, setPendingReject] = useState<ApprovalListItem | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [actingId, setActingId] = useState<string | null>(null);
@@ -442,6 +478,8 @@ export function ApprovalSubmissionsLayer() {
   const [rowErrors, setRowErrors] = useState<ReadonlyMap<string, string>>(new Map());
   const idem = useRef(createIdempotencyScope());
   const seqRef = useRef(0);
+  // 行淡出定时器：卸载统一清理（审查 A35）
+  const rowTimers = useRowTimers();
   // 目标空间筛选（超管端 §7.3）：ops 待审恒为公共库时不渲染筛选控件
   const [spaceFilter, setSpaceFilter] = useState<'all' | 'public' | 'department'>('all');
   const [departmentFilter, setDepartmentFilter] = useState<string>('all');
@@ -471,6 +509,7 @@ export function ApprovalSubmissionsLayer() {
       }
       setItems(response.items);
       setVersionByRow(new Map(response.items.map((item) => [item.submission_id, item.version])));
+      setInitialized(true);
     } catch {
       if (seq === seqRef.current) {
         setLoadError(true);
@@ -516,7 +555,7 @@ export function ApprovalSubmissionsLayer() {
 
   function fadeAndRemove(submissionId: string): void {
     setFading((current) => new Set(current).add(submissionId));
-    window.setTimeout(() => {
+    rowTimers(() => {
       setFading((current) => {
         const next = new Set(current);
         next.delete(submissionId);
@@ -638,25 +677,32 @@ export function ApprovalSubmissionsLayer() {
           {actionError}
         </p>
       )}
-      {loading ? (
-        <LoadingRows count={4} />
-      ) : loadError ? (
-        <ErrorState text={copyManage.approvalsError} onRetry={() => void loadSubmissions()} />
+      {/* 读刷新静默化（审查 A32）：骨架仅首载显示；写后 / 冲突刷新保留旧行 */}
+      {!initialized && loading ? (
+        <LoadingRows count={4} rowHeight={56} />
       ) : visibleItems.length === 0 ? (
-        <EmptyState text={copyManage.approvalsEmpty} />
+        loadError ? (
+          <ErrorState text={copyManage.approvalsError} onRetry={() => void loadSubmissions()} />
+        ) : (
+          <EmptyState text={copyManage.approvalsEmpty} />
+        )
       ) : (
-        <div role="table" aria-label={copyApprovals.submissions}>
-          <div
-            role="row"
-            className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto] items-center gap-3 px-4 py-2"
-          >
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colFile}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colSubmitter}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colKindSize}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colTargetSpace}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colSubmittedAt}</span>
-            <span role="columnheader" className="truncate text-[14px] text-ash-gray">{copyApprovals.colActions}</span>
-          </div>
+        <>
+          {loadError && (
+            <ErrorState text={copyManage.approvalsError} onRetry={() => void loadSubmissions()} />
+          )}
+          <div role="table" aria-label={copyApprovals.submissions}>
+            <div
+              role="row"
+              className={`grid ${SUBMISSION_GRID} items-center gap-3 px-4 py-2`}
+            >
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colFile}</span>
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colSubmitter}</span>
+              <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyApprovals.colKindSize}</span>
+              <span role="columnheader" className="hidden truncate text-[14px] text-slate-strong md:block">{copyApprovals.colTargetSpace}</span>
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colSubmittedAt}</span>
+              <span role="columnheader" className="truncate text-[14px] text-slate-strong">{copyApprovals.colActions}</span>
+            </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
             {visibleItems.map((item) => {
               const acting = actingId === item.submission_id;
@@ -672,7 +718,7 @@ export function ApprovalSubmissionsLayer() {
                   <div
                     role="row"
                     aria-busy={acting || undefined}
-                    className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto] items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray"
+                    className={`grid ${SUBMISSION_GRID} items-center gap-3 px-4 py-4 transition-colors duration-150 hover:bg-mist-gray`}
                   >
                     <div role="cell" className="min-w-0">
                       <p className="truncate text-[15px] text-ink-black">{item.name}</p>
@@ -684,10 +730,16 @@ export function ApprovalSubmissionsLayer() {
                       {item.submitter.display_name}
                       {item.submitter.department !== null ? ` · ${item.submitter.department.name}` : ''}
                     </span>
-                    <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
+                    <span
+                      role="cell"
+                      className="hidden min-w-0 truncate text-[15px] text-slate-gray md:block"
+                    >
                       {formatFileSize(item.size_bytes)}
                     </span>
-                    <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
+                    <span
+                      role="cell"
+                      className="hidden min-w-0 truncate text-[15px] text-slate-gray md:block"
+                    >
                       {item.target_space_name}
                     </span>
                     <span role="cell" className="min-w-0 truncate text-[15px] text-slate-gray">
@@ -727,6 +779,7 @@ export function ApprovalSubmissionsLayer() {
             })}
           </ul>
         </div>
+        </>
       )}
 
       {/* 驳回对话框（400px）：可选填单行原因，填了随铃铛送达投稿人 */}

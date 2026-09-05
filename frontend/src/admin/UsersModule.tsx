@@ -7,8 +7,10 @@
  *   「新增用户」（高 36）；筛选变更重新拉取并回到第一页。
  * - 用户表：姓名 / 用户名 / 部门（无部门「—」smoke）/ 角色 / 最近活跃 / 操作；行高 56、发丝线、
  *   hover mist-gray；默认含 active 与 pending_delete（只读），无 deleted 墓碑；分页 Paginator。
- *   可读性（D1）：≥1024px（lg）角色 / 最近活跃列带最小宽直接可读；更窄时列可收缩，截断单元格
- *   一律 title 悬停全文（含冻结行角色文本与「将于 YYYY-MM-DD 清理」）。
+ *   窄屏降级（D1）：<768px 隐藏用户名 / 部门两个次要列（md 起恢复）；≥1024px（lg）角色 /
+ *   最近活跃列带最小宽直接可读；截断单元格一律 title 悬停全文（含冻结行角色文本与
+ *   「将于 YYYY-MM-DD 清理」）。读刷新静默化（D5）：骨架仅首载显示，翻页 / 筛选 / 搜索
+ *   保留旧行与分页器。
  * - 操作可见性按 §12 规则表推导（冻结 / 自己 / admin 目标 / ops 视角其他 ops 行均不渲染任何
  *   操作；不做禁用态），后端 403 兜底；渲染规则见 canManageUser。
  * - 编辑对话框（400px）：姓名只读 17px → 角色单选（admin 三选 / ops 两选，选中行左侧 6px 墨点）
@@ -30,7 +32,7 @@
 
 import * as Popover from '@radix-ui/react-popover';
 import { Check, ChevronRight } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { ApiError } from '../api/errors';
 import { useAuthState } from '../auth/AuthProvider';
@@ -52,6 +54,7 @@ import { useAdmin } from './AdminProvider';
 import { DialogFrame } from './dialog-frame';
 import { formatDate, formatDateTime } from './format';
 import { useAdminRead } from './use-admin-read';
+import { useRowTimers } from './use-row-timers';
 import { UserSearchBox } from './UserSearchBox';
 import type {
   AdminDepartmentItem,
@@ -68,10 +71,13 @@ const FLASH_MS = 400;
 const ENTER_MS = 300;
 
 // 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）。
-// ≥1024px（lg）为「角色」「最近活跃」两列加最小宽：冻结行「角色 + 已冻结，待清理」tag 与完整时间 /
-// 「将于 YYYY-MM-DD 清理」直接可读（D1 优先直接显示）；小于 lg 沿用可收缩栅格（窄屏渲染不变），
-// 截断列一律带 title 悬停全文（空间不足时的兜底通道）。
-const USER_GRID = 'grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto] lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(168px,1.2fr)_minmax(136px,1.2fr)_auto]';
+// 窄屏降级（审查 A28）：<768px 隐藏「用户名」「部门」两个次要列（md 起恢复），保留姓名 /
+// 角色（含冻结标记）/ 最近活跃（冻结行清理日期）/ 操作四列；≥768px 恢复六列，≥1024px（lg）
+// 「角色」「最近活跃」列带最小宽直接可读。截断单元格一律 title 悬停全文（含冻结行角色文本）。
+const USER_GRID =
+  'grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.3fr)_auto] ' +
+  'md:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto] ' +
+  'lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(168px,1.2fr)_minmax(136px,1.2fr)_auto]';
 
 /** 角色中文标签：用户列表 / 筛选 / 单选统一取 copy.settings.profile 角色常量。 */
 function roleLabel(role: Role): string {
@@ -127,6 +133,29 @@ const VALUE_INACTIVE_CURRENT = '__inactive_current__';
 
 /* ---------- 筛选下拉（ghost pill 触发 + 280px 浮层） ---------- */
 
+/**
+ * radiogroup 方向键循环（审查 A35）：↑/↓ 在 role=radio 按钮间移动焦点并首尾循环，
+ * 不移动焦点到组外（radio group 惯例）。FilterChip 浮层与 RoleRadioGroup 共用。
+ */
+function handleRadioArrowKeys(event: KeyboardEvent<HTMLElement>): void {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+    return;
+  }
+  const radios = Array.from(
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+  );
+  const index = radios.indexOf(document.activeElement as HTMLButtonElement);
+  if (index === -1) {
+    return;
+  }
+  event.preventDefault();
+  const next =
+    event.key === 'ArrowDown'
+      ? (index + 1) % radios.length
+      : (index - 1 + radios.length) % radios.length;
+  radios[next]?.focus();
+}
+
 interface FilterOption {
   readonly value: string;
   readonly label: string;
@@ -168,7 +197,7 @@ function FilterChip({ ariaLabel, allLabel, options, value, onChange }: FilterChi
             'rounded-[var(--radius-elevatedcards)] bg-paper-white p-1 shadow-[var(--shadow-subtle)]'
           }
         >
-          <div role="radiogroup" aria-label={ariaLabel}>
+          <div role="radiogroup" aria-label={ariaLabel} onKeyDown={handleRadioArrowKeys}>
             <button
               type="button"
               role="radio"
@@ -213,7 +242,12 @@ function RoleRadioGroup({
   readonly onChange: (role: Role) => void;
 }) {
   return (
-    <div role="radiogroup" aria-label={copy.admin.users.colRole} className="flex flex-col">
+    <div
+      role="radiogroup"
+      aria-label={copy.admin.users.colRole}
+      className="flex flex-col"
+      onKeyDown={handleRadioArrowKeys}
+    >
       {roles.map((role) => {
         const selected = role === value;
         return (
@@ -259,6 +293,8 @@ export function UsersModule() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /** 是否已完成首次成功加载：之后翻页 / 筛选 / 搜索一律静默刷新（审查 A32），不再整表替换骨架。 */
+  const [initialized, setInitialized] = useState(false);
   /** 列表错误行统一通道（403 forbidden_target / cannot_modify_self、user_pending_delete）。 */
   const [actionError, setActionError] = useState<string | null>(null);
   const [flashIds, setFlashIds] = useState<ReadonlySet<string>>(new Set());
@@ -271,6 +307,8 @@ export function UsersModule() {
   const [disableNote, setDisableNote] = useState<string | null>(null);
   const [disableError, setDisableError] = useState<string | null>(null);
   const [confirmingDisable, setConfirmingDisable] = useState(false);
+  // 行闪现 / 插入定时器：卸载统一清理（审查 A35）
+  const rowTimers = useRowTimers();
 
   /** 部门筛选下拉的目录（active）：模块挂载时加载一次；对话框打开的目录由对话框各自重拉。 */
   const [directory, setDirectory] = useState<readonly FilterOption[]>([]);
@@ -318,6 +356,7 @@ export function UsersModule() {
       }
       setItems(response.items);
       setTotal(response.total);
+      setInitialized(true);
       return response.items;
     } catch {
       if (seq === seqRef.current) {
@@ -337,7 +376,7 @@ export function UsersModule() {
 
   function flashRow(userId: string): void {
     setFlashIds((current) => new Set(current).add(userId));
-    window.setTimeout(() => {
+    rowTimers(() => {
       setFlashIds((current) => {
         const next = new Set(current);
         next.delete(userId);
@@ -348,7 +387,7 @@ export function UsersModule() {
 
   function markEnter(userId: string): void {
     setEnterIds((current) => new Set(current).add(userId));
-    window.setTimeout(() => {
+    rowTimers(() => {
       setEnterIds((current) => {
         const next = new Set(current);
         next.delete(userId);
@@ -516,27 +555,34 @@ export function UsersModule() {
           {actionError}
         </p>
       )}
-      {loading ? (
-        <LoadingRows count={5} />
-      ) : loadError ? (
-        <ErrorState text={copyUsers.loadError} onRetry={() => void loadUsers()} />
+      {/* 读刷新静默化（审查 A32）：骨架仅首载显示；翻页 / 筛选 / 搜索保留旧行与分页器 */}
+      {!initialized && loading ? (
+        <LoadingRows count={5} rowHeight={56} />
       ) : items.length === 0 ? (
-        <EmptyState text={copyUsers.empty}>
-          <TextLink onClick={clearFilters}>{copyUsers.clearFilters}</TextLink>
-        </EmptyState>
+        loadError ? (
+          <ErrorState text={copyUsers.loadError} onRetry={() => void loadUsers()} />
+        ) : (
+          <EmptyState text={copyUsers.empty}>
+            <TextLink onClick={clearFilters}>{copyUsers.clearFilters}</TextLink>
+          </EmptyState>
+        )
       ) : (
-        <div role="table" aria-label={copy.shell.drawer.modules.usersOps}>
-          <div
-            role="row"
-            className={`grid ${USER_GRID} items-center gap-3 px-4 pb-1 text-[14px] text-ash-gray`}
-          >
-            <span role="columnheader">{copyUsers.colRealName}</span>
-            <span role="columnheader">{copyUsers.colUsername}</span>
-            <span role="columnheader">{copyUsers.colDepartment}</span>
-            <span role="columnheader">{copyUsers.colRole}</span>
-            <span role="columnheader">{copyUsers.colLastActive}</span>
-            <span role="columnheader">{copyUsers.colActions}</span>
-          </div>
+        <>
+          {loadError && (
+            <ErrorState text={copyUsers.loadError} onRetry={() => void loadUsers()} />
+          )}
+          <div role="table" aria-label={copy.shell.drawer.modules.usersOps}>
+            <div
+              role="row"
+              className={`grid ${USER_GRID} items-center gap-3 px-4 pb-1 text-[14px] text-slate-strong`}
+            >
+              <span role="columnheader">{copyUsers.colRealName}</span>
+              <span role="columnheader" className="hidden md:block">{copyUsers.colUsername}</span>
+              <span role="columnheader" className="hidden md:block">{copyUsers.colDepartment}</span>
+              <span role="columnheader">{copyUsers.colRole}</span>
+              <span role="columnheader">{copyUsers.colLastActive}</span>
+              <span role="columnheader">{copyUsers.colActions}</span>
+            </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
             {items.map((item) => {
               const frozen = item.lifecycle_status === 'pending_delete';
@@ -575,7 +621,7 @@ export function UsersModule() {
                     <span
                       role="cell"
                       title={item.username}
-                      className="truncate text-[15px] text-slate-gray"
+                      className="hidden truncate text-[15px] text-slate-gray md:block"
                     >
                       {item.username}
                     </span>
@@ -583,7 +629,7 @@ export function UsersModule() {
                       role="cell"
                       title={item.department?.name ?? copyUsers.noDepartment}
                       className={
-                        'truncate text-[15px] ' +
+                        'hidden truncate text-[15px] md:block ' +
                         (item.department === null ? 'text-smoke-gray' : 'text-slate-gray')
                       }
                     >
@@ -594,7 +640,7 @@ export function UsersModule() {
                         {roleLabel(item.role)}
                       </span>
                       {frozen && (
-                        <span className="shrink-0 text-[14px] text-ash-gray">
+                        <span className="shrink-0 text-[14px] text-slate-strong">
                           {copy.admin.common.frozenTag}
                         </span>
                       )}
@@ -620,9 +666,10 @@ export function UsersModule() {
             })}
           </ul>
         </div>
-      )}
-      {!loading && !loadError && totalPages > 1 && (
-        <Paginator page={page} totalPages={totalPages} onChange={setPage} />
+          {totalPages > 1 && (
+            <Paginator page={page} totalPages={totalPages} onChange={setPage} />
+          )}
+        </>
       )}
     </section>
   );
@@ -1329,7 +1376,7 @@ function PermissionMatrixSection() {
           <>
             <table className="w-full text-left">
               <thead>
-                <tr className="border-b border-[var(--color-hairline)] text-[14px] text-ash-gray">
+                <tr className="border-b border-[var(--color-hairline)] text-[14px] text-slate-strong">
                   <th className="py-1.5 font-normal"> </th>
                   {MATRIX_ROLES.map((role) => (
                     <th key={role} className="py-1.5 font-normal">

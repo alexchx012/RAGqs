@@ -246,59 +246,82 @@ function CalibrationWindowCard() {
 
 /* ---------- 排行榜 / 影子评测排名（§11.1 同表同规格） ---------- */
 
-function LeaderboardTable({ entries }: { readonly entries: readonly LeaderboardEntry[] }) {
+function LeaderboardTable({
+  entries,
+  ariaLabel,
+}: {
+  readonly entries: readonly LeaderboardEntry[];
+  readonly ariaLabel: string;
+}) {
   const evaluation = copy.admin.evaluation;
   // metrics map 动态列：键集取全部行并集，列序稳定排序
   const metricKeys = [...new Set(entries.flatMap((entry) => Object.keys(entry.metrics)))].sort();
   return (
-    <table className="w-full border-collapse text-left">
-      <thead>
-        <tr className="text-[14px] text-ash-gray">
-          <th className="px-4 py-2 font-normal">{evaluation.colRank}</th>
-          <th className="px-4 py-2 font-normal">{evaluation.colName}</th>
-          <th className="px-4 py-2 font-normal">{evaluation.colScore}</th>
-          {metricKeys.map((key) => (
-            <th key={key} className="px-4 py-2 font-normal">
-              {key}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {entries.map((entry) => (
-          <tr
-            key={`${entry.rank}:${entry.name}`}
-            className={`border-t border-[var(--color-hairline)] ${entry.is_active ? 'bg-fog-white' : ''}`}
-          >
-            {/* 名次 Sohne 500 16px ink，不用奖牌彩色 */}
-            <td className="px-4 py-3 text-[16px] font-medium text-ink-black">{entry.rank}</td>
-            <td className="px-4 py-3 text-[15px] text-ink-black">
-              {entry.name}
-              {!entry.eligible && (
-                <span className="ml-2 text-[14px] text-smoke-gray">{evaluation.notEligibleTag}</span>
-              )}
-            </td>
-            <td className="px-4 py-3 text-[15px] text-slate-gray">{entry.score}</td>
+    // 动态指标列可能超出卡宽（审查 A33）：外壳 overflow-x-auto + 单元格 whitespace-nowrap，
+    // 多指标列不互相挤压；数字列 tabular-nums（审查 A31）；table 带 aria-label（审查 A35）。
+    <div className="overflow-x-auto">
+      <table aria-label={ariaLabel} className="w-full border-collapse text-left">
+        <thead>
+          <tr className="text-[14px] text-slate-strong">
+            <th className="whitespace-nowrap px-4 py-2 font-normal">{evaluation.colRank}</th>
+            <th className="whitespace-nowrap px-4 py-2 font-normal">{evaluation.colName}</th>
+            <th className="whitespace-nowrap px-4 py-2 font-normal">{evaluation.colScore}</th>
             {metricKeys.map((key) => (
-              <td key={key} className="px-4 py-3 text-[15px] text-slate-gray">
-                {entry.metrics[key] ?? '—'}
-              </td>
+              <th key={key} className="whitespace-nowrap px-4 py-2 font-normal">
+                {key}
+              </th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {entries.map((entry) => (
+            <tr
+              key={`${entry.rank}:${entry.name}`}
+              className={`border-t border-[var(--color-hairline)] ${entry.is_active ? 'bg-fog-white' : ''}`}
+            >
+              {/* 名次 Sohne 500 16px ink，不用奖牌彩色 */}
+              <td className="whitespace-nowrap px-4 py-3 text-[16px] font-medium tabular-nums text-ink-black">
+                {entry.rank}
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 text-[15px] text-ink-black">
+                {entry.name}
+                {!entry.eligible && (
+                  <span className="ml-2 text-[14px] text-slate-strong">{evaluation.notEligibleTag}</span>
+                )}
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 text-[15px] tabular-nums text-slate-gray">
+                {entry.score}
+              </td>
+              {metricKeys.map((key) => (
+                <td
+                  key={key}
+                  className="whitespace-nowrap px-4 py-3 text-[15px] tabular-nums text-slate-gray"
+                >
+                  {entry.metrics[key] ?? '—'}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-function LeaderboardCard({ entries }: { readonly entries: readonly LeaderboardEntry[] }) {
+function LeaderboardCard({
+  entries,
+  ariaLabel,
+}: {
+  readonly entries: readonly LeaderboardEntry[];
+  readonly ariaLabel: string;
+}) {
   const evaluation = copy.admin.evaluation;
   return (
     <div className="rounded-[var(--radius-cards)] border border-[var(--color-hairline)] bg-paper-white p-2">
       {entries.length === 0 ? (
         <EmptyState text={evaluation.empty} />
       ) : (
-        <LeaderboardTable entries={entries} />
+        <LeaderboardTable entries={entries} ariaLabel={ariaLabel} />
       )}
     </div>
   );
@@ -337,7 +360,7 @@ export function EvaluationModule() {
               <LoadingRows count={3} />
             ) : (
               <>
-                <LeaderboardCard entries={read.data.entries} />
+                <LeaderboardCard entries={read.data.entries} ariaLabel={evaluation.leaderboardTitle} />
                 <p className="px-1 text-[15px] text-slate-gray">{policyLine(read.data.policy)}</p>
               </>
             )}
@@ -347,7 +370,7 @@ export function EvaluationModule() {
             {read.loading || read.data === null ? (
               <LoadingRows count={2} />
             ) : (
-              <LeaderboardCard entries={read.data.shadow_entries} />
+              <LeaderboardCard entries={read.data.shadow_entries} ariaLabel={evaluation.shadowTitle} />
             )}
           </section>
         </>

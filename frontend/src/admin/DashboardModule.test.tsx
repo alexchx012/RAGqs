@@ -392,14 +392,15 @@ describe('总览 dashboard：超阈与整卡跳转', () => {
     expect(card.className).not.toContain('hover:bg-fog-white');
   });
 
-  it('无数据卡：value null → 数字位「—」+ 图形区「暂无数据」smoke-gray（不参与超阈判定）', async () => {
+  it('无数据卡：value null → 数字位「—」+ 图形区「暂无数据」达标次级文字 token（不参与超阈判定）', async () => {
     const { container } = renderDashboard(
       fakeAdminApi({ getDashboard: vi.fn(async (window: MetricsWindow) => opsDashboard(window)) }),
     );
     await screen.findByText('任务与健康');
     const card = cardElement(container, 'latency');
     expect(within(card).getByText('—')).toBeInTheDocument();
-    expect(within(card).getByText(copyDashboard.noData).className).toContain('text-smoke-gray');
+    // 空态文案是有意义文字（审查 A31 灰 token 迁移）：smoke 灰不足 4.5:1，用 slate-strong
+    expect(within(card).getByText(copyDashboard.noData).className).toContain('text-slate-strong');
     expect(card.querySelector('svg polyline')?.getAttribute('points') ?? '').toBe('');
     expect(card).not.toHaveAttribute('data-breached');
   });
