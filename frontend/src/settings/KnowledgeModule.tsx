@@ -412,7 +412,7 @@ export function KnowledgeModule() {
             type="button"
             data-drill-row="uploads"
             onClick={() => drillUploads()}
-            className="inline-flex items-center gap-1.5 text-[15px] text-ink-black underline-offset-2 hover:underline"
+            className="ui-text-entry inline-flex items-center gap-1.5 px-2.5 py-1 text-[15px] text-ink-black"
           >
             {copy.settings.knowledge.uploads.historyEntry}
             {uploadPendingCount > 0 && (
@@ -426,7 +426,7 @@ export function KnowledgeModule() {
               type="button"
               data-drill-row="submissions"
               onClick={() => drillSubmissions()}
-              className="text-[15px] text-ink-black underline-offset-2 hover:underline"
+              className="ui-text-entry inline-flex items-center px-2.5 py-1 text-[15px] text-ink-black"
             >
               {copy.settings.knowledge.submissions.entry}
             </button>

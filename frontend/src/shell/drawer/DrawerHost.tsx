@@ -830,9 +830,12 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
               {navArea}
             </nav>
           )}
+          {/* 滚动容器留 4px 顶部/左侧绘制余量：首行元素（顶行入口、文档名等）与 scrollport
+              齐平，hover 的 scale 放大与阴影会溢出内容盒被裁剪。pt/pl + 等量负 margin 保持
+              内容原位，max-w 同步 +4（720→724）抵消 pl，内容宽度与右缘均不变。 */}
           <div
             ref={contentRef}
-            className={`min-w-0 flex-1 overflow-y-auto ${narrow ? '' : 'max-w-[720px]'}`}
+            className={`min-w-0 flex-1 overflow-y-auto pt-1 pl-1 -mt-1 -ml-1 ${narrow ? '' : 'max-w-[724px]'}`}
           >
             {narrowListView ? renderModuleList('idle') : contentArea}
           </div>

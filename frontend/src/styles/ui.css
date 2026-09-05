@@ -282,3 +282,25 @@
     transform: rotate(360deg) translateY(6.5px) scale(1);
   }
 }
+
+/* 无边框文本入口按钮（设置页顶行「上传结果 / 我的投稿」、知识空间文档名等）：
+ * 悬停时放大 1.05 + 椭圆 hairline 边框 + fog-white 底 + 小面积投影，
+ * --duration-base --ease-out 双向过渡；prefers-reduced-motion 由 base.css 全局降级为直出。
+ * 阴影各向溢出须 ≤4px：设置抽屉滚动容器只给了 4px 绘制余量（DrawerHost pt-1/pl-1），
+ * 超出会被 scrollport 裁剪，故不用 --shadow-subtle（模糊半径 24px 远超余量）。 */
+.ui-text-entry {
+  border: 1px solid transparent;
+  border-radius: var(--radius-buttons);
+  transition:
+    transform var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    background-color var(--duration-base) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out);
+}
+
+.ui-text-entry:hover {
+  transform: scale(1.05);
+  border-color: var(--color-hairline);
+  background-color: var(--color-fog-white);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
+}

@@ -245,7 +245,7 @@ function AdminDocumentList({
                     aria-label={copySpaces.openPreviewAria(doc.name)}
                     title={doc.name}
                     onClick={() => openDocumentPreview(doc.id)}
-                    className="w-full truncate text-left text-[15px] text-ink-black underline-offset-2 hover:underline"
+                    className="ui-text-entry block w-fit max-w-full truncate px-2.5 py-1 text-left text-[15px] text-ink-black"
                   >
                     {doc.name}
                   </button>
