@@ -113,7 +113,9 @@ function DistributionRows({ card }: { readonly card: DistributionDashboardCard }
               {row.label}
             </span>
             <RatioBar ratio={row.ratio} />
-            <span className={`shrink-0 text-[15px] ${warning ? 'text-warning' : 'text-slate-gray'}`}>
+            <span
+              className={`shrink-0 text-[15px] tabular-nums ${warning ? 'text-warning' : 'text-slate-gray'}`}
+            >
               {row.value}
             </span>
           </li>
@@ -139,12 +141,12 @@ function UserRankRows({
       <ul className="mt-3 flex flex-col gap-2">
         {rows.map((row, rowIndex) => (
           <li key={row.label} className="flex items-center gap-3">
-            <span className="w-6 shrink-0 text-[16px] font-medium text-ink-black">
+            <span className="w-6 shrink-0 text-[16px] font-medium tabular-nums text-ink-black">
               {rowIndex + 1}
             </span>
             <span className="w-20 shrink-0 truncate text-[15px] text-ink-black">{row.label}</span>
             <RatioBar ratio={row.ratio} />
-            <span className="shrink-0 text-[15px] text-slate-gray">{row.value}</span>
+            <span className="shrink-0 text-[15px] tabular-nums text-slate-gray">{row.value}</span>
           </li>
         ))}
       </ul>
@@ -245,7 +247,7 @@ export function DashboardCardView({
         content = (
           <>
             <div
-              className={`mt-2 text-[20px] font-medium leading-none ${
+              className={`mt-2 text-[20px] font-medium leading-none tabular-nums ${
                 breached ? 'text-danger' : 'text-ink-black'
               }`}
             >
@@ -253,7 +255,7 @@ export function DashboardCardView({
             </div>
             {card.delta !== null && <DeltaRow delta={card.delta} />}
             {card.value === null ? (
-              <div className="mt-3 flex h-8 items-center justify-center text-[15px] text-smoke-gray">
+              <div className="mt-3 flex h-8 items-center justify-center text-[15px] text-slate-strong">
                 {copyDashboard.noData}
               </div>
             ) : (
@@ -266,7 +268,7 @@ export function DashboardCardView({
         content = (
           <>
             <div
-              className={`mt-2 text-[20px] font-medium leading-none ${
+              className={`mt-2 text-[20px] font-medium leading-none tabular-nums ${
                 breached ? 'text-danger' : 'text-ink-black'
               }`}
             >
@@ -281,7 +283,7 @@ export function DashboardCardView({
             </div>
             {card.delta !== null && <DeltaRow delta={card.delta} />}
             {card.value === null && (
-              <p className="mt-2 text-[15px] text-smoke-gray">{copyDashboard.noData}</p>
+              <p className="mt-2 text-[15px] text-slate-strong">{copyDashboard.noData}</p>
             )}
           </>
         );

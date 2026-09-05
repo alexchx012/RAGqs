@@ -85,6 +85,8 @@ function AdminDocumentList({
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /** 是否已完成首次成功加载：之后翻页 / 写后刷新一律静默（审查 A32），不再整表替换骨架。 */
+  const [initialized, setInitialized] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<DocumentListItem | null>(null);
   const [pendingReindex, setPendingReindex] = useState<DocumentListItem | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -115,6 +117,7 @@ function AdminDocumentList({
       }
       setDocuments(response.items);
       setTotal(response.total);
+      setInitialized(true);
     } catch {
       if (seq === seqRef.current) {
         setLoadError(true);
@@ -220,21 +223,28 @@ function AdminDocumentList({
       {notice !== null && (
         <HeaderNotice intent="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
-      {loading ? (
-        <LoadingRows count={3} />
-      ) : loadError ? (
-        <ErrorState text={copyDocuments.loadError} onRetry={() => void loadDocuments()} />
+      {/* 读刷新静默化（审查 A32）：骨架仅首载显示；翻页 / 写后刷新保留旧行与分页器 */}
+      {!initialized && loading ? (
+        <LoadingRows count={3} rowHeight={56} />
       ) : documents.length === 0 ? (
-        <EmptyState text={copyDocuments.empty} />
+        loadError ? (
+          <ErrorState text={copyDocuments.loadError} onRetry={() => void loadDocuments()} />
+        ) : (
+          <EmptyState text={copyDocuments.empty} />
+        )
       ) : (
-        <div role="table" aria-label={copyDocuments.title}>
-          <div role="row" className="flex items-center gap-3 px-4 py-2">
-            <span role="columnheader" className="min-w-0 flex-1 truncate text-[14px] text-ash-gray">{copySpaces.colDocument}</span>
-            <span role="columnheader" className="w-28 shrink-0 truncate text-[14px] text-ash-gray">{copySpaces.colStatus}</span>
-            <span role="columnheader" className="hidden w-40 shrink-0 truncate text-[14px] text-ash-gray md:inline">{copySpaces.colUploadedAt}</span>
-            <span role="columnheader" className="hidden w-40 shrink-0 truncate text-[14px] text-ash-gray lg:inline">{copySpaces.colUsage}</span>
-            {manage && <span role="columnheader" aria-label={copySpaces.colActions} className="w-8 shrink-0" />}
-          </div>
+        <>
+          {loadError && (
+            <ErrorState text={copyDocuments.loadError} onRetry={() => void loadDocuments()} />
+          )}
+          <div role="table" aria-label={copyDocuments.title}>
+            <div role="row" className="flex items-center gap-3 px-4 py-2">
+              <span role="columnheader" className="min-w-0 flex-1 truncate text-[14px] text-slate-strong">{copySpaces.colDocument}</span>
+              <span role="columnheader" className="w-28 shrink-0 truncate text-[14px] text-slate-strong">{copySpaces.colStatus}</span>
+              <span role="columnheader" className="hidden w-40 shrink-0 truncate text-[14px] text-slate-strong md:inline">{copySpaces.colUploadedAt}</span>
+              <span role="columnheader" className="hidden w-40 shrink-0 truncate text-[14px] text-slate-strong lg:inline">{copySpaces.colUsage}</span>
+              {manage && <span role="columnheader" aria-label={copySpaces.colActions} className="w-8 shrink-0" />}
+            </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
           {documents.map((doc) => (
             <li key={doc.id} role="presentation" className="group transition-colors duration-150 hover:bg-mist-gray">
@@ -315,14 +325,15 @@ function AdminDocumentList({
           ))}
           </ul>
         </div>
+          {totalPages > 1 && (
+            <Paginator page={page} totalPages={totalPages} onChange={setPage} />
+          )}
+        </>
       )}
       {actionError !== null && (
         <p role="alert" className="text-[15px] text-danger">
           {actionError}
         </p>
-      )}
-      {!loading && !loadError && totalPages > 1 && (
-        <Paginator page={page} totalPages={totalPages} onChange={setPage} />
       )}
 
       <ConfirmDialog
@@ -654,10 +665,10 @@ function GraphBuildSection() {
             </p>
           )}
           {current.graph_availability === 'stale' && current.active_generation !== null && (
-            <p className="text-[14px] text-smoke-gray">{graph.generationExpired}</p>
+            <p className="text-[14px] text-slate-strong">{graph.generationExpired}</p>
           )}
           {latestRun === null ? (
-            <p className="text-[14px] text-smoke-gray">{graph.empty}</p>
+            <p className="text-[14px] text-slate-strong">{graph.empty}</p>
           ) : (
             <div className="flex flex-col gap-1">
               <p className="text-[14px] text-slate-gray">
@@ -896,14 +907,18 @@ export function PersonalLibsLayer() {
         placeholder={copySpaces.userSearchPlaceholder}
         ariaLabel={copySpaces.userSearchAria}
       />
-      {read.loading ? (
-        <LoadingRows count={3} />
-      ) : read.error ? (
-        <ErrorState text={copySpaces.loadError} onRetry={read.reload} />
-      ) : read.data !== null && read.data.items.length === 0 ? (
+      {/* 读刷新静默化（审查 A32）：useAdminRead 失败 / 刷新中保留旧 data；骨架仅首载显示 */}
+      {read.data === null ? (
+        read.loading ? (
+          <LoadingRows count={3} rowHeight={56} />
+        ) : read.error ? (
+          <ErrorState text={copySpaces.loadError} onRetry={read.reload} />
+        ) : null
+      ) : read.data.items.length === 0 ? (
         <EmptyState text={copySpaces.emptyUsers} />
-      ) : read.data !== null ? (
+      ) : (
         <>
+          {read.error && <ErrorState text={copySpaces.loadError} onRetry={read.reload} />}
           <ul className="divide-y divide-[var(--color-hairline)]">
             {read.data.items.map((item) => {
               const frozen = item.lifecycle_status === 'pending_delete';
@@ -923,7 +938,7 @@ export function PersonalLibsLayer() {
                     </p>
                   </div>
                   {frozen && (
-                    <span className="shrink-0 text-[14px] text-ash-gray">{copy.admin.common.frozenTag}</span>
+                    <span className="shrink-0 text-[14px] text-slate-strong">{copy.admin.common.frozenTag}</span>
                   )}
                 </>
               );
@@ -950,7 +965,7 @@ export function PersonalLibsLayer() {
           </ul>
           {totalPages > 1 && <Paginator page={page} totalPages={totalPages} onChange={setPage} />}
         </>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -1001,14 +1016,11 @@ export function DepartmentLibsLayer() {
                   </p>
                 </div>
                 <span className="flex shrink-0 items-center gap-2 text-[14px] text-slate-gray">
-                  {department.status === 'active' ? (
-                    copyDepartments.statusActive
-                  ) : (
-                    <>
-                      <StatusDot intent="slate" />
-                      {copyDepartments.statusInactive}
-                    </>
-                  )}
+                  {/* active / inactive 均带 StatusDot，状态形态一致（审查 A35） */}
+                  <StatusDot intent={department.status === 'active' ? 'success' : 'slate'} />
+                  {department.status === 'active'
+                    ? copyDepartments.statusActive
+                    : copyDepartments.statusInactive}
                   {department.pending_submission_count > 0 && (
                     <CountBadge count={department.pending_submission_count} />
                   )}

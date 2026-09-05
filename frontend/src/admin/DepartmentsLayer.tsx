@@ -4,8 +4,9 @@
  *   TextLink（15px ink）+ filled pill「新增部门」（高 36）；接口未定义分页与搜索参数 →
  *   不提供分页器与搜索框。进入层、切换筛选、点击「刷新」按当前 status 重新请求。
  * - 部门表：部门名（一行截断）/ 状态（6px 点：在用 success / 已停用 slate + 15px 文字）/
- *   成员 / 文档 / 进行中任务 / 待审投稿（四列计数 15px slate，仅决策参考）/ 停用时间
- *   （YYYY-MM-DD；在用「—」）/ 操作；行高 56、发丝线、hover mist、表头 14px ash。
+ *   成员 / 文档 / 进行中任务 / 待审投稿（四列计数 15px slate tabular-nums，仅决策参考）/
+ *   停用时间（YYYY-MM-DD；在用「—」）/ 操作；行高 56、发丝线、hover mist、表头 14px。
+ *   窄屏降级（D1）：<768px 隐藏四个计数列（md 起恢复）；读刷新静默化（D5）：骨架仅首载。
  * - 行操作唯一依据 = 该行 allowed_actions：rename →「改名」、deactivate →「停用」（danger）；
  *   空数组「—」；未知值不渲染；不按角色 / 状态 / 计数推导、补出或预先放行。
  * - 写操作提交体固定：新增 { name }（201）、改名 { expected_version, name }、停用
@@ -37,6 +38,7 @@ import {
 import { useAdmin } from './AdminProvider';
 import { DialogFrame } from './dialog-frame';
 import { formatDate } from './format';
+import { useRowTimers } from './use-row-timers';
 import type { AdminDepartmentItem, DepartmentAction, DepartmentStatusFilter } from './types';
 
 /** 行底 fog-white 闪现时长（--duration-slow = 400ms）。 */
@@ -46,9 +48,12 @@ const ENTER_MS = 300;
 /** 改名成功名称就地交叉淡变时长（--duration-fast = 150ms，略留余量后清理 class）。 */
 const RENAME_FADE_MS = 200;
 
-// 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）
+// 单行字面量：Tailwind 按源码原文扫描生成 CSS，多行拼接不会被识别（列塌陷，行内容堆叠遮挡）。
+// 窄屏降级（审查 A28）：<768px 隐藏成员 / 文档 / 进行中任务 / 待审投稿四个次要计数列
+// （md 起恢复），保留部门名 / 状态 / 停用时间 / 操作。
 const DEPARTMENT_GRID =
-  'grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.5fr)_minmax(0,0.5fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto]';
+  'grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_auto] ' +
+  'md:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.5fr)_minmax(0,0.5fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto]';
 
 const KNOWN_ACTIONS: readonly DepartmentAction[] = ['rename', 'deactivate'];
 
@@ -64,6 +69,8 @@ export function DepartmentsLayer() {
   const [items, setItems] = useState<readonly AdminDepartmentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  /** 是否已完成首次成功加载：之后筛选 / 刷新一律静默（审查 A32），不再整表替换骨架。 */
+  const [initialized, setInitialized] = useState(false);
   /** 列表错误行统一通道（404 / 409 inactive 等状态变化）。 */
   const [actionError, setActionError] = useState<string | null>(null);
   const [flashIds, setFlashIds] = useState<ReadonlySet<string>>(new Set());
@@ -71,6 +78,8 @@ export function DepartmentsLayer() {
   const [renamedIds, setRenamedIds] = useState<ReadonlySet<string>>(new Set());
   const seqRef = useRef(0);
   const idem = useRef(createIdempotencyScope());
+  // 行闪现 / 插入 / 改名淡变定时器：卸载统一清理（审查 A35）
+  const rowTimers = useRowTimers();
 
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<AdminDepartmentItem | null>(null);
@@ -93,6 +102,7 @@ export function DepartmentsLayer() {
         return null;
       }
       setItems(response.items);
+      setInitialized(true);
       return response.items;
     } catch {
       if (seq === seqRef.current) {
@@ -112,7 +122,7 @@ export function DepartmentsLayer() {
 
   function flashRow(departmentId: string): void {
     setFlashIds((current) => new Set(current).add(departmentId));
-    window.setTimeout(() => {
+    rowTimers(() => {
       setFlashIds((current) => {
         const next = new Set(current);
         next.delete(departmentId);
@@ -123,7 +133,7 @@ export function DepartmentsLayer() {
 
   function markEnter(departmentId: string): void {
     setEnterIds((current) => new Set(current).add(departmentId));
-    window.setTimeout(() => {
+    rowTimers(() => {
       setEnterIds((current) => {
         const next = new Set(current);
         next.delete(departmentId);
@@ -134,7 +144,7 @@ export function DepartmentsLayer() {
 
   function markRenamed(departmentId: string): void {
     setRenamedIds((current) => new Set(current).add(departmentId));
-    window.setTimeout(() => {
+    rowTimers(() => {
       setRenamedIds((current) => {
         const next = new Set(current);
         next.delete(departmentId);
@@ -371,33 +381,40 @@ export function DepartmentsLayer() {
           {actionError}
         </p>
       )}
-      {loading ? (
-        <LoadingRows count={5} />
-      ) : loadError ? (
-        <ErrorState text={copyDepartments.loadError} onRetry={() => void loadDepartments()} />
+      {/* 读刷新静默化（审查 A32）：骨架仅首载显示；筛选 / 手动刷新保留旧行 */}
+      {!initialized && loading ? (
+        <LoadingRows count={5} rowHeight={56} />
       ) : items.length === 0 ? (
-        <EmptyState text={copyDepartments.empty}>
-          {filter === 'active' && (
-            <Pill onClick={() => setCreating(true)}>{copyDepartments.add}</Pill>
-          )}
-        </EmptyState>
+        loadError ? (
+          <ErrorState text={copyDepartments.loadError} onRetry={() => void loadDepartments()} />
+        ) : (
+          <EmptyState text={copyDepartments.empty}>
+            {filter === 'active' && (
+              <Pill onClick={() => setCreating(true)}>{copyDepartments.add}</Pill>
+            )}
+          </EmptyState>
+        )
       ) : (
-        <div role="table" aria-label={copy.shell.drawer.modules.departments}>
-          <div
-            role="row"
-            className={
-              `grid ${DEPARTMENT_GRID} items-center gap-3 px-4 pb-1 text-[14px] text-ash-gray`
-            }
-          >
-            <span role="columnheader">{copyDepartments.colName}</span>
-            <span role="columnheader">{copyDepartments.colStatus}</span>
-            <span role="columnheader">{copyDepartments.colMembers}</span>
-            <span role="columnheader">{copyDepartments.colDocuments}</span>
-            <span role="columnheader">{copyDepartments.colTasks}</span>
-            <span role="columnheader">{copyDepartments.colSubmissions}</span>
-            <span role="columnheader">{copyDepartments.colDeactivatedAt}</span>
-            <span role="columnheader">{copyDepartments.colActions}</span>
-          </div>
+        <>
+          {loadError && (
+            <ErrorState text={copyDepartments.loadError} onRetry={() => void loadDepartments()} />
+          )}
+          <div role="table" aria-label={copy.shell.drawer.modules.departments}>
+            <div
+              role="row"
+              className={
+                `grid ${DEPARTMENT_GRID} items-center gap-3 px-4 pb-1 text-[14px] text-slate-strong`
+              }
+            >
+              <span role="columnheader">{copyDepartments.colName}</span>
+              <span role="columnheader">{copyDepartments.colStatus}</span>
+              <span role="columnheader" className="hidden md:block">{copyDepartments.colMembers}</span>
+              <span role="columnheader" className="hidden md:block">{copyDepartments.colDocuments}</span>
+              <span role="columnheader" className="hidden md:block">{copyDepartments.colTasks}</span>
+              <span role="columnheader" className="hidden md:block">{copyDepartments.colSubmissions}</span>
+              <span role="columnheader">{copyDepartments.colDeactivatedAt}</span>
+              <span role="columnheader">{copyDepartments.colActions}</span>
+            </div>
           <ul role="rowgroup" className="divide-y divide-[var(--color-hairline)]">
             {items.map((item) => {
               const active = item.status === 'active';
@@ -433,16 +450,28 @@ export function DepartmentsLayer() {
                       <StatusDot intent={active ? 'success' : 'slate'} />
                       {active ? copyDepartments.statusActive : copyDepartments.statusInactive}
                     </span>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                    <span
+                      role="cell"
+                      className="hidden truncate text-[15px] tabular-nums text-slate-gray md:block"
+                    >
                       {item.member_count}
                     </span>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                    <span
+                      role="cell"
+                      className="hidden truncate text-[15px] tabular-nums text-slate-gray md:block"
+                    >
                       {item.document_count}
                     </span>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                    <span
+                      role="cell"
+                      className="hidden truncate text-[15px] tabular-nums text-slate-gray md:block"
+                    >
                       {item.nonterminal_job_count}
                     </span>
-                    <span role="cell" className="truncate text-[15px] text-slate-gray">
+                    <span
+                      role="cell"
+                      className="hidden truncate text-[15px] tabular-nums text-slate-gray md:block"
+                    >
                       {item.pending_submission_count}
                     </span>
                     <span role="cell" className="truncate text-[15px] text-slate-gray">
@@ -490,6 +519,7 @@ export function DepartmentsLayer() {
             })}
           </ul>
         </div>
+        </>
       )}
 
       {creating && (

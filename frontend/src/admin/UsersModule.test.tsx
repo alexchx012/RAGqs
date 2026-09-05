@@ -307,15 +307,16 @@ describe('列可读性与悬停全文（A1、A45；D1 截断策略）', () => {
     expect(noDepartmentCell).toHaveAttribute('title', copyUsers.noDepartment);
   });
 
-  it('行栅格：窄屏基础模板保持可收缩 minmax(0,…)（A4 不变）；≥1024px 角色 / 最近活跃列加最小宽', async () => {
+  it('行栅格：<768px 隐藏用户名 / 部门列收缩为四列；md 起恢复六列；≥1024px 角色 / 最近活跃加最小宽', async () => {
     await renderModule(adminUser());
     await screen.findByText('张三');
     const tokens = (rowOf('张三').firstElementChild?.className ?? '').split(' ');
-    // 基础（<1024px，含窄屏）模板与改动前一致：六列均可收缩，不引入固定宽溢出
+    // 窄屏降级（A28）：基础模板四列（姓名 / 角色 / 最近活跃 / 操作），均可收缩
+    expect(tokens).toContain('grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.3fr)_auto]');
+    // ≥768px：恢复六列；≥1024px：角色列 ≥168px（角色 + 冻结 tag）、最近活跃列 ≥136px（完整时间 / 清理日期）
     expect(tokens).toContain(
-      'grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto]',
+      'md:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_auto]',
     );
-    // ≥1024px：角色列 ≥168px（角色 + 冻结 tag）、最近活跃列 ≥136px（完整时间 / 清理日期）
     expect(tokens).toContain(
       'lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(168px,1.2fr)_minmax(136px,1.2fr)_auto]',
     );
