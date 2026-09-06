@@ -65,6 +65,10 @@ _logger = logging.getLogger(__name__)
 EXECUTION_LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 MAX_PHYSICAL_EXECUTIONS = 3
+# Conversation context (work item B): the latest turns enter the provider
+# prompt and the retrieval router's recent-queries signal.
+CONVERSATION_HISTORY_TURNS = 3
+ASSISTANT_HISTORY_DIGEST_CHARS = 500
 # Candidates at/above this ROUGE-L similarity are near duplicates and the
 # pair is collapsed instead of being offered for a vote.
 AB_NEAR_DUPLICATE_ROUGE_L = 0.92
@@ -1021,6 +1025,7 @@ class ChatGenerationWorker:
         strategy_operations: tuple[DeepRetrievalStrategy, ...],
         select_candidates: bool,
         emit_routed_event: bool,
+        recent_queries: Sequence[str] = (),
     ) -> RetrievalStageResult:
         """One retrieval round: step events, search, notices and citations."""
 
@@ -1046,6 +1051,7 @@ class ChatGenerationWorker:
             effort=budget.effort_level,
             budget=rag_budget_meter,
             strategy_operations=strategy_operations,
+            recent_queries=recent_queries,
         )
         if self._budget_meter is not None:
             assert reservation_id is not None
@@ -1122,6 +1128,8 @@ class ChatGenerationWorker:
         citations: list[Mapping[str, Any]],
         rag_budget_meter: BudgetMeter,
         query: str,
+        history_messages: tuple[Mapping[str, Any], ...] = (),
+        recent_queries: Sequence[str] = (),
     ) -> GenerationStageResult:
         """Produce answer candidates, streaming provider deltas through the sink."""
 
@@ -1145,6 +1153,8 @@ class ChatGenerationWorker:
                 query=query,
                 logical_budget=rag_budget_meter,
                 on_delta=delta_sink,
+                history_messages=history_messages,
+                recent_queries=recent_queries,
             )
         finally:
             if delta_sink is not None:
@@ -1318,6 +1328,10 @@ class ChatGenerationWorker:
             budget_meter_snapshot,
             _utc(generation["absolute_deadline_at_utc"]),
         )
+        conversation_history = self._load_conversation_history(generation=generation)
+        recent_queries: tuple[str, ...] = tuple(
+            str(message["content"]) for message in conversation_history if message["role"] == "user"
+        )
         hits: tuple[RetrievalHitOutcome, ...] = ()
         strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
         if effort == "deep":
@@ -1327,6 +1341,7 @@ class ChatGenerationWorker:
                 fencing_token=fencing_token,
                 control_version=control_version,
                 budget=rag_budget_meter,
+                history_messages=conversation_history,
             )
 
         round_index = int(checkpoint.get("round_index", 0)) if checkpoint else 0
@@ -1401,6 +1416,7 @@ class ChatGenerationWorker:
                 strategy_operations=strategy_operations if round_index == 0 else (),
                 select_candidates=True,
                 emit_routed_event=not skip_retrieval_events,
+                recent_queries=recent_queries,
             )
             step_index = result.step_index
             hits = result.hits
@@ -1457,6 +1473,8 @@ class ChatGenerationWorker:
                 citations=citations,
                 rag_budget_meter=rag_budget_meter,
                 query=effective_query,
+                history_messages=conversation_history,
+                recent_queries=recent_queries,
             ).candidates
             evaluation = self._run_self_evaluation_stage(
                 evaluator=evaluator,
@@ -1531,6 +1549,7 @@ class ChatGenerationWorker:
                 strategy_operations=(),
                 select_candidates=False,
                 emit_routed_event=False,
+                recent_queries=recent_queries,
             )
             step_index = result.step_index
             hits = result.hits
@@ -1723,6 +1742,47 @@ class ChatGenerationWorker:
             )
         )
 
+    def _load_conversation_history(
+        self, *, generation: Mapping[str, Any]
+    ) -> tuple[dict[str, str], ...]:
+        """Load the conversation's latest turns in chronological order."""
+
+        conversation_id = str(generation.get("conversation_id") or "")
+        if not conversation_id:
+            return ()
+        excluded_ids = [
+            str(generation.get(key))
+            for key in ("user_message_id", "message_id")
+            if generation.get(key)
+        ]
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(chat_message_table.c.role, chat_message_table.c.content)
+                .where(
+                    chat_message_table.c.conversation_id == conversation_id,
+                    chat_message_table.c.role.in_(("user", "assistant")),
+                    chat_message_table.c.content != "",
+                    chat_message_table.c.id.not_in(excluded_ids),
+                )
+                .order_by(
+                    # Newest first; within one identical timestamp (one ask
+                    # writes the user question and the assistant message with
+                    # the same ``now``) the assistant row precedes the user
+                    # row so the reversed history reads question → answer.
+                    chat_message_table.c.created_at_utc.desc(),
+                    chat_message_table.c.role.asc(),
+                    chat_message_table.c.id.desc(),
+                )
+                .limit(CONVERSATION_HISTORY_TURNS * 2)
+            ).fetchall()
+        history: list[dict[str, str]] = []
+        for row in reversed(rows):
+            content = str(row.content)
+            if row.role == "assistant":
+                content = content[:ASSISTANT_HISTORY_DIGEST_CHARS]
+            history.append({"role": str(row.role), "content": content})
+        return tuple(history)
+
     def _plan_deep_retrieval(
         self,
         *,
@@ -1731,6 +1791,7 @@ class ChatGenerationWorker:
         fencing_token: int,
         control_version: int,
         budget: BudgetMeter,
+        history_messages: tuple[Mapping[str, Any], ...] = (),
     ) -> tuple[DeepRetrievalStrategy, ...]:
         """Use the main chat model transport for one validated deep strategy plan."""
 
@@ -1742,6 +1803,7 @@ class ChatGenerationWorker:
             candidate=None,
             context_items=(),
             source_conflict_contract=source_conflict_contract(),
+            history_messages=history_messages,
             purpose="deep_retrieval_plan",
         )
         try:
@@ -1785,6 +1847,8 @@ class ChatGenerationWorker:
         query: str | None = None,
         logical_budget: BudgetMeter | None = None,
         on_delta: Callable[[str], None] | None = None,
+        history_messages: tuple[Mapping[str, Any], ...] = (),
+        recent_queries: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
         pair = self._pair_for_generation(generation_id=str(generation["id"]))
         candidate_numbers = (0, 1) if pair is not None else (0,)
@@ -1801,6 +1865,7 @@ class ChatGenerationWorker:
                     profile_version=candidate_config_versions[1],
                     effort=str(generation["effective_effort_level"]),
                     budget=retrieval_budget,
+                    recent_queries=recent_queries,
                 )
                 candidate_hits = outcome.hits
                 candidate_citations = self._resolve_citations(candidate_hits, generation)
@@ -1856,6 +1921,7 @@ class ChatGenerationWorker:
                 candidate=None if pair is None else candidate,
                 context_items=context,
                 source_conflict_contract=source_conflict_contract(),
+                history_messages=history_messages,
                 on_delta=on_delta,
             )
             answer_mode = _answer_mode(candidate_hits, candidate_citations)
@@ -1956,6 +2022,11 @@ class ChatGenerationWorker:
             for item in request.context_items
             if isinstance(item, Mapping)
         ]
+        snippets.extend(
+            str(message.get("content") or "")
+            for message in request.history_messages
+            if isinstance(message, Mapping)
+        )
         return conservative_chat_token_estimate(request.content, snippets)
 
     def _provider_call(

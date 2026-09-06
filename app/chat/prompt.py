@@ -39,21 +39,37 @@ def _context_block(item: Mapping[str, Any]) -> str:
     return f"{header}\n{snippet}"
 
 
+def _history_block(request: ChatProviderRequest) -> str | None:
+    """Render recent conversation turns as one prefixed block (plan prompts)."""
+
+    if not request.history_messages:
+        return None
+    lines = ["以下是同一会话的最近对话，仅供理解当前问题的指代与语境："]
+    for message in request.history_messages:
+        role = str(message.get("role") or "user")
+        label = "用户" if role == "user" else "助手"
+        content = str(message.get("content") or "")
+        lines.append(f"{label}: {content}")
+    return "\n".join(lines)
+
+
 def assemble_generation_prompt(request: ChatProviderRequest) -> str:
     """Assemble the provider prompt; the conflict directive is always present."""
 
     contract = request.source_conflict_contract or source_conflict_contract()
     instruction = str(contract.get("instruction") or SOURCE_CONFLICT_INSTRUCTION)
     if request.purpose == "deep_retrieval_plan":
-        return "\n\n".join(
-            (
-                instruction,
-                "为深度研究选择检索策略。仅返回一个 JSON 对象，格式必须是 "
-                '{"strategies":[...]}。可选值仅为 rewrite、split_subquestions、hyde、tree、'
-                "sub_chunk、parent_document、document_summary；不输出理由、参数或其他字段。",
-                request.content,
-            )
+        blocks = [instruction]
+        history_block = _history_block(request)
+        if history_block is not None:
+            blocks.append(history_block)
+        blocks.append(
+            "为深度研究选择检索策略。仅返回一个 JSON 对象，格式必须是 "
+            '{"strategies":[...]}。可选值仅为 rewrite、split_subquestions、hyde、tree、'
+            "sub_chunk、parent_document、document_summary；不输出理由、参数或其他字段。"
         )
+        blocks.append(request.content)
+        return "\n\n".join(blocks)
     blocks = [instruction]
     if request.context_items:
         # The marker instruction only applies when there is something to cite;
@@ -62,3 +78,25 @@ def assemble_generation_prompt(request: ChatProviderRequest) -> str:
     blocks.extend(_context_block(item) for item in request.context_items)
     blocks.append(request.content)
     return "\n\n".join(blocks)
+
+
+def assemble_generation_messages(request: ChatProviderRequest) -> list[dict[str, str]]:
+    """Assemble the full provider message list: history turns, then the prompt.
+
+    The final user message carries the canonical conflict/citation directives
+    and context blocks via :func:`assemble_generation_prompt`; history turns
+    precede it verbatim (assistant digests already truncated by the caller).
+    The deep strategy plan embeds history inside its single prompt instead.
+    """
+
+    messages: list[dict[str, str]] = []
+    if request.purpose == "answer":
+        messages = [
+            {
+                "role": str(message.get("role") or "user"),
+                "content": str(message.get("content") or ""),
+            }
+            for message in request.history_messages
+        ]
+    messages.append({"role": "user", "content": assemble_generation_prompt(request)})
+    return messages

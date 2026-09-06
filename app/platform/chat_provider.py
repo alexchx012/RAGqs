@@ -19,7 +19,7 @@ import httpx
 
 from app.chat.models import ChatProviderResponse
 from app.chat.ports import ChatProviderRequest
-from app.chat.prompt import assemble_generation_prompt
+from app.chat.prompt import assemble_generation_messages
 from app.platform.errors import PlatformError
 from app.platform.model_http import (
     ModelHttpError,
@@ -120,12 +120,7 @@ class DashScopeChatProvider:
         # 首 token 等待与思考 token 成本（deep 档保留思考）。
         payload = {
             "model": self._model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": assemble_generation_prompt(request),
-                }
-            ],
+            "messages": assemble_generation_messages(request),
             "enable_thinking": request.effort_level == "deep",
         }
         if request.on_delta is not None:

@@ -13,9 +13,16 @@ class _FakeRequest:
         self.released = False
 
     def search(
-        self, query: str, *, principal: Any, narrowing_scope: Any, profile: Any, budget: Any = None
+        self,
+        query: str,
+        *,
+        principal: Any,
+        narrowing_scope: Any,
+        profile: Any,
+        budget: Any = None,
+        recent_queries: Any = (),
     ) -> Any:
-        del query, principal, narrowing_scope
+        del query, principal, narrowing_scope, recent_queries
         chunk = IndexChunk(
             chunk_id="chunk_1",
             generation_id="gen_index_1",
