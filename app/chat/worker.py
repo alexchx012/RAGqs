@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -33,12 +34,13 @@ from app.usage.reconcile import (
 )
 
 from .budget import (
-    EFFORT_CANDIDATE_LIMITS,
     EFFORT_UPGRADE_CHAIN,
     BudgetMeter,
     BudgetPolicy,
+    EffortPolicy,
     GenerationBudget,
     conservative_chat_token_estimate,
+    effort_policy,
     select_budget_candidates,
 )
 from .events import append_event, has_terminal_event
@@ -65,6 +67,10 @@ _logger = logging.getLogger(__name__)
 EXECUTION_LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 MAX_PHYSICAL_EXECUTIONS = 3
+# Conversation context (work item B): the latest turns enter the provider
+# prompt and the retrieval router's recent-queries signal.
+CONVERSATION_HISTORY_TURNS = 3
+ASSISTANT_HISTORY_DIGEST_CHARS = 500
 # Candidates at/above this ROUGE-L similarity are near duplicates and the
 # pair is collapsed instead of being offered for a vote.
 AB_NEAR_DUPLICATE_ROUGE_L = 0.92
@@ -163,6 +169,43 @@ class ProviderCallOutcome:
     provider_request_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalStageResult:
+    """One retrieval round: selected hits, published citations, route summary."""
+
+    hits: tuple[RetrievalHitOutcome, ...]
+    citations: list[Mapping[str, Any]]
+    route_summary: dict[str, Any] | None
+    step_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationStageResult:
+    """One candidate-production pass over the frozen retrieval context."""
+
+    candidates: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class SelfEvaluationOutcome:
+    """Terminal self-evaluation signal: accept the draft or rewrite once more."""
+
+    accepted: bool
+    rewritten_query: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EffortUpgradeOutcome:
+    """Single effort-upgrade transition shared by both loop sites."""
+
+    upgraded: bool
+    fence_lost: bool
+    generation: Mapping[str, Any]
+    # Mirrors the usage-meter snapshot type used by the pre-refactor loop:
+    # ``Any`` until ``_build_rag_budget_meter`` settles its snapshot contract.
+    budget_meter_snapshot: Any | None = None
+
+
 class ChatGenerationWorker:
     """Claims queued executions and drives retrieval/provider to a terminal."""
 
@@ -183,10 +226,16 @@ class ChatGenerationWorker:
         disconnect_grace_seconds: int = 60,
         provider_reconciliation: Any | None = None,
         max_scope_retries: int = 1,
+        tool_retrieval: ChatRetrievalPort | None = None,
     ) -> None:
         self._engine = engine
         self._clock = clock
+        # Model-invoked tool searches run on their own port instance: the
+        # production adapter binds one retrieval request per port and the
+        # mainline binding must survive until publication revalidates
+        # citations against it.
         self._retrieval = retrieval
+        self._tool_retrieval = tool_retrieval or retrieval
         self._provider = provider
         self._usage = usage
         self._calibration = calibration
@@ -966,6 +1015,284 @@ class ChatGenerationWorker:
         )
         return BudgetMeter(policy=policy, deadline=deadline)
 
+    def _run_retrieval_stage(
+        self,
+        *,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        query: str,
+        budget: GenerationBudget,
+        rag_budget_meter: BudgetMeter,
+        budget_meter_snapshot: Any | None,
+        profile_id: str,
+        profile_version: str,
+        reservation_id: str | None,
+        step_index: int,
+        strategy_operations: tuple[DeepRetrievalStrategy, ...],
+        select_candidates: bool,
+        emit_routed_event: bool,
+        recent_queries: Sequence[str] = (),
+        emit_step_events: bool = False,
+    ) -> RetrievalStageResult:
+        """One retrieval round: step events, search, notices and citations."""
+
+        round_step = None
+        if emit_step_events:
+            step_index += 1
+            round_step = step_index
+            self._emit_step(
+                generation_id=str(generation["id"]),
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                index=round_step,
+                label=f"retrieve_round_{round_step}",
+                state="active",
+            )
+        outcome = self._retrieval.search(
+            query,
+            principal=_principal_from_generation(generation),
+            narrowing_scope=generation["request_scope_json"],
+            profile_id=profile_id,
+            profile_version=profile_version,
+            effort=budget.effort_level,
+            budget=rag_budget_meter,
+            strategy_operations=strategy_operations,
+            recent_queries=recent_queries,
+        )
+        if self._budget_meter is not None:
+            assert reservation_id is not None
+            self._budget_meter.settle(
+                generation_id=str(generation["id"]),
+                reservation_id=reservation_id,
+                actual_tokens=0,
+                actual_cost=Decimal("0"),
+            )
+        hits = outcome.hits
+        route_summary: dict[str, Any] | None = None
+        if emit_routed_event:
+            route_summary = _public_route_summary(outcome.route_output)
+            self._emit_stage(
+                generation_id=str(generation["id"]),
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                phase="retrieval_routed",
+                generation=generation,
+                detail={"route": route_summary},
+            )
+        degradations = tuple(outcome.degradations)
+        if select_candidates:
+            hits, missing_identities = select_budget_candidates(
+                hits,
+                limit=(
+                    budget_meter_snapshot.candidate_document_limit
+                    if budget_meter_snapshot is not None
+                    else effort_policy(budget.effort_level).max_candidate_documents
+                ),
+            )
+            degradations = degradations + tuple(dict(item) for item in missing_identities)
+        budget.record_rag_round()
+        for item in degradations:
+            code = str(item.get("code") or "")
+            kind = code if code in NOTICE_KINDS else "retrieval_degraded"
+            self._emit_notice(
+                generation_id=str(generation["id"]),
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                kind=kind,
+                detail=dict(item),
+                generation=generation,
+            )
+        citations = self._resolve_citations(hits, generation)
+        if round_step is not None:
+            self._emit_step(
+                generation_id=str(generation["id"]),
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                index=round_step,
+                label=f"retrieve_round_{round_step}",
+                state="done",
+            )
+        return RetrievalStageResult(
+            hits=hits,
+            citations=citations,
+            route_summary=route_summary,
+            step_index=step_index,
+        )
+
+    def _run_generation_stage(
+        self,
+        *,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        candidate_config_versions: tuple[str, str] | None,
+        hits: tuple[RetrievalHitOutcome, ...],
+        citations: list[Mapping[str, Any]],
+        rag_budget_meter: BudgetMeter,
+        query: str,
+        history_messages: tuple[Mapping[str, Any], ...] = (),
+        recent_queries: Sequence[str] = (),
+        policy: EffortPolicy | None = None,
+        resume_state: dict[str, Any] | None = None,
+    ) -> GenerationStageResult:
+        """Produce answer candidates, streaming provider deltas through the sink."""
+
+        effort_policy_value = policy or effort_policy(str(generation["effective_effort_level"]))
+        delta_sink = self._open_delta_sink(
+            generation=generation,
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+            candidate_config_versions=candidate_config_versions,
+            enabled=effort_policy_value.stream_deltas,
+        )
+        try:
+            candidates = self._produce_candidates(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                hits=hits,
+                citations=citations,
+                candidate_config_versions=candidate_config_versions,
+                retrieval_budget=rag_budget_meter,
+                query=query,
+                logical_budget=rag_budget_meter,
+                on_delta=delta_sink,
+                history_messages=history_messages,
+                recent_queries=recent_queries,
+                policy=effort_policy_value,
+                resume_state=resume_state,
+            )
+        finally:
+            if delta_sink is not None:
+                delta_sink.flush()
+        return GenerationStageResult(candidates=candidates)
+
+    def _run_self_evaluation_stage(
+        self,
+        *,
+        evaluator: SelfEvaluationPort,
+        query: str,
+        candidates: list[dict[str, Any]],
+        citations: list[Mapping[str, Any]],
+        hits: tuple[RetrievalHitOutcome, ...],
+    ) -> SelfEvaluationOutcome:
+        """Evaluate the lead candidate; a rejected draft may supply a rewrite."""
+
+        try:
+            evaluation = evaluator.evaluate(
+                query=query,
+                candidate_content=candidates[0]["content"],
+                citations=tuple(citations),
+                context_items=tuple(_hit_mapping(hit) for hit in hits),
+            )
+        except Exception:
+            self._complete_deferred_provider_calls_public(candidates)
+            raise
+        return SelfEvaluationOutcome(
+            accepted=bool(evaluation.acceptable or evaluation.rewritten_query is None),
+            rewritten_query=evaluation.rewritten_query,
+        )
+
+    def _try_upgrade_effort(
+        self,
+        *,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        budget: GenerationBudget,
+        rag_budget_meter: BudgetMeter,
+        budget_meter_snapshot: Any | None,
+        hits: tuple[RetrievalHitOutcome, ...],
+        estimate_query: str,
+    ) -> EffortUpgradeOutcome:
+        """The single effort-upgrade transition (chain: at most one level)."""
+
+        previous_effort = budget.effort_level
+        upgraded = EFFORT_UPGRADE_CHAIN.get(previous_effort)
+        if upgraded is None:
+            return EffortUpgradeOutcome(
+                upgraded=False,
+                fence_lost=False,
+                generation=generation,
+                budget_meter_snapshot=budget_meter_snapshot,
+            )
+        if self._budget_meter is not None:
+            next_step_tokens = conservative_chat_token_estimate(
+                estimate_query,
+                (hit.snippet for hit in hits),
+            )
+            if (
+                self._budget_meter.upgrade(
+                    generation_id=str(generation["id"]),
+                    next_step_tokens=next_step_tokens,
+                    next_step_cost=self._budget_meter.estimate_cost(
+                        "chat_generation", next_step_tokens
+                    ),
+                    next_step_is_rag=True,
+                )
+                != upgraded
+            ):
+                return EffortUpgradeOutcome(
+                    upgraded=False,
+                    fence_lost=False,
+                    generation=generation,
+                    budget_meter_snapshot=budget_meter_snapshot,
+                )
+            budget_meter_snapshot = self._budget_meter.meter(generation_id=str(generation["id"]))
+        upgraded = budget.upgrade_effort()
+        assert upgraded is not None
+        assert rag_budget_meter.upgrade_policy(
+            self._build_rag_budget_meter(
+                upgraded,
+                budget_meter_snapshot,
+                _utc(generation["absolute_deadline_at_utc"]),
+            ).policy
+        )
+        if not self._persist_effort_upgrade(
+            generation_id=str(generation["id"]),
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+            previous_effort=previous_effort,
+            upgraded_effort=upgraded,
+        ):
+            return EffortUpgradeOutcome(
+                upgraded=False,
+                fence_lost=True,
+                generation=generation,
+                budget_meter_snapshot=budget_meter_snapshot,
+            )
+        generation = {
+            **generation,
+            "effective_effort_level": upgraded,
+            "upgraded_from": previous_effort,
+        }
+        self._emit_notice(
+            generation_id=str(generation["id"]),
+            execution_id=execution_id,
+            fencing_token=fencing_token,
+            control_version=control_version,
+            kind="effort_upgraded",
+            detail={"effort_level": upgraded, "from": previous_effort, "to": upgraded},
+            generation=generation,
+        )
+        return EffortUpgradeOutcome(
+            upgraded=True,
+            fence_lost=False,
+            generation=generation,
+            budget_meter_snapshot=budget_meter_snapshot,
+        )
+
     def _execute_claimed(
         self,
         *,
@@ -1000,6 +1327,7 @@ class ChatGenerationWorker:
             # production. The mapping is read-only after pair creation.
             profile_version = candidate_config_versions[0]
         effort = str(generation["effective_effort_level"])
+        policy = effort_policy(effort)
         budget = GenerationBudget.from_checkpoint(
             effort,
             checkpoint.get("budget", checkpoint) if checkpoint else None,
@@ -1016,15 +1344,21 @@ class ChatGenerationWorker:
             budget_meter_snapshot,
             _utc(generation["absolute_deadline_at_utc"]),
         )
+        conversation_history = self._load_conversation_history(generation=generation)
+        recent_queries: tuple[str, ...] = tuple(
+            str(message["content"]) for message in conversation_history if message["role"] == "user"
+        )
+        tool_resume = self._tool_resume_state(checkpoint)
         hits: tuple[RetrievalHitOutcome, ...] = ()
         strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
-        if effort == "deep":
+        if policy.retrieval_depth == "deep" and tool_resume is None:
             strategy_operations = self._plan_deep_retrieval(
                 generation=generation,
                 execution_id=execution_id,
                 fencing_token=fencing_token,
                 control_version=control_version,
                 budget=rag_budget_meter,
+                history_messages=conversation_history,
             )
 
         round_index = int(checkpoint.get("round_index", 0)) if checkpoint else 0
@@ -1033,309 +1367,178 @@ class ChatGenerationWorker:
         step_index = 0
         skip_retrieval_events = bool(checkpoint and checkpoint.get("phase") == "retrieval_complete")
         citations: list[Mapping[str, Any]] = []
-        while True:
-            if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
-                # Fail atomically through _fail_execution before any retrieval,
-                # provider or usage side effects of this round.
-                raise PlatformError(
-                    "generation_deadline_exceeded",
-                    "The generation deadline expired before further execution",
-                    {},
-                    500,
-                )
-            if round_index > 0 and not budget.can_start_rag_round():
-                previous_effort = budget.effort_level
-                upgraded = EFFORT_UPGRADE_CHAIN.get(previous_effort)
-                if upgraded is None:
-                    break
-                assert upgraded is not None
-                if self._budget_meter is not None:
-                    next_step_tokens = conservative_chat_token_estimate(
-                        str(generation["request_content"]),
-                        (hit.snippet for hit in hits),
+        if tool_resume is not None:
+            # Crash resume mid-generation: reuse the recorded tool observations
+            # and the retrieval context snapshot instead of repeating outbound
+            # work; the generation stage continues the interrupted tool loop.
+            hits = tool_resume["hits"]
+            citations = tool_resume["citations"]
+        else:
+            while True:
+                if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
+                    # Fail atomically through _fail_execution before any retrieval,
+                    # provider or usage side effects of this round.
+                    raise PlatformError(
+                        "generation_deadline_exceeded",
+                        "The generation deadline expired before further execution",
+                        {},
+                        500,
                     )
-                    next_step_cost = self._budget_meter.estimate_cost(
-                        "chat_generation", next_step_tokens
+                if round_index > 0 and not budget.can_start_rag_round():
+                    upgrade = self._try_upgrade_effort(
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        budget=budget,
+                        rag_budget_meter=rag_budget_meter,
+                        budget_meter_snapshot=budget_meter_snapshot,
+                        hits=hits,
+                        estimate_query=str(generation["request_content"]),
                     )
-                    if (
-                        self._budget_meter.upgrade(
-                            generation_id=generation_id,
-                            next_step_tokens=next_step_tokens,
-                            next_step_cost=next_step_cost,
-                            next_step_is_rag=True,
-                        )
-                        != upgraded
-                    ):
+                    if upgrade.fence_lost:
+                        return
+                    if not upgrade.upgraded:
                         break
-                    budget_meter_snapshot = self._budget_meter.meter(generation_id=generation_id)
-                upgraded = budget.upgrade_effort()
-                assert upgraded is not None
-                assert rag_budget_meter.upgrade_policy(
-                    self._build_rag_budget_meter(
-                        upgraded,
-                        budget_meter_snapshot,
-                        _utc(generation["absolute_deadline_at_utc"]),
-                    ).policy
-                )
-                if not self._persist_effort_upgrade(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    previous_effort=previous_effort,
-                    upgraded_effort=upgraded,
-                ):
-                    return
-                generation = {
-                    **generation,
-                    "effective_effort_level": upgraded,
-                    "upgraded_from": previous_effort,
-                }
-                self._emit_notice(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    kind="effort_upgraded",
-                    detail={"effort_level": upgraded, "from": previous_effort, "to": upgraded},
-                    generation=generation,
-                )
-            stage = "retrieving" if round_index == 0 else "retrieving_again"
-            self._emit_stage(
-                generation_id=generation_id,
-                execution_id=execution_id,
-                fencing_token=fencing_token,
-                control_version=control_version,
-                phase=stage,
-                generation=generation,
-            )
-            budget_reservation_id = None
-            if self._budget_meter is not None:
-                budget_reservation_id = f"rag:{generation_id}:{round_index}"
-                self._budget_reserve(
-                    generation=generation,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    reservation_id=budget_reservation_id,
-                    operation_kind="rag_retrieval",
-                    estimated_tokens=0,
-                    estimated_cost=Decimal("0"),
-                    is_rag=True,
-                )
-            round_step = None
-            if budget.effort_level == "deep":
-                step_index += 1
-                round_step = step_index
-                self._emit_step(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    index=round_step,
-                    label=f"retrieve_round_{round_step}",
-                    state="active",
-                )
-            outcome = self._retrieval.search(
-                str(generation["request_content"]),
-                principal=_principal_from_generation(generation),
-                narrowing_scope=generation["request_scope_json"],
-                profile_id=profile_id,
-                profile_version=profile_version,
-                effort=budget.effort_level,
-                budget=rag_budget_meter,
-                strategy_operations=strategy_operations if round_index == 0 else (),
-            )
-            if self._budget_meter is not None:
-                self._budget_meter.settle(
-                    generation_id=generation_id,
-                    reservation_id=budget_reservation_id,
-                    actual_tokens=0,
-                    actual_cost=Decimal("0"),
-                )
-            hits = outcome.hits
-            if not skip_retrieval_events:
+                    generation = upgrade.generation
+                    budget_meter_snapshot = upgrade.budget_meter_snapshot
+                    policy = effort_policy(budget.effort_level)
                 self._emit_stage(
                     generation_id=generation_id,
                     execution_id=execution_id,
                     fencing_token=fencing_token,
                     control_version=control_version,
-                    phase="retrieval_routed",
-                    generation=generation,
-                    detail={"route": _public_route_summary(outcome.route_output)},
-                )
-            hits, missing_identities = select_budget_candidates(
-                hits,
-                limit=(
-                    budget_meter_snapshot.candidate_document_limit
-                    if budget_meter_snapshot is not None
-                    else EFFORT_CANDIDATE_LIMITS[budget.effort_level]
-                ),
-            )
-            budget.record_rag_round()
-            outcome_degradations = tuple(outcome.degradations) + tuple(
-                dict(item) for item in missing_identities
-            )
-            for item in outcome_degradations:
-                code = str(item.get("code") or "")
-                kind = code if code in NOTICE_KINDS else "retrieval_degraded"
-                self._emit_notice(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    kind=kind,
-                    detail=dict(item),
+                    phase="retrieving" if round_index == 0 else "retrieving_again",
                     generation=generation,
                 )
-            citations = self._resolve_citations(hits, generation)
-            if round_step is not None:
-                self._emit_step(
-                    generation_id=generation_id,
+                budget_reservation_id = None
+                if self._budget_meter is not None:
+                    budget_reservation_id = f"rag:{generation_id}:{round_index}"
+                    self._budget_reserve(
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        reservation_id=budget_reservation_id,
+                        operation_kind="rag_retrieval",
+                        estimated_tokens=0,
+                        estimated_cost=Decimal("0"),
+                        is_rag=True,
+                    )
+                result = self._run_retrieval_stage(
+                    generation=generation,
                     execution_id=execution_id,
                     fencing_token=fencing_token,
                     control_version=control_version,
-                    index=round_step,
-                    label=f"retrieve_round_{round_step}",
-                    state="done",
+                    query=str(generation["request_content"]),
+                    budget=budget,
+                    rag_budget_meter=rag_budget_meter,
+                    budget_meter_snapshot=budget_meter_snapshot,
+                    profile_id=profile_id,
+                    profile_version=profile_version,
+                    reservation_id=budget_reservation_id,
+                    step_index=step_index,
+                    strategy_operations=strategy_operations if round_index == 0 else (),
+                    select_candidates=True,
+                    emit_routed_event=not skip_retrieval_events,
+                    emit_step_events=policy.emit_step_events,
+                    recent_queries=recent_queries,
                 )
-            if len(citations) == len(hits):
-                if not self._persist_checkpoint(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    checkpoint={
-                        "phase": "retrieval_complete",
-                        "round_index": round_index,
-                        "completed_operations": [f"retrieval:{round_index}"],
-                        "retrieval_scope": {
-                            "profile_id": profile_id,
-                            "profile_version": profile_version,
+                step_index = result.step_index
+                hits = result.hits
+                citations = result.citations
+                if len(citations) == len(hits):
+                    if not self._persist_checkpoint(
+                        generation_id=generation_id,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        checkpoint={
+                            "phase": "retrieval_complete",
+                            "round_index": round_index,
+                            "completed_operations": [f"retrieval:{round_index}"],
+                            "retrieval_scope": {
+                                "profile_id": profile_id,
+                                "profile_version": profile_version,
+                            },
+                            "query_config_version": profile_version,
+                            "budget": budget.to_checkpoint(),
                         },
-                        "query_config_version": profile_version,
-                        "budget": budget.to_checkpoint(),
-                    },
-                ):
-                    return
-                break
-            visible_ids = {(str(item["document_id"]), str(item["chunk_id"])) for item in citations}
-            hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
-            if not hits:
-                # Every hit was ACL-filtered between search and citation
-                # resolution: this is a normal business outcome (no_context),
-                # not a generation failure.
-                citations = []
-                break
-            round_index += 1
-            skip_retrieval_events = False
+                    ):
+                        return
+                    break
+                visible_ids = {
+                    (str(item["document_id"]), str(item["chunk_id"])) for item in citations
+                }
+                hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
+                if not hits:
+                    # Every hit was ACL-filtered between search and citation
+                    # resolution: this is a normal business outcome (no_context),
+                    # not a generation failure.
+                    citations = []
+                    break
+                round_index += 1
+                skip_retrieval_events = False
 
         # Generation with the bounded self-evaluation rewrite loop (A6):
-        # quick skips the evaluation entirely; think/deep re-run retrieval
-        # within the same frozen scope only while the tier still has RAG
-        # rounds and open budget gates. Rejected drafts never become public.
+        # tiers whose policy disables self-evaluation accept the first draft
+        # (quick); think/deep re-run retrieval within the same frozen scope
+        # only while the tier still has RAG rounds and open budget gates.
+        # Rejected drafts never become public.
         effective_query = str(generation["request_content"])
         evaluator: SelfEvaluationPort = (
-            AcceptingSelfEvaluationPort()
-            if str(generation["effective_effort_level"]) == "quick"
-            else self._self_evaluator
+            self._self_evaluator if policy.self_evaluation else AcceptingSelfEvaluationPort()
         )
+        tool_resume_state = tool_resume
         while True:
-            delta_sink = self._open_delta_sink(
+            candidates = self._run_generation_stage(
                 generation=generation,
                 execution_id=execution_id,
                 fencing_token=fencing_token,
                 control_version=control_version,
                 candidate_config_versions=candidate_config_versions,
+                hits=hits,
+                citations=citations,
+                rag_budget_meter=rag_budget_meter,
+                query=effective_query,
+                history_messages=conversation_history,
+                recent_queries=recent_queries,
+                policy=policy,
+                resume_state=tool_resume_state,
+            ).candidates
+            tool_resume_state = None
+            evaluation = self._run_self_evaluation_stage(
+                evaluator=evaluator,
+                query=effective_query,
+                candidates=candidates,
+                citations=citations,
+                hits=hits,
             )
-            try:
-                candidates = self._produce_candidates(
-                    generation=generation,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    hits=hits,
-                    citations=citations,
-                    candidate_config_versions=candidate_config_versions,
-                    retrieval_budget=rag_budget_meter,
-                    query=effective_query,
-                    logical_budget=rag_budget_meter,
-                    on_delta=delta_sink,
-                )
-            finally:
-                if delta_sink is not None:
-                    delta_sink.flush()
-            try:
-                evaluation = evaluator.evaluate(
-                    query=effective_query,
-                    candidate_content=candidates[0]["content"],
-                    citations=tuple(citations),
-                    context_items=tuple(_hit_mapping(hit) for hit in hits),
-                )
-            except Exception:
-                self._complete_deferred_provider_calls_public(candidates)
-                raise
-            if evaluation.acceptable or evaluation.rewritten_query is None:
+            if evaluation.accepted:
                 break
             if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
                 self._complete_deferred_provider_calls_public(candidates)
                 break
             if not budget.can_start_rag_round():
-                previous_effort = budget.effort_level
-                upgraded = EFFORT_UPGRADE_CHAIN.get(previous_effort)
-                next_step_tokens = conservative_chat_token_estimate(
-                    effective_query,
-                    (hit.snippet for hit in hits),
-                )
-                if upgraded is None or (
-                    self._budget_meter is not None
-                    and self._budget_meter.upgrade(
-                        generation_id=generation_id,
-                        next_step_tokens=next_step_tokens,
-                        next_step_cost=self._budget_meter.estimate_cost(
-                            "chat_generation", next_step_tokens
-                        ),
-                        next_step_is_rag=True,
-                    )
-                    != upgraded
-                ):
-                    self._complete_deferred_provider_calls_public(candidates)
-                    break
-                if self._budget_meter is not None:
-                    budget_meter_snapshot = self._budget_meter.meter(generation_id=generation_id)
-                upgraded = budget.upgrade_effort()
-                assert upgraded is not None
-                assert rag_budget_meter.upgrade_policy(
-                    self._build_rag_budget_meter(
-                        upgraded,
-                        budget_meter_snapshot,
-                        _utc(generation["absolute_deadline_at_utc"]),
-                    ).policy
-                )
-                if not self._persist_effort_upgrade(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    previous_effort=previous_effort,
-                    upgraded_effort=upgraded,
-                ):
-                    self._complete_deferred_provider_calls_public(candidates)
-                    return
-                generation = {
-                    **generation,
-                    "effective_effort_level": upgraded,
-                    "upgraded_from": previous_effort,
-                }
-                self._emit_notice(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    kind="effort_upgraded",
-                    detail={"effort_level": upgraded, "from": previous_effort, "to": upgraded},
+                upgrade = self._try_upgrade_effort(
                     generation=generation,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    budget=budget,
+                    rag_budget_meter=rag_budget_meter,
+                    budget_meter_snapshot=budget_meter_snapshot,
+                    hits=hits,
+                    estimate_query=effective_query,
                 )
+                if not upgrade.upgraded:
+                    self._complete_deferred_provider_calls_public(candidates)
+                    if upgrade.fence_lost:
+                        return
+                    break
+                generation = upgrade.generation
+                budget_meter_snapshot = upgrade.budget_meter_snapshot
+                policy = effort_policy(budget.effort_level)
             # The current draft is discarded before the rewritten query is
             # retrieved; settle its provider calls independently of publish.
             self._complete_deferred_provider_calls_public(candidates)
@@ -1362,60 +1565,28 @@ class ChatGenerationWorker:
                 generation=generation,
             )
             effective_query = str(evaluation.rewritten_query)
-            rewrite_step = None
-            if budget.effort_level == "deep":
-                step_index += 1
-                rewrite_step = step_index
-                self._emit_step(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    index=rewrite_step,
-                    label=f"retrieve_round_{rewrite_step}",
-                    state="active",
-                )
-            outcome = self._retrieval.search(
-                effective_query,
-                principal=_principal_from_generation(generation),
-                narrowing_scope=generation["request_scope_json"],
+            result = self._run_retrieval_stage(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                query=effective_query,
+                budget=budget,
+                rag_budget_meter=rag_budget_meter,
+                budget_meter_snapshot=budget_meter_snapshot,
                 profile_id=profile_id,
                 profile_version=profile_version,
-                effort=budget.effort_level,
-                budget=rag_budget_meter,
+                reservation_id=rewrite_reservation_id,
+                step_index=step_index,
+                strategy_operations=(),
+                select_candidates=False,
+                emit_routed_event=False,
+                emit_step_events=policy.emit_step_events,
+                recent_queries=recent_queries,
             )
-            if self._budget_meter is not None:
-                self._budget_meter.settle(
-                    generation_id=generation_id,
-                    reservation_id=rewrite_reservation_id,
-                    actual_tokens=0,
-                    actual_cost=Decimal("0"),
-                )
-            hits = outcome.hits
-            budget.record_rag_round()
-            for item in outcome.degradations:
-                code = str(item.get("code") or "")
-                kind = code if code in NOTICE_KINDS else "retrieval_degraded"
-                self._emit_notice(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    kind=kind,
-                    detail=dict(item),
-                    generation=generation,
-                )
-            citations = self._resolve_citations(hits, generation)
-            if rewrite_step is not None:
-                self._emit_step(
-                    generation_id=generation_id,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    index=rewrite_step,
-                    label=f"retrieve_round_{rewrite_step}",
-                    state="done",
-                )
+            step_index = result.step_index
+            hits = result.hits
+            citations = result.citations
             if len(citations) != len(hits):
                 visible_ids = {
                     (str(item["document_id"]), str(item["chunk_id"])) for item in citations
@@ -1604,6 +1775,217 @@ class ChatGenerationWorker:
             )
         )
 
+    def _load_conversation_history(
+        self, *, generation: Mapping[str, Any]
+    ) -> tuple[dict[str, str], ...]:
+        """Load the conversation's latest turns in chronological order."""
+
+        conversation_id = str(generation.get("conversation_id") or "")
+        if not conversation_id:
+            return ()
+        excluded_ids = [
+            str(generation.get(key))
+            for key in ("user_message_id", "message_id")
+            if generation.get(key)
+        ]
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(chat_message_table.c.role, chat_message_table.c.content)
+                .where(
+                    chat_message_table.c.conversation_id == conversation_id,
+                    chat_message_table.c.role.in_(("user", "assistant")),
+                    chat_message_table.c.content != "",
+                    chat_message_table.c.id.not_in(excluded_ids),
+                )
+                .order_by(
+                    # Newest first; within one identical timestamp (one ask
+                    # writes the user question and the assistant message with
+                    # the same ``now``) the assistant row precedes the user
+                    # row so the reversed history reads question → answer.
+                    chat_message_table.c.created_at_utc.desc(),
+                    chat_message_table.c.role.asc(),
+                    chat_message_table.c.id.desc(),
+                )
+                .limit(CONVERSATION_HISTORY_TURNS * 2)
+            ).fetchall()
+        history: list[dict[str, str]] = []
+        for row in reversed(rows):
+            content = str(row.content)
+            if row.role == "assistant":
+                content = content[:ASSISTANT_HISTORY_DIGEST_CHARS]
+            history.append({"role": str(row.role), "content": content})
+        return tuple(history)
+
+    _TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
+        "search_retrieval": {
+            "type": "function",
+            "function": {
+                "name": "search_retrieval",
+                "description": "混合检索知识库文档，返回与 query 最相关的文档片段（含树检索/图谱路由，由检索配置决定）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "检索查询"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        "search_tree": {
+            "type": "function",
+            "function": {
+                "name": "search_tree",
+                "description": "按树检索策略深入知识库，适合需要定位章节/子块的多跳问题。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "检索查询"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        "search_graph": {
+            "type": "function",
+            "function": {
+                "name": "search_graph",
+                "description": "沿知识图谱关系检索，适合实体间关联问题。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "检索查询"}},
+                    "required": ["query"],
+                },
+            },
+        },
+    }
+
+    def _tool_definitions(self, allowed_tools: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            dict(self._TOOL_DEFINITIONS[name])
+            for name in allowed_tools
+            if name in self._TOOL_DEFINITIONS
+        )
+
+    def _execute_tool(
+        self,
+        *,
+        name: str,
+        arguments: str,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        rag_budget_meter: BudgetMeter | None,
+        step_sequence: int,
+        profile_version: str,
+    ) -> str:
+        """Execute one model-requested retrieval tool; return its observation."""
+
+        try:
+            arguments_data = json.loads(arguments) if arguments.strip() else {}
+        except ValueError:
+            arguments_data = {}
+        query = ""
+        if isinstance(arguments_data, Mapping):
+            query = str(arguments_data.get("query") or "").strip()
+        if not query:
+            query = str(generation["request_content"])
+        strategy: tuple[DeepRetrievalStrategy, ...] = ("tree",) if name == "search_tree" else ()
+        route_graph = name == "search_graph"
+        reservation_id = f"rag:{generation['id']}:tool-{step_sequence}"
+        if self._budget_meter is not None:
+            self._budget_reserve(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                reservation_id=reservation_id,
+                operation_kind="rag_retrieval",
+                estimated_tokens=0,
+                estimated_cost=Decimal("0"),
+                is_rag=True,
+            )
+        outcome = self._tool_retrieval.search(
+            query,
+            principal=_principal_from_generation(generation),
+            narrowing_scope=generation["request_scope_json"],
+            profile_id=str(generation["retrieval_profile_id"]),
+            profile_version=profile_version,
+            effort=str(generation["effective_effort_level"]),
+            budget=rag_budget_meter,
+            strategy_operations=strategy,
+            recent_queries=(),
+            route_graph=route_graph,
+        )
+        if self._budget_meter is not None:
+            self._budget_meter.settle(
+                generation_id=str(generation["id"]),
+                reservation_id=reservation_id,
+                actual_tokens=0,
+                actual_cost=Decimal("0"),
+            )
+        degradations = [dict(item) for item in outcome.degradations]
+        for item in degradations:
+            code = str(item.get("code") or "")
+            kind = code if code in NOTICE_KINDS else "retrieval_degraded"
+            self._emit_notice(
+                generation_id=str(generation["id"]),
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                kind=kind,
+                detail=dict(item),
+                generation=generation,
+            )
+        documents = [
+            {
+                "document_id": hit.document_id,
+                "document_version_id": hit.document_version_id,
+                "snippet": hit.snippet[:300] if hit.snippet else "",
+            }
+            for hit in outcome.hits[:5]
+        ]
+        return json.dumps(
+            {"query": query, "documents": documents, "degradations": degradations},
+            ensure_ascii=True,
+        )
+
+    def _tool_resume_state(self, checkpoint: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Restore executed tool observations after a crash mid-generation."""
+
+        if not checkpoint or checkpoint.get("phase") != "tool_observed":
+            return None
+        if checkpoint.get("candidate") not in (None, 0):
+            # A/B candidate 1 is not resumable; fall back to a fresh attempt
+            # with the pre-change re-execution semantics.
+            return None
+        hits = tuple(
+            RetrievalHitOutcome(
+                document_id=str(item.get("document_id") or ""),
+                document_version_id=str(item.get("document_version_id") or ""),
+                publication_id=str(item.get("publication_id") or ""),
+                chunk_id=str(item.get("chunk_id") or ""),
+                space_id=str(item.get("space_id") or ""),
+                locator=dict(item.get("locator") or {}),
+                snippet=str(item.get("snippet") or ""),
+                library=str(item.get("library") or "unknown"),
+            )
+            for item in checkpoint.get("hits", ())
+            if isinstance(item, Mapping)
+        )
+        return {
+            "hits": hits,
+            "citations": [
+                dict(item) for item in checkpoint.get("citations", ()) if isinstance(item, Mapping)
+            ],
+            "observations": [
+                dict(item)
+                for item in checkpoint.get("observations", ())
+                if isinstance(item, Mapping)
+            ],
+            "followup_messages": tuple(
+                dict(item)
+                for item in checkpoint.get("followup_messages", ())
+                if isinstance(item, Mapping)
+            ),
+        }
+
     def _plan_deep_retrieval(
         self,
         *,
@@ -1612,6 +1994,7 @@ class ChatGenerationWorker:
         fencing_token: int,
         control_version: int,
         budget: BudgetMeter,
+        history_messages: tuple[Mapping[str, Any], ...] = (),
     ) -> tuple[DeepRetrievalStrategy, ...]:
         """Use the main chat model transport for one validated deep strategy plan."""
 
@@ -1623,6 +2006,8 @@ class ChatGenerationWorker:
             candidate=None,
             context_items=(),
             source_conflict_contract=source_conflict_contract(),
+            history_messages=history_messages,
+            enable_thinking=True,
             purpose="deep_retrieval_plan",
         )
         try:
@@ -1666,6 +2051,10 @@ class ChatGenerationWorker:
         query: str | None = None,
         logical_budget: BudgetMeter | None = None,
         on_delta: Callable[[str], None] | None = None,
+        history_messages: tuple[Mapping[str, Any], ...] = (),
+        recent_queries: Sequence[str] = (),
+        policy: EffortPolicy | None = None,
+        resume_state: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         pair = self._pair_for_generation(generation_id=str(generation["id"]))
         candidate_numbers = (0, 1) if pair is not None else (0,)
@@ -1682,6 +2071,7 @@ class ChatGenerationWorker:
                     profile_version=candidate_config_versions[1],
                     effort=str(generation["effective_effort_level"]),
                     budget=retrieval_budget,
+                    recent_queries=recent_queries,
                 )
                 candidate_hits = outcome.hits
                 candidate_citations = self._resolve_citations(candidate_hits, generation)
@@ -1722,13 +2112,12 @@ class ChatGenerationWorker:
                 phase="generating",
                 generation=generation,
             )
-            if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
-                raise PlatformError(
-                    "generation_deadline_exceeded",
-                    "The generation deadline expired before the provider call",
-                    {},
-                    500,
-                )
+            policy_value = policy or effort_policy(str(generation["effective_effort_level"]))
+            tool_profile_version = (
+                candidate_config_versions[0]
+                if candidate_config_versions is not None
+                else str(generation["retrieval_profile_version"])
+            )
             request = ChatProviderRequest(
                 generation_id=str(generation["id"]),
                 owner_user_id=str(generation["owner_user_id"]),
@@ -1737,46 +2126,170 @@ class ChatGenerationWorker:
                 candidate=None if pair is None else candidate,
                 context_items=context,
                 source_conflict_contract=source_conflict_contract(),
+                history_messages=history_messages,
                 on_delta=on_delta,
             )
-            answer_mode = _answer_mode(candidate_hits, candidate_citations)
-            pending_checkpoint = {
-                "phase": "provider_pending",
-                "pending_candidate": {
-                    "candidate": candidate,
-                    "content": "",
-                    "citations": [dict(item) for item in candidate_citations],
-                    "answer_mode": answer_mode,
-                },
-            }
-            try:
-                response = self._provider_call(
+            tools = self._tool_definitions(policy_value.allowed_tools)
+            followup_messages: list[dict[str, Any]] = list(
+                (resume_state or {}).get("followup_messages", ())
+            )
+            observations: list[dict[str, Any]] = list((resume_state or {}).get("observations", []))
+            step = len(observations)
+            deadline = _utc(generation["absolute_deadline_at_utc"])
+            while True:
+                if _utc(self._now()) >= deadline:
+                    raise PlatformError(
+                        "generation_deadline_exceeded",
+                        "The generation deadline expired before the provider call",
+                        {},
+                        500,
+                    )
+                offer_tools = bool(tools) and step < policy_value.max_model_steps - 1
+                step_request = replace(
                     request,
-                    generation=generation,
+                    tools=tools if offer_tools else (),
+                    enable_thinking=policy_value.enable_thinking,
+                    followup_messages=tuple(followup_messages),
+                )
+                answer_mode = _answer_mode(candidate_hits, candidate_citations)
+                pending_checkpoint = {
+                    "phase": "provider_pending",
+                    "pending_candidate": {
+                        "candidate": candidate,
+                        "content": "",
+                        "citations": [dict(item) for item in candidate_citations],
+                        "answer_mode": answer_mode,
+                    },
+                    "observations": observations,
+                }
+                try:
+                    response = self._provider_call(
+                        step_request,
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        defer_completion=True,
+                        pending_checkpoint=pending_checkpoint,
+                        logical_budget=logical_budget,
+                        call_sequence=step,
+                    )
+                except Exception:
+                    # Earlier candidates are known results even if a later
+                    # candidate fails or becomes unknown.
+                    self._complete_deferred_provider_calls_public(results)
+                    raise
+                provider_meta: dict[str, Any] = {}
+                if isinstance(response, ProviderCallOutcome):
+                    provider_response = response.response
+                    provider_meta = {
+                        "_provider_call_id": response.provider_call_id,
+                        "_provider_measurement": response.measurement,
+                        "_provider_ownership": response.ownership,
+                        "_provider_started_at_utc": response.started_at_utc,
+                        "_provider_request_id": response.provider_request_id,
+                    }
+                else:
+                    provider_response = response
+                calls = provider_response.tool_calls
+                if not calls or not offer_tools:
+                    if not str(provider_response.content or "").strip():
+                        # A model that still answers empty after its final step
+                        # would previously have been rejected by the transport.
+                        raise PlatformError(
+                            "provider_unavailable",
+                            "Chat model transport returned an empty answer",
+                            {"retryable": True},
+                            503,
+                            True,
+                        )
+                    break
+                # Intermediate tool-step calls are final usage facts: settle
+                # them into the ledger now; only the last call stays deferred
+                # and completes with the published candidate.
+                if isinstance(response, ProviderCallOutcome):
+                    self._usage.complete_provider_call(
+                        provider_call_id=response.provider_call_id,
+                        measurement=response.measurement,
+                        ownership=response.ownership,
+                        result="succeeded",
+                        provider_request_id=response.provider_request_id,
+                        started_at_utc=response.started_at_utc,
+                    )
+                # ReAct continuation: execute the requested tools, record the
+                # observations durably, then continue the model conversation.
+                step += 1
+                assistant_turn: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [dict(call) for call in calls],
+                }
+                tool_turns: list[dict[str, Any]] = []
+                for call in calls:
+                    name = str(call.get("name") or "")
+                    observation = self._execute_tool(
+                        name=name,
+                        arguments=str(call.get("arguments") or ""),
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        rag_budget_meter=logical_budget or retrieval_budget,
+                        step_sequence=step,
+                        profile_version=tool_profile_version,
+                    )
+                    observations.append(
+                        {
+                            "tool": name,
+                            "arguments": call.get("arguments"),
+                            "observation": observation,
+                        }
+                    )
+                    tool_turns.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or ""),
+                            "content": observation,
+                        }
+                    )
+                followup_messages.append(assistant_turn)
+                followup_messages.extend(tool_turns)
+                if policy_value.emit_step_events:
+                    for position in range(1, len(tool_turns) + 1):
+                        self._emit_step(
+                            generation_id=str(generation["id"]),
+                            execution_id=execution_id,
+                            fencing_token=fencing_token,
+                            control_version=control_version,
+                            index=step * 10 + position,
+                            label=f"tool_{position}_step_{step}",
+                            state="done",
+                        )
+                if not self._persist_checkpoint(
+                    generation_id=str(generation["id"]),
                     execution_id=execution_id,
                     fencing_token=fencing_token,
                     control_version=control_version,
-                    defer_completion=True,
-                    pending_checkpoint=pending_checkpoint,
-                    logical_budget=logical_budget,
-                )
-            except Exception:
-                # Earlier candidates are known results even if a later
-                # candidate fails or becomes unknown.
-                self._complete_deferred_provider_calls_public(results)
-                raise
-            provider_meta: dict[str, Any] = {}
-            if isinstance(response, ProviderCallOutcome):
-                provider_response = response.response
-                provider_meta = {
-                    "_provider_call_id": response.provider_call_id,
-                    "_provider_measurement": response.measurement,
-                    "_provider_ownership": response.ownership,
-                    "_provider_started_at_utc": response.started_at_utc,
-                    "_provider_request_id": response.provider_request_id,
-                }
-            else:
-                provider_response = response
+                    checkpoint={
+                        "phase": "tool_observed",
+                        "candidate": candidate,
+                        "observations": observations,
+                        "followup_messages": followup_messages,
+                        "hits": [_hit_mapping(hit) for hit in candidate_hits],
+                        "citations": [dict(item) for item in candidate_citations],
+                        "budget": (
+                            logical_budget.to_checkpoint()
+                            if isinstance(logical_budget, BudgetMeter)
+                            else None
+                        ),
+                    },
+                ):
+                    raise PlatformError(
+                        "generation_state_conflict",
+                        "The generation control fence was invalidated",
+                        {},
+                        409,
+                    )
             content = str(provider_response.content)
             # Citations carry only the hits the model actually referenced in
             # its content (A4); the answer mode follows the referenced subset.
@@ -1837,6 +2350,11 @@ class ChatGenerationWorker:
             for item in request.context_items
             if isinstance(item, Mapping)
         ]
+        snippets.extend(
+            str(message.get("content") or "")
+            for message in request.history_messages
+            if isinstance(message, Mapping)
+        )
         return conservative_chat_token_estimate(request.content, snippets)
 
     def _provider_call(
@@ -1850,13 +2368,15 @@ class ChatGenerationWorker:
         defer_completion: bool = False,
         pending_checkpoint: Mapping[str, Any] | None = None,
         logical_budget: BudgetMeter | None = None,
+        call_sequence: int = 0,
     ) -> Any:
         budget_reservation_id = None
         estimated_cost = Decimal("0")
         if self._budget_meter is not None:
             candidate_key = request.candidate if request.candidate is not None else 0
             budget_reservation_id = (
-                f"provider:{request.generation_id}:{execution_id}:{request.purpose}:{candidate_key}"
+                f"provider:{request.generation_id}:{execution_id}:"
+                f"{request.purpose}:{candidate_key}:s{call_sequence}"
             )
             estimated_tokens = self._estimated_provider_tokens(request)
             estimated_cost = self._budget_meter.estimate_cost("chat_generation", estimated_tokens)
@@ -2599,15 +3119,16 @@ class ChatGenerationWorker:
         fencing_token: int,
         control_version: int,
         candidate_config_versions: tuple[str, str] | None,
+        enabled: bool = True,
     ) -> _DeltaStreamSink | None:
         """Streaming pass-through only where the draft is the published answer.
 
-        The quick tier skips self-evaluation entirely and A/B candidates must
-        stay blind before publication; think/deep drafts can be discarded by
-        the rewrite loop, so they keep the buffered answer path.
+        The effort policy decides which tiers stream (quick: yes; think/deep
+        drafts can be discarded by the rewrite loop, so they keep the buffered
+        answer path), and A/B candidates must stay blind before publication.
         """
 
-        if str(generation["effective_effort_level"]) != "quick":
+        if not enabled:
             return None
         if candidate_config_versions is not None:
             return None

@@ -32,6 +32,85 @@ BUDGET_REASONS = ("budget_exhausted", "cost_unavailable")
 _UPGRADE_CHAIN = {"quick": "think", "think": "deep"}
 EFFORT_UPGRADE_CHAIN = _UPGRADE_CHAIN
 
+# Tools the model may invoke, executed against the existing retrieval-domain
+# paths (hybrid retrieval incl. per-profile tree/graph routing, tree strategy,
+# graph reader).
+RETRIEVAL_TOOL_NAMES = ("search_retrieval", "search_tree", "search_graph")
+
+
+@dataclass(frozen=True, slots=True)
+class EffortPolicy:
+    """The single source of user-perceivable quick/think/deep differences.
+
+    Every orchestration branch in the worker reads this table; nothing else
+    may branch on the effort level.
+    """
+
+    effort_level: str
+    # Retrieval phase
+    max_rag_calls: int
+    max_rag_rounds: int
+    max_candidate_documents: int
+    retrieval_depth: str  # "baseline" | "deep" (deep plans strategy operations)
+    # Generation phase
+    max_model_steps: int  # upper bound on model calls inside one generation
+    allowed_tools: tuple[str, ...]
+    # Gates and presentation
+    self_evaluation: bool
+    enable_thinking: bool
+    emit_step_events: bool
+    stream_deltas: bool
+
+
+_EFFORT_POLICIES: dict[str, EffortPolicy] = {
+    "quick": EffortPolicy(
+        effort_level="quick",
+        max_rag_calls=EFFORT_RAG_LIMITS["quick"],
+        max_rag_rounds=_EFFORT_ROUND_LIMITS["quick"],
+        max_candidate_documents=EFFORT_CANDIDATE_DOCUMENT_LIMITS["quick"],
+        retrieval_depth="baseline",
+        max_model_steps=1,
+        allowed_tools=(),
+        self_evaluation=False,
+        enable_thinking=False,
+        emit_step_events=False,
+        stream_deltas=True,
+    ),
+    "think": EffortPolicy(
+        effort_level="think",
+        max_rag_calls=EFFORT_RAG_LIMITS["think"],
+        max_rag_rounds=_EFFORT_ROUND_LIMITS["think"],
+        max_candidate_documents=EFFORT_CANDIDATE_DOCUMENT_LIMITS["think"],
+        retrieval_depth="baseline",
+        max_model_steps=4,
+        allowed_tools=RETRIEVAL_TOOL_NAMES,
+        self_evaluation=True,
+        enable_thinking=False,
+        emit_step_events=False,
+        stream_deltas=False,
+    ),
+    "deep": EffortPolicy(
+        effort_level="deep",
+        max_rag_calls=EFFORT_RAG_LIMITS["deep"],
+        max_rag_rounds=_EFFORT_ROUND_LIMITS["deep"],
+        max_candidate_documents=EFFORT_CANDIDATE_DOCUMENT_LIMITS["deep"],
+        retrieval_depth="deep",
+        max_model_steps=6,
+        allowed_tools=RETRIEVAL_TOOL_NAMES,
+        self_evaluation=True,
+        enable_thinking=True,
+        emit_step_events=True,
+        stream_deltas=False,
+    ),
+}
+
+
+def effort_policy(effort_level: str) -> EffortPolicy:
+    policy = _EFFORT_POLICIES.get(effort_level)
+    if policy is None:
+        raise PlatformError("validation_error", "budget effort level is invalid", {}, 422)
+    return policy
+
 
 def default_pricer(_operation: str, _tokens: int) -> float | None:
     """No production deployment may use this: it cannot estimate cost."""
@@ -110,7 +189,7 @@ class GenerationBudget:
 
     @property
     def rag_calls_remaining(self) -> int:
-        return max(_EFFORT_ROUND_LIMITS[self.effort_level] - self.rag_calls_used, 0)
+        return max(effort_policy(self.effort_level).max_rag_rounds - self.rag_calls_used, 0)
 
     def can_start_rag_round(self) -> bool:
         return self.rag_calls_remaining > 0

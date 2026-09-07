@@ -35,7 +35,7 @@ from .observability import (
     record_index_observation,
 )
 from .providers import SparseIndexProvider
-from .routing import MetadataPrefilter, RuleQueryRouter
+from .routing import MetadataPrefilter, RouteOutput, RuleQueryRouter
 
 
 def _utc_now() -> datetime:
@@ -264,6 +264,7 @@ class RetrievalRequest:
         narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
         profile: RetrievalProfile | None = None,
         budget: RAGOperationBudgetPort | None = None,
+        recent_queries: Sequence[str] = (),
     ) -> RetrievalResult:
         return self._service._search_with_lease(
             query,
@@ -273,6 +274,7 @@ class RetrievalRequest:
             profile=profile,
             budget=budget,
             document_leases=self._document_leases,
+            recent_queries=recent_queries,
         )
 
     def resolve_citation(self, hit: RetrievalHit, *, principal: Any = None) -> Mapping[str, Any]:
@@ -824,6 +826,7 @@ class RetrievalService:
         narrowing_scope: NarrowingScope | Mapping[str, Any] | None = None,
         profile: RetrievalProfile | None = None,
         budget: RAGOperationBudgetPort | None = None,
+        recent_queries: Sequence[str] = (),
     ) -> RetrievalResult:
         with self.open_request() as request:
             return request.search(
@@ -832,7 +835,21 @@ class RetrievalService:
                 narrowing_scope=narrowing_scope,
                 profile=profile,
                 budget=budget,
+                recent_queries=recent_queries,
             )
+
+    @staticmethod
+    def _resolve_history_query(
+        route: RouteOutput, query: str, recent_queries: Sequence[str]
+    ) -> str | None:
+        """Resolve the conversation-history signal into a searchable query."""
+
+        if route.query_history_ref != "conversation_history" or not recent_queries:
+            return None
+        resolved = str(recent_queries[-1]).strip()
+        if not resolved or resolved == query.strip():
+            return None
+        return resolved
 
     def _search_with_lease(
         self,
@@ -844,6 +861,7 @@ class RetrievalService:
         profile: RetrievalProfile | None = None,
         budget: RAGOperationBudgetPort | None = None,
         document_leases: list[Mapping[str, Any]] | None = None,
+        recent_queries: Sequence[str] = (),
     ) -> RetrievalResult:
         if not isinstance(query, str) or not query.strip():
             raise PlatformError("validation_error", "query is required", {}, 422)
@@ -869,6 +887,7 @@ class RetrievalService:
         route = self._query_router.route(
             query,
             strategy_operations=selected.strategy_operations,
+            recent_queries=recent_queries,
         )
         dense_weight = route.dense_weight or selected.dense_weight
         sparse_weight = route.sparse_weight or selected.sparse_weight
@@ -908,8 +927,16 @@ class RetrievalService:
             )
             budget.reconcile(rewrite_reservation, actual_tokens=0)
 
+        scheduled_plans: list[tuple[str, str]] = list(route.search_query_plan())
+        history_query = self._resolve_history_query(route, query, recent_queries)
+        if history_query is not None and scheduled_plans:
+            # A bare pronoun follow-up shares no terms with the topic: search
+            # the most recent user turn on the primary branch instead, keeping
+            # every extra strategy branch as planned.
+            primary_operation, _primary_query = scheduled_plans[0]
+            scheduled_plans[0] = (primary_operation, history_query)
         scheduled_queries: list[tuple[str, str, float | None]] = []
-        for route_operation, search_query in route.search_query_plan():
+        for route_operation, search_query in scheduled_plans:
             if route_operation in blocked_strategies:
                 continue
             scheduled_reservation: float | None = None
