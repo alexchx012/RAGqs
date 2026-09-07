@@ -59,6 +59,7 @@ class EffortPolicy:
     self_evaluation: bool
     enable_thinking: bool
     emit_step_events: bool
+    stream_deltas: bool
 
 
 _EFFORT_POLICIES: dict[str, EffortPolicy] = {
@@ -73,6 +74,7 @@ _EFFORT_POLICIES: dict[str, EffortPolicy] = {
         self_evaluation=False,
         enable_thinking=False,
         emit_step_events=False,
+        stream_deltas=True,
     ),
     "think": EffortPolicy(
         effort_level="think",
@@ -85,6 +87,7 @@ _EFFORT_POLICIES: dict[str, EffortPolicy] = {
         self_evaluation=True,
         enable_thinking=False,
         emit_step_events=False,
+        stream_deltas=False,
     ),
     "deep": EffortPolicy(
         effort_level="deep",
@@ -97,6 +100,7 @@ _EFFORT_POLICIES: dict[str, EffortPolicy] = {
         self_evaluation=True,
         enable_thinking=True,
         emit_step_events=True,
+        stream_deltas=False,
     ),
 }
 
@@ -185,7 +189,7 @@ class GenerationBudget:
 
     @property
     def rag_calls_remaining(self) -> int:
-        return max(_EFFORT_ROUND_LIMITS[self.effort_level] - self.rag_calls_used, 0)
+        return max(effort_policy(self.effort_level).max_rag_rounds - self.rag_calls_used, 0)
 
     def can_start_rag_round(self) -> bool:
         return self.rag_calls_remaining > 0

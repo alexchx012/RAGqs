@@ -98,6 +98,7 @@ def test_deep_strategy_plan_sees_history() -> None:
 
     plan_calls = [call for call in provider.calls if call.purpose == "deep_retrieval_plan"]
     assert plan_calls, "deep tier must issue a strategy plan request"
+    assert plan_calls[-1].enable_thinking is True
     roles = [str(message["role"]) for message in plan_calls[-1].history_messages]
     assert roles == ["user", "assistant"]
     assert str(plan_calls[-1].history_messages[0]["content"]) == "RAGqs 的检索架构是什么？"

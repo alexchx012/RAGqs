@@ -34,7 +34,6 @@ from app.usage.reconcile import (
 )
 
 from .budget import (
-    EFFORT_CANDIDATE_LIMITS,
     EFFORT_UPGRADE_CHAIN,
     BudgetMeter,
     BudgetPolicy,
@@ -227,10 +226,16 @@ class ChatGenerationWorker:
         disconnect_grace_seconds: int = 60,
         provider_reconciliation: Any | None = None,
         max_scope_retries: int = 1,
+        tool_retrieval: ChatRetrievalPort | None = None,
     ) -> None:
         self._engine = engine
         self._clock = clock
+        # Model-invoked tool searches run on their own port instance: the
+        # production adapter binds one retrieval request per port and the
+        # mainline binding must survive until publication revalidates
+        # citations against it.
         self._retrieval = retrieval
+        self._tool_retrieval = tool_retrieval or retrieval
         self._provider = provider
         self._usage = usage
         self._calibration = calibration
@@ -1085,7 +1090,7 @@ class ChatGenerationWorker:
                 limit=(
                     budget_meter_snapshot.candidate_document_limit
                     if budget_meter_snapshot is not None
-                    else EFFORT_CANDIDATE_LIMITS[budget.effort_level]
+                    else effort_policy(budget.effort_level).max_candidate_documents
                 ),
             )
             degradations = degradations + tuple(dict(item) for item in missing_identities)
@@ -1146,6 +1151,7 @@ class ChatGenerationWorker:
             fencing_token=fencing_token,
             control_version=control_version,
             candidate_config_versions=candidate_config_versions,
+            enabled=effort_policy_value.stream_deltas,
         )
         try:
             candidates = self._produce_candidates(
@@ -1345,7 +1351,7 @@ class ChatGenerationWorker:
         tool_resume = self._tool_resume_state(checkpoint)
         hits: tuple[RetrievalHitOutcome, ...] = ()
         strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
-        if policy.retrieval_depth == "deep":
+        if policy.retrieval_depth == "deep" and tool_resume is None:
             strategy_operations = self._plan_deep_retrieval(
                 generation=generation,
                 execution_id=execution_id,
@@ -1867,6 +1873,7 @@ class ChatGenerationWorker:
         control_version: int,
         rag_budget_meter: BudgetMeter | None,
         step_sequence: int,
+        profile_version: str,
     ) -> str:
         """Execute one model-requested retrieval tool; return its observation."""
 
@@ -1894,12 +1901,12 @@ class ChatGenerationWorker:
                 estimated_cost=Decimal("0"),
                 is_rag=True,
             )
-        outcome = self._retrieval.search(
+        outcome = self._tool_retrieval.search(
             query,
             principal=_principal_from_generation(generation),
             narrowing_scope=generation["request_scope_json"],
             profile_id=str(generation["retrieval_profile_id"]),
-            profile_version=str(generation["retrieval_profile_version"]),
+            profile_version=profile_version,
             effort=str(generation["effective_effort_level"]),
             budget=rag_budget_meter,
             strategy_operations=strategy,
@@ -1943,6 +1950,10 @@ class ChatGenerationWorker:
         """Restore executed tool observations after a crash mid-generation."""
 
         if not checkpoint or checkpoint.get("phase") != "tool_observed":
+            return None
+        if checkpoint.get("candidate") not in (None, 0):
+            # A/B candidate 1 is not resumable; fall back to a fresh attempt
+            # with the pre-change re-execution semantics.
             return None
         hits = tuple(
             RetrievalHitOutcome(
@@ -2102,6 +2113,11 @@ class ChatGenerationWorker:
                 generation=generation,
             )
             policy_value = policy or effort_policy(str(generation["effective_effort_level"]))
+            tool_profile_version = (
+                candidate_config_versions[0]
+                if candidate_config_versions is not None
+                else str(generation["retrieval_profile_version"])
+            )
             request = ChatProviderRequest(
                 generation_id=str(generation["id"]),
                 owner_user_id=str(generation["owner_user_id"]),
@@ -2156,6 +2172,7 @@ class ChatGenerationWorker:
                         defer_completion=True,
                         pending_checkpoint=pending_checkpoint,
                         logical_budget=logical_budget,
+                        call_sequence=step,
                     )
                 except Exception:
                     # Earlier candidates are known results even if a later
@@ -2176,7 +2193,29 @@ class ChatGenerationWorker:
                     provider_response = response
                 calls = provider_response.tool_calls
                 if not calls or not offer_tools:
+                    if not str(provider_response.content or "").strip():
+                        # A model that still answers empty after its final step
+                        # would previously have been rejected by the transport.
+                        raise PlatformError(
+                            "provider_unavailable",
+                            "Chat model transport returned an empty answer",
+                            {"retryable": True},
+                            503,
+                            True,
+                        )
                     break
+                # Intermediate tool-step calls are final usage facts: settle
+                # them into the ledger now; only the last call stays deferred
+                # and completes with the published candidate.
+                if isinstance(response, ProviderCallOutcome):
+                    self._usage.complete_provider_call(
+                        provider_call_id=response.provider_call_id,
+                        measurement=response.measurement,
+                        ownership=response.ownership,
+                        result="succeeded",
+                        provider_request_id=response.provider_request_id,
+                        started_at_utc=response.started_at_utc,
+                    )
                 # ReAct continuation: execute the requested tools, record the
                 # observations durably, then continue the model conversation.
                 step += 1
@@ -2197,6 +2236,7 @@ class ChatGenerationWorker:
                         control_version=control_version,
                         rag_budget_meter=logical_budget or retrieval_budget,
                         step_sequence=step,
+                        profile_version=tool_profile_version,
                     )
                     observations.append(
                         {
@@ -2232,6 +2272,7 @@ class ChatGenerationWorker:
                     control_version=control_version,
                     checkpoint={
                         "phase": "tool_observed",
+                        "candidate": candidate,
                         "observations": observations,
                         "followup_messages": followup_messages,
                         "hits": [_hit_mapping(hit) for hit in candidate_hits],
@@ -2327,13 +2368,15 @@ class ChatGenerationWorker:
         defer_completion: bool = False,
         pending_checkpoint: Mapping[str, Any] | None = None,
         logical_budget: BudgetMeter | None = None,
+        call_sequence: int = 0,
     ) -> Any:
         budget_reservation_id = None
         estimated_cost = Decimal("0")
         if self._budget_meter is not None:
             candidate_key = request.candidate if request.candidate is not None else 0
             budget_reservation_id = (
-                f"provider:{request.generation_id}:{execution_id}:{request.purpose}:{candidate_key}"
+                f"provider:{request.generation_id}:{execution_id}:"
+                f"{request.purpose}:{candidate_key}:s{call_sequence}"
             )
             estimated_tokens = self._estimated_provider_tokens(request)
             estimated_cost = self._budget_meter.estimate_cost("chat_generation", estimated_tokens)
@@ -3076,15 +3119,16 @@ class ChatGenerationWorker:
         fencing_token: int,
         control_version: int,
         candidate_config_versions: tuple[str, str] | None,
+        enabled: bool = True,
     ) -> _DeltaStreamSink | None:
         """Streaming pass-through only where the draft is the published answer.
 
-        The quick tier skips self-evaluation entirely and A/B candidates must
-        stay blind before publication; think/deep drafts can be discarded by
-        the rewrite loop, so they keep the buffered answer path.
+        The effort policy decides which tiers stream (quick: yes; think/deep
+        drafts can be discarded by the rewrite loop, so they keep the buffered
+        answer path), and A/B candidates must stay blind before publication.
         """
 
-        if str(generation["effective_effort_level"]) != "quick":
+        if not enabled:
             return None
         if candidate_config_versions is not None:
             return None

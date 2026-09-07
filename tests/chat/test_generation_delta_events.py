@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import select
 
 import app.chat.worker as worker_module
+from app.chat.budget import effort_policy
 from app.chat.models import AskRequest
 from app.chat.schema import chat_generation_event_table
 
@@ -131,6 +132,7 @@ def test_delta_sink_boundary_is_quick_non_ab_only() -> None:
             fencing_token=1,
             control_version=1,
             candidate_config_versions=config_versions,
+            enabled=effort_policy(effort).stream_deltas,
         )
 
     assert sink(effort="quick", config_versions=None) is not None

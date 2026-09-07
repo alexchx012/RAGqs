@@ -962,6 +962,10 @@ def build_runtime(
         IndexingChatRetrievalPort(indexing_service)
     )
     configured.setdefault("chat_retrieval_port", chat_retrieval)
+    chat_tool_retrieval = configured.get("chat_tool_retrieval_port") or (
+        IndexingChatRetrievalPort(indexing_service)
+    )
+    configured.setdefault("chat_tool_retrieval_port", chat_tool_retrieval)
     chat_provider = configured.get("chat_provider_port") or _default_chat_provider(settings)
     configured.setdefault("chat_provider_port", chat_provider)
     prompt_enhance_provider = configured.get("prompt_enhance_provider_port") or (
@@ -1024,6 +1028,7 @@ def build_runtime(
         engine,
         clock=clock,
         retrieval=chat_retrieval,
+        tool_retrieval=chat_tool_retrieval,
         provider=chat_provider,
         usage=chat_usage,
         calibration=chat_calibration,

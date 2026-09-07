@@ -135,6 +135,13 @@ def test_tool_loop_executes_observes_and_resumes_after_crash(monkeypatch) -> Non
     usage_meter = _StubUsageMeter()
     original_ensure = usage_meter.ensure_meter
     usage_meter.ensure_meter = lambda **kwargs: _AttributeSnapshot(original_ensure(**kwargs))
+    # Tool searches run on their own retrieval port instance so the mainline
+    # citation binding survives until publication revalidates it.
+    tool_retrieval = RecordingChatRetrievalPort()
+    tool_retrieval.outcomes = {
+        "tool query": RetrievalOutcome(hits=(_hit("doc_tool", "chunk_tool"),))
+    }
+    monkeypatch.setattr(worker, "_tool_retrieval", tool_retrieval)
     original_persist = worker._persist_checkpoint
 
     def persist_then_die(**kwargs: Any) -> bool:
@@ -151,11 +158,10 @@ def test_tool_loop_executes_observes_and_resumes_after_crash(monkeypatch) -> Non
         pass
     monkeypatch.undo()
 
-    # The tool search ran exactly once before the simulated death.
-    assert [search["query"] for search in retrieval.searches] == [
-        "第一轮的问题",
-        "tool query",
-    ]
+    # The tool search ran exactly once before the simulated death, on the
+    # dedicated tool port; the mainline port only served the opening round.
+    assert [search["query"] for search in retrieval.searches] == ["第一轮的问题"]
+    assert [search["query"] for search in tool_retrieval.searches] == ["tool query"]
     assert len(provider.calls) == 1
 
     with env["engine"].begin() as connection:
@@ -182,10 +188,8 @@ def test_tool_loop_executes_observes_and_resumes_after_crash(monkeypatch) -> Non
     assert tool_turn["tool_call_id"] == "call_1"
     assert '"documents"' in str(tool_turn["content"])
     assert continuation.tools, "think tier offers the retrieval tools"
-    assert [search["query"] for search in retrieval.searches] == [
-        "第一轮的问题",
-        "tool query",
-    ]
+    assert [search["query"] for search in retrieval.searches] == ["第一轮的问题"]
+    assert [search["query"] for search in tool_retrieval.searches] == ["tool query"]
     # The tool execution passed through the usage-budget reserve/settle seam.
     tool_reservation = f"rag:{generation_id}:tool-1"
     assert tool_reservation in usage_meter.reserved
