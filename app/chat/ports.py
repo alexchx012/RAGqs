@@ -52,6 +52,14 @@ class ChatProviderRequest:
     # in chronological order; the provider renders them as prior messages and
     # the deep strategy plan sees them in its prompt.
     history_messages: tuple[Mapping[str, Any], ...] = ()
+    # OpenAI-compatible tool definitions offered to the model; the adapter
+    # passes them through verbatim and parses tool_calls from the response.
+    tools: tuple[Mapping[str, Any], ...] = ()
+    # Assistant tool_calls + tool result messages appended after the final
+    # user message when the loop continues after executed tool calls.
+    followup_messages: tuple[Mapping[str, Any], ...] = ()
+    # Thinking-mode switch resolved from the effort policy by the worker.
+    enable_thinking: bool = False
     # Optional streaming sink: invoked per content chunk when the caller can
     # pass provider deltas through; the returned ChatProviderResponse stays
     # the single authoritative answer.
@@ -124,6 +132,7 @@ class ChatRetrievalPort(Protocol):
         budget: Any | None = None,
         strategy_operations: tuple[DeepRetrievalStrategy, ...] = (),
         recent_queries: Sequence[str] = (),
+        route_graph: bool = False,
     ) -> RetrievalOutcome: ...
 
     def resolve_citations(
@@ -376,6 +385,7 @@ class IndexingChatRetrievalPort:
         budget: Any | None = None,
         strategy_operations: tuple[DeepRetrievalStrategy, ...] = (),
         recent_queries: Sequence[str] = (),
+        route_graph: bool = False,
     ) -> RetrievalOutcome:
         from .models import RetrievalHitOutcome
 
@@ -387,6 +397,7 @@ class IndexingChatRetrievalPort:
             effort=cast(Literal["quick", "think", "deep"], effort),
             strategy_operations=strategy_operations,
             route_tree="tree" in strategy_operations,
+            route_graph=route_graph,
         )
         request = self._indexing.open_retrieval_request()
         result = request.search(
@@ -579,6 +590,7 @@ class RecordingChatRetrievalPort:
         budget: Any | None = None,
         strategy_operations: tuple[DeepRetrievalStrategy, ...] = (),
         recent_queries: Sequence[str] = (),
+        route_graph: bool = False,
     ) -> RetrievalOutcome:
         self.searches.append(
             {
@@ -590,6 +602,7 @@ class RecordingChatRetrievalPort:
                 "effort": effort,
                 "strategy_operations": strategy_operations,
                 "recent_queries": list(recent_queries),
+                "route_graph": route_graph,
             }
         )
         return self.outcomes.get(query, RetrievalOutcome(hits=()))

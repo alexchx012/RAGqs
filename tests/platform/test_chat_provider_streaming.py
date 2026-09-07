@@ -40,7 +40,9 @@ def _provider(transport: httpx.BaseTransport) -> DashScopeChatProvider:
 
 
 def _request(
-    effort: str = "quick", on_delta: Callable[[str], None] | None = None
+    effort: str = "quick",
+    on_delta: Callable[[str], None] | None = None,
+    enable_thinking: bool = False,
 ) -> ChatProviderRequest:
     return ChatProviderRequest(
         generation_id="gen_1",
@@ -50,6 +52,7 @@ def _request(
         candidate=None,
         context_items=(),
         on_delta=on_delta,
+        enable_thinking=enable_thinking,
     )
 
 
@@ -83,13 +86,13 @@ def _stream_chunks() -> list[dict]:
     ("effort", "expected"),
     [("quick", False), ("think", False), ("deep", True)],
 )
-def test_enable_thinking_follows_effort_level(effort: str, expected: bool) -> None:
+def test_enable_thinking_follows_effort_policy(effort: str, expected: bool) -> None:
     transport = _CapturingTransport(
         httpx.Response(200, json={"choices": [{"message": {"content": "a"}}]})
     )
     provider = _provider(transport)
     try:
-        provider.generate(_request(effort))
+        provider.generate(_request(effort, enable_thinking=expected))
     finally:
         provider.close()
 

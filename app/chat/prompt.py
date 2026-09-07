@@ -80,16 +80,18 @@ def assemble_generation_prompt(request: ChatProviderRequest) -> str:
     return "\n\n".join(blocks)
 
 
-def assemble_generation_messages(request: ChatProviderRequest) -> list[dict[str, str]]:
+def assemble_generation_messages(request: ChatProviderRequest) -> list[dict[str, Any]]:
     """Assemble the full provider message list: history turns, then the prompt.
 
     The final user message carries the canonical conflict/citation directives
     and context blocks via :func:`assemble_generation_prompt`; history turns
     precede it verbatim (assistant digests already truncated by the caller).
     The deep strategy plan embeds history inside its single prompt instead.
+    Tool-loop continuation turns are appended verbatim: they already carry
+    the OpenAI ``tool_calls`` / ``tool_call_id`` structure.
     """
 
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
     if request.purpose == "answer":
         messages = [
             {
@@ -99,4 +101,6 @@ def assemble_generation_messages(request: ChatProviderRequest) -> list[dict[str,
             for message in request.history_messages
         ]
     messages.append({"role": "user", "content": assemble_generation_prompt(request)})
+    for message in request.followup_messages:
+        messages.append(dict(message))
     return messages

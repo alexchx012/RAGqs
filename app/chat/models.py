@@ -222,6 +222,9 @@ class ChatProviderResponse:
     output_tokens: int
     reasoning_tokens: int | None = None
     provider_request_id: str | None = None
+    # Normalized model-initiated tool calls: {"id", "name", "arguments"} with
+    # ``arguments`` as the raw JSON text. Empty unless tools were offered.
+    tool_calls: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

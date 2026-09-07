@@ -38,6 +38,29 @@ def _int_or_none(value: Any) -> int | None:
     return value
 
 
+def _normalize_tool_call(raw: Any) -> dict[str, Any] | None:
+    """Normalize one OpenAI tool_call object to ``{"id", "name", "arguments"}``."""
+
+    if not isinstance(raw, dict):
+        return None
+    function = raw.get("function")
+    if not isinstance(function, dict):
+        return None
+    return {
+        "id": str(raw.get("id") or ""),
+        "name": str(function.get("name") or ""),
+        "arguments": str(function.get("arguments") or ""),
+    }
+
+
+def _tool_calls_from(message: Any) -> tuple[dict[str, Any], ...]:
+    raw_calls = message.get("tool_calls") if isinstance(message, dict) else None
+    if not isinstance(raw_calls, list):
+        return ()
+    normalized = (_normalize_tool_call(item) for item in raw_calls)
+    return tuple(call for call in normalized if call is not None)
+
+
 class _StreamAccumulator:
     """解析 OpenAI 兼容 SSE ``data:`` 载荷：累积正文并逐段回调透出。
 
@@ -51,6 +74,7 @@ class _StreamAccumulator:
         self._parts: list[str] = []
         self.usage: dict[str, Any] = {}
         self.request_id: str | None = None
+        self._tool_fragments: dict[int, dict[str, str]] = {}
 
     def __call__(self, data: str) -> None:
         if data == "[DONE]":
@@ -72,9 +96,36 @@ class _StreamAccumulator:
                 if isinstance(text, str) and text:
                     self._parts.append(text)
                     self._on_delta(text)
+                self._accumulate_tool_calls(delta.get("tool_calls"))
         usage = chunk.get("usage")
         if isinstance(usage, dict):
             self.usage = usage
+
+    def _accumulate_tool_calls(self, raw_calls: Any) -> None:
+        if not isinstance(raw_calls, list):
+            return
+        for raw in raw_calls:
+            if not isinstance(raw, dict):
+                raise ProviderFailure("invalid_response_body", retryable=False, sent=True)
+            index = raw.get("index")
+            slot = index if isinstance(index, int) and index >= 0 else len(self._tool_fragments)
+            fragment = self._tool_fragments.setdefault(
+                slot, {"id": "", "name": "", "arguments": ""}
+            )
+            call_id = raw.get("id")
+            if isinstance(call_id, str) and call_id and not fragment["id"]:
+                fragment["id"] = call_id
+            function = raw.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+                if isinstance(name, str) and name and not fragment["name"]:
+                    fragment["name"] = name
+                arguments = function.get("arguments")
+                if isinstance(arguments, str) and arguments:
+                    fragment["arguments"] += arguments
+
+    def tool_calls(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self._tool_fragments[index] for index in sorted(self._tool_fragments))
 
     def content(self) -> str:
         return "".join(self._parts)
@@ -121,8 +172,10 @@ class DashScopeChatProvider:
         payload = {
             "model": self._model,
             "messages": assemble_generation_messages(request),
-            "enable_thinking": request.effort_level == "deep",
+            "enable_thinking": request.enable_thinking,
         }
+        if request.tools:
+            payload["tools"] = [dict(tool) for tool in request.tools]
         if request.on_delta is not None:
             return self._generate_stream(request, request.on_delta, payload)
         try:
@@ -145,6 +198,7 @@ class DashScopeChatProvider:
             raise self._translate(exc) from exc
         body = egress.body
         content: Any = None
+        tool_calls: tuple[dict[str, Any], ...] = ()
         if isinstance(body, dict):
             choices = body.get("choices")
             if isinstance(choices, list) and choices:
@@ -152,9 +206,13 @@ class DashScopeChatProvider:
                 message = first.get("message") if isinstance(first, dict) else None
                 if isinstance(message, dict):
                     content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
+                    tool_calls = _tool_calls_from(message)
+        content_text = content.strip() if isinstance(content, str) else ""
+        # A tool-call turn carries no prose content; only treat an empty
+        # answer as unavailable when the model offered no tool calls.
+        if not content_text and not tool_calls:
             raise self._unavailable()
-        raw_usage = body.get("usage")
+        raw_usage = body.get("usage") if isinstance(body, dict) else None
         usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         raw_details = usage.get("completion_tokens_details")
         details: dict[str, Any] = raw_details if isinstance(raw_details, dict) else {}
@@ -163,11 +221,12 @@ class DashScopeChatProvider:
         if request_id is None and isinstance(body.get("id"), str):
             request_id = body["id"]
         return ChatProviderResponse(
-            content=content.strip(),
+            content=content_text,
             input_tokens=_int_or_none(usage.get("prompt_tokens")) or 0,
             output_tokens=_int_or_none(usage.get("completion_tokens")) or 0,
             reasoning_tokens=reasoning,
             provider_request_id=request_id,
+            tool_calls=tool_calls,
         )
 
     def _generate_stream(
@@ -199,7 +258,8 @@ class DashScopeChatProvider:
         except ModelHttpError as exc:
             raise self._translate(exc) from exc
         content = sink.content()
-        if not content.strip():
+        tool_calls = sink.tool_calls()
+        if not content.strip() and not tool_calls:
             raise self._unavailable()
         usage = sink.usage
         raw_details = usage.get("completion_tokens_details")
@@ -213,6 +273,7 @@ class DashScopeChatProvider:
             output_tokens=_int_or_none(usage.get("completion_tokens")) or 0,
             reasoning_tokens=_int_or_none(details.get("reasoning_tokens")),
             provider_request_id=request_id,
+            tool_calls=tool_calls,
         )
 
     @staticmethod

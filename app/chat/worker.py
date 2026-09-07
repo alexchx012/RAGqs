@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -37,8 +38,10 @@ from .budget import (
     EFFORT_UPGRADE_CHAIN,
     BudgetMeter,
     BudgetPolicy,
+    EffortPolicy,
     GenerationBudget,
     conservative_chat_token_estimate,
+    effort_policy,
     select_budget_candidates,
 )
 from .events import append_event, has_terminal_event
@@ -1026,11 +1029,12 @@ class ChatGenerationWorker:
         select_candidates: bool,
         emit_routed_event: bool,
         recent_queries: Sequence[str] = (),
+        emit_step_events: bool = False,
     ) -> RetrievalStageResult:
         """One retrieval round: step events, search, notices and citations."""
 
         round_step = None
-        if budget.effort_level == "deep":
+        if emit_step_events:
             step_index += 1
             round_step = step_index
             self._emit_step(
@@ -1130,9 +1134,12 @@ class ChatGenerationWorker:
         query: str,
         history_messages: tuple[Mapping[str, Any], ...] = (),
         recent_queries: Sequence[str] = (),
+        policy: EffortPolicy | None = None,
+        resume_state: dict[str, Any] | None = None,
     ) -> GenerationStageResult:
         """Produce answer candidates, streaming provider deltas through the sink."""
 
+        effort_policy_value = policy or effort_policy(str(generation["effective_effort_level"]))
         delta_sink = self._open_delta_sink(
             generation=generation,
             execution_id=execution_id,
@@ -1155,6 +1162,8 @@ class ChatGenerationWorker:
                 on_delta=delta_sink,
                 history_messages=history_messages,
                 recent_queries=recent_queries,
+                policy=effort_policy_value,
+                resume_state=resume_state,
             )
         finally:
             if delta_sink is not None:
@@ -1312,6 +1321,7 @@ class ChatGenerationWorker:
             # production. The mapping is read-only after pair creation.
             profile_version = candidate_config_versions[0]
         effort = str(generation["effective_effort_level"])
+        policy = effort_policy(effort)
         budget = GenerationBudget.from_checkpoint(
             effort,
             checkpoint.get("budget", checkpoint) if checkpoint else None,
@@ -1332,9 +1342,10 @@ class ChatGenerationWorker:
         recent_queries: tuple[str, ...] = tuple(
             str(message["content"]) for message in conversation_history if message["role"] == "user"
         )
+        tool_resume = self._tool_resume_state(checkpoint)
         hits: tuple[RetrievalHitOutcome, ...] = ()
         strategy_operations: tuple[DeepRetrievalStrategy, ...] = ()
-        if effort == "deep":
+        if policy.retrieval_depth == "deep":
             strategy_operations = self._plan_deep_retrieval(
                 generation=generation,
                 execution_id=execution_id,
@@ -1350,118 +1361,129 @@ class ChatGenerationWorker:
         step_index = 0
         skip_retrieval_events = bool(checkpoint and checkpoint.get("phase") == "retrieval_complete")
         citations: list[Mapping[str, Any]] = []
-        while True:
-            if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
-                # Fail atomically through _fail_execution before any retrieval,
-                # provider or usage side effects of this round.
-                raise PlatformError(
-                    "generation_deadline_exceeded",
-                    "The generation deadline expired before further execution",
-                    {},
-                    500,
-                )
-            if round_index > 0 and not budget.can_start_rag_round():
-                upgrade = self._try_upgrade_effort(
-                    generation=generation,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    budget=budget,
-                    rag_budget_meter=rag_budget_meter,
-                    budget_meter_snapshot=budget_meter_snapshot,
-                    hits=hits,
-                    estimate_query=str(generation["request_content"]),
-                )
-                if upgrade.fence_lost:
-                    return
-                if not upgrade.upgraded:
-                    break
-                generation = upgrade.generation
-                budget_meter_snapshot = upgrade.budget_meter_snapshot
-            self._emit_stage(
-                generation_id=generation_id,
-                execution_id=execution_id,
-                fencing_token=fencing_token,
-                control_version=control_version,
-                phase="retrieving" if round_index == 0 else "retrieving_again",
-                generation=generation,
-            )
-            budget_reservation_id = None
-            if self._budget_meter is not None:
-                budget_reservation_id = f"rag:{generation_id}:{round_index}"
-                self._budget_reserve(
-                    generation=generation,
-                    execution_id=execution_id,
-                    fencing_token=fencing_token,
-                    control_version=control_version,
-                    reservation_id=budget_reservation_id,
-                    operation_kind="rag_retrieval",
-                    estimated_tokens=0,
-                    estimated_cost=Decimal("0"),
-                    is_rag=True,
-                )
-            result = self._run_retrieval_stage(
-                generation=generation,
-                execution_id=execution_id,
-                fencing_token=fencing_token,
-                control_version=control_version,
-                query=str(generation["request_content"]),
-                budget=budget,
-                rag_budget_meter=rag_budget_meter,
-                budget_meter_snapshot=budget_meter_snapshot,
-                profile_id=profile_id,
-                profile_version=profile_version,
-                reservation_id=budget_reservation_id,
-                step_index=step_index,
-                strategy_operations=strategy_operations if round_index == 0 else (),
-                select_candidates=True,
-                emit_routed_event=not skip_retrieval_events,
-                recent_queries=recent_queries,
-            )
-            step_index = result.step_index
-            hits = result.hits
-            citations = result.citations
-            if len(citations) == len(hits):
-                if not self._persist_checkpoint(
+        if tool_resume is not None:
+            # Crash resume mid-generation: reuse the recorded tool observations
+            # and the retrieval context snapshot instead of repeating outbound
+            # work; the generation stage continues the interrupted tool loop.
+            hits = tool_resume["hits"]
+            citations = tool_resume["citations"]
+        else:
+            while True:
+                if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
+                    # Fail atomically through _fail_execution before any retrieval,
+                    # provider or usage side effects of this round.
+                    raise PlatformError(
+                        "generation_deadline_exceeded",
+                        "The generation deadline expired before further execution",
+                        {},
+                        500,
+                    )
+                if round_index > 0 and not budget.can_start_rag_round():
+                    upgrade = self._try_upgrade_effort(
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        budget=budget,
+                        rag_budget_meter=rag_budget_meter,
+                        budget_meter_snapshot=budget_meter_snapshot,
+                        hits=hits,
+                        estimate_query=str(generation["request_content"]),
+                    )
+                    if upgrade.fence_lost:
+                        return
+                    if not upgrade.upgraded:
+                        break
+                    generation = upgrade.generation
+                    budget_meter_snapshot = upgrade.budget_meter_snapshot
+                    policy = effort_policy(budget.effort_level)
+                self._emit_stage(
                     generation_id=generation_id,
                     execution_id=execution_id,
                     fencing_token=fencing_token,
                     control_version=control_version,
-                    checkpoint={
-                        "phase": "retrieval_complete",
-                        "round_index": round_index,
-                        "completed_operations": [f"retrieval:{round_index}"],
-                        "retrieval_scope": {
-                            "profile_id": profile_id,
-                            "profile_version": profile_version,
+                    phase="retrieving" if round_index == 0 else "retrieving_again",
+                    generation=generation,
+                )
+                budget_reservation_id = None
+                if self._budget_meter is not None:
+                    budget_reservation_id = f"rag:{generation_id}:{round_index}"
+                    self._budget_reserve(
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        reservation_id=budget_reservation_id,
+                        operation_kind="rag_retrieval",
+                        estimated_tokens=0,
+                        estimated_cost=Decimal("0"),
+                        is_rag=True,
+                    )
+                result = self._run_retrieval_stage(
+                    generation=generation,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    query=str(generation["request_content"]),
+                    budget=budget,
+                    rag_budget_meter=rag_budget_meter,
+                    budget_meter_snapshot=budget_meter_snapshot,
+                    profile_id=profile_id,
+                    profile_version=profile_version,
+                    reservation_id=budget_reservation_id,
+                    step_index=step_index,
+                    strategy_operations=strategy_operations if round_index == 0 else (),
+                    select_candidates=True,
+                    emit_routed_event=not skip_retrieval_events,
+                    emit_step_events=policy.emit_step_events,
+                    recent_queries=recent_queries,
+                )
+                step_index = result.step_index
+                hits = result.hits
+                citations = result.citations
+                if len(citations) == len(hits):
+                    if not self._persist_checkpoint(
+                        generation_id=generation_id,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        checkpoint={
+                            "phase": "retrieval_complete",
+                            "round_index": round_index,
+                            "completed_operations": [f"retrieval:{round_index}"],
+                            "retrieval_scope": {
+                                "profile_id": profile_id,
+                                "profile_version": profile_version,
+                            },
+                            "query_config_version": profile_version,
+                            "budget": budget.to_checkpoint(),
                         },
-                        "query_config_version": profile_version,
-                        "budget": budget.to_checkpoint(),
-                    },
-                ):
-                    return
-                break
-            visible_ids = {(str(item["document_id"]), str(item["chunk_id"])) for item in citations}
-            hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
-            if not hits:
-                # Every hit was ACL-filtered between search and citation
-                # resolution: this is a normal business outcome (no_context),
-                # not a generation failure.
-                citations = []
-                break
-            round_index += 1
-            skip_retrieval_events = False
+                    ):
+                        return
+                    break
+                visible_ids = {
+                    (str(item["document_id"]), str(item["chunk_id"])) for item in citations
+                }
+                hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
+                if not hits:
+                    # Every hit was ACL-filtered between search and citation
+                    # resolution: this is a normal business outcome (no_context),
+                    # not a generation failure.
+                    citations = []
+                    break
+                round_index += 1
+                skip_retrieval_events = False
 
         # Generation with the bounded self-evaluation rewrite loop (A6):
-        # quick skips the evaluation entirely; think/deep re-run retrieval
-        # within the same frozen scope only while the tier still has RAG
-        # rounds and open budget gates. Rejected drafts never become public.
+        # tiers whose policy disables self-evaluation accept the first draft
+        # (quick); think/deep re-run retrieval within the same frozen scope
+        # only while the tier still has RAG rounds and open budget gates.
+        # Rejected drafts never become public.
         effective_query = str(generation["request_content"])
         evaluator: SelfEvaluationPort = (
-            AcceptingSelfEvaluationPort()
-            if str(generation["effective_effort_level"]) == "quick"
-            else self._self_evaluator
+            self._self_evaluator if policy.self_evaluation else AcceptingSelfEvaluationPort()
         )
+        tool_resume_state = tool_resume
         while True:
             candidates = self._run_generation_stage(
                 generation=generation,
@@ -1475,7 +1497,10 @@ class ChatGenerationWorker:
                 query=effective_query,
                 history_messages=conversation_history,
                 recent_queries=recent_queries,
+                policy=policy,
+                resume_state=tool_resume_state,
             ).candidates
+            tool_resume_state = None
             evaluation = self._run_self_evaluation_stage(
                 evaluator=evaluator,
                 query=effective_query,
@@ -1507,6 +1532,7 @@ class ChatGenerationWorker:
                     break
                 generation = upgrade.generation
                 budget_meter_snapshot = upgrade.budget_meter_snapshot
+                policy = effort_policy(budget.effort_level)
             # The current draft is discarded before the rewritten query is
             # retrieved; settle its provider calls independently of publish.
             self._complete_deferred_provider_calls_public(candidates)
@@ -1549,6 +1575,7 @@ class ChatGenerationWorker:
                 strategy_operations=(),
                 select_candidates=False,
                 emit_routed_event=False,
+                emit_step_events=policy.emit_step_events,
                 recent_queries=recent_queries,
             )
             step_index = result.step_index
@@ -1783,6 +1810,171 @@ class ChatGenerationWorker:
             history.append({"role": str(row.role), "content": content})
         return tuple(history)
 
+    _TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
+        "search_retrieval": {
+            "type": "function",
+            "function": {
+                "name": "search_retrieval",
+                "description": "混合检索知识库文档，返回与 query 最相关的文档片段（含树检索/图谱路由，由检索配置决定）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "检索查询"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        "search_tree": {
+            "type": "function",
+            "function": {
+                "name": "search_tree",
+                "description": "按树检索策略深入知识库，适合需要定位章节/子块的多跳问题。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "检索查询"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        "search_graph": {
+            "type": "function",
+            "function": {
+                "name": "search_graph",
+                "description": "沿知识图谱关系检索，适合实体间关联问题。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "检索查询"}},
+                    "required": ["query"],
+                },
+            },
+        },
+    }
+
+    def _tool_definitions(self, allowed_tools: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            dict(self._TOOL_DEFINITIONS[name])
+            for name in allowed_tools
+            if name in self._TOOL_DEFINITIONS
+        )
+
+    def _execute_tool(
+        self,
+        *,
+        name: str,
+        arguments: str,
+        generation: Mapping[str, Any],
+        execution_id: str,
+        fencing_token: int,
+        control_version: int,
+        rag_budget_meter: BudgetMeter | None,
+        step_sequence: int,
+    ) -> str:
+        """Execute one model-requested retrieval tool; return its observation."""
+
+        try:
+            arguments_data = json.loads(arguments) if arguments.strip() else {}
+        except ValueError:
+            arguments_data = {}
+        query = ""
+        if isinstance(arguments_data, Mapping):
+            query = str(arguments_data.get("query") or "").strip()
+        if not query:
+            query = str(generation["request_content"])
+        strategy: tuple[DeepRetrievalStrategy, ...] = ("tree",) if name == "search_tree" else ()
+        route_graph = name == "search_graph"
+        reservation_id = f"rag:{generation['id']}:tool-{step_sequence}"
+        if self._budget_meter is not None:
+            self._budget_reserve(
+                generation=generation,
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                reservation_id=reservation_id,
+                operation_kind="rag_retrieval",
+                estimated_tokens=0,
+                estimated_cost=Decimal("0"),
+                is_rag=True,
+            )
+        outcome = self._retrieval.search(
+            query,
+            principal=_principal_from_generation(generation),
+            narrowing_scope=generation["request_scope_json"],
+            profile_id=str(generation["retrieval_profile_id"]),
+            profile_version=str(generation["retrieval_profile_version"]),
+            effort=str(generation["effective_effort_level"]),
+            budget=rag_budget_meter,
+            strategy_operations=strategy,
+            recent_queries=(),
+            route_graph=route_graph,
+        )
+        if self._budget_meter is not None:
+            self._budget_meter.settle(
+                generation_id=str(generation["id"]),
+                reservation_id=reservation_id,
+                actual_tokens=0,
+                actual_cost=Decimal("0"),
+            )
+        degradations = [dict(item) for item in outcome.degradations]
+        for item in degradations:
+            code = str(item.get("code") or "")
+            kind = code if code in NOTICE_KINDS else "retrieval_degraded"
+            self._emit_notice(
+                generation_id=str(generation["id"]),
+                execution_id=execution_id,
+                fencing_token=fencing_token,
+                control_version=control_version,
+                kind=kind,
+                detail=dict(item),
+                generation=generation,
+            )
+        documents = [
+            {
+                "document_id": hit.document_id,
+                "document_version_id": hit.document_version_id,
+                "snippet": hit.snippet[:300] if hit.snippet else "",
+            }
+            for hit in outcome.hits[:5]
+        ]
+        return json.dumps(
+            {"query": query, "documents": documents, "degradations": degradations},
+            ensure_ascii=True,
+        )
+
+    def _tool_resume_state(self, checkpoint: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Restore executed tool observations after a crash mid-generation."""
+
+        if not checkpoint or checkpoint.get("phase") != "tool_observed":
+            return None
+        hits = tuple(
+            RetrievalHitOutcome(
+                document_id=str(item.get("document_id") or ""),
+                document_version_id=str(item.get("document_version_id") or ""),
+                publication_id=str(item.get("publication_id") or ""),
+                chunk_id=str(item.get("chunk_id") or ""),
+                space_id=str(item.get("space_id") or ""),
+                locator=dict(item.get("locator") or {}),
+                snippet=str(item.get("snippet") or ""),
+                library=str(item.get("library") or "unknown"),
+            )
+            for item in checkpoint.get("hits", ())
+            if isinstance(item, Mapping)
+        )
+        return {
+            "hits": hits,
+            "citations": [
+                dict(item) for item in checkpoint.get("citations", ()) if isinstance(item, Mapping)
+            ],
+            "observations": [
+                dict(item)
+                for item in checkpoint.get("observations", ())
+                if isinstance(item, Mapping)
+            ],
+            "followup_messages": tuple(
+                dict(item)
+                for item in checkpoint.get("followup_messages", ())
+                if isinstance(item, Mapping)
+            ),
+        }
+
     def _plan_deep_retrieval(
         self,
         *,
@@ -1804,6 +1996,7 @@ class ChatGenerationWorker:
             context_items=(),
             source_conflict_contract=source_conflict_contract(),
             history_messages=history_messages,
+            enable_thinking=True,
             purpose="deep_retrieval_plan",
         )
         try:
@@ -1849,6 +2042,8 @@ class ChatGenerationWorker:
         on_delta: Callable[[str], None] | None = None,
         history_messages: tuple[Mapping[str, Any], ...] = (),
         recent_queries: Sequence[str] = (),
+        policy: EffortPolicy | None = None,
+        resume_state: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         pair = self._pair_for_generation(generation_id=str(generation["id"]))
         candidate_numbers = (0, 1) if pair is not None else (0,)
@@ -1906,13 +2101,7 @@ class ChatGenerationWorker:
                 phase="generating",
                 generation=generation,
             )
-            if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
-                raise PlatformError(
-                    "generation_deadline_exceeded",
-                    "The generation deadline expired before the provider call",
-                    {},
-                    500,
-                )
+            policy_value = policy or effort_policy(str(generation["effective_effort_level"]))
             request = ChatProviderRequest(
                 generation_id=str(generation["id"]),
                 owner_user_id=str(generation["owner_user_id"]),
@@ -1924,44 +2113,142 @@ class ChatGenerationWorker:
                 history_messages=history_messages,
                 on_delta=on_delta,
             )
-            answer_mode = _answer_mode(candidate_hits, candidate_citations)
-            pending_checkpoint = {
-                "phase": "provider_pending",
-                "pending_candidate": {
-                    "candidate": candidate,
-                    "content": "",
-                    "citations": [dict(item) for item in candidate_citations],
-                    "answer_mode": answer_mode,
-                },
-            }
-            try:
-                response = self._provider_call(
+            tools = self._tool_definitions(policy_value.allowed_tools)
+            followup_messages: list[dict[str, Any]] = list(
+                (resume_state or {}).get("followup_messages", ())
+            )
+            observations: list[dict[str, Any]] = list((resume_state or {}).get("observations", []))
+            step = len(observations)
+            deadline = _utc(generation["absolute_deadline_at_utc"])
+            while True:
+                if _utc(self._now()) >= deadline:
+                    raise PlatformError(
+                        "generation_deadline_exceeded",
+                        "The generation deadline expired before the provider call",
+                        {},
+                        500,
+                    )
+                offer_tools = bool(tools) and step < policy_value.max_model_steps - 1
+                step_request = replace(
                     request,
-                    generation=generation,
+                    tools=tools if offer_tools else (),
+                    enable_thinking=policy_value.enable_thinking,
+                    followup_messages=tuple(followup_messages),
+                )
+                answer_mode = _answer_mode(candidate_hits, candidate_citations)
+                pending_checkpoint = {
+                    "phase": "provider_pending",
+                    "pending_candidate": {
+                        "candidate": candidate,
+                        "content": "",
+                        "citations": [dict(item) for item in candidate_citations],
+                        "answer_mode": answer_mode,
+                    },
+                    "observations": observations,
+                }
+                try:
+                    response = self._provider_call(
+                        step_request,
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        defer_completion=True,
+                        pending_checkpoint=pending_checkpoint,
+                        logical_budget=logical_budget,
+                    )
+                except Exception:
+                    # Earlier candidates are known results even if a later
+                    # candidate fails or becomes unknown.
+                    self._complete_deferred_provider_calls_public(results)
+                    raise
+                provider_meta: dict[str, Any] = {}
+                if isinstance(response, ProviderCallOutcome):
+                    provider_response = response.response
+                    provider_meta = {
+                        "_provider_call_id": response.provider_call_id,
+                        "_provider_measurement": response.measurement,
+                        "_provider_ownership": response.ownership,
+                        "_provider_started_at_utc": response.started_at_utc,
+                        "_provider_request_id": response.provider_request_id,
+                    }
+                else:
+                    provider_response = response
+                calls = provider_response.tool_calls
+                if not calls or not offer_tools:
+                    break
+                # ReAct continuation: execute the requested tools, record the
+                # observations durably, then continue the model conversation.
+                step += 1
+                assistant_turn: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [dict(call) for call in calls],
+                }
+                tool_turns: list[dict[str, Any]] = []
+                for call in calls:
+                    name = str(call.get("name") or "")
+                    observation = self._execute_tool(
+                        name=name,
+                        arguments=str(call.get("arguments") or ""),
+                        generation=generation,
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        rag_budget_meter=logical_budget or retrieval_budget,
+                        step_sequence=step,
+                    )
+                    observations.append(
+                        {
+                            "tool": name,
+                            "arguments": call.get("arguments"),
+                            "observation": observation,
+                        }
+                    )
+                    tool_turns.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or ""),
+                            "content": observation,
+                        }
+                    )
+                followup_messages.append(assistant_turn)
+                followup_messages.extend(tool_turns)
+                if policy_value.emit_step_events:
+                    for position in range(1, len(tool_turns) + 1):
+                        self._emit_step(
+                            generation_id=str(generation["id"]),
+                            execution_id=execution_id,
+                            fencing_token=fencing_token,
+                            control_version=control_version,
+                            index=step * 10 + position,
+                            label=f"tool_{position}_step_{step}",
+                            state="done",
+                        )
+                if not self._persist_checkpoint(
+                    generation_id=str(generation["id"]),
                     execution_id=execution_id,
                     fencing_token=fencing_token,
                     control_version=control_version,
-                    defer_completion=True,
-                    pending_checkpoint=pending_checkpoint,
-                    logical_budget=logical_budget,
-                )
-            except Exception:
-                # Earlier candidates are known results even if a later
-                # candidate fails or becomes unknown.
-                self._complete_deferred_provider_calls_public(results)
-                raise
-            provider_meta: dict[str, Any] = {}
-            if isinstance(response, ProviderCallOutcome):
-                provider_response = response.response
-                provider_meta = {
-                    "_provider_call_id": response.provider_call_id,
-                    "_provider_measurement": response.measurement,
-                    "_provider_ownership": response.ownership,
-                    "_provider_started_at_utc": response.started_at_utc,
-                    "_provider_request_id": response.provider_request_id,
-                }
-            else:
-                provider_response = response
+                    checkpoint={
+                        "phase": "tool_observed",
+                        "observations": observations,
+                        "followup_messages": followup_messages,
+                        "hits": [_hit_mapping(hit) for hit in candidate_hits],
+                        "citations": [dict(item) for item in candidate_citations],
+                        "budget": (
+                            logical_budget.to_checkpoint()
+                            if isinstance(logical_budget, BudgetMeter)
+                            else None
+                        ),
+                    },
+                ):
+                    raise PlatformError(
+                        "generation_state_conflict",
+                        "The generation control fence was invalidated",
+                        {},
+                        409,
+                    )
             content = str(provider_response.content)
             # Citations carry only the hits the model actually referenced in
             # its content (A4); the answer mode follows the referenced subset.
