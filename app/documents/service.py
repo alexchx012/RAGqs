@@ -26,7 +26,7 @@ from app.indexing.schema import (
 )
 from app.outbox.ports import DocumentNotificationRedactionCommand
 from app.platform.context import current_context
-from app.platform.database import _insert_do_nothing, platform_audit_table
+from app.platform.database import _insert_do_nothing, as_utc, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.http_contract import IDEMPOTENCY_KEY_MAX_LENGTH, batch_item_error
 from app.platform.storage import MemoryObjectStore, ObjectMetadata, ObjectStorePort, StorageKeyError
@@ -219,14 +219,8 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
 
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 def _timestamp(value: datetime) -> str:
-    return _utc(value).isoformat()
+    return as_utc(value).isoformat()
 
 
 def _json(value: Any) -> Any:
@@ -388,7 +382,7 @@ class DocumentsService:
         self._malware_scanner = malware_scanner
 
     def _current_time(self) -> datetime:
-        return _utc(self._now())
+        return as_utc(self._now())
 
     def _current_index_generation(self, connection: Connection) -> str:
         handoff = self._indexing_handoff_port
@@ -726,7 +720,7 @@ class DocumentsService:
                 "document_version_purged", "Document version content was purged", {}, 410
             )
         purge_after = version["purge_after_at_utc"]
-        if purge_after is not None and _utc(purge_after) <= self._current_time():
+        if purge_after is not None and as_utc(purge_after) <= self._current_time():
             raise PlatformError(
                 "document_version_purged", "Document version retention has expired", {}, 410
             )
@@ -2782,7 +2776,7 @@ class DocumentsService:
             now = self._current_time()
             if (
                 source["purge_after_at_utc"] is not None
-                and _utc(source["purge_after_at_utc"]) <= now
+                and as_utc(source["purge_after_at_utc"]) <= now
             ):
                 raise PlatformError(
                     "document_version_purged",
@@ -2790,7 +2784,7 @@ class DocumentsService:
                     {
                         "document_id": document_id,
                         "document_version_id": document_version_id,
-                        "purge_after_at_utc": _utc(source["purge_after_at_utc"]).isoformat(),
+                        "purge_after_at_utc": as_utc(source["purge_after_at_utc"]).isoformat(),
                     },
                     409,
                 )
@@ -3275,7 +3269,7 @@ class DocumentsService:
                 reject_receipt("fence_conflict", "The processing attempt is no longer current")
             if (
                 attempt["lease_expires_at_utc"] is None
-                or _utc(attempt["lease_expires_at_utc"]) <= self._current_time()
+                or as_utc(attempt["lease_expires_at_utc"]) <= self._current_time()
             ):
                 reject_receipt("fence_conflict", "The processing attempt lease has expired")
             try:

@@ -25,7 +25,7 @@
   reset_at/period/business timezone/calendar version 服务端计算；read path 不创建
   projection（read_snapshot 缺投影返回基线且不建行）。
 - read_pending 的 created_at 由 DB 回读：SQLite 返回 naive datetime（DateTime(
-  timezone=True) 不保留 tz），统一 `_utc` 补 UTC 后再 isoformat，保证 RFC3339
+  timezone=True) 不保留 tz），统一 `as_utc` 补 UTC 后再 isoformat，保证 RFC3339
   `+00:00` 与 create 的 created_at 逐字节一致（PG 原生 tz-aware 亦走同路径）。
 - Task 10 审批（正式 spec §5 + Task 10 约束，旧 brief 示例陷阱已审计修正）：
   - summary 所有登录角色可读：仅精确 ops 统计当前业务月 pending（spec L50：admin
@@ -73,7 +73,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import Engine, and_, func, select, update
 from sqlalchemy.engine import Connection
@@ -84,7 +84,7 @@ from app.documents.schema import knowledge_submissions_table
 from app.identity.schema import identity_user_table
 from app.identity.service import AuthPrincipal
 from app.platform.context import current_context
-from app.platform.database import SqlAlchemyTransactionManager, platform_audit_table
+from app.platform.database import SqlAlchemyTransactionManager, as_utc, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.persistence import IdempotencyConflict
 
@@ -103,10 +103,6 @@ _ENDPOINT = "POST:/quota-requests"
 # 与底层 platform_idempotency.idempotency_key String(256) 对齐：最多 256 字符
 # （正式 spec 无 255 产品上限；256 接受、257 拒绝，保留非空/whitespace 策略）。
 _IDEMPOTENCY_KEY_MAX_LENGTH = 256
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _require_text(value: object, name: str, max_len: int) -> str:
@@ -257,7 +253,7 @@ class QuotaRequestService:
             "version": int(row["version"]),
             "requested_pages": int(row["requested_pages"]),
             "quota_period": str(row["quota_period"]),
-            "created_at": _utc(row["created_at_utc"]).isoformat(),
+            "created_at": as_utc(row["created_at_utc"]).isoformat(),
         }
 
     def me(self, *, actor: AuthPrincipal) -> dict:
@@ -899,9 +895,9 @@ class QuotaRequestService:
                             else None
                         ),
                         "quota_period": str(row["quota_period"]),
-                        "created_at": _utc(row["created_at_utc"]).isoformat(),
+                        "created_at": as_utc(row["created_at_utc"]).isoformat(),
                         "reviewed_at": (
-                            _utc(row["reviewed_at_utc"]).isoformat()
+                            as_utc(row["reviewed_at_utc"]).isoformat()
                             if row["reviewed_at_utc"] is not None
                             else None
                         ),

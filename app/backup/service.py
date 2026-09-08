@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import Connection, and_, func, select, update
 
 from app.platform.context import current_context
-from app.platform.database import platform_audit_table
+from app.platform.database import as_utc, platform_audit_table
 from app.platform.errors import PlatformError
 
 from .ports import (
@@ -69,12 +69,6 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
 
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 class BackupRestoreService:
     def __init__(
         self,
@@ -98,7 +92,7 @@ class BackupRestoreService:
         self._now = now or (lambda: datetime.now(UTC))
 
     def _current_time(self) -> datetime:
-        return _utc(self._now())
+        return as_utc(self._now())
 
     # ------------------------------------------------------------------
     # Backup sets

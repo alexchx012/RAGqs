@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.identity.schema import identity_user_table
 from app.platform.context import current_context
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .ports import (
@@ -166,10 +167,6 @@ ROLE_SNAPSHOT_EVENT_TYPES: frozenset[str] = frozenset(
 SINGLE_RECIPIENT_EVENT_TYPES: frozenset[str] = frozenset({"graph_build_completed"})
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
 def _canonical_graph_payload(command: OutboxPublishCommand) -> dict[str, object]:
     envelope = {
         "schema_version": command.schema_version,
@@ -178,7 +175,7 @@ def _canonical_graph_payload(command: OutboxPublishCommand) -> dict[str, object]
         "aggregate_type": command.aggregate_type,
         "aggregate_id": command.aggregate_id,
         "transition_version": command.transition_version,
-        "occurred_at": _utc(command.occurred_at).isoformat(),
+        "occurred_at": as_utc(command.occurred_at).isoformat(),
     }
     for field, expected in envelope.items():
         supplied = command.payload.get(field)
@@ -478,10 +475,10 @@ class SqlAlchemyOutboxPublisher:
         if self._clock is not None:
             value = self._clock.now_utc(connection)
             if isinstance(value, datetime):
-                return _utc(value)
+                return as_utc(value)
         if self._now is not None:
-            return _utc(self._now())
-        return _utc(datetime.now(UTC))
+            return as_utc(self._now())
+        return as_utc(datetime.now(UTC))
 
     def _publish_authorized(
         self,
@@ -576,7 +573,7 @@ class SqlAlchemyOutboxPublisher:
             )
 
         now = self._database_now(connection)
-        occurred_at = _utc(command.occurred_at)
+        occurred_at = as_utc(command.occurred_at)
         recipients = [
             self._recipient_record(connection, command, selection, now=now)
             for selection in command.recipients

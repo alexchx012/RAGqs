@@ -12,6 +12,8 @@ from sqlalchemy import and_, delete, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.platform.database import as_utc
+
 from .database import (
     _insert_do_nothing,
     platform_observability_aggregate_table,
@@ -312,14 +314,8 @@ class InMemoryObservabilityMetrics:
         )
 
 
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 def _floor_hour(value: datetime) -> datetime:
-    value = _as_utc(value)
+    value = as_utc(value)
     return value.replace(minute=0, second=0, microsecond=0)
 
 
@@ -364,7 +360,7 @@ class SqlAlchemyObservabilityMetrics:
         )
 
     def _utc_now(self) -> datetime:
-        return _as_utc(self._now())
+        return as_utc(self._now())
 
     def _sanitize(self, sample: ObservabilitySample) -> ObservabilitySample:
         route = sample.route_template

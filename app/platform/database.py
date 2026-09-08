@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, overload
 
 from sqlalchemy import (
     JSON,
@@ -107,7 +107,17 @@ platform_observability_aggregate_table = Table(
 CORE_TABLE_NAMES = frozenset(core_metadata.tables)
 
 
-def _as_utc(value: datetime) -> datetime:
+@overload
+def as_utc(value: datetime) -> datetime: ...
+
+
+@overload
+def as_utc(value: datetime | None) -> datetime | None: ...
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
@@ -122,7 +132,7 @@ def _current_timestamp(connection: Connection) -> datetime:
     value = connection.execute(select(database_time)).scalar_one()
     if not isinstance(value, datetime):
         raise RuntimeError("database did not return a timestamp")
-    return _as_utc(value)
+    return as_utc(value)
 
 
 def _insert_do_nothing(
@@ -247,7 +257,7 @@ class SqlAlchemyTransaction:
                 resource_type=record.resource_type,
                 resource_id=record.resource_id,
                 request_id=record.request_id,
-                occurred_at_utc=_as_utc(occurred_at),
+                occurred_at_utc=as_utc(occurred_at),
                 result=record.result,
                 details_json={},
             )
@@ -432,7 +442,7 @@ class SqlAlchemyLeaseStore:
             record is None
             or record["owner"] != owner
             or int(record["fence_token"]) != fence_token
-            or _as_utc(record["expires_at_utc"]) <= now
+            or as_utc(record["expires_at_utc"]) <= now
         ):
             raise FenceViolation(f"stale fence for {resource}")
 

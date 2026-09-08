@@ -23,6 +23,7 @@ from app.agents.selfeval import (
     SelfEvaluationPort,
 )
 from app.indexing.models import DEEP_RETRIEVAL_STRATEGIES, DeepRetrievalStrategy
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 from app.usage.ledger import OwnershipSnapshot, ProviderMeasurement
 from app.usage.ports import UsageSubmissionPort
@@ -75,12 +76,6 @@ ASSISTANT_HISTORY_DIGEST_CHARS = 500
 # pair is collapsed instead of being offered for a vote.
 AB_NEAR_DUPLICATE_ROUGE_L = 0.92
 # Renewal cadence for the background execution heartbeat; well below the lease TTL.
-
-
-def _utc(value: Any) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 # Delta events aggregate provider chunks before each durable write: one DB
@@ -300,7 +295,7 @@ class ChatGenerationWorker:
         )
         stopped = 0
         for row in rows:
-            if _utc(row["disconnect_deadline_at_utc"]) > now:
+            if as_utc(row["disconnect_deadline_at_utc"]) > now:
                 continue
             generation_id = str(row["id"])
             if generation_has_active_lease(connection, generation_id=generation_id, now=now):
@@ -319,7 +314,7 @@ class ChatGenerationWorker:
                 generation is None
                 or str(generation["status"]) != "running"
                 or generation["disconnect_deadline_at_utc"] is None
-                or _utc(generation["disconnect_deadline_at_utc"]) > now
+                or as_utc(generation["disconnect_deadline_at_utc"]) > now
             ):
                 continue
             updated = connection.execute(
@@ -415,7 +410,10 @@ class ChatGenerationWorker:
         )
         recovered = 0
         for row in rows:
-            if row["lease_expires_at_utc"] is not None and _utc(row["lease_expires_at_utc"]) >= now:
+            if (
+                row["lease_expires_at_utc"] is not None
+                and as_utc(row["lease_expires_at_utc"]) >= now
+            ):
                 continue
             generation_id = str(row["generation_id"])
             claimed = connection.execute(
@@ -448,7 +446,7 @@ class ChatGenerationWorker:
                 continue
             if (
                 str(generation["status"]) not in {"running", "stop_requested"}
-                or _utc(generation["absolute_deadline_at_utc"]) <= now
+                or as_utc(generation["absolute_deadline_at_utc"]) <= now
             ):
                 self._terminalize_unrecoverable(connection, generation_id=generation_id, now=now)
                 continue
@@ -522,7 +520,7 @@ class ChatGenerationWorker:
             generation = self._lock_generation(connection, generation_id=generation_id)
             if generation is None or str(generation["status"]) != "running":
                 continue
-            if _utc(generation["absolute_deadline_at_utc"]) > now:
+            if as_utc(generation["absolute_deadline_at_utc"]) > now:
                 continue
             updated = connection.execute(
                 update(chat_generation_table)
@@ -740,7 +738,7 @@ class ChatGenerationWorker:
         if str(generation["status"]) in {"running", "stop_requested"}:
             # The two unrecoverable shapes keep distinct codes (后端设计 §2.5):
             # the absolute deadline reached vs recovery quota exhausted early.
-            deadline_passed = _utc(generation["absolute_deadline_at_utc"]) <= now
+            deadline_passed = as_utc(generation["absolute_deadline_at_utc"]) <= now
             error_code = (
                 "generation_deadline_exceeded"
                 if deadline_passed
@@ -805,7 +803,7 @@ class ChatGenerationWorker:
         expired = 0
         for row in rows:
             deadlines = [
-                _utc(value)
+                as_utc(value)
                 for value in (row["expires_at_utc"], row["close_deadline_at_utc"])
                 if value is not None
             ]
@@ -872,7 +870,7 @@ class ChatGenerationWorker:
             due = connection.execute(claimable).mappings().first()
             if due is None:
                 return None
-            if _utc(due["next_attempt_at_utc"]) > now:
+            if as_utc(due["next_attempt_at_utc"]) > now:
                 return None
             execution_id = str(due["execution_id"])
             generation_id = str(due["generation_id"])
@@ -1255,7 +1253,7 @@ class ChatGenerationWorker:
             self._build_rag_budget_meter(
                 upgraded,
                 budget_meter_snapshot,
-                _utc(generation["absolute_deadline_at_utc"]),
+                as_utc(generation["absolute_deadline_at_utc"]),
             ).policy
         )
         if not self._persist_effort_upgrade(
@@ -1342,7 +1340,7 @@ class ChatGenerationWorker:
         rag_budget_meter = self._build_rag_budget_meter(
             effort,
             budget_meter_snapshot,
-            _utc(generation["absolute_deadline_at_utc"]),
+            as_utc(generation["absolute_deadline_at_utc"]),
         )
         conversation_history = self._load_conversation_history(generation=generation)
         recent_queries: tuple[str, ...] = tuple(
@@ -1375,7 +1373,7 @@ class ChatGenerationWorker:
             citations = tool_resume["citations"]
         else:
             while True:
-                if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
+                if as_utc(self._now()) >= as_utc(generation["absolute_deadline_at_utc"]):
                     # Fail atomically through _fail_execution before any retrieval,
                     # provider or usage side effects of this round.
                     raise PlatformError(
@@ -1516,7 +1514,7 @@ class ChatGenerationWorker:
             )
             if evaluation.accepted:
                 break
-            if _utc(self._now()) >= _utc(generation["absolute_deadline_at_utc"]):
+            if as_utc(self._now()) >= as_utc(generation["absolute_deadline_at_utc"]):
                 self._complete_deferred_provider_calls_public(candidates)
                 break
             if not budget.can_start_rag_round():
@@ -2135,9 +2133,9 @@ class ChatGenerationWorker:
             )
             observations: list[dict[str, Any]] = list((resume_state or {}).get("observations", []))
             step = len(observations)
-            deadline = _utc(generation["absolute_deadline_at_utc"])
+            deadline = as_utc(generation["absolute_deadline_at_utc"])
             while True:
-                if _utc(self._now()) >= deadline:
+                if as_utc(self._now()) >= deadline:
                     raise PlatformError(
                         "generation_deadline_exceeded",
                         "The generation deadline expired before the provider call",

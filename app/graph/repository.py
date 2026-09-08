@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import and_, literal, select, update
@@ -19,6 +19,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .models import GraphRunRecord
@@ -37,14 +38,6 @@ _OPERATION_RESERVATION_TTL = timedelta(minutes=5)
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(15)}"
-
-
-def _utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
 
 
 def _insert_operation_if_absent(
@@ -114,7 +107,7 @@ class SqlAlchemyGraphRepository:
                 str(row["component_stage_id"]) if row["component_stage_id"] is not None else None
             ),
             grant_operation_id=str(row["grant_operation_id"]),
-            grant_expires_at=_utc(row["grant_expires_at_utc"]),  # type: ignore[arg-type]
+            grant_expires_at=as_utc(row["grant_expires_at_utc"]),  # type: ignore[arg-type]
             config_snapshot=dict(row["config_snapshot_json"] or {}),
             plan_snapshot=dict(row["plan_snapshot_json"] or {}),
             estimated_primary_model_calls=int(row["estimated_primary_model_calls"]),
@@ -122,8 +115,8 @@ class SqlAlchemyGraphRepository:
             actual_provider_calls=int(row["actual_provider_calls"]),
             current_attempt=int(row["current_attempt"]),
             lease_owner=str(row["lease_owner"]) if row["lease_owner"] is not None else None,
-            lease_expires_at=_utc(row["lease_expires_at_utc"]),
-            heartbeat_at=_utc(row["heartbeat_at_utc"]),
+            lease_expires_at=as_utc(row["lease_expires_at_utc"]),
+            heartbeat_at=as_utc(row["heartbeat_at_utc"]),
             fencing_token=str(row["fencing_token"]) if row["fencing_token"] is not None else None,
             failure_class=str(row["failure_class"]) if row["failure_class"] is not None else None,
             failure_reason=(
@@ -140,9 +133,9 @@ class SqlAlchemyGraphRepository:
                 if row["activation_receipt_id"] is not None
                 else None
             ),
-            created_at=_utc(row["created_at_utc"]),  # type: ignore[arg-type]
-            started_at=_utc(row["started_at_utc"]),
-            completed_at=_utc(row["completed_at_utc"]),
+            created_at=as_utc(row["created_at_utc"]),  # type: ignore[arg-type]
+            started_at=as_utc(row["started_at_utc"]),
+            completed_at=as_utc(row["completed_at_utc"]),
         )
 
     def get_run(
@@ -795,7 +788,7 @@ class SqlAlchemyGraphRepository:
             )
         if existing["status"] == "completed" and existing["response_json"] is not None:
             return "replay", dict(existing["response_json"]), None
-        created_at = _utc(existing["created_at_utc"])
+        created_at = as_utc(existing["created_at_utc"])
         if (
             allow_reclaim
             and existing["status"] == "reserved"
@@ -882,7 +875,7 @@ class SqlAlchemyGraphRepository:
             .mappings()
             .one_or_none()
         )
-        created_at = _utc(row["created_at_utc"]) if row is not None else None
+        created_at = as_utc(row["created_at_utc"]) if row is not None else None
         if row is None or row["status"] != "reserved" or created_at != reservation_created_at:
             raise PlatformError(
                 "idempotency_key_conflict",

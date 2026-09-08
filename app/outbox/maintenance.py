@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import Connection, Engine
+
+from app.platform.database import as_utc
 
 from .compaction import canonical_receipt_fingerprint
 from .schema import (
@@ -26,10 +28,6 @@ from .schema import (
 _logger = logging.getLogger(__name__)
 
 MAX_ONLINE_NOTIFICATIONS = 50
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def retire_notification_by_id(
@@ -114,7 +112,7 @@ class NotificationRetentionMaintenance:
     def run_once(self, *, limit: int = 1000) -> int:
         """Retire due notifications; returns the number of retired rows."""
         with self._engine.begin() as connection:
-            now = _utc(self._now())
+            now = as_utc(self._now())
             return self._retire_due(connection, now=now, limit=limit)
 
     def run_forever(

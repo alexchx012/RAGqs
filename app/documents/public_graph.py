@@ -10,7 +10,7 @@ from typing import Any, Literal
 from sqlalchemy import and_, select, update
 from sqlalchemy.engine import Connection, Engine
 
-from app.platform.database import _insert_do_nothing
+from app.platform.database import _insert_do_nothing, as_utc
 from app.platform.errors import PlatformError
 
 from .domain import canonical_request_fingerprint
@@ -29,12 +29,6 @@ def _id(prefix: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -619,7 +613,7 @@ class PublicGraphSourceService:
                 int(row["source_head_fence"]) if row["source_head_fence"] is not None else None
             ),
             state=row["state"],
-            acknowledged_at=_utc(row["acknowledged_at_utc"]),
+            acknowledged_at=as_utc(row["acknowledged_at_utc"]),
         )
 
 

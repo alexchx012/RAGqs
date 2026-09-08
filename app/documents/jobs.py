@@ -3,11 +3,12 @@ from __future__ import annotations
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, select, update
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .domain import DocumentVersionState, IngestionJobState, PublicationState
@@ -24,12 +25,6 @@ from .schema import (
 
 def _id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(15)}"
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,7 +470,7 @@ class DocumentsJobCoordinator:
                 attempt is None
                 or attempt["state"] != "running"
                 or attempt["lease_expires_at_utc"] is None
-                or _as_utc(attempt["lease_expires_at_utc"]) > now
+                or as_utc(attempt["lease_expires_at_utc"]) > now
             ):
                 continue
 

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.chat.ports import ChatPairExpiryPort
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .judge import JudgeProviderPort, JudgeRequest
@@ -22,10 +23,6 @@ from .metrics import (
 from .models import JudgeScores, ShadowRunRecord
 from .ports import UnavailableAnswerReplayPort
 from .repository import SqlAlchemyEvaluationRepository
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _question_hash(text: str) -> str:
@@ -107,7 +104,7 @@ class ShadowEvaluationWorker:
         self._monotonic = monotonic or time.perf_counter
 
     def _now_utc(self) -> datetime:
-        return _utc(self._now())
+        return as_utc(self._now())
 
     def run_once(self) -> ShadowEvaluationWorkerStats:
         requeued = 0
@@ -304,7 +301,7 @@ class ShadowEvaluationWorker:
         deadline_seconds = limits.get("deadline_seconds")
         if not isinstance(deadline_seconds, int) or deadline_seconds <= 0:
             return None
-        return _utc(run.created_at) + timedelta(seconds=deadline_seconds)
+        return as_utc(run.created_at) + timedelta(seconds=deadline_seconds)
 
     def _golden_by_hash(self, run: ShadowRunRecord) -> dict[str, Mapping[str, Any]]:
         golden_version = run.frozen_snapshot.get("golden_set_version")
@@ -502,7 +499,7 @@ class CalibrationCloseWorker:
         self._now = now or (lambda: datetime.now(UTC))
 
     def _now_utc(self) -> datetime:
-        return _utc(self._now())
+        return as_utc(self._now())
 
     def _window_has_open_or_pending_pairs(
         self,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import and_, delete, func, select, text, update
@@ -19,6 +19,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
 from app.identity.schema import identity_user_table
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .compaction import canonical_receipt_fingerprint, compact_event
@@ -61,10 +62,6 @@ class UnauthorizedLifecycleCaller(PlatformError):
             {"caller": caller},
             403,
         )
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _reserve_row(connection: Connection, table: Any, values: dict[str, object]) -> bool:
@@ -177,8 +174,8 @@ class SqlAlchemyOutboxLifecycle:
     def _current_time(self, connection: Connection | None = None) -> datetime:
         if self._clock is not None and connection is not None:
             value = self._clock.now_utc(connection)
-            return value if isinstance(value, datetime) else _utc(self._now())
-        return _utc(self._now())
+            return value if isinstance(value, datetime) else as_utc(self._now())
+        return as_utc(self._now())
 
     def _verify_archive_proof(self, command: AccountNotificationRetirementCommand) -> None:
         """Verify the opaque archive reference against a completed archive proof.
@@ -1114,7 +1111,7 @@ class SqlAlchemyOutboxLifecycle:
                     recipient_user_id=user_id,
                     outcome=outcome,
                     original_notification_seq=None,
-                    occurred_at_utc=_utc(event_occurred_at),
+                    occurred_at_utc=as_utc(event_occurred_at),
                     materialized_at_utc=None,
                     retired_at_utc=now,
                     fingerprint=fingerprint,

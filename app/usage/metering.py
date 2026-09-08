@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.engine import Connection, Engine
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from ._fingerprint import ledger_fingerprint
@@ -38,10 +39,6 @@ def _require_text(value: object, name: str, limit: int) -> str:
             "validation_error", f"{name} must be at most {limit} characters", {}, 422
         )
     return text
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _scope(**values: object) -> dict[str, str]:
@@ -187,8 +184,8 @@ class LocalUsageMeterService:
                 **scope,
                 "status": "running",
                 "ownership_json": _ownership_json(ownership),
-                "started_at_utc": _utc(now),
-                "lease_expires_at_utc": _utc(lease_expires_at_utc),
+                "started_at_utc": as_utc(now),
+                "lease_expires_at_utc": as_utc(lease_expires_at_utc),
                 "checkpoint_sequence": 0,
                 "tail_estimated": 0,
                 "created_at_utc": now,
@@ -255,7 +252,7 @@ class LocalUsageMeterService:
             )
             self.metrics.observe(
                 "local_usage_checkpoint_latency_seconds",
-                max(0.0, (_utc(now) - _utc(existing["updated_at_utc"])).total_seconds()),
+                max(0.0, (as_utc(now) - as_utc(existing["updated_at_utc"])).total_seconds()),
             )
             self.metrics.increment("local_usage_checkpoint")
             return {**dict(existing), **update_values}
@@ -304,7 +301,7 @@ class LocalUsageMeterService:
                         values=values,
                         ownership=ownership,
                         result=result,
-                        started_at_utc=_utc(started_at_utc),
+                        started_at_utc=as_utc(started_at_utc),
                         replay_generation=replay_generation,
                     )
                 )
@@ -378,7 +375,7 @@ class LocalUsageMeterService:
                     result="abandoned",
                     measurement=measurement,
                     ownership=_ownership_from_json(row["ownership_json"]),
-                    started_at_utc=_utc(row["started_at_utc"]),
+                    started_at_utc=as_utc(row["started_at_utc"]),
                     tail_estimated=True,
                     error_code="meter_lease_expired",
                 )
@@ -430,7 +427,7 @@ class LocalUsageMeterService:
                 "result": result,
                 "event_fingerprint": fingerprint,
                 "ownership_json": _ownership_json(ownership),
-                "started_at_utc": _utc(started_at_utc),
+                "started_at_utc": as_utc(started_at_utc),
                 "completed_at_utc": now,
                 "effective_calendar_version_id": lock.version_id,
                 "effective_at_utc": started_at_utc,
@@ -473,9 +470,9 @@ class LocalUsageMeterService:
             "effective_at_utc": self._row_by_scope(connection, scope)["started_at_utc"],
             "effective_period": effective_period,
             "recorded_calendar_version_id": calendar_version,
-            "recorded_at_utc": _utc(now),
+            "recorded_at_utc": as_utc(now),
             "recorded_period": recorded_period,
-            "updated_at_utc": _utc(now),
+            "updated_at_utc": as_utc(now),
         }
         existing = (
             connection.execute(

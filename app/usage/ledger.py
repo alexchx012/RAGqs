@@ -47,13 +47,14 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
 from sqlalchemy import Engine, and_, delete, select, update
 from sqlalchemy.engine import Connection
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from ._fingerprint import ledger_fingerprint
@@ -146,14 +147,10 @@ class LocalMeasurement:
     measurement_sources: dict[str, str] = dataclass_field(default_factory=dict)
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
 def _as_utc(value: datetime, what: str) -> datetime:
     if not isinstance(value, datetime):
         raise PlatformError("validation_error", f"{what} must be a datetime", {}, 422)
-    return _utc(value)
+    return as_utc(value)
 
 
 def _require_text(value, name: str, max_len: int) -> str:
@@ -520,7 +517,7 @@ class UsageLedger:
         """
         row_started = call["started_at_utc"]
         if row_started is not None:
-            persisted = _utc(row_started)
+            persisted = as_utc(row_started)
             if started_at_utc is not None:
                 explicit = _as_utc(started_at_utc, "started_at_utc")
                 if explicit != persisted:
@@ -591,7 +588,7 @@ class UsageLedger:
             "attempt_id": call["attempt_id"],
             "generation_id": call["generation_id"],
             "resource_id": call["resource_id"],
-            "deadline_utc": _utc(call["deadline_utc"]),
+            "deadline_utc": as_utc(call["deadline_utc"]),
             "ownership": _ownership_json(ownership),
             "provider_request_id": provider_request_id,
             "started_at_utc": started,
@@ -840,8 +837,8 @@ class UsageLedger:
                 and_(
                     provider_call_table.c.provider_call_id == provider_call_id,
                     provider_call_table.c.status == "dispatching",
-                    provider_call_table.c.dispatching_at_utc <= _utc(older_than_utc),
-                    provider_call_table.c.deadline_utc <= _utc(current_utc),
+                    provider_call_table.c.dispatching_at_utc <= as_utc(older_than_utc),
+                    provider_call_table.c.deadline_utc <= as_utc(current_utc),
                 )
             )
             .values(status="unknown", unknown_at_utc=self.clock.now_utc(connection))
@@ -900,7 +897,7 @@ class UsageLedger:
         ).rowcount
         if claimed != 1:
             return None  # 已终态化（completed/not_sent）→ 跳过，不写 amount-only
-        started = _utc(call["started_at_utc"] or call["dispatching_at_utc"])
+        started = as_utc(call["started_at_utc"] or call["dispatching_at_utc"])
         now = self.clock.now_utc(connection)
         lock = self.calendar.lock_or_verify(connection)
         effective_period = self.calendar.period_for(lock, started)
@@ -1255,7 +1252,7 @@ class UsageLedger:
                 return call_id, True
             # 重放：全部不可变字段必须一致（review agent-11 #7）。
             existing = self._require_call(connection, call_id)
-            if _utc(existing["deadline_utc"]) != deadline:
+            if as_utc(existing["deadline_utc"]) != deadline:
                 raise PlatformError(
                     "ledger_invariant_conflict",
                     "Provider call id reused with a different deadline_utc",
@@ -1327,7 +1324,7 @@ class UsageLedger:
                 "model": str(call["model"]),
                 "operation": str(call["operation"]),
             }
-            deadline = _utc(call["deadline_utc"])
+            deadline = as_utc(call["deadline_utc"])
             ready = started
             stabilized = callable_provider is None
             for _sample_number in range(8):
@@ -1350,11 +1347,11 @@ class UsageLedger:
                 if post_lock >= deadline:
                     self.mark_not_sent_in_transaction(connection, provider_call_id)
                     return False
-                locked_from = _utc(locked_price.effective_from_utc)
+                locked_from = as_utc(locked_price.effective_from_utc)
                 locked_to = (
                     None
                     if locked_price.effective_to_utc is None
-                    else _utc(locked_price.effective_to_utc)
+                    else as_utc(locked_price.effective_to_utc)
                 )
                 if locked_from <= post_lock and (locked_to is None or post_lock < locked_to):
                     ready = post_lock
@@ -1689,14 +1686,14 @@ class UsageLedger:
     def list_stale_dispatching(self, *, older_than_utc: datetime, limit: int = 100) -> list[dict]:
         """列出同时满足 stale 与 persisted deadline 已过的 dispatching call。"""
         with self._engine.connect() as connection:
-            current = _utc(self.clock.now_utc(connection))
+            current = as_utc(self.clock.now_utc(connection))
             rows = (
                 connection.execute(
                     select(provider_call_table)
                     .where(
                         and_(
                             provider_call_table.c.status == "dispatching",
-                            provider_call_table.c.dispatching_at_utc <= _utc(older_than_utc),
+                            provider_call_table.c.dispatching_at_utc <= as_utc(older_than_utc),
                             provider_call_table.c.deadline_utc <= current,
                         )
                     )

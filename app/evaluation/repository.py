@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import and_, select, update
 from sqlalchemy.engine import Connection, Engine
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .models import (
@@ -43,14 +44,6 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(15)}"
 
 
-def _utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 def _policy_from_row(row: Mapping[Any, Any]) -> EvaluationPolicySnapshot:
     return EvaluationPolicySnapshot(
         policy_version=str(row["policy_version"]),
@@ -74,7 +67,7 @@ def _policy_from_row(row: Mapping[Any, Any]) -> EvaluationPolicySnapshot:
         heartbeat_seconds=int(row["heartbeat_seconds"]),
         concurrency=int(row["concurrency"]),
         judge_k=int(row["judge_k"]),
-        created_at_utc=_utc(row["created_at_utc"]),  # type: ignore[arg-type]
+        created_at_utc=as_utc(row["created_at_utc"]),  # type: ignore[arg-type]
     )
 
 
@@ -85,10 +78,10 @@ def _run_from_row(row: Mapping[Any, Any]) -> ShadowRunRecord:
         state=str(row["state"]),
         attempt=int(row["attempt"]),
         lease_owner=str(row["lease_owner"]) if row["lease_owner"] is not None else None,
-        lease_expires_at=_utc(row["lease_expires_at_utc"]),
-        heartbeat_at=_utc(row["heartbeat_at_utc"]),
+        lease_expires_at=as_utc(row["lease_expires_at_utc"]),
+        heartbeat_at=as_utc(row["heartbeat_at_utc"]),
         fencing_token=str(row["fencing_token"]) if row["fencing_token"] is not None else None,
-        next_attempt_at=_utc(row["next_attempt_at_utc"]),
+        next_attempt_at=as_utc(row["next_attempt_at_utc"]),
         failure_class=str(row["failure_class"]) if row["failure_class"] is not None else None,
         progress=dict(row["progress_json"] or {}),
         report_ref=str(row["report_ref"]) if row["report_ref"] is not None else None,
@@ -100,9 +93,9 @@ def _run_from_row(row: Mapping[Any, Any]) -> ShadowRunRecord:
         index_generation_id=str(row["index_generation_id"]),
         index_revision=int(row["index_revision"]),
         frozen_snapshot=dict(row["frozen_snapshot_json"] or {}),
-        created_at=_utc(row["created_at_utc"]),  # type: ignore[arg-type]
-        started_at=_utc(row["started_at_utc"]),
-        completed_at=_utc(row["completed_at_utc"]),
+        created_at=as_utc(row["created_at_utc"]),  # type: ignore[arg-type]
+        started_at=as_utc(row["started_at_utc"]),
+        completed_at=as_utc(row["completed_at_utc"]),
         version=int(row["version"]),
     )
 
@@ -111,10 +104,10 @@ def _window_from_row(row: Mapping[Any, Any]) -> WindowSnapshot:
     return WindowSnapshot(
         window_id=str(row["window_id"]),
         status=str(row["status"]),
-        opened_at=_utc(row["opened_at_utc"]),
-        closed_at=_utc(row["closed_at_utc"]),
+        opened_at=as_utc(row["opened_at_utc"]),
+        closed_at=as_utc(row["closed_at_utc"]),
         pairs_collected=int(row["pairs_collected"]),
-        close_deadline_at=_utc(row["close_deadline_at_utc"]),
+        close_deadline_at=as_utc(row["close_deadline_at_utc"]),
         window_kind=str(row["window_kind"]),
         policy_version=str(row["policy_version"]),
         sample_rate=float(row["sample_rate"]),
@@ -838,9 +831,9 @@ class SqlAlchemyEvaluationRepository:
             rank_summary=dict(row["rank_summary_json"] or {}),
             status=str(row["status"]),
             version=int(row["version"]),
-            created_at=_utc(row["created_at_utc"]),  # type: ignore[arg-type]
-            invalidated_at=_utc(row["invalidated_at_utc"]),
-            consumed_at=_utc(row["consumed_at_utc"]),
+            created_at=as_utc(row["created_at_utc"]),  # type: ignore[arg-type]
+            invalidated_at=as_utc(row["invalidated_at_utc"]),
+            consumed_at=as_utc(row["consumed_at_utc"]),
         )
 
     def transition_suggestion(
@@ -914,9 +907,9 @@ class SqlAlchemyEvaluationRepository:
             rank_summary=dict(row["rank_summary_json"] or {}),
             status=str(row["status"]),
             version=int(row["version"]),
-            created_at=_utc(row["created_at_utc"]),  # type: ignore[arg-type]
-            invalidated_at=_utc(row["invalidated_at_utc"]),
-            consumed_at=_utc(row["consumed_at_utc"]),
+            created_at=as_utc(row["created_at_utc"]),  # type: ignore[arg-type]
+            invalidated_at=as_utc(row["invalidated_at_utc"]),
+            consumed_at=as_utc(row["consumed_at_utc"]),
         )
 
     def supersede_actionable_suggestions(

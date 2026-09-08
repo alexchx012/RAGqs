@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from app.platform.errors import PlatformError
@@ -38,12 +38,6 @@ def _required(value: str, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise PlatformError("validation_error", f"{name} is required", {}, 422)
     return value.strip()
-
-
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)

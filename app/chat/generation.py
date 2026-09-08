@@ -14,6 +14,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
 from app.platform.context import current_context
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .budget import RAG_BUDGET_POLICY_VERSION
@@ -67,14 +68,6 @@ STRATIFIED_SAMPLE_MAX_DECAY_STEPS = 4
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
-
-
-def _utc(value: Any) -> datetime:
-    if not isinstance(value, datetime):
-        raise TypeError("expected a datetime")
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def _require_owned_conversation(
@@ -296,7 +289,10 @@ class GenerationService:
             if isinstance(oldest, datetime):
                 retry_after = max(
                     1,
-                    min(60, int((_utc(oldest) + timedelta(minutes=1) - _utc(now)).total_seconds())),
+                    min(
+                        60,
+                        int((as_utc(oldest) + timedelta(minutes=1) - as_utc(now)).total_seconds()),
+                    ),
                 )
             raise PlatformError(
                 "rate_limit_exceeded",
@@ -1280,11 +1276,11 @@ class GenerationService:
     @staticmethod
     def _pair_vote_deadline(pair: Any, now: datetime) -> datetime | None:
         candidates = [
-            _utc(value)
+            as_utc(value)
             for value in (pair["expires_at_utc"], pair["close_deadline_at_utc"])
             if value is not None
         ]
-        return min(candidates) if candidates else _utc(now) + timedelta(days=3650)
+        return min(candidates) if candidates else as_utc(now) + timedelta(days=3650)
 
     # ---------------------------------------------------------- idempotency
 

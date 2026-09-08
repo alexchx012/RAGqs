@@ -367,7 +367,7 @@ _MAX_ASYNCHRONOUS_ATTEMPTS = 5
 _MAX_PROVIDER_ATTEMPT_SECONDS = 30
 
 
-def _utc(value: Any, *, callback_name: str | None = None) -> datetime:
+def _validated_utc(value: Any, *, callback_name: str | None = None) -> datetime:
     if not isinstance(value, datetime):
         if callback_name is not None:
             raise TypeError(f"{callback_name} callback must return datetime")
@@ -423,9 +423,9 @@ def call_with_policy(
     sleep = sleep or time.sleep
     jitter = jitter or _default_jitter
     telemetry = telemetry or _DEFAULT_TELEMETRY
-    started = _utc(now(), callback_name="now")
+    started = _validated_utc(now(), callback_name="now")
     last_known_now = started
-    deadline = _utc(context.deadline_utc)
+    deadline = _validated_utc(context.deadline_utc)
     max_attempts = policy.max_attempts(asynchronous)
     if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts <= 0:
         raise TypeError("max_attempts callback must return a positive int")
@@ -442,7 +442,7 @@ def call_with_policy(
 
     def sample_now() -> datetime:
         nonlocal last_known_now
-        sampled = _utc(now(), callback_name="now")
+        sampled = _validated_utc(now(), callback_name="now")
         last_known_now = sampled
         return sampled
 
