@@ -278,7 +278,7 @@ class UsageSubmissionLifecycle:
             fallback(provider_call_id)
 
 
-def _utc(value: Any, *, callback_name: str | None = None) -> datetime:
+def _validated_utc(value: Any, *, callback_name: str | None = None) -> datetime:
     if not isinstance(value, datetime):
         if callback_name is not None:
             raise TypeError(f"{callback_name} callback must return datetime")
@@ -479,7 +479,7 @@ def run_provider_call_with_usage(
             capture_hook_error(replay_error)
             raise ProviderPolicyAbort("pre-send lifecycle replay") from replay_error
         try:
-            post_prepare_now = _utc(clock_now(), callback_name="clock")
+            post_prepare_now = _validated_utc(clock_now(), callback_name="clock")
         except asyncio.CancelledError as cancellation:
             abort_after_terminal(
                 lambda: lifecycle.mark_not_sent(ctx.provider_call_id),
@@ -492,14 +492,14 @@ def run_provider_call_with_usage(
                 exc,
                 message="post-prepare clock failure",
             )
-        if post_prepare_now >= _utc(ctx.deadline_utc):
+        if post_prepare_now >= _validated_utc(ctx.deadline_utc):
             mark_not_sent_or_abort(ctx)
             raise ProviderPreSendDeadlineExceeded
         try:
             # started callback 由 ledger 在 dispatch 事务内延迟求值和重验。
             dispatch_committed = lifecycle.mark_dispatching(
                 ctx.provider_call_id,
-                started_at_provider=lambda: _utc(clock_now(), callback_name="clock"),
+                started_at_provider=lambda: _validated_utc(clock_now(), callback_name="clock"),
             )
         except asyncio.CancelledError as cancellation:
             abort_after_terminal(
@@ -523,7 +523,7 @@ def run_provider_call_with_usage(
         if not dispatch_committed:
             raise ProviderPreSendDeadlineExceeded
         try:
-            final_pre_send_now = _utc(clock_now(), callback_name="clock")
+            final_pre_send_now = _validated_utc(clock_now(), callback_name="clock")
         except asyncio.CancelledError as cancellation:
             abort_after_terminal(
                 lambda: lifecycle.mark_not_sent(ctx.provider_call_id),
@@ -536,7 +536,7 @@ def run_provider_call_with_usage(
                 exc,
                 message="final pre-send clock failure",
             )
-        if final_pre_send_now >= _utc(ctx.deadline_utc):
+        if final_pre_send_now >= _validated_utc(ctx.deadline_utc):
             mark_not_sent_or_abort(ctx)
             raise ProviderPreSendDeadlineExceeded
         try:

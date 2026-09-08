@@ -5,12 +5,13 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from ._sql import _insert_do_nothing
@@ -172,10 +173,6 @@ def _money(value: object, name: str) -> Decimal:
     return value
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
 class BudgetMeterService:
     """Reserve before egress and settle only from returned usage facts."""
 
@@ -218,12 +215,12 @@ class BudgetMeterService:
         if effort_level not in _EFFORTS:
             raise PlatformError("validation_error", "effort_level is invalid", {}, 422)
         effort = self.policy.efforts[effort_level]
-        now = _utc(self.clock.now_utc(connection))
+        now = as_utc(self.clock.now_utc(connection))
         row = self._locked_meter(connection, generation_id)
         if row is not None:
             return self._snapshot(row)
         wall_deadline = now + timedelta(seconds=effort.max_wall_seconds)
-        effective_deadline = min(_utc(deadline_at_utc), wall_deadline)
+        effective_deadline = min(as_utc(deadline_at_utc), wall_deadline)
         values = {
             "generation_budget_meter_id": f"gbm_{secrets.token_urlsafe(9)}",
             "generation_id": generation_id,
@@ -375,7 +372,7 @@ class BudgetMeterService:
             now = self.clock.now_utc(connection)
             if meter["status"] != "active":
                 self._reject(meter, "budget_exhausted")
-            if _utc(now) >= _utc(meter["deadline_at_utc"]):
+            if as_utc(now) >= as_utc(meter["deadline_at_utc"]):
                 self._mark_exhausted(connection, meter, "wall_clock")
                 self._reject(meter, "budget_exhausted")
             if is_rag and meter["rag_calls_used"] >= meter["max_rag_calls"]:
@@ -564,7 +561,7 @@ class BudgetMeterService:
                 + Decimal(str(meter["reserved_cost_amount"]))
                 + next_cost
                 <= effort.max_estimated_cost_amount
-                and _utc(self.clock.now_utc(connection)) < _utc(meter["deadline_at_utc"])
+                and as_utc(self.clock.now_utc(connection)) < as_utc(meter["deadline_at_utc"])
             )
             if not has_budget:
                 return None
@@ -635,7 +632,7 @@ class BudgetMeterService:
             generation_id=str(row["generation_id"]),
             effort_level=str(row["effort_level"]),
             status=str(row["status"]),
-            deadline_at_utc=_utc(row["deadline_at_utc"]),
+            deadline_at_utc=as_utc(row["deadline_at_utc"]),
             max_rag_calls=int(row["max_rag_calls"]),
             max_total_tokens=int(row["max_total_tokens"]),
             max_estimated_cost_amount=Decimal(str(row["max_estimated_cost_amount"])),

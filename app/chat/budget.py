@@ -342,10 +342,7 @@ class BudgetMeter:
         return True
 
     def _price(self, operation: str, tokens: int) -> float | None:
-        try:
-            estimate = self.policy.pricer(operation, max(tokens, 0))
-        except Exception:
-            return None
+        estimate = self.policy.pricer(operation, max(tokens, 0))
         if estimate is None:
             return None
         try:

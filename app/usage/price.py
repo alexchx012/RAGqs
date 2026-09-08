@@ -52,7 +52,7 @@ import secrets
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal, localcontext
 from typing import Literal
 
@@ -60,6 +60,7 @@ from sqlalchemy import Engine, or_, select, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 from app.platform.persistence import DatabaseClock
 
@@ -298,14 +299,10 @@ class PriceVersion:
     lines: tuple[PriceLine, ...]
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
 def _as_utc(value: datetime, what: str) -> datetime:
     if not isinstance(value, datetime):
         raise PlatformError("validation_error", f"{what} must be a datetime", {}, 422)
-    return _utc(value)
+    return as_utc(value)
 
 
 def _require_text(value, name: str, max_len: int) -> str:
@@ -692,12 +689,12 @@ class PriceCatalogService:
         if latest is None or latest["id"] != supersedes_version_id:
             raise _scope_conflict("Must supersede the latest version of this scope")
         if latest["effective_to_utc"] is None:
-            if effective_from <= _utc(latest["effective_from_utc"]):
+            if effective_from <= as_utc(latest["effective_from_utc"]):
                 raise _scope_conflict(
                     "A successor effective_from must be later than the version it supersedes"
                 )
         else:
-            if effective_from < _utc(latest["effective_to_utc"]):
+            if effective_from < as_utc(latest["effective_to_utc"]):
                 raise _scope_conflict(
                     "A successor effective_from must not be earlier than "
                     "the superseded version's effective_to"
@@ -839,7 +836,7 @@ class PriceCatalogService:
             raise _close_conflict(
                 "Price version is already closed; its interval cannot be modified"
             )
-        if effective_to <= _utc(locked["effective_from_utc"]):
+        if effective_to <= as_utc(locked["effective_from_utc"]):
             raise _close_conflict("Close time must be after the version effective_from")
         self._reject_any_usage(connection, version_id)
         self._reject_pending_dispatches(
@@ -879,9 +876,9 @@ class PriceCatalogService:
         )
         if row is None:
             raise PlatformError("price_not_found", "Price version was not found", {}, 404)
-        effective_from = _utc(row["effective_from_utc"])
+        effective_from = as_utc(row["effective_from_utc"])
         effective_to = (
-            _utc(row["effective_to_utc"]) if row["effective_to_utc"] is not None else None
+            as_utc(row["effective_to_utc"]) if row["effective_to_utc"] is not None else None
         )
         if at < effective_from or (effective_to is not None and at >= effective_to):
             raise PlatformError(
@@ -967,8 +964,8 @@ class PriceCatalogService:
             model=str(row["model"]),
             operation=str(row["operation"]),
             currency_code=str(row["currency_code"]),
-            effective_from_utc=_utc(row["effective_from_utc"]),
-            effective_to_utc=_utc(effective_to) if effective_to is not None else None,
+            effective_from_utc=as_utc(row["effective_from_utc"]),
+            effective_to_utc=as_utc(effective_to) if effective_to is not None else None,
             supersedes_version_id=row["supersedes_version_id"],
             lines=tuple(
                 PriceLine(

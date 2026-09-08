@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select, text, update
 from sqlalchemy.engine import Connection, Engine
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .ports import ACKNOWLEDGEABLE_EVENT_TYPES
@@ -21,10 +22,6 @@ from .schema import (
     outbox_event_table,
     outbox_recipient_table,
 )
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class NotificationService:
@@ -44,8 +41,8 @@ class NotificationService:
     def _current_time(self, connection: Connection) -> datetime:
         if self._clock is not None:
             value = self._clock.now_utc(connection)
-            return value if isinstance(value, datetime) else _utc(self._now())
-        return _utc(self._now())
+            return value if isinstance(value, datetime) else as_utc(self._now())
+        return as_utc(self._now())
 
     def list_notifications(self, user_id: str, *, limit: int) -> list[dict[str, object]]:
         with self._engine.connect() as connection:

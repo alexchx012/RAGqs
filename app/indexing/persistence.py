@@ -19,7 +19,7 @@ from app.documents.schema import (
     index_revisions_table,
     publications_table,
 )
-from app.platform.database import _current_timestamp, _insert_do_nothing
+from app.platform.database import _current_timestamp, _insert_do_nothing, as_utc
 from app.platform.errors import PlatformError
 
 from .models import (
@@ -49,10 +49,6 @@ from .schema import (
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(12)}"
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _fingerprint(value: Any) -> str:
@@ -230,10 +226,7 @@ class SqlAlchemyIndexingRepository:
             yield owned
 
     def _timestamp(self, connection: Connection) -> datetime:
-        try:
-            return _utc(_current_timestamp(connection))
-        except Exception:
-            return _utc(self._now())
+        return _current_timestamp(connection)
 
     def get_operation(
         self, operation_id: str, *, connection: Connection | None = None
@@ -321,11 +314,11 @@ class SqlAlchemyIndexingRepository:
             base_revision=int(row["base_revision"]),
             applied_revision=int(row["applied_revision"]),
             manifest=manifest,
-            created_at=_utc(row["created_at_utc"]),
-            activated_at=_utc(row["activated_at_utc"]) if row["activated_at_utc"] else None,
-            retired_at=_utc(row["retired_at_utc"]) if row["retired_at_utc"] else None,
+            created_at=as_utc(row["created_at_utc"]),
+            activated_at=as_utc(row["activated_at_utc"]) if row["activated_at_utc"] else None,
+            retired_at=as_utc(row["retired_at_utc"]) if row["retired_at_utc"] else None,
             rollback_until_utc=(
-                _utc(row["rollback_until_utc"]) if row["rollback_until_utc"] else None
+                as_utc(row["rollback_until_utc"]) if row["rollback_until_utc"] else None
             ),
             rollback_applied_revision=(
                 int(row["rollback_applied_revision"])
@@ -1472,7 +1465,7 @@ class SqlAlchemyIndexingRepository:
                 raise PlatformError(
                     "rollback_not_eligible", "generation is not a rollback candidate", {}, 409
                 )
-            if candidate.rollback_until_utc and _utc(self._now()) > _utc(
+            if candidate.rollback_until_utc and as_utc(self._now()) > as_utc(
                 candidate.rollback_until_utc
             ):
                 raise PlatformError("rollback_not_eligible", "rollback window has expired", {}, 409)
@@ -1717,7 +1710,7 @@ class SqlAlchemyIndexingRepository:
                 "public_graph",
                 str(row["manifest_hash"]),
                 int(row["source_head_fence"]),
-                _utc(row["expires_at_utc"]),
+                as_utc(row["expires_at_utc"]),
             )
 
     def renew_graph_reader_lease(
@@ -1747,7 +1740,7 @@ class SqlAlchemyIndexingRepository:
                 or row["released_at_utc"] is not None
             ):
                 raise PlatformError("lease_not_found", "graph reader lease was not found", {}, 404)
-            if _utc(row["expires_at_utc"]) <= now:
+            if as_utc(row["expires_at_utc"]) <= now:
                 raise PlatformError("lease_expired", "graph reader lease has expired", {}, 409)
             if not validate_source_head():
                 conn.execute(
@@ -1897,7 +1890,7 @@ class SqlAlchemyIndexingRepository:
             reasons.append("active_generation")
         rollback_until = generation.rollback_until_utc
         if head["rollback_candidate_id"] == candidate_generation_id and (
-            rollback_until is None or _utc(now) <= _utc(rollback_until)
+            rollback_until is None or as_utc(now) <= as_utc(rollback_until)
         ):
             # 回滚窗口内保持阻塞（A62）；过窗后 GC 不再被回滚候选身份无条件
             # 阻塞——与 rollback 消费路径的窗口判定一致。窗口内租约/消费语义

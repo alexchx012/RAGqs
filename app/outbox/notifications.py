@@ -7,12 +7,13 @@ delivery receipt) and the delivery row is committed in the same transaction.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, text
 from sqlalchemy.engine import Connection, Engine
 
 from app.identity.schema import identity_user_table
+from app.platform.database import as_utc
 
 from .maintenance import MAX_ONLINE_NOTIFICATIONS, retire_notification_by_id
 from .ports import DeliveryMaterialization
@@ -25,10 +26,6 @@ from .schema import (
 )
 
 DELETED_DOCUMENT_TITLE = "Deleted document"
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class NotificationMaterializer:
@@ -58,7 +55,7 @@ class NotificationMaterializer:
         now: datetime,
     ) -> DeliveryMaterialization | None:
         """Return the materialized notification, or None when suppressed."""
-        now = _utc(now)
+        now = as_utc(now)
         # Serialize with read-all and retirement on the same per-user lock;
         # inside the lock the identity lifecycle is re-read so a concurrent
         # retirement can never race a materialization.
@@ -188,7 +185,7 @@ class NotificationMaterializer:
             title=str(row["title"]),
             payload=dict(row["payload_json"]),
             notification_seq=int(row["notification_seq"]),
-            read_at=_utc(row["read_at_utc"]) if row["read_at_utc"] is not None else None,
+            read_at=as_utc(row["read_at_utc"]) if row["read_at_utc"] is not None else None,
         )
 
     def _materialize_new(
@@ -227,7 +224,7 @@ class NotificationMaterializer:
                 notification_context_ack_table.c.recipient_user_id == recipient_user_id,
             )
         ).scalar_one_or_none()
-        acked_at = _utc(ack) if ack is not None else None
+        acked_at = as_utc(ack) if ack is not None else None
         if inbox is None:
             connection.execute(
                 notification_inbox_table.insert().values(
@@ -252,7 +249,9 @@ class NotificationMaterializer:
             )
 
         occurred_at = event.get("occurred_at_utc")
-        event_occurred_at = _utc(occurred_at) if isinstance(occurred_at, datetime) else _utc(now)
+        event_occurred_at = (
+            as_utc(occurred_at) if isinstance(occurred_at, datetime) else as_utc(now)
+        )
         if redacted:
             # Deleted-document projections keep only opaque identifiers and
             # never restore filename/title/snippet or free text.

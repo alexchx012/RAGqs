@@ -22,7 +22,7 @@ from sqlalchemy import Connection, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.platform.context import current_context
-from app.platform.database import platform_audit_table
+from app.platform.database import as_utc, platform_audit_table
 from app.platform.errors import PlatformError
 
 from .schema import (
@@ -60,14 +60,8 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
 
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 def _iso(value: datetime | None) -> str | None:
-    return _utc(value).isoformat() if value is not None else None
+    return as_utc(value).isoformat() if value is not None else None
 
 
 def hash_idempotency_key(idempotency_key: str) -> str:
@@ -92,7 +86,7 @@ class BackupOpsService:
         self._now = now or (lambda: datetime.now(UTC))
 
     def _current_time(self) -> datetime:
-        return _utc(self._now())
+        return as_utc(self._now())
 
     # ------------------------------------------------------------------
     # Policy

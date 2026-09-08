@@ -6,11 +6,13 @@ import hashlib
 import hmac
 import json
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from app.platform.database import as_utc
 
 _PASSWORD_ITERATIONS = 310_000
 _REPLAY_AAD = b"ragqs:refresh-replay:v1"
@@ -28,10 +30,6 @@ def _b64decode(value: str) -> bytes:
 
 def _strict_b64decode(value: str) -> bytes:
     return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def hash_password(password: str) -> str:
@@ -78,7 +76,7 @@ def sign_access_token(
     issued_at: datetime,
     expires_in_seconds: int,
 ) -> str:
-    issued = int(_utc(issued_at).timestamp())
+    issued = int(as_utc(issued_at).timestamp())
     payload = {
         "sub": user_id,
         "sid": auth_session_id,
@@ -106,7 +104,7 @@ def verify_access_token(secret: bytes, token: str, *, now: datetime) -> dict[str
         if decoded.get("typ") != "access" or not isinstance(decoded.get("sub"), str):
             return None
         if not isinstance(decoded.get("sid"), str) or int(decoded.get("exp", 0)) <= int(
-            _utc(now).timestamp()
+            as_utc(now).timestamp()
         ):
             return None
         return decoded
@@ -181,4 +179,4 @@ def decrypt_replay_payload(secret: bytes, value: str) -> dict[str, str] | None:
 
 
 def within(value: datetime, *, now: datetime, duration: timedelta) -> bool:
-    return _utc(value) + duration > _utc(now)
+    return as_utc(value) + duration > as_utc(now)

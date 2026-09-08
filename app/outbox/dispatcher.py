@@ -12,7 +12,7 @@ import logging
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from sqlalchemy import and_, func, or_, select, text, update
@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.documents.schema import documents_table
 from app.platform.context import current_context
-from app.platform.database import platform_audit_table
+from app.platform.database import as_utc, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.persistence import FenceViolation
 
@@ -66,10 +66,6 @@ _DOCUMENT_TITLE_TEMPLATES = {
 }
 
 _logger = logging.getLogger(__name__)
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _new_attempt_id() -> str:
@@ -144,8 +140,8 @@ class OutboxDispatcher:
         """Database time on the caller's transaction connection when available."""
         if self._clock is not None:
             value = self._clock.now_utc(connection)
-            return value if isinstance(value, datetime) else _utc(self._now())
-        return _utc(self._now())
+            return value if isinstance(value, datetime) else as_utc(self._now())
+        return as_utc(self._now())
 
     def _record_metric(
         self,
@@ -294,7 +290,7 @@ class OutboxDispatcher:
                         connection,
                         "outbox.deliveries.oldest_pending_seconds",
                         event_id=event_id,
-                        value=max(0.0, (now - _utc(occurred_at)).total_seconds()),
+                        value=max(0.0, (now - as_utc(occurred_at)).total_seconds()),
                     )
             return DeliveryClaim(
                 event_id=event_id,
@@ -458,7 +454,9 @@ class OutboxDispatcher:
                     connection,
                     "outbox.deliveries.latency_ms",
                     event_id=claim.event_id,
-                    value=max(0.0, (delivered_at - _utc(claim.started_at)).total_seconds() * 1000),
+                    value=max(
+                        0.0, (delivered_at - as_utc(claim.started_at)).total_seconds() * 1000
+                    ),
                 )
                 self._maybe_freeze_compaction(connection, claim.event_id, now)
             return DeliveryOutcome(status="delivered")
@@ -848,7 +846,7 @@ class OutboxDispatcher:
                 outbox_delivery_table.c.event_id == event_id
             )
         ).scalar_one()
-        compact_after = _utc(latest) + timedelta(days=self._retention_days) if latest else None
+        compact_after = as_utc(latest) + timedelta(days=self._retention_days) if latest else None
         if compact_after is None:
             return
         connection.execute(
@@ -1114,7 +1112,7 @@ class OutboxDispatcher:
         """Compact full events whose retention elapsed and all deliveries are delivered."""
         compacted = 0
         with self._engine.begin() as connection:
-            current = _utc(now) if now is not None else self._current_time(connection)
+            current = as_utc(now) if now is not None else self._current_time(connection)
             if self._metrics is not None:
                 self._metrics.prune_before(
                     connection,

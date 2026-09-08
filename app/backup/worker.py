@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.platform.config import PlatformSettings
 from app.platform.context import current_context
-from app.platform.database import platform_audit_table
+from app.platform.database import as_utc, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.persistence import FenceViolation, LeaseUnavailable
 from app.platform.worker import (
@@ -92,12 +92,6 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
 
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 class _DrainTimeout(Exception):
     """The write gate could not quiesce within the configured drain timeout."""
 
@@ -153,7 +147,7 @@ class BackupMaintenanceWorker:
         self._now = now or (lambda: datetime.now(UTC))
 
     def _current_time(self) -> datetime:
-        return _utc(self._now())
+        return as_utc(self._now())
 
     # ------------------------------------------------------------------
     # Loop
@@ -222,7 +216,7 @@ class BackupMaintenanceWorker:
             # missed window and marks the earlier ones skipped_missed.
             return
         start = policy["last_scheduled_for_utc"] or policy["updated_at_utc"]
-        windows = self._due_windows(policy, _utc(start), now)
+        windows = self._due_windows(policy, as_utc(start), now)
         if not windows:
             return
         for missed in windows[:-1]:
@@ -421,7 +415,7 @@ class BackupMaintenanceWorker:
             # Adopt our own crashed execution: holding the execute lease
             # guarantees no live peer is executing this backup. The persisted
             # gate update time measures how long the gate has been quiescing.
-            settle_elapsed = max(0.0, (now - _utc(gate["updated_at_utc"])).total_seconds())
+            settle_elapsed = max(0.0, (now - as_utc(gate["updated_at_utc"])).total_seconds())
         else:
             return  # the gate is held by another backup's execution
         try:
@@ -695,7 +689,7 @@ class BackupMaintenanceWorker:
         candidates = [
             row
             for row in restorable
-            if str(row["id"]) not in keep_ids and _utc(row["completed_at_utc"]) < cutoff
+            if str(row["id"]) not in keep_ids and as_utc(row["completed_at_utc"]) < cutoff
         ]
         for row in reversed(candidates):  # oldest first
             if budget <= 0:

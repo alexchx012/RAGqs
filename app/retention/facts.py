@@ -39,6 +39,7 @@ from app.indexing.schema import (
     index_generations_table,
     index_graph_components_table,
 )
+from app.platform.database import as_utc
 from app.usage.schema import quota_debit_table, quota_request_table, usage_event_table
 
 _WINDOW_DAYS = {"today": 0, "7d": 7, "30d": 30}
@@ -48,10 +49,6 @@ _REPLAYABLE_JOB_STATES = ("failed", "cancelled", "dead_letter")
 # threshold (default 0.9); the read side splits the remainder at 0.95.
 _OCR_HIGH_CONFIDENCE_MIN = 0.95
 _OCR_MEDIUM_CONFIDENCE_MIN = 0.9
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def window_bounds(window: str, now: datetime) -> tuple[datetime, datetime]:
@@ -393,7 +390,7 @@ def cache_hit_rate_facts(
         total_miss += miss
         completed = row["completed_at_utc"]
         elapsed = (
-            (_utc(completed) - start).total_seconds() if isinstance(completed, datetime) else 0
+            (as_utc(completed) - start).total_seconds() if isinstance(completed, datetime) else 0
         )
         bucket_index = min(4, max(0, int(elapsed / window_seconds * 5)))
         buckets[bucket_index][0] += hit

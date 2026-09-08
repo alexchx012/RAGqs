@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from threading import RLock
 from typing import Any
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .models import (
@@ -19,10 +20,6 @@ from .models import (
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _new_id(prefix: str) -> str:
@@ -117,7 +114,7 @@ class GenerationManager:
             raise ValueError("generation settings are invalid")
         self._now = now
         self._rollback_window = timedelta(days=rollback_days)
-        timestamp = _utc(now())
+        timestamp = as_utc(now())
         initial = Generation(
             generation_id="generation_initial",
             status="active",
@@ -208,7 +205,7 @@ class GenerationManager:
             identifier = generation_id or _new_id("generation")
             if identifier in self._generations:
                 return self._generations[identifier]
-            timestamp = _utc(self._now())
+            timestamp = as_utc(self._now())
             payload = _generation_manifest(
                 identifier,
                 revision=revision,
@@ -331,7 +328,7 @@ class GenerationManager:
                         "release_gate_failed", "a generation component failed", {}, 409
                     )
             previous = self._generations[self._active_generation_id]
-            timestamp = _utc(self._now())
+            timestamp = as_utc(self._now())
             retired = previous.with_updates(
                 status="retired",
                 retired_at=timestamp,
@@ -365,7 +362,7 @@ class GenerationManager:
                     "rollback_not_eligible", "generation is not a rollback candidate", {}, 409
                 )
             retired_at = candidate.retired_at or candidate.created_at
-            if _utc(self._now()) - _utc(retired_at) > self._rollback_window:
+            if as_utc(self._now()) - as_utc(retired_at) > self._rollback_window:
                 raise PlatformError("rollback_not_eligible", "rollback window has expired", {}, 409)
             if candidate.rollback_applied_revision != revision:
                 raise PlatformError(
@@ -401,7 +398,7 @@ class GenerationManager:
                     manifest={**dict(candidate.manifest), "components": components},
                 )
             active = self._generations[self._active_generation_id]
-            timestamp = _utc(self._now())
+            timestamp = as_utc(self._now())
             old_active = active.with_updates(
                 status="retired",
                 retired_at=timestamp,
@@ -425,7 +422,7 @@ class GenerationManager:
             lease = GenerationReferenceLease(
                 lease_id=_new_id("generation_lease"),
                 generation_id=self._active_generation_id,
-                expires_at=_utc(self._now()) + ttl,
+                expires_at=as_utc(self._now()) + ttl,
             )
             self._leases[lease.lease_id] = _LeaseRecord(lease, "generation")
             return lease
@@ -463,7 +460,7 @@ class GenerationManager:
                 component_kind="public_graph",
                 manifest_hash=manifest_hash,
                 source_head_fence=source_head_fence,
-                expires_at=_utc(self._now()) + ttl,
+                expires_at=as_utc(self._now()) + ttl,
             )
             self._leases[lease.lease_id] = _LeaseRecord(lease, "graph")
             return lease
@@ -492,7 +489,7 @@ class GenerationManager:
                 raise PlatformError("lease_not_found", "graph reader lease was not found", {}, 404)
             lease = record.lease
             assert isinstance(lease, GenerationComponentReaderLease)
-            if lease.expires_at <= _utc(self._now()):
+            if lease.expires_at <= as_utc(self._now()):
                 raise PlatformError("lease_expired", "graph reader lease has expired", {}, 409)
             if not validate_source_head():
                 self._leases.pop(lease_id, None)
@@ -506,7 +503,7 @@ class GenerationManager:
                 component_kind=lease.component_kind,
                 manifest_hash=lease.manifest_hash,
                 source_head_fence=lease.source_head_fence,
-                expires_at=_utc(self._now()) + ttl,
+                expires_at=as_utc(self._now()) + ttl,
             )
             self._leases[lease_id] = _LeaseRecord(renewed, "graph")
             return renewed
@@ -547,7 +544,7 @@ class GenerationManager:
                 reasons.append("active_generation")
             rollback_until = generation.rollback_until_utc
             if self._rollback_candidate_id == candidate_generation_id and (
-                rollback_until is None or _utc(self._now()) <= _utc(rollback_until)
+                rollback_until is None or as_utc(self._now()) <= as_utc(rollback_until)
             ):
                 # 与持久层一致（A62）：过回滚窗口后不再阻塞 GC；未设窗口保持阻塞。
                 reasons.append("rollback_candidate")

@@ -21,13 +21,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Engine, and_, or_, select, update
 from sqlalchemy.engine import Connection
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .ledger import OwnershipSnapshot, ProviderMeasurement, UsageLedger  # noqa: F401
@@ -164,7 +165,7 @@ class LedgerBackedProviderReconciliationPort:
                 measurement=_measurement_from_event(event),
                 ownership=_ownership_from_event(event),
                 result=str(event["result"]),
-                started_at_utc=_utc(event["started_at_utc"]),
+                started_at_utc=as_utc(event["started_at_utc"]),
                 provider_request_id=(
                     str(event["provider_request_id"])
                     if event["provider_request_id"] is not None
@@ -207,10 +208,6 @@ def _ownership_from_event(event: Any) -> OwnershipSnapshot:
     )
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
 def _select_candidates(
     engine: Engine,
     *,
@@ -219,8 +216,8 @@ def _select_candidates(
     limit: int,
 ) -> list[dict]:
     """事务外扫描：stale unknown；dispatching 还必须已越过持久化 deadline。"""
-    older_than = _utc(older_than_utc)
-    current = _utc(current_utc)
+    older_than = as_utc(older_than_utc)
+    current = as_utc(current_utc)
     with engine.connect() as connection:
         rows = (
             connection.execute(

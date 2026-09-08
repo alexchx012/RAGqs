@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from ._fingerprint import ledger_fingerprint
@@ -86,10 +87,6 @@ def _money(value: Decimal, name: str) -> Decimal:
     if abs(value) >= Decimal("99999999999999999999.9999999999"):
         raise PlatformError("validation_error", f"{name} exceeds the storage range", {}, 422)
     return value
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 _SENSITIVE_METADATA_FRAGMENTS = (
@@ -272,7 +269,7 @@ class ProviderBillingService:
         """Rebuild all derived cost projection rows without mutating source facts."""
 
         with self.engine.begin() as connection:
-            now = _utc(self.clock.now_utc(connection))
+            now = as_utc(self.clock.now_utc(connection))
             lock = self.ledger.calendar.lock_or_verify(connection)
             recorded_period = self.ledger.calendar.period_for(lock, now)
             sources = (
@@ -374,7 +371,7 @@ class ProviderBillingService:
                             else "provisional"
                         ),
                         "effective_calendar_version_id": event["effective_calendar_version_id"],
-                        "effective_at_utc": _utc(event["effective_at_utc"]),
+                        "effective_at_utc": as_utc(event["effective_at_utc"]),
                         "effective_period": event["effective_period"],
                         "recorded_calendar_version_id": lock.version_id,
                         "recorded_at_utc": now,
@@ -408,7 +405,7 @@ class ProviderBillingService:
                             "projected_amount": None,
                             "cost_status": "billing_period_unallocated",
                             "effective_calendar_version_id": lock.version_id,
-                            "effective_at_utc": _utc(
+                            "effective_at_utc": as_utc(
                                 source["service_start_utc"] or source["service_end_utc"] or now
                             ),
                             "effective_period": source["service_month"] or recorded_period,
@@ -435,7 +432,7 @@ class ProviderBillingService:
                             "effective_calendar_version_id": adjustment[
                                 "effective_calendar_version_id"
                             ],
-                            "effective_at_utc": _utc(adjustment["effective_at_utc"]),
+                            "effective_at_utc": as_utc(adjustment["effective_at_utc"]),
                             "effective_period": adjustment["effective_period"],
                             "recorded_calendar_version_id": lock.version_id,
                             "recorded_at_utc": now,
@@ -566,9 +563,9 @@ class ProviderBillingService:
             "operation": operation,
             "provider_request_id": request_id,
             "service_start_utc": (
-                _utc(record.service_start_utc) if record.service_start_utc else None
+                as_utc(record.service_start_utc) if record.service_start_utc else None
             ),
-            "service_end_utc": _utc(record.service_end_utc) if record.service_end_utc else None,
+            "service_end_utc": as_utc(record.service_end_utc) if record.service_end_utc else None,
             "service_month": record.service_month,
             "measurements": dict(record.measurements),
             "amount": amount,
@@ -576,7 +573,7 @@ class ProviderBillingService:
             "source_status": status,
             "source_metadata": _source_metadata(record.source_metadata),
             "content_fingerprint": ledger_fingerprint("provider_billing_source", payload),
-            "created_at_utc": _utc(self.clock.now_utc()),
+            "created_at_utc": as_utc(self.clock.now_utc()),
         }
 
     def _source(self, connection: Connection, source_record_id: str):
@@ -638,7 +635,7 @@ class ProviderBillingService:
             connection=connection,
         )
         lock = self.ledger.calendar.lock_or_verify(connection)
-        now = _utc(self.clock.now_utc(connection))
+        now = as_utc(self.clock.now_utc(connection))
         self._upsert_cost_projection(
             connection,
             target_kind="provider_event",
@@ -649,7 +646,7 @@ class ProviderBillingService:
             adjustment_amount=delta,
             projected_amount=Decimal(str(source["amount"])),
             cost_status="reconciled",
-            effective_at_utc=_utc(usage["effective_at_utc"]),
+            effective_at_utc=as_utc(usage["effective_at_utc"]),
             effective_period=str(usage["effective_period"]),
             calendar_version=str(usage["effective_calendar_version_id"]),
             recorded_period=self.ledger.calendar.period_for(lock, now),
@@ -672,7 +669,7 @@ class ProviderBillingService:
         ownership: OwnershipSnapshot,
         allocations: list[dict[str, object]],
     ) -> ReconciliationResult:
-        now = _utc(self.clock.now_utc(connection))
+        now = as_utc(self.clock.now_utc(connection))
         lock = self.ledger.calendar.lock_or_verify(connection)
         recorded_period = self.ledger.calendar.period_for(lock, now)
         group_id = self._ensure_group(connection, source=source, now=now)
@@ -687,7 +684,7 @@ class ProviderBillingService:
                 adjustment_amount=None,
                 projected_amount=None,
                 cost_status="billing_period_unallocated",
-                effective_at_utc=_utc(
+                effective_at_utc=as_utc(
                     source["service_start_utc"]
                     or source["service_end_utc"]
                     or datetime(1970, 1, 1, tzinfo=UTC)

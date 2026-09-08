@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Connection
+
+from app.platform.database import as_utc
 
 from .schema import (
     notification_delivery_receipt_table,
@@ -24,10 +26,6 @@ from .schema import (
     outbox_event_table,
     outbox_recipient_table,
 )
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def canonical_receipt_fingerprint(
@@ -91,7 +89,7 @@ def _write_suppression_receipts(connection: Connection, event_id: str, now: date
                 recipient_user_id=user_id,
                 outcome=outcome,
                 original_notification_seq=None,
-                occurred_at_utc=_utc(event),
+                occurred_at_utc=as_utc(event),
                 materialized_at_utc=None,
                 retired_at_utc=now,
                 fingerprint=fingerprint,
@@ -154,7 +152,7 @@ def compact_event(
         for row in deliveries
     ]
     # Suppressed recipients get their permanent receipt before deletion.
-    _write_suppression_receipts(connection, event_id, _utc(now))
+    _write_suppression_receipts(connection, event_id, as_utc(now))
     updated = connection.execute(
         update(outbox_event_table)
         .where(

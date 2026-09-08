@@ -63,12 +63,13 @@ import re
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Protocol, cast
 
 from sqlalchemy import Engine, and_, func, select, update
 from sqlalchemy.engine import Connection, RowMapping
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from ._fingerprint import ledger_fingerprint
@@ -104,10 +105,6 @@ class QuotaSnapshot:
     quota_period: str
     business_calendar_version_id: str
     pending_request: dict | None
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _require_text(value: Any, name: str, max_len: int) -> str:
@@ -396,8 +393,8 @@ class QuotaService:
         """分录基础值；effective 事实可选直接继承（reversal/supplement 用被引用 debit
         的 facts，不按调用方 calendar_lock 重算，review #4）；recorded_* 始终用当前
         calendar_lock + recorded_at_utc。"""
-        effective = _utc(effective_at_utc)
-        recorded = _utc(recorded_at_utc)
+        effective = as_utc(effective_at_utc)
+        recorded = as_utc(recorded_at_utc)
         return {
             "entry_kind": entry_kind,
             "page_delta": page_delta,
@@ -556,7 +553,7 @@ class QuotaService:
         if quota_exempt_reason is not None or self.unlimited_role(role) or replay_generation > 0:
             return None
         now = self._clock.now_utc(connection)
-        effective = _utc(effective_at_utc)
+        effective = as_utc(effective_at_utc)
         period = self.calendar.period_for(calendar_lock, effective)
         base = self._base_entry_values(
             entry_kind="debit",
@@ -990,7 +987,7 @@ class QuotaService:
         if existing_id is not None:
             return existing_id  # 幂等重放：不更新投影
         # 首次插入路径：校验 quota_period 为当前业务月。
-        current_period = self.calendar.period_for(calendar_lock, _utc(now))
+        current_period = self.calendar.period_for(calendar_lock, as_utc(now))
         if quota_period != current_period:
             raise PlatformError(
                 "validation_error",

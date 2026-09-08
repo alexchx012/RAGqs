@@ -20,7 +20,7 @@ from app.documents.schema import documents_table
 from app.outbox.schema import notification_inbox_table
 from app.platform.config import AuthSettings, _resolve_user_deletion_archive_dir
 from app.platform.context import current_context
-from app.platform.database import _insert_do_nothing, platform_audit_table
+from app.platform.database import _insert_do_nothing, as_utc, platform_audit_table
 from app.platform.errors import PlatformError
 from app.platform.storage import ObjectMetadata, ObjectStorePort, StorageKeyError
 
@@ -84,16 +84,12 @@ class _ArchiveRestoreRequired(Exception):
     """Internal signal: archive missing/corrupt after cleanup already started."""
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
 def _optional_utc(value: object) -> datetime | None:
     if value is None:
         return None
     if not isinstance(value, datetime):
         raise TypeError("Expected a datetime value")
-    return _utc(value)
+    return as_utc(value)
 
 
 def _normalize_username(value: str) -> str:
@@ -270,7 +266,7 @@ class IdentityAccessService:
         self._profile: str = "development"
 
     def _current_time(self) -> datetime:
-        return _utc(self._now())
+        return as_utc(self._now())
 
     def _configured_work_check(self) -> DepartmentWorkCheckPort | None:
         """Directory counts need the documents adapter; deployments without it keep zeros."""
@@ -2180,7 +2176,7 @@ class IdentityAccessService:
                     {},
                     409,
                 )
-            purge_after = _utc(workflow["purge_after_at_utc"])
+            purge_after = as_utc(workflow["purge_after_at_utc"])
             if now < purge_after:
                 raise PlatformError(
                     "deletion_not_ready",
@@ -2247,7 +2243,7 @@ class IdentityAccessService:
                     AccountDeletionCleanupCommand(
                         operation_id=str(workflow["cleanup_operation_id"]),
                         user_id=user_id,
-                        requested_at=_utc(workflow["requested_at_utc"]),
+                        requested_at=as_utc(workflow["requested_at_utc"]),
                         purge_after=purge_after,
                     ),
                     connection=connection,
@@ -2304,7 +2300,7 @@ class IdentityAccessService:
                     user_id=user_id,
                     deletion_id=str(workflow["cleanup_operation_id"]),
                     cleanup_operation_id=str(workflow["cleanup_operation_id"]),
-                    requested_at=_utc(workflow["requested_at_utc"]).isoformat(),
+                    requested_at=as_utc(workflow["requested_at_utc"]).isoformat(),
                 )
             retirement_receipt_id = str(workflow["retirement_receipt_id"] or "")
             if not retirement_receipt_id:
@@ -2584,7 +2580,7 @@ class IdentityAccessService:
                     ),
                     "role": record[identity_user_table.c.role],
                     "last_active_at": (
-                        _utc(last_active_at).isoformat()
+                        as_utc(last_active_at).isoformat()
                         if isinstance(last_active_at, datetime)
                         else None
                     ),
@@ -2592,12 +2588,12 @@ class IdentityAccessService:
                     "version": record[identity_user_table.c.version],
                     "lifecycle_status": record[identity_user_table.c.lifecycle_status],
                     "deletion_requested_at": (
-                        _utc(record[identity_user_table.c.deletion_requested_at_utc]).isoformat()
+                        as_utc(record[identity_user_table.c.deletion_requested_at_utc]).isoformat()
                         if record[identity_user_table.c.deletion_requested_at_utc]
                         else None
                     ),
                     "purge_after_at": (
-                        _utc(record[identity_user_table.c.purge_after_at_utc]).isoformat()
+                        as_utc(record[identity_user_table.c.purge_after_at_utc]).isoformat()
                         if record[identity_user_table.c.purge_after_at_utc]
                         else None
                     ),
@@ -2655,7 +2651,7 @@ class IdentityAccessService:
                     "nonterminal_job_count": work_state.nonterminal_job_count,
                     "pending_submission_count": work_state.pending_submission_count,
                     "deactivated_at": (
-                        _utc(department["deactivated_at_utc"]).isoformat()
+                        as_utc(department["deactivated_at_utc"]).isoformat()
                         if department["deactivated_at_utc"]
                         else None
                     ),
@@ -3160,7 +3156,7 @@ class IdentityAccessService:
             {
                 "id": record["id"],
                 "device": record["device"],
-                "last_active_at": _utc(record["last_active_at_utc"]).isoformat(),
+                "last_active_at": as_utc(record["last_active_at_utc"]).isoformat(),
                 "current": record["id"] == current_session_id,
             }
             for record in sessions
@@ -3839,7 +3835,7 @@ class IdentityAccessService:
                 raise PlatformError("authentication_required", "The account is not active", {}, 401)
             if int(session["identity_transition_version"]) != int(user["transition_version"]):
                 raise PlatformError("session_revoked", "The session has been revoked", {}, 401)
-            last_active = _utc(session["last_active_at_utc"])
+            last_active = as_utc(session["last_active_at_utc"])
             if (now - last_active).total_seconds() >= 60:
                 connection.execute(
                     update(auth_session_table)
@@ -4172,7 +4168,7 @@ class IdentityAccessService:
                 or record[identity_user_table.c.lifecycle_status] != "active"
                 or int(record[auth_session_table.c.identity_transition_version])
                 != int(record[identity_user_table.c.transition_version])
-                or _utc(record[auth_session_table.c.family_expires_at_utc]) <= now
+                or as_utc(record[auth_session_table.c.family_expires_at_utc]) <= now
             ):
                 raise PlatformError("invalid_refresh", "Refresh token is invalid", {}, 401)
 
@@ -4185,7 +4181,7 @@ class IdentityAccessService:
                 if token_sequence == current_sequence - 1:
                     if (
                         replay_expires_at is not None
-                        and _utc(replay_expires_at) > now
+                        and as_utc(replay_expires_at) > now
                         and isinstance(replay_payload, str)
                     ):
                         payload = decrypt_replay_payload(self._secret, replay_payload)

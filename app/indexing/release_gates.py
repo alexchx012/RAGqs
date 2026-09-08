@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy import Engine, select, update
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 
 from .schema import retrieval_release_gate_metric_table, retrieval_release_gate_table
@@ -35,13 +36,6 @@ _METRIC_DIRECTIONS: dict[str, str] = {
 }
 GATE_AGGREGATIONS = frozenset({"mean", "max", "p50", "p95", "p99", "rate"})
 GATE_SEVERITIES = frozenset({"blocking", "advisory"})
-
-
-def _as_utc(value: datetime) -> datetime:
-    # SQLite 丢时区信息，读出后统一补 UTC 再比较/返回。
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
 
 
 def _gate_id() -> str:
@@ -242,7 +236,7 @@ class RetrievalReleaseGateService:
                         {"open_version_id": str(open_row["id"])},
                         409,
                     )
-                if not effective_from_utc > _as_utc(open_row["effective_from_utc"]):
+                if not effective_from_utc > as_utc(open_row["effective_from_utc"]):
                     raise PlatformError(
                         "validation_error",
                         "the new gate version must take effect after its predecessor",
@@ -299,12 +293,12 @@ class RetrievalReleaseGateService:
             "version": str(row["version"]),
             "hardware_profile": dict(row["hardware_profile_json"] or {}),
             "concurrency": int(row["concurrency"]),
-            "effective_from_utc": _as_utc(row["effective_from_utc"]),
+            "effective_from_utc": as_utc(row["effective_from_utc"]),
             "effective_to_utc": (
-                None if row["effective_to_utc"] is None else _as_utc(row["effective_to_utc"])
+                None if row["effective_to_utc"] is None else as_utc(row["effective_to_utc"])
             ),
             "supersedes_version_id": row["supersedes_version_id"],
-            "created_at_utc": _as_utc(row["created_at_utc"]),
+            "created_at_utc": as_utc(row["created_at_utc"]),
             "metrics": tuple(metrics),
         }
 
@@ -334,11 +328,11 @@ class RetrievalReleaseGateService:
             "version": str(detail["version"]),
             "hardware_profile": dict(detail["hardware_profile_json"] or {}),
             "concurrency": int(detail["concurrency"]),
-            "effective_from_utc": _as_utc(detail["effective_from_utc"]),
+            "effective_from_utc": as_utc(detail["effective_from_utc"]),
             "effective_to_utc": (
-                None if detail["effective_to_utc"] is None else _as_utc(detail["effective_to_utc"])
+                None if detail["effective_to_utc"] is None else as_utc(detail["effective_to_utc"])
             ),
             "supersedes_version_id": detail["supersedes_version_id"],
-            "created_at_utc": _as_utc(detail["created_at_utc"]),
+            "created_at_utc": as_utc(detail["created_at_utc"]),
             "metrics": tuple(metrics),
         }

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Engine, select
 from sqlalchemy.engine import Connection
 
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 from app.platform.persistence import DatabaseClock
 
@@ -31,10 +32,6 @@ class CalendarLock:
     version_id: str
     timezone: str
     effective_from_utc: datetime
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _ledger_invariant(message: str) -> PlatformError:
@@ -115,12 +112,12 @@ class BusinessCalendarService:
         return CalendarLock(
             version_id=str(row["version_id"]),
             timezone=str(row["timezone"]),
-            effective_from_utc=_utc(effective_from),
+            effective_from_utc=as_utc(effective_from),
         )
 
     def _local_month_start(self, lock: CalendarLock, at_utc: datetime) -> datetime:
         tz = ZoneInfo(lock.timezone)
-        local = _utc(at_utc).astimezone(tz)
+        local = as_utc(at_utc).astimezone(tz)
         return datetime(local.year, local.month, 1, tzinfo=tz)
 
     def month_start_utc(self, lock: CalendarLock, at_utc: datetime) -> datetime:
@@ -135,7 +132,7 @@ class BusinessCalendarService:
         return nxt.astimezone(UTC)
 
     def period_for(self, lock: CalendarLock, at_utc: datetime) -> str:
-        local = _utc(at_utc).astimezone(ZoneInfo(lock.timezone))
+        local = as_utc(at_utc).astimezone(ZoneInfo(lock.timezone))
         return f"{local.year:04d}-{local.month:02d}"
 
 

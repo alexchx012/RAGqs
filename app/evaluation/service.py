@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Connection, Engine
 
 from app.identity.schema import identity_space_table
+from app.platform.database import as_utc
 from app.platform.errors import PlatformError
 from app.usage.schema import usage_event_table
 
@@ -50,10 +51,6 @@ from .schema import (
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(15)}"
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _request_hash(kind: str, payload: Mapping[str, Any]) -> str:
@@ -98,7 +95,7 @@ class EvaluationService:
         value = self._now(connection)
         if not isinstance(value, datetime):
             value = datetime.now(UTC)
-        return _utc(value)
+        return as_utc(value)
 
     @staticmethod
     def _require_ops(principal: Any) -> None:
