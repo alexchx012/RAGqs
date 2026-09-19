@@ -238,16 +238,25 @@
  * 外扩量 --touch-expand 由控件按视觉尺寸在 className 里声明
  * （24px → -10px、28px → -8px、32px → -6px、36px → -4px）。
  * 某一轴已达 44px 时可用 --touch-expand-x / --touch-expand-y 单轴声明（0 表示不外扩）。
+ *
+ * 必须留在 @layer components 内：Tailwind v4 的工具类位于 @layer utilities，而未分层
+ * (unlayered) 规则一律压过分层规则（与书写顺序、specificity 无关）。本规则若不加层，会静默
+ * 覆盖同元素上的 .absolute / .fixed / .sticky，令「触控热区 + 定位工具类」的组合退回
+ * position: relative —— 登录页与安全模块的密码可见性眼睛按钮正是因此错位。放进 components
+ * 后层序为 theme < base < components < utilities：只挂 ui-touch-target 的元素照旧获得
+ * position: relative（::after 需要定位祖先），同时挂定位工具类的元素由工具类胜出。
  */
-.ui-touch-target {
-  position: relative;
-}
+@layer components {
+  .ui-touch-target {
+    position: relative;
+  }
 
-.ui-touch-target::after {
-  content: '';
-  position: absolute;
-  inset: var(--touch-expand-y, var(--touch-expand, -6px))
-    var(--touch-expand-x, var(--touch-expand, -6px));
+  .ui-touch-target::after {
+    content: '';
+    position: absolute;
+    inset: var(--touch-expand-y, var(--touch-expand, -6px))
+      var(--touch-expand-x, var(--touch-expand, -6px));
+  }
 }
 
 /* 触屏常显（审查 A5）：⋯ 触发钮默认随父级 group hover 淡入，触屏（无 hover 能力）

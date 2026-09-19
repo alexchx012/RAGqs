@@ -895,12 +895,21 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
               {navArea}
             </nav>
           )}
-          {/* 滚动容器留 4px 顶部/左侧绘制余量：首行元素（顶行入口、文档名等）与 scrollport
-              齐平，hover 的 scale 放大与阴影会溢出内容盒被裁剪。pt/pl + 等量负 margin 保持
-              内容原位，max-w 同步 +4（720→724）抵消 pl，内容宽度与右缘均不变。 */}
+          {/* 滚动容器绘制余量：顶部/左侧 4px 供首行元素（顶行入口、文档名等）与 scrollport
+              齐平时的 hover 放大与阴影溢出内容盒（pt/pl + 等量负 margin 保持内容原位）。
+              右侧 12px 吸收 ui-touch-target::after 这类不可见触控热区伪元素的外扩（抽屉内最大
+              --touch-expand 为 TextLink 的 -11px）；不吸收它们会越出 padding box，被
+              overflow-y:auto 顺带算成 overflow-x:auto 而兑现成横向滚动条与横向拖动。
+              pr-3/-mr-3 与 pt-1/-mt-1 同理：内容盒左缘与宽度完全不变，只把 padding box 右移边界。
+              底部 8px 吸收进入动画：过渡期内容被包成 relative h-full + absolute inset-0，被动画
+              块恰为内容盒满高，而 drill-switch / drill-content-rise 自 translateY(8px) 起步；
+              缺这段余量时会把块推过滚动口底部 8px，令 scrollHeight 瞬时 +8px 闪出滚动条。
+              hide-scrollbar：右栏保留滚动能力但不显示滚动条。
+              overflow-x-hidden：兜底——横向没有可滚动内容，任何漏网的外扩都不得变成横向滚动。
+              内容列不再限宽（原 max-w-[724px] 与 共用基座设计.md 的 720px 条款一并移除）。 */}
           <div
             ref={contentRef}
-            className={`min-w-0 flex-1 overflow-y-auto overscroll-contain pt-1 pl-1 -mt-1 -ml-1 ${narrow ? '' : 'max-w-[724px]'}`}
+            className="hide-scrollbar min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pt-1 pb-2 pl-1 pr-3 -mt-1 -ml-1 -mr-3"
           >
             {narrowListView ? renderModuleList('idle') : contentArea}
           </div>
