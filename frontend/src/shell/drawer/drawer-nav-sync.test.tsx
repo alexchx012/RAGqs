@@ -133,7 +133,7 @@ describe('左栏选中态一致性：管理段快速连续切换（A2）', () =>
   it('下钻动画进行中打断切换到其他模块：最终态与残留计时器走完后均一致', async () => {
     const probe = await renderApp('/admin/approvals', 'ops');
     const dialog = await screen.findByRole('dialog', { name: modules.approvals });
-    // 下钻进配额申请（五步动画真实计时器 550ms 启动）
+    // 下钻进配额申请（两相整页动画真实计时器 250+250ms 启动）
     fireEvent.click(
       within(dialog).getByRole('button', { name: new RegExp(`^${modules.quotaRequests}`) }),
     );

@@ -41,14 +41,14 @@ async function openAdminDrawer(page: Page): Promise<void> {
 }
 
 /**
- * 抽屉过渡窗口（五步下钻 550ms / 同层切换交叉淡变 150ms）：窗口内内容区并存 from/to 两份
- * 拷贝（过渡态 .relative.h-full 包装 + absolute 双拷贝），断言/交互须等包装消失、
- * 只剩稳态单拷贝后进行，否则可能命中严格模式重复匹配或点到淡出中的 from 侧。
+ * 抽屉过渡窗口（两相整页下钻 250+250ms / 同层切换交叉淡变 150+250ms）：窗口内内容区并存
+ * from/to 两份拷贝（过渡态 .relative.h-full 包装 + absolute 双拷贝），断言/交互须等包装消失、
+ * 只剩稳态单拷贝后进行，否则可能命中严格模式重复匹配或点到离开相中的 from 侧。
  */
 async function waitDrillSettled(drawer: Locator): Promise<void> {
   await expect(
     drawer.locator(
-      '.drill-exit, .drill-hidden, .drill-content-rise, .drill-content-return, .drill-switch, .drill-flip-clone',
+      '.drill-exit, .drill-hidden, .drill-switch, .drill-page-leave-up, .drill-page-leave-down, .drill-page-arrive-from-below, .drill-page-arrive-from-above',
     ),
   ).toHaveCount(0);
 }

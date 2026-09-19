@@ -1,4 +1,4 @@
-/* 共享壳层组件动效与布局补充（fe-shared-shell）：抽屉滑上、下钻五步动画、返回按钮、手势。
+/* 共享壳层组件动效与布局补充（fe-shared-shell）：抽屉滑上、下钻两相整页过渡、手势。
    只使用 token；reduced-motion 由 base.css 全局降级为直出。 */
 
 /* 全屏抽屉滑上 / 滑下（共用基座 §5.1：400ms；进入 --ease-out，离开 --ease-in-out） */
@@ -37,22 +37,45 @@
   transition: transform 250ms var(--ease-in-out);
 }
 
-/* 五步层级下钻动画（§5.2）：
-   第 2 步：左栏列表与右栏原内容渐变消失 150ms --ease-in-out； */
-.drill-exit {
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-in-out);
+/* 两相层级下钻动画（§5.2）：
+   第 1 相「离开」：当前页主体（左栏 + 右栏）作为整体上滑渐隐；
+   第 2 相「进入」：新页主体自下方 8px 上移渐显。两相顺序执行、不交叠（各 --duration-base）。
+   左栏与右栏各自挂同一个类——同一次提交里加类，CSS 动画同帧起步、同时长同缓动，
+   视觉上等价于整页位移；因此无需为「整页」引入新的外层容器（保留 contentRef 单一滚动容器）。
+   页头（关闭按钮 + 页级标题 + 铃铛）在两栏之外，结构上天然不参与本动画。 */
+@keyframes drill-page-leave-up {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
 }
 
-.drill-hidden {
-  visibility: hidden;
-  pointer-events: none;
+.drill-page-leave-up {
+  animation: drill-page-leave-up var(--duration-base) var(--ease-in-out) both;
 }
 
-/* 下钻右栏内容进入（§5.2 左栏换选同语言）：FLIP 克隆自右栏行位飞向左栏标题槽途中，
-   越过内容区左边界（飞行起始 ~100ms）后，右栏新内容自下方 8px 淡入上移；
-   100ms 延迟 + backwards 填充，延迟期间保持透明，不与尚在原位的克隆交叠。 */
-@keyframes drill-content-rise {
+/* 返回（完整镜像）：当前页主体下滑渐隐 */
+@keyframes drill-page-leave-down {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.drill-page-leave-down {
+  animation: drill-page-leave-down var(--duration-base) var(--ease-in-out) both;
+}
+
+/* 下钻进入：新页主体自下方 8px 上移渐显 */
+@keyframes drill-page-arrive-from-below {
   from {
     opacity: 0;
     transform: translateY(8px);
@@ -63,31 +86,15 @@
   }
 }
 
-.drill-content-rise {
-  animation: drill-content-rise var(--duration-base) var(--ease-out) 100ms backwards;
+.drill-page-arrive-from-below {
+  animation: drill-page-arrive-from-below var(--duration-base) var(--ease-out) both;
 }
 
-/* 反向（返回）：原右栏内容重新进入（同第 4 步镜像，缓动 --ease-in-out） */
-@keyframes drill-content-return {
+/* 返回进入：上一层主体自上方 8px 落位渐显 */
+@keyframes drill-page-arrive-from-above {
   from {
     opacity: 0;
-    transform: translateX(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-.drill-content-return {
-  animation: drill-content-return var(--duration-base) var(--ease-in-out);
-}
-
-/* 第 5 步：返回按钮 opacity 0→1 + 自上方 4px 落位，150ms --duration-fast --ease-out */
-@keyframes drill-back-enter {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(-8px);
   }
   to {
     opacity: 1;
@@ -95,35 +102,19 @@
   }
 }
 
-.drill-back-enter {
-  animation: drill-back-enter var(--duration-fast) var(--ease-out);
+.drill-page-arrive-from-above {
+  animation: drill-page-arrive-from-above var(--duration-base) var(--ease-out) both;
 }
 
-.drill-back-exit {
+/* 原位淡出：同层切换的旧内容（左栏换选）与过渡期 from 侧复用 */
+.drill-exit {
   opacity: 0;
   transition: opacity var(--duration-fast) var(--ease-in-out);
 }
 
-/* 第 3 步：被点击项名称 FLIP 位移到左栏第一位，400ms --duration-slow --ease-in-out。
-   元素静态定位在终点槽位，起点 transform 由组件注入 CSS 变量 --flip-from，
-   挂载即播 keyframes（合成器动画，无 JS 回调、无逐帧重排）。 */
-.drill-flip-clone {
-  position: absolute;
-  z-index: 30;
-  margin: 0;
+.drill-hidden {
+  visibility: hidden;
   pointer-events: none;
-  white-space: nowrap;
-  transform-origin: left top;
-  animation: drill-flip-move var(--duration-slow) var(--ease-in-out) both;
-}
-
-@keyframes drill-flip-move {
-  from {
-    transform: var(--flip-from, translate(0, 0) scale(1));
-  }
-  to {
-    transform: translate(0, 0) scale(1);
-  }
 }
 
 /* 同层切换内容进入（§5.2 左栏换选）：序列为先旧内容原地淡出（drill-exit 150ms --duration-fast），

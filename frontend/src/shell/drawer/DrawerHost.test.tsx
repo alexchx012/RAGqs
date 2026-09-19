@@ -3,7 +3,7 @@
  * 经 AppRoutes 整树渲染（真实 URL 驱动）：开合、深链恢复、未注册层占位、按角色左栏、
  * 跨段切换、下钻与返回、Esc 逐层、关闭按钮、下滑手势、管理段顶层自动选中总览、窄屏单栏化、
  * prefers-reduced-motion 降级。
- * 动画计时器走真实时钟（进入 400ms / 关闭 400ms / 下钻 550ms），断言最终稳定状态。
+ * 动画计时器走真实时钟（进入 400ms / 关闭 400ms / 下钻两相 500ms），断言最终稳定状态。
  */
 
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
@@ -179,7 +179,7 @@ describe('下钻、返回与 Esc 逐层', () => {
     await user.click(within(dialog).getByRole('button', { name: modules.submissions }));
     expect(await within(dialog).findByText(copy.settings.knowledge.submissions.title)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge/submissions');
-    // 同理：五步下钻动画（550ms）结束、from 侧知识库内容卸载后再抓返回按钮
+    // 同理：两相下钻动画（250+250ms）结束、from 侧知识库内容卸载后再抓返回按钮
     await waitFor(() =>
       expect(
         within(dialog).queryByText(copy.settings.knowledge.uploads.historyEntry),
@@ -191,6 +191,60 @@ describe('下钻、返回与 Esc 逐层', () => {
     );
     expect(await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
     expect(probe.textContent).toBe('/settings/knowledge');
+  });
+
+  it('下钻为两相整页过渡：离开相两栏同上滑渐隐，进入相两栏同自下渐显，页头不参与', async () => {
+    const probe = await renderApp('/settings/knowledge');
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    // 同步触发，抓住离开相（真实计时器 250ms 内的中间态）
+    fireEvent.click(within(dialog).getByRole('button', { name: modules.submissions }));
+    expect(probe.textContent).toBe('/settings/knowledge/submissions');
+    // 离开相：左栏与右栏同挂上滑渐隐类（同一提交 → 同帧起步，视觉上等价于整页位移）
+    expect(dialog.querySelectorAll('.drill-page-leave-up')).toHaveLength(2);
+    // 进入相尚未开始：新页两栏都还没挂渐显类（否则动画会在 drill-hidden 期间跑完）
+    expect(dialog.querySelectorAll('.drill-page-arrive-from-below')).toHaveLength(0);
+    // 页头（关闭按钮 + 页级标题 + 铃铛）不参与整页过渡
+    expect(dialog.querySelector('header')?.querySelector('[class*="drill-page-"]')).toBeNull();
+    // FLIP 飞字效果整体缺席
+    expect(document.querySelector('.drill-flip-clone')).toBeNull();
+    // 进入相：新页两栏同挂自下渐显类
+    await waitFor(() =>
+      expect(dialog.querySelectorAll('.drill-page-arrive-from-below')).toHaveLength(2),
+    );
+    // 收尾后回到稳态：不留任何过渡标记
+    await waitFor(() => expect(dialog.querySelector('[class*="drill-page-"]')).toBeNull());
+  });
+
+  it('返回为反向镜像：离开相下滑渐隐，进入相自上方落位', async () => {
+    const probe = await renderApp('/settings/knowledge/submissions');
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
+    );
+    expect(probe.textContent).toBe('/settings/knowledge');
+    expect(dialog.querySelectorAll('.drill-page-leave-down')).toHaveLength(2);
+    await waitFor(() =>
+      expect(dialog.querySelectorAll('.drill-page-arrive-from-above')).toHaveLength(2),
+    );
+    await waitFor(() => expect(dialog.querySelector('[class*="drill-page-"]')).toBeNull());
+  });
+
+  it('离开相渲染的上层页，其返回按钮指向该层自己的上一层（深层下钻不串层名）', async () => {
+    await renderApp('/settings/knowledge/manage', 'minister');
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    fireEvent.click(
+      within(dialog).getByRole('button', {
+        name: new RegExp(`^${copy.settings.knowledge.manage.approvals}`),
+      }),
+    );
+    // 离开相（部门库管理）的返回按钮回「知识库」；到达相（投稿审核）的返回按钮回「部门库管理」。
+    // 到达相在离开相以 drill-hidden 预挂载，故查询带上 hidden: true。
+    const backNames = within(dialog)
+      .queryAllByRole('button', { hidden: true })
+      .map((node) => node.getAttribute('aria-label'))
+      .filter((label): label is string => label !== null && label.startsWith('返回'));
+    expect(backNames).toContain(drawerCopy.backAria(modules.knowledge));
+    expect(backNames).toContain(drawerCopy.backAria(copy.settings.knowledge.manage.title));
   });
 
   it('运维在知识库层不渲染「我的投稿」（无权限模块不渲染）', async () => {
@@ -487,7 +541,7 @@ describe('抽屉页头铃铛与窄屏单栏化', () => {
 });
 
 describe('prefers-reduced-motion 降级', () => {
-  it('下钻降级为直出：无 FLIP 克隆节点，内容立即切换（共用基座 §5.2）', async () => {
+  it('下钻降级为直出：两栏均不挂页面级动画类，内容立即切换（共用基座 §5.2）', async () => {
     const original = window.matchMedia;
     window.matchMedia = ((query: string) => ({
       matches: query.includes('prefers-reduced-motion'),
@@ -507,7 +561,9 @@ describe('prefers-reduced-motion 降级', () => {
       // 直出：点击后的提交里内容已切换，无需等待动画时序
       expect(within(dialog).getByText(copy.settings.knowledge.uploads.historyEntry)).toBeInTheDocument();
       expect(probe.textContent).toBe('/settings/knowledge');
-      expect(document.querySelector('.drill-flip-clone')).toBeNull();
+      // 直出：过渡渲染整体缺席，页面级动画类一个都不挂
+      expect(document.querySelector('[class*="drill-page-"]')).toBeNull();
+      expect(dialog.querySelector('.drill-hidden')).toBeNull();
     } finally {
       window.matchMedia = original;
     }
