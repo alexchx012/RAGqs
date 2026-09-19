@@ -6,13 +6,14 @@
  * 动画计时器走真实时钟（进入 400ms / 关闭 400ms / 下钻 550ms），断言最终稳定状态。
  */
 
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useLocation } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import type { AdminApi } from '../../admin/api';
 import { copy } from '../../copy';
 import { AppRoutes } from '../../router/AppRoutes';
+import type { SettingsApi } from '../../settings/api';
 import { createAuthedStore, fakeAdminApi, renderWithShell, testUser } from '../../test/auth-fixtures';
 
 const drawerCopy = copy.shell.drawer;
@@ -25,7 +26,35 @@ function LocationProbe() {
   return <output data-testid="location-path">{location.pathname}</output>;
 }
 
-async function renderApp(path: string, role: TestRole = 'user', adminApi?: AdminApi) {
+/** §6.9 版本记录响应（含 1 条 active 版本，供参数化下钻层的参数生效断言使用）。 */
+function versionsResponse(documentId: string) {
+  return {
+    document_id: documentId,
+    version: 2,
+    active_version_id: `dv_${documentId}_2`,
+    items: [
+      {
+        document_version_id: `dv_${documentId}_2`,
+        version_number: 2,
+        status: 'active',
+        created_at: '2026-07-20T10:00:00Z',
+        activated_at: '2026-07-20T10:00:00Z',
+        terminal_at: null,
+        superseded_at: null,
+        purge_after_at: null,
+        purged_at: null,
+        restored_from_version_id: null,
+        content_available: true,
+      },
+    ],
+  };
+}
+
+async function renderApp(
+  path: string,
+  role: TestRole = 'user',
+  options: { adminApi?: AdminApi; settingsApi?: SettingsApi } = {},
+) {
   const store = await createAuthedStore(testUser({ role }));
   renderWithShell(
     <>
@@ -34,7 +63,7 @@ async function renderApp(path: string, role: TestRole = 'user', adminApi?: Admin
     </>,
     store,
     [path],
-    { adminApi },
+    { adminApi: options.adminApi, settingsApi: options.settingsApi },
   );
   return screen.getByTestId('location-path');
 }
@@ -189,6 +218,55 @@ describe('下钻、返回与 Esc 逐层', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {
       timeout: 2000,
     });
+  });
+
+  it('版本记录（参数化下钻层）返回按钮直达知识库层：不落参数缺失的空版本记录层', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsResponse(documentId));
+    const probe = await renderApp('/settings/knowledge/versions/docA', 'user', {
+      settingsApi: { listVersions } as unknown as SettingsApi,
+    });
+    const user = userEvent.setup();
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    // 参数生效：本层渲染 docA 的版本记录
+    expect(
+      await within(dialog).findByText(copy.settings.knowledge.versions.versionNumber(2)),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
+    );
+    // 修复前停 /settings/knowledge/versions（无 documentId → 空态「暂无版本记录」），须再点一次
+    await waitFor(() => expect(probe.textContent).toBe('/settings/knowledge'));
+    expect(
+      await within(dialog).findByText(copy.settings.knowledge.uploads.historyEntry),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(copy.settings.knowledge.versions.empty)).toBeNull();
+  });
+
+  it('版本记录（参数化下钻层）Esc 逐层向上同样直达知识库层', async () => {
+    const probe = await renderApp('/settings/knowledge/versions/docA');
+    const user = userEvent.setup();
+    await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(probe.textContent).toBe('/settings/knowledge'));
+  });
+
+  it('离开版本记录层：退出动画期间离开侧仍是版本详情，不被清成空态', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsResponse(documentId));
+    await renderApp('/settings/knowledge/versions/docA', 'user', {
+      settingsApi: { listVersions } as unknown as SettingsApi,
+    });
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    expect(
+      await within(dialog).findByText(copy.settings.knowledge.versions.versionNumber(2)),
+    ).toBeInTheDocument();
+    // 同步派发（不等动画推进）：断言退出相位（150ms）内的离开侧内容
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
+    );
+    expect(
+      within(dialog).getByText(copy.settings.knowledge.versions.versionNumber(2)),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(copy.settings.knowledge.versions.empty)).toBeNull();
   });
 
   it('左上角关闭按钮关闭抽屉并回到聊天主页', async () => {
@@ -457,7 +535,7 @@ describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => 
       getCalibrationWindow: vi.fn(async () => openWindow),
       listOpsJobs: vi.fn(async () => ({ items: [], stale_count: 3 })),
     });
-    await renderApp('/admin', 'ops', adminApi);
+    await renderApp('/admin', 'ops', { adminApi });
     const dialog = await screen.findByRole('dialog', { name: modules.dashboard });
     // 审批中心：仅后端真实提供的配额待审数 2
     const approvalsButton = within(dialog).getByRole('button', { name: /审批中心/ });
@@ -478,7 +556,7 @@ describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => 
     const adminApi = fakeAdminApi({
       getApprovalSummary: vi.fn(async () => ({ quota_pending: 2, submission_pending: 1 })),
     });
-    await renderApp('/admin/approvals', 'ops', adminApi);
+    await renderApp('/admin/approvals', 'ops', { adminApi });
     const dialog = await screen.findByRole('dialog', { name: modules.approvals });
     const quotaRow = within(dialog).getByRole('button', { name: new RegExp(modules.quotaRequests) });
     expect(await within(quotaRow).findByText('2')).toBeInTheDocument();
@@ -493,7 +571,7 @@ describe('左栏项右侧摘要（renderSummary：徽标 / 状态点）', () => 
     const adminApi = fakeAdminApi({
       getApprovalSummary: vi.fn(async () => ({ quota_pending: 2, submission_pending: 1 })),
     });
-    await renderApp('/admin/spaces', 'admin', adminApi);
+    await renderApp('/admin/spaces', 'admin', { adminApi });
     const dialog = await screen.findByRole('dialog', { name: modules.spaces });
     const submissionsRow = within(dialog).getByRole('button', {
       name: new RegExp(modules.knowledgeApprovals),

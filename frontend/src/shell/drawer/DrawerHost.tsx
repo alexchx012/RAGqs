@@ -101,6 +101,13 @@ function isPrefix(prefix: readonly string[], path: readonly string[]): boolean {
   return prefix.length <= path.length && prefix.every((segment, index) => segment === path[index]);
 }
 
+/** 返回目标：当前层链的上一层 drill。层链长度 k 对应 URL 前 k 段；参数化下钻层
+ *  （/settings/knowledge/versions/<documentId>）的参数尾段不注册为层（resolve 返回 exact=false），
+ *  按 URL 段数砍一段会落到「同层但参数缺失」的无效路径（空版本记录层），故上一层取 k − 1 段。 */
+function parentDrill(drill: readonly string[], layers: readonly DrawerLayer[]): readonly string[] {
+  return drill.slice(0, Math.max(layers.length - 1, 0));
+}
+
 function focusableIn(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
     (element) =>
@@ -461,12 +468,14 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     if (!current.open || current.segment === null) {
       return;
     }
+    // 上一层按已解析层链计算（参数化层的参数尾段不算一层）；无层可退（未注册深链）时回段顶层
+    const currentLayers = registry.resolve(current.segment, current.drill, role).layers;
     const next =
       current.drill.length > 0
         ? formatDrawerLocation({
             open: true,
             segment: current.segment,
-            drill: current.drill.slice(0, -1),
+            drill: parentDrill(current.drill, currentLayers),
           })
         : '/';
     escPathRef.current = next;
@@ -584,11 +593,12 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
   const narrowBackLabel =
     shownDrill.length === 1 ? segmentTitle : (shownLayers[shownLayers.length - 2]?.title ?? segmentTitle);
   const goBack = () => {
+    // 返回上一层：按层链（而非 URL 段数）取上一层，参数化层的参数尾段不占一层
     navigate(
       formatDrawerLocation({
         open: true,
         segment: parsed.segment,
-        drill: parsed.drill.slice(0, -1),
+        drill: parentDrill(parsed.drill, resolved.layers),
       }),
     );
   };
@@ -668,6 +678,9 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     layers: readonly DrawerLayer[],
     phase: 'idle' | 'exit' | 'enter',
     enterKind: 'enter' | 'return' | 'switch',
+    /** 该层自己的 drill 路径：退出侧传 transition.from、到达侧传当前路径。
+     *  参数化层（versions/<documentId>）据此取参数，两侧混用会让退出中的版本详情被清成空态。 */
+    path: readonly string[],
   ) => {
     const layer = layers[layers.length - 1];
     const phaseClass =
@@ -693,7 +706,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       // 立即清空账号相关 state（跨逻辑会话数据残留防护；review Major 1）。
       return (
         <div key={sessionKey ?? 'no-session'} className={phaseClass}>
-          {layer.render({ path: shownDrill })}
+          {layer.render({ path })}
         </div>
       );
     }
@@ -789,6 +802,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
               shownLayers,
               enterKick ? 'enter' : 'idle',
               enterKick ? 'enter' : 'switch',
+              shownDrill,
             )}
           </div>
         </div>
@@ -808,14 +822,14 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         <div className="relative h-full">
           {!fromIsCurrent && !entering && (
             <div key={contentKey(transition.from)} className="absolute inset-0">
-              {renderLayerContent(fromLayers, 'exit', enterKind)}
+              {renderLayerContent(fromLayers, 'exit', enterKind, transition.from)}
             </div>
           )}
           <div
             key={currentContentKey}
             className={`absolute inset-0 ${entering ? 'drill-switch' : 'drill-hidden'}`}
           >
-            {renderLayerContent(shownLayers, 'idle', enterKind)}
+            {renderLayerContent(shownLayers, 'idle', enterKind, shownDrill)}
           </div>
         </div>
       );
@@ -824,7 +838,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       <div className="relative h-full">
         {!fromIsCurrent && (
           <div key={contentKey(transition.from)} className="absolute inset-0">
-            {renderLayerContent(fromLayers, 'exit', enterKind)}
+            {renderLayerContent(fromLayers, 'exit', enterKind, transition.from)}
           </div>
         )}
         <div
@@ -832,8 +846,8 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
           className={`absolute inset-0 ${transition.phase === 'exit' ? 'drill-hidden' : ''}`}
         >
           {transition.phase === 'exit'
-            ? renderLayerContent(shownLayers, 'idle', enterKind)
-            : renderLayerContent(shownLayers, 'enter', enterKind)}
+            ? renderLayerContent(shownLayers, 'idle', enterKind, shownDrill)
+            : renderLayerContent(shownLayers, 'enter', enterKind, shownDrill)}
         </div>
       </div>
     );
