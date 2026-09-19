@@ -149,7 +149,7 @@ describe('左栏选中态一致性：管理段快速连续切换（A2）', () =>
     expect(
       within(dialog).getByRole('button', { name: new RegExp(`^${modules.publicSpace}`) }),
     ).toBeInTheDocument();
-    // 残留动画计时器（550ms）走完后仍一致
+    // 残留动画计时器（两相 500ms）走完后仍一致
     await new Promise((resolve) => setTimeout(resolve, 600));
     expectModuleConsistent(dialog, probe, '/admin/spaces', modules.spaces);
   });

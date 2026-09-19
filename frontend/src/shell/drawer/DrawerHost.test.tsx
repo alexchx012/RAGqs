@@ -196,21 +196,26 @@ describe('下钻、返回与 Esc 逐层', () => {
   it('下钻为两相整页过渡：离开相两栏同上滑渐隐，进入相两栏同自下渐显，页头不参与', async () => {
     const probe = await renderApp('/settings/knowledge');
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    const nav = dialog.querySelector('nav');
+    /** 左栏内与左栏外（右栏内容列）各挂几个该类名的元素。 */
+    const splitByColumn = (selector: string): [number, number] => {
+      const nodes = Array.from(dialog.querySelectorAll(selector));
+      const inNav = nodes.filter((node) => nav?.contains(node) === true).length;
+      return [inNav, nodes.length - inNav];
+    };
     // 同步触发，抓住离开相（真实计时器 250ms 内的中间态）
     fireEvent.click(within(dialog).getByRole('button', { name: modules.submissions }));
     expect(probe.textContent).toBe('/settings/knowledge/submissions');
-    // 离开相：左栏与右栏同挂上滑渐隐类（同一提交 → 同帧起步，视觉上等价于整页位移）
-    expect(dialog.querySelectorAll('.drill-page-leave-up')).toHaveLength(2);
+    // 离开相：左栏与右栏各挂一个上滑渐隐类（同一提交 → 同帧起步，视觉上等价于整页位移）
+    expect(splitByColumn('.drill-page-leave-up')).toEqual([1, 1]);
     // 进入相尚未开始：新页两栏都还没挂渐显类（否则动画会在 drill-hidden 期间跑完）
     expect(dialog.querySelectorAll('.drill-page-arrive-from-below')).toHaveLength(0);
     // 页头（关闭按钮 + 页级标题 + 铃铛）不参与整页过渡
     expect(dialog.querySelector('header')?.querySelector('[class*="drill-page-"]')).toBeNull();
     // FLIP 飞字效果整体缺席
     expect(document.querySelector('.drill-flip-clone')).toBeNull();
-    // 进入相：新页两栏同挂自下渐显类
-    await waitFor(() =>
-      expect(dialog.querySelectorAll('.drill-page-arrive-from-below')).toHaveLength(2),
-    );
+    // 进入相：新页两栏各挂一个自下渐显类
+    await waitFor(() => expect(splitByColumn('.drill-page-arrive-from-below')).toEqual([1, 1]));
     // 收尾后回到稳态：不留任何过渡标记
     await waitFor(() => expect(dialog.querySelector('[class*="drill-page-"]')).toBeNull());
   });
@@ -223,10 +228,44 @@ describe('下钻、返回与 Esc 逐层', () => {
     );
     expect(probe.textContent).toBe('/settings/knowledge');
     expect(dialog.querySelectorAll('.drill-page-leave-down')).toHaveLength(2);
+    // 镜像方向不串台：离开相不带任何进入类
+    expect(dialog.querySelector('.drill-page-arrive-from-above')).toBeNull();
+    expect(dialog.querySelector('[class*="arrive-from-below"]')).toBeNull();
     await waitFor(() =>
       expect(dialog.querySelectorAll('.drill-page-arrive-from-above')).toHaveLength(2),
     );
     await waitFor(() => expect(dialog.querySelector('[class*="drill-page-"]')).toBeNull());
+  });
+
+  it('窄屏首屏下钻：离开相滑隐的是屏幕上的模块名列表本身，而非占位文案', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('max-width'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+    try {
+      const probe = await renderApp('/settings');
+      const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+      // 窄屏首屏：模块名列表渲染在内容列（单栏化）
+      expect(dialog.querySelector('[data-nav-variant="modules"]')).not.toBeNull();
+      fireEvent.click(within(dialog).getByRole('button', { name: modules.knowledge }));
+      expect(probe.textContent).toBe('/settings/knowledge');
+      const leaving = Array.from(dialog.querySelectorAll('.drill-page-leave-up'));
+      expect(leaving).toHaveLength(2);
+      // 两侧离开节点都是真实模块列表（与窄屏 idle 同一形态），不是从未露面的顶层占位文案
+      for (const node of leaving) {
+        expect(node.getAttribute('data-nav-variant')).toBe('modules');
+        expect(node.textContent).not.toContain(drawerCopy.topPlaceholderBody);
+      }
+    } finally {
+      window.matchMedia = original;
+    }
   });
 
   it('离开相渲染的上层页，其返回按钮指向该层自己的上一层（深层下钻不串层名）', async () => {
@@ -313,7 +352,7 @@ describe('下钻、返回与 Esc 逐层', () => {
     expect(
       await within(dialog).findByText(copy.settings.knowledge.versions.versionNumber(2)),
     ).toBeInTheDocument();
-    // 同步派发（不等动画推进）：断言退出相位（150ms）内的离开侧内容
+    // 同步派发（不等动画推进）：断言退出相位（250ms）内的离开侧内容
     fireEvent.click(
       within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
     );

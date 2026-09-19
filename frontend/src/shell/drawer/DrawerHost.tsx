@@ -705,6 +705,10 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
   const contentKey = (drill: readonly string[]) =>
     `${sessionKey ?? 'no-session'}:${shownSegment}:${drill.join('/')}`;
   const currentContentKey = contentKey(shownDrill);
+  // 窄屏首屏（drill 为空）的「当前页主体」是模块名列表而非右栏层内容（见下方 narrowListView）。
+  // 过渡期间 narrowListView 恒为 false，故 from/to 两侧都要按同一形态渲染——否则窄屏下钻
+  // 会把屏幕上真实存在的模块列表丢掉，换成一个从未露面的占位文案去播离开动画。
+  const narrowListPath = (drill: readonly string[]) => narrow && drill.length === 0;
   const contentArea = (() => {
     if (!transitioning) {
       return (
@@ -749,18 +753,22 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       <div className="relative h-full">
         {!fromIsCurrent && (
           <div key={contentKey(transition.from)} className="absolute inset-0">
-            {renderLayerContent(fromLayers, exitClass, transition.from)}
+            {narrowListPath(transition.from)
+              ? renderModuleList(exitClass)
+              : renderLayerContent(fromLayers, exitClass, transition.from)}
           </div>
         )}
         <div
           key={currentContentKey}
           className={`absolute inset-0 ${transition.phase === 'exit' ? 'drill-hidden' : ''}`}
         >
-          {renderLayerContent(
-            shownLayers,
-            transition.phase === 'exit' ? '' : enterClass,
-            shownDrill,
-          )}
+          {narrowListPath(shownDrill)
+            ? renderModuleList(transition.phase === 'exit' ? '' : enterClass)
+            : renderLayerContent(
+                shownLayers,
+                transition.phase === 'exit' ? '' : enterClass,
+                shownDrill,
+              )}
         </div>
       </div>
     );
