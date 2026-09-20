@@ -4,8 +4,11 @@
  * 「取消」丢弃草稿；保存失败由 use-preferences 回滚并置 saveError。
  * 界面语言与消息时间戳不在本期范围（后端无对应偏好字段），本模块不渲染也不留占位行。
  * 三态（loading / loadError / saveError）与 aria-busy 沿用既有语义。
+ * 保存进行中禁用两个分段控件（见 DraftFieldSet）：use-preferences 的 saving 契约要求消费方
+ * 禁用相关控件，且保存落地会重置草稿，窗口内可改会导致在途编辑被静默丢弃。
  * FormFooter 是 SettingsCard 的直接子节点且必须留在最后（负外边距抵消卡片 p-8）。
  */
+import type { ReactNode } from 'react';
 import { copy } from '../copy';
 import { FormFooter } from '../ui/FormFooter';
 import { FormRow } from '../ui/FormRow';
@@ -25,6 +28,25 @@ const FONT_SIZE_OPTIONS: SegmentedOption[] = [
   { value: 'standard', label: copy.settings.appearance.fontStandard },
   { value: 'large', label: copy.settings.appearance.fontLarge },
 ];
+
+/*
+ * 分段控件的禁用外壳。保存进行中必须禁用可交互控件：use-preferences 对 saving 的契约是
+ * 「消费方据此禁用相关控件」；且真实保存响应每次都是新对象（api/client.ts 的 response.json()），
+ * useDraftForm 见 submitted 身份变化即重置草稿——窗口内若还能改，那笔在途编辑会被静默丢弃。
+ * fieldset 原生 disabled 让后代控件不可交互；disabled:opacity-60 + disabled:cursor-not-allowed
+ * 让禁用态可见。enabled:opacity-100 不可省：浏览器对 disabled fieldset 默认 opacity:0，
+ * 不加则非保存期整块消失。
+ */
+function DraftFieldSet({ saving, children }: { saving: boolean; children: ReactNode }) {
+  return (
+    <fieldset
+      disabled={saving}
+      className="m-0 min-w-0 border-0 p-0 transition-opacity duration-[var(--duration-base)] enabled:opacity-100 disabled:opacity-60 disabled:cursor-not-allowed"
+    >
+      {children}
+    </fieldset>
+  );
+}
 
 export function AppearanceModule() {
   const { preferences, loading, loadError, saveError, saving, reload, save } = usePreferences();
@@ -66,24 +88,29 @@ export function AppearanceModule() {
             label={copy.settings.appearance.themeTitle}
             description={copy.settings.appearance.themeDescription}
           >
-            <SegmentedControl
-              options={THEME_OPTIONS}
-              value={draft.theme}
-              onChange={(value) => set({ theme: value as ThemePreferenceValue })}
-              ariaLabel={copy.settings.appearance.themeAria}
-            />
+            {/* 保存进行中禁用整块控件，避免在途编辑被静默丢弃（详见 DraftFieldSet 注释）。 */}
+            <DraftFieldSet saving={saving}>
+              <SegmentedControl
+                options={THEME_OPTIONS}
+                value={draft.theme}
+                onChange={(value) => set({ theme: value as ThemePreferenceValue })}
+                ariaLabel={copy.settings.appearance.themeAria}
+              />
+            </DraftFieldSet>
           </FormRow>
 
           <FormRow
             label={copy.settings.appearance.fontSizeTitle}
             description={copy.settings.appearance.fontSizeDescription}
           >
-            <SegmentedControl
-              options={FONT_SIZE_OPTIONS}
-              value={draft.chat_font_size}
-              onChange={(value) => set({ chat_font_size: value as ChatFontSize })}
-              ariaLabel={copy.settings.appearance.fontSizeAria}
-            />
+            <DraftFieldSet saving={saving}>
+              <SegmentedControl
+                options={FONT_SIZE_OPTIONS}
+                value={draft.chat_font_size}
+                onChange={(value) => set({ chat_font_size: value as ChatFontSize })}
+                ariaLabel={copy.settings.appearance.fontSizeAria}
+              />
+            </DraftFieldSet>
           </FormRow>
 
           {saveError && (

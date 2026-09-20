@@ -45,9 +45,19 @@ function preferences(overrides: Partial<UserPreferences> = {}): UserPreferences 
   };
 }
 
+/*
+ * 保存回声必须还原真实 API 的对象身份行为：api/client.ts 的 `response.json()` 每次返回
+ * **新对象**（`return body as T`），不是传入的那个。若 mock 直接 `async (next) => next` 回声
+ * 同一引用，useDraftForm 就观察不到 submitted 变化，会掩盖「保存落地即重置草稿」的真实后果
+ * （在途编辑被静默丢弃）。故统一用本函数：取值相同、身份必新。
+ */
+function echoPreferences(next: UserPreferences): UserPreferences {
+  return { ...next };
+}
+
 function createPreferencesApi(initial: UserPreferences) {
   const getPreferences = vi.fn(async () => initial);
-  const updatePreferences = vi.fn(async (next: UserPreferences) => next);
+  const updatePreferences = vi.fn(async (next: UserPreferences) => echoPreferences(next));
   return {
     api: { getPreferences, updatePreferences } as unknown as SettingsApi,
     getPreferences,
@@ -229,6 +239,77 @@ describe('AppearanceModule', () => {
     expect(saveButton()).toBeEnabled();
   });
 
+  it('保存进行中分段控件不可交互（在途编辑不得被静默丢弃）', async () => {
+    // 回归守卫：真实 API 的保存响应每次都是新对象（api/client.ts `response.json()`），
+    // useDraftForm 见 submitted 身份变化即重置草稿。若保存窗口内控件仍可改，
+    // 那笔在途编辑会在响应落地时被重置掉，且再点保存是 no-op（草稿已等于服务端快照）——
+    // 编辑无声消失。use-preferences 对 saving 的既有契约要求消费方禁用相关控件。
+    const save = deferred<UserPreferences>();
+    const getPreferences = vi.fn(async () => preferences());
+    const updatePreferences = vi.fn<SettingsApi['updatePreferences']>(() => save.promise);
+    const api = { getPreferences, updatePreferences } as unknown as SettingsApi;
+    const theme = createThemeController();
+    const user = userEvent.setup();
+
+    await renderModule(api, theme);
+    await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(saveButton());
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+
+    expect(screen.getByRole('radio', { name: copy.settings.appearance.themeDark })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: copy.settings.appearance.fontLarge })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: copy.settings.appearance.fontLarge })).toBeDisabled();
+
+    // 在途点击被吞掉：草稿仍是提交前那次选择
+    await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeLight }));
+    expect(screen.getByRole('radio', { name: copy.settings.appearance.themeDark })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    // 保存落地后（新对象身份 → 草稿重置为服务端快照）用户此前的选择仍被保留
+    await act(async () => {
+      save.resolve(echoPreferences(preferences({ theme: 'dark' })));
+      await save.promise;
+    });
+    expect(theme.getPreference()).toBe('dark');
+    expect(screen.getByRole('radio', { name: copy.settings.appearance.themeDark })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    // 另一条静默丢失路径已不可达：草稿不可能在响应落地后被重置成「与快照不同」，
+    // 因此不存在「用户以为还有未保存改动、再点保存却 no-op」的状态。
+    expect(screen.getByRole('radio', { name: copy.settings.appearance.fontStandard })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    await user.click(saveButton());
+    expect(updatePreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it('保存进行中的禁用态可见（降透明度 + 不可点光标）', async () => {
+    const save = deferred<UserPreferences>();
+    const getPreferences = vi.fn(async () => preferences());
+    const updatePreferences = vi.fn<SettingsApi['updatePreferences']>(() => save.promise);
+    const api = { getPreferences, updatePreferences } as unknown as SettingsApi;
+    const user = userEvent.setup();
+
+    await renderModule(api, createThemeController());
+    const group = screen.getByRole('radiogroup', { name: copy.settings.appearance.themeAria });
+    // 保存前不降透明度（避免 fieldset 默认 opacity:0 让内容整块消失）
+    expect(group.closest('fieldset')?.className).toContain('opacity-100');
+
+    await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(saveButton());
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+
+    const disabledFieldset = group.closest('fieldset');
+    expect(disabledFieldset).not.toBeNull();
+    expect(disabledFieldset?.className).toContain('opacity-60');
+    expect(disabledFieldset?.className).toContain('disabled:cursor-not-allowed');
+  });
+
   it('保存失败时回滚运行时并显示可读错误', async () => {
     const initial = preferences();
     const { api, updatePreferences } = createPreferencesApi(initial);
@@ -274,7 +355,7 @@ describe('AppearanceModule', () => {
     const getPreferences = vi.fn<SettingsApi['getPreferences']>(() => pending.promise);
     const api = {
       getPreferences,
-      updatePreferences: vi.fn(async (next: UserPreferences) => next),
+      updatePreferences: vi.fn(async (next: UserPreferences) => echoPreferences(next)),
     } as unknown as SettingsApi;
     const theme = createThemeController();
 
@@ -301,7 +382,7 @@ describe('AppearanceModule', () => {
       .mockReturnValueOnce(secondLoad.promise);
     const api = {
       getPreferences,
-      updatePreferences: vi.fn(async (next: UserPreferences) => next),
+      updatePreferences: vi.fn(async (next: UserPreferences) => echoPreferences(next)),
     } as unknown as SettingsApi;
     const theme = createThemeController();
 
@@ -343,8 +424,8 @@ describe('AppearanceModule', () => {
     const save = deferred<UserPreferences>();
     const getPreferences = vi
       .fn<SettingsApi['getPreferences']>()
-      .mockResolvedValueOnce(initial)
-      .mockResolvedValueOnce(nextSession);
+      .mockResolvedValueOnce(echoPreferences(initial))
+      .mockResolvedValueOnce(echoPreferences(nextSession));
     const updatePreferences = vi.fn<SettingsApi['updatePreferences']>(() => save.promise);
     const api = { getPreferences, updatePreferences } as unknown as SettingsApi;
     const theme = createThemeController();
