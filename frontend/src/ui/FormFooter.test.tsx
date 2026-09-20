@@ -61,4 +61,34 @@ describe('FormFooter', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+
+  it('不传 statusSlot 时不渲染前置插槽：页脚结构与既有输出完全一致', () => {
+    // 逐字节守卫：常规设置（Task 8）不传 statusSlot，其页脚输出必须与加插槽前一致。
+    render(<FormFooter onCancel={() => {}} onSave={() => {}} />);
+    const bar = screen.getByTestId('form-footer');
+    expect(bar.className).toBe(
+      '-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-hairline bg-fog-white px-8 py-4',
+    );
+    expect(bar.children).toHaveLength(2);
+    expect(bar.firstElementChild).toBe(screen.getByRole('button', { name: copy.controls.cancel }));
+    expect(bar.lastElementChild).toBe(screen.getByRole('button', { name: copy.controls.save }));
+  });
+
+  it('statusSlot 落在页脚内部、按钮组之前（左侧），页脚自身类名不变', () => {
+    render(<FormFooter onCancel={() => {}} onSave={() => {}} statusSlot={<span>已保存</span>} />);
+    const bar = screen.getByTestId('form-footer');
+    const slot = screen.getByText('已保存');
+    expect(bar).toContainElement(slot);
+    // 前置插槽自带 mr-auto：反馈在左、按钮组被推到右侧
+    expect(slot.parentElement?.className).toContain('mr-auto');
+    const cancel = screen.getByRole('button', { name: copy.controls.cancel });
+    const save = screen.getByRole('button', { name: copy.controls.save });
+    expect(slot.compareDocumentPosition(cancel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(cancel.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 页脚仍是同一组高度/内边距类：插槽不改变页脚高度与按钮顺序
+    expect(bar.className).toBe(
+      '-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-hairline bg-fog-white px-8 py-4',
+    );
+    expect(bar.children).toHaveLength(3);
+  });
 });

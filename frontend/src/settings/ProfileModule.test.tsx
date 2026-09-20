@@ -350,6 +350,34 @@ describe('ProfileModule 草稿-保存语义', () => {
     expect(input).toHaveValue('新名字');
   });
 
+  it('保存成功：「已保存」落在页脚行内（左侧），不额外撑高页脚', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const footer = screen.getByTestId('form-footer');
+    const footerClass = footer.className;
+    const cardChildren = screen.getByTestId('settings-card').childElementCount;
+
+    const input = displayNameInput();
+    await user.clear(input);
+    await user.type(input, '新名字');
+    await user.click(saveButton());
+
+    const feedback = await screen.findByText(copy.settings.profile.saved);
+    // 反馈在页脚内部（与按钮同排、在左侧），而不是在页脚之上另起一行
+    expect(footer).toContainElement(feedback);
+    expect(feedback.closest('[data-testid="form-footer"]')).toBe(footer);
+    expect(
+      feedback.compareDocumentPosition(cancelButton()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // 页脚仍是同一组高度/内边距类，卡片直接子节点数不变 → 反馈出现不改变页脚高度与纵向节奏
+    expect(footer.className).toBe(footerClass);
+    expect(screen.getByTestId('settings-card').childElementCount).toBe(cardChildren);
+  });
+
   it('保存成功：显示「已保存」小字，约 2s 后淡出消失', async () => {
     const user = userEvent.setup();
     const currentUser = testUser();

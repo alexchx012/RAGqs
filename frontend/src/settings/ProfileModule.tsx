@@ -303,21 +303,27 @@ export function ProfileModule() {
             </p>
           )}
 
-          {savedFeedback !== 'idle' && (
-            <p
-              role="status"
-              className={`pt-4 text-right text-caption text-success ${
-                savedFeedback === 'fading'
-                  ? 'opacity-0 transition-opacity duration-[var(--duration-fast)]'
-                  : 'ui-fade-enter-fast'
-              }`}
-            >
-              {copy.settings.profile.saved}
-            </p>
-          )}
-
-          {/* FormFooter 是卡片的直接子节点且为最后一个子节点（负外边距抵消卡片 p-8） */}
-          <FormFooter onCancel={cancelDraft} onSave={commit} saving={savingProfile} />
+          {/* FormFooter 是卡片的直接子节点且为最后一个子节点（负外边距抵消卡片 p-8）。
+              「已保存」小字经 statusSlot 进入页脚那一行（按钮组左侧），不额外占一行、不改变页脚高度。 */}
+          <FormFooter
+            onCancel={cancelDraft}
+            onSave={commit}
+            saving={savingProfile}
+            statusSlot={
+              savedFeedback === 'idle' ? undefined : (
+                <p
+                  role="status"
+                  className={`text-caption text-success ${
+                    savedFeedback === 'fading'
+                      ? 'opacity-0 transition-opacity duration-[var(--duration-fast)]'
+                      : 'ui-fade-enter-fast'
+                  }`}
+                >
+                  {copy.settings.profile.saved}
+                </p>
+              )
+            }
+          />
         </SettingsCard>
       )}
 
