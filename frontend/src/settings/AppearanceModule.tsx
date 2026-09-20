@@ -4,6 +4,9 @@
  * 「取消」丢弃草稿；保存失败由 use-preferences 回滚并置 saveError。
  * 界面语言与消息时间戳不在本期范围（后端无对应偏好字段），本模块不渲染也不留占位行。
  * 三态（loading / loadError / saveError）与 aria-busy 沿用既有语义。
+ * 卡片标题与灰色副标题由 SettingsCard 的 title/description 渲染（设计图原文，见 copy 的 cardTitle/cardDescription）。
+ * 区域只在卡片上命名一次：外层 section 不再挂 aria-label，避免与 SettingsCard 形成嵌套同名 landmark
+ * （Task 8 遗留缺陷；账号设置与安全设置两个模块本就没有外层具名）。
  * 保存进行中禁用两个分段控件（见 DraftFieldSet）：use-preferences 的 saving 契约要求消费方
  * 禁用相关控件，且保存落地会重置草稿，窗口内可改会导致在途编辑被静默丢弃。
  * FormFooter 是 SettingsCard 的直接子节点且必须留在最后（负外边距抵消卡片 p-8）。
@@ -56,11 +59,7 @@ export function AppearanceModule() {
   const { draft, set, reset, commit } = useDraftForm(preferences, save);
 
   return (
-    <section
-      aria-label={copy.settings.appearance.sectionLabel}
-      aria-busy={loading || saving}
-      className="pb-10"
-    >
+    <section aria-busy={loading || saving} className="pb-10">
       {loading && (
         <p role="status" className="text-caption text-slate-strong">
           {copy.settings.appearance.loading}
@@ -83,7 +82,11 @@ export function AppearanceModule() {
       {/* 加载态以 draft === null 判断：已提交快照未到位时 useDraftForm 不产出草稿。
           卡片整体不渲染，避免出现控件绑不上草稿的空壳。 */}
       {!loading && !loadError && draft !== null && (
-        <SettingsCard ariaLabel={copy.settings.appearance.sectionLabel}>
+        <SettingsCard
+          ariaLabel={copy.settings.appearance.sectionLabel}
+          title={copy.settings.appearance.cardTitle}
+          description={copy.settings.appearance.cardDescription}
+        >
           {/* 两行的父容器负责关闭末行分隔线（FormRow 始终渲染 border-b）。
               该类不能加在卡片上：卡片里 FormFooter 是最后一个子节点，卡片上的 :last-child
               命中的是页脚，被去掉的会是页脚的下边框；FormFooter 必须仍是卡片的直接子节点且留在最后。 */}

@@ -1,7 +1,8 @@
 /*
  * 安全设置：整页**一张** SettingsCard（R13/R14 裁决，按新设计图像素实测），共用 SettingsCard + FormRow +
- * FormFooter 基座。设计图是**连续的两栏表单行序列、没有小节标题**，故卡内自上而下就是：
- * 当前密码 / 新密码 / 再次输入新密码 → 活跃会话（右列是「退出全部设备」）→ 各设备会话行 → 隐私（右列是开关）。
+ * FormFooter 基座。设计图是**卡片标题 + 灰色副标题 + 连续的两栏表单行序列、没有小节标题**，故卡内自上而下就是：
+ * 「安全设置 / 管理登录密码与设备会话」标题块 → 当前密码 / 新密码 / 再次输入新密码 → 活跃会话（右列是
+ * 「退出全部设备」）→ 各设备会话行 → 隐私（右列是开关）。
  *
  * 三条语义边界（本模块的核心）：
  * - 密码字段 = 显式提交的命令：输入只改本地 state，页脚「保存」才发请求（校验失败就地提示）。
@@ -332,7 +333,11 @@ export function SecurityModule() {
 
   return (
     <section className="pb-10">
-      <SettingsCard ariaLabel={copy.settings.security.sectionLabel}>
+      <SettingsCard
+        ariaLabel={copy.settings.security.sectionLabel}
+        title={copy.settings.security.cardTitle}
+        description={copy.settings.security.cardDescription}
+      >
         {/* 全部行由这一层容器承载：末行分隔线（隐私行的 border-b）由它的 :last-child 规则关闭。
             条件渲染的元素都不当这个容器的直接子节点，见文件头。 */}
         <div className="[&>*:last-child]:border-b-0">

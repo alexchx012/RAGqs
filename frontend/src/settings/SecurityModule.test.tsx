@@ -718,9 +718,10 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片、连�
     const cards = screen.getAllByTestId('settings-card');
     expect(cards).toHaveLength(1);
     expect(cards[0]).toHaveAccessibleName(copy.settings.security.sectionLabel);
-    // R14：设计图是连续的两栏表单行，卡内不再有 h2 小节标题（标题只存在于卡片 aria-label）
-    expect(screen.queryAllByRole('heading')).toHaveLength(0);
-    expect(cards[0].querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0);
+    // R14 + 3.8：设计图是「卡片标题 + 副标题 + 连续的两栏表单行」，卡内只有卡片标题一个标题元素，
+    // 没有 h2 小节标题（分区由表单行的标签表达）
+    expect(screen.queryAllByRole('heading')).toHaveLength(1);
+    expect(cards[0].querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(1);
 
     const rows = screen.getAllByTestId('form-row');
     expect(rows).toHaveLength(7);
@@ -732,6 +733,39 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片、连�
     expect(labels[4]).toContain(CURRENT_SESSION.device);
     expect(labels[5]).toContain(OTHER_SESSION.device);
     expect(labels[6]).toContain(copy.settings.security.abOptOutLabel);
+  });
+
+  it('卡片在第一个表单行之前渲染模块标题与灰色副标题（措辞逐字取自设计图）', async () => {
+    await renderModule();
+
+    const card = screen.getByTestId('settings-card');
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(card).toContainElement(heading);
+    expect(heading).toHaveTextContent('安全设置');
+    expect(heading.tagName).toBe('H2');
+    expect(heading.className.split(/\s+/)).toContain('text-body-lg');
+
+    const subtitle = screen.getByText('管理登录密码与设备会话');
+    expect(subtitle.tagName).toBe('P');
+    expect(subtitle.className.split(/\s+/)).toContain('text-caption');
+    expect(subtitle.className.split(/\s+/)).toContain('text-slate-strong');
+
+    expect(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      subtitle.compareDocumentPosition(screen.getAllByTestId('form-row')[0]) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('区域只在卡片上命名一次（无嵌套同名 landmark）', async () => {
+    await renderModule();
+
+    const regions = screen.getAllByRole('region');
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toBe(screen.getByTestId('settings-card'));
+    expect(regions[0]).toHaveAccessibleName(copy.settings.security.sectionLabel);
+    // 标题元素自身不挂 aria-label（同一元素上标题 + aria-label 会被重复朗读）
+    expect(screen.getByRole('heading', { level: 2 })).not.toHaveAttribute('aria-label');
   });
 
   it('只有一个承载末行分隔线关闭规则的行容器，且它的最后一个子节点是末行（隐私行）', async () => {
@@ -746,8 +780,10 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片、连�
     expect(container.className.split(/\s+/)).toContain('[&>*:last-child]:border-b-0');
     expect(card).toContainElement(container);
     expect(container.lastElementChild).toBe(rows[rows.length - 1]);
-    // 容器是卡片的第一个子节点；条件渲染的提示都在容器之外，不会顶掉末行的分隔线关闭规则
-    expect(card.children[0]).toBe(container);
+    // 容器是卡片「标题块之后」的第一个子节点（卡片首个子节点是标题块）；
+    // 条件渲染的提示都在容器之外，不会顶掉末行的分隔线关闭规则
+    expect(card.children[0]).toContainElement(screen.getByRole('heading', { level: 2 }));
+    expect(card.children[1]).toBe(container);
     for (const row of rows) {
       // 每一行都在这个容器内（密码三行隔着一层 form，其余行是直接子节点）
       expect(container).toContainElement(row);

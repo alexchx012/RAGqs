@@ -137,25 +137,61 @@ describe('AppearanceModule', () => {
     expect(card.lastElementChild).toBe(footer);
   });
 
-  it('行容器承载末行分隔线关闭规则，卡片直接子节点为「行容器 + 页脚」', async () => {
+  it('行容器承载末行分隔线关闭规则，卡片直接子节点为「标题块 + 行容器 + 页脚」', async () => {
     const { api } = createPreferencesApi(preferences());
     await renderModule(api, createThemeController());
 
     const card = screen.getByTestId('settings-card');
-    // 卡片直接子节点顺序固定：行容器 + FormFooter
-    expect(Array.from(card.children)).toHaveLength(2);
-    expect(card.children[0].tagName).toBe('DIV');
-    expect(card.children[1]).toBe(screen.getByTestId('form-footer'));
+    // 卡片直接子节点顺序固定：标题块 + 行容器 + FormFooter
+    expect(Array.from(card.children)).toHaveLength(3);
+    expect(card.children[0]).toContainElement(screen.getByRole('heading', { level: 2 }));
+    expect(card.children[1].tagName).toBe('DIV');
+    expect(card.children[2]).toBe(screen.getByTestId('form-footer'));
 
     // 末行分隔线必须由「直接包裹这组行的父容器」关闭，而不是卡片本身：
     // 卡片里 FormFooter 是最后一个子节点，加在卡片上的 :last-child 命中的会是页脚，
     // 去掉的将是页脚的下边框。FormRow 始终渲染 border-b，故这里同时确认两者。
     const rows = screen.getAllByTestId('form-row');
-    const rowContainer = card.children[0];
+    const rowContainer = card.children[1];
     expect(rowContainer.className).toContain('[&>*:last-child]:border-b-0');
     expect(Array.from(rowContainer.children)).toEqual(rows);
     expect(rows[rows.length - 1].className).toContain('border-b');
     expect(card.className).not.toContain('[&>*:last-child]:border-b-0');
+  });
+
+  it('卡片在第一个表单行之前渲染模块标题与灰色副标题（措辞逐字取自设计图）', async () => {
+    const { api } = createPreferencesApi(preferences());
+    await renderModule(api, createThemeController());
+
+    const card = screen.getByTestId('settings-card');
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(heading).toHaveTextContent('常规设置');
+    expect(heading.tagName).toBe('H2');
+    expect(heading.className.split(/\s+/)).toContain('text-body-lg');
+
+    const subtitle = screen.getByText('管理界面外观与基础显示行为');
+    expect(subtitle.tagName).toBe('P');
+    expect(subtitle.className.split(/\s+/)).toContain('text-caption');
+    expect(subtitle.className.split(/\s+/)).toContain('text-slate-strong');
+
+    // 设计结构是「卡片标题 + 副标题 + 连续的两栏表单行」：卡内恰有 1 个标题元素，没有小节标题
+    expect(card.querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(1);
+    const firstRow = screen.getAllByTestId('form-row')[0];
+    expect(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(subtitle.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('区域只在卡片上命名一次（外层 section 不具名，无嵌套同名 landmark）', async () => {
+    const { api } = createPreferencesApi(preferences());
+    await renderModule(api, createThemeController());
+
+    // 此前外层 section 与卡片同名，读屏会遇到嵌套同名 landmark（Task 8 遗留缺陷）
+    const regions = screen.getAllByRole('region');
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toBe(screen.getByTestId('settings-card'));
+    expect(regions[0]).toHaveAccessibleName(copy.settings.appearance.sectionLabel);
+    // 标题元素自身不挂 aria-label（同一元素上标题 + aria-label 会被重复朗读）
+    expect(screen.getByRole('heading', { level: 2 })).not.toHaveAttribute('aria-label');
   });
 
   it('只渲染主题与对话字号两行（界面语言/消息时间戳不在本期范围）', async () => {

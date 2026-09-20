@@ -20,6 +20,7 @@
  * 且留在最后，负外边距依赖该结构）。
  *
  * 卡片只渲染一次具名区域：外层 section 不再挂 aria-label，避免与 SettingsCard 形成嵌套同名 landmark。
+ * 卡片标题与灰色副标题由 SettingsCard 的 title/description 渲染（设计图原文，见 copy 的 cardTitle/cardDescription）。
  * A39 保留：显示名有未保存更改时，Esc / 页头关闭钮 / 刷新三个关闭入口先弹「放弃未保存的更改」确认。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
@@ -223,7 +224,11 @@ export function ProfileModule() {
     <section className="pb-10">
       {/* 加载态以 draft === null 判断（会话用户未就位时 useDraftForm 不产出草稿），卡片整体不渲染。 */}
       {draft !== null && (
-        <SettingsCard ariaLabel={copy.settings.profile.sectionLabel}>
+        <SettingsCard
+          ariaLabel={copy.settings.profile.sectionLabel}
+          title={copy.settings.profile.cardTitle}
+          description={copy.settings.profile.cardDescription}
+        >
           {/* 五行的父容器负责关闭末行分隔线（FormRow 始终渲染 border-b）；
               FormFooter 必须仍是卡片的直接子节点且留在最后。 */}
           <div className="[&>*:last-child]:border-b-0">

@@ -222,6 +222,48 @@ describe('ProfileModule 表单结构（设置基座）', () => {
     }
   });
 
+  it('卡片在第一个表单行之前渲染模块标题与灰色副标题（措辞逐字取自设计图）', async () => {
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findByTestId('settings-card');
+
+    const card = screen.getByTestId('settings-card');
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(heading).toHaveTextContent('账号设置');
+    expect(heading.tagName).toBe('H2');
+    expect(heading.className.split(/\s+/)).toContain('text-body-lg');
+
+    const subtitle = screen.getByText('管理你的个人资料与展示信息');
+    expect(subtitle.tagName).toBe('P');
+    expect(subtitle.className.split(/\s+/)).toContain('text-caption');
+    expect(subtitle.className.split(/\s+/)).toContain('text-slate-strong');
+
+    // 设计结构是「卡片标题 + 副标题 + 连续的两栏表单行」：卡内恰有 1 个标题元素，没有小节标题
+    expect(card.querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(1);
+    const firstRow = formRows()[0];
+    expect(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(subtitle.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('区域只在卡片上命名一次（无嵌套同名 landmark）', async () => {
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findByTestId('settings-card');
+
+    const regions = screen.getAllByRole('region');
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toBe(screen.getByTestId('settings-card'));
+    expect(regions[0]).toHaveAccessibleName(copy.settings.profile.sectionLabel);
+    // 标题元素自身不挂 aria-label（同一元素上标题 + aria-label 会被重复朗读）
+    expect(screen.getByRole('heading', { level: 2 })).not.toHaveAttribute('aria-label');
+  });
+
   it('显示名行的标签关联输入框；只读行的标签不关联任何控件', async () => {
     const currentUser = testUser();
     const { api } = createProfileApi(currentUser);

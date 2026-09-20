@@ -97,6 +97,8 @@ export const zhCN = {
   settings: {
     profile: {
       sectionLabel: '个人资料', // 措辞后定
+      cardTitle: '账号设置', // 设计图原文：卡片标题（20px 字级）
+      cardDescription: '管理你的个人资料与展示信息', // 设计图原文：卡片灰色副标题（15px 字级）
       avatarLabel: '头像', // 措辞后定：头像行标签
       avatarAlt: '个人头像', // 措辞后定
       avatarInputLabel: '更换头像', // 措辞后定：头像行即时动作按钮
@@ -119,6 +121,8 @@ export const zhCN = {
     },
     security: {
       sectionLabel: '安全', // 措辞后定
+      cardTitle: '安全设置', // 设计图原文：卡片标题（20px 字级）
+      cardDescription: '管理登录密码与设备会话', // 设计图原文：卡片灰色副标题（15px 字级）
       passwordTitle: '修改密码', // 措辞后定
       oldPasswordLabel: '当前密码', // 措辞后定
       oldPasswordHint: '输入正在使用的密码以验证身份', // 措辞后定：左列说明（设计图）
@@ -158,6 +162,8 @@ export const zhCN = {
     },
     appearance: {
       sectionLabel: '外观', // 措辞后定
+      cardTitle: '常规设置', // 设计图原文：卡片标题（20px 字级）
+      cardDescription: '管理界面外观与基础显示行为', // 设计图原文：卡片灰色副标题（15px 字级）
       themeTitle: '主题', // 措辞后定
       themeDescription: '选择界面主题，跟随系统会根据设备设置自动切换', // 措辞后定
       themeAria: '主题', // 措辞后定
