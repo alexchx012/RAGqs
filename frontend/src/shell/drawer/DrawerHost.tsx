@@ -558,11 +558,13 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       <ul className="flex flex-col gap-0.5">
         {modules.map((module) => (
           <li key={module.id}>
+            {/* 导航项自身不带左缩进：24px 基线由左栏容器（nav 的 pl-6）承载（裁决 R10），
+                否则会与容器叠加成 48px 双重内缩。 */}
             <button
               type="button"
               data-drill-row={narrow ? module.id : undefined}
               onClick={() => selectModule(segment, module.id)}
-              className={`ml-6 flex h-10 w-[200px] items-center justify-between gap-2 rounded-[var(--radius-buttons)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray ${
+              className={`flex h-10 w-[200px] items-center justify-between gap-2 rounded-[var(--radius-buttons)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray ${
                 selected === module.id ? 'bg-mist-gray font-w480' : 'font-normal'
               }`}
             >
@@ -574,7 +576,9 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       </ul>
     );
     return (
-      <div data-nav-variant="modules" className={phaseClass}>
+      // 窄屏（<768px）单栏化时模块列表改在内容区整页渲染（左栏不渲染），缩进基线需由本容器
+      // 自己补 24px；桌面端同一缩进由左栏 nav 的 pl-6 承载，此处不得重复叠加。
+      <div data-nav-variant="modules" className={`${narrow ? 'pl-6' : ''} ${phaseClass}`}>
         <p className="px-3 pb-1 text-caption text-slate-strong">{drawerCopy.personalSegmentLabel}</p>
         {list(personalModules, 'personal')}
         {adminModules.length > 0 && (
@@ -844,7 +848,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         <div className="mt-10 flex min-h-0 flex-1 px-5 md:px-0">
           {!narrowListView && (
             <nav
-              className={`${narrow ? 'hidden' : ''} w-60 shrink-0 overflow-y-auto bg-paper-white`}
+              className={`${narrow ? 'hidden' : ''} w-60 shrink-0 overflow-y-auto bg-paper-white pl-6 pr-4`}
               aria-label={drawerCopy.navAria}
             >
               {navArea}

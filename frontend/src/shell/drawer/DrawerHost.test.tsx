@@ -193,7 +193,45 @@ describe('抽屉作用域挂载与左栏新显示名（drawer-visual-system）',
     expect(active.className).toContain('w-[200px]');
     expect(active.className).toContain('h-10');
     expect(active.className).toContain('rounded-[var(--radius-buttons)]');
-    expect(active.className).toContain('ml-6');
+    // 24px 内缩由左栏容器 pl-6 承载（裁决 R10），胶囊不再自带 ml-6；
+    // 容器基线与分组标签对齐见「左栏 24px 内缩由容器承载」用例。
+  });
+
+  it('左栏 24px 内缩由容器承载：分组标签与胶囊文字共用同一基线，胶囊不自带 ml-6', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    // 24px 基线移到左栏容器：左 24 + 胶囊 200 + 右 16 = 240（与设计图胶囊 24..224 一致）
+    expect(nav.className).toContain('pl-6');
+    expect(nav.className).toContain('pr-4');
+    // 胶囊不再自带缩进，否则 24 + 24 = 48 双重内缩
+    for (const item of Array.from(nav.querySelectorAll('button'))) {
+      expect(item.className).not.toContain('ml-6');
+    }
+    // 分组标签是左栏容器的子节点，只保留自身 px-3 → 文字落在 24 + 12 = 36（设计图实测 36.5）
+    const groupLabel = within(nav).getByText(drawerCopy.personalSegmentLabel);
+    expect(nav.contains(groupLabel)).toBe(true);
+    expect(groupLabel.className).toContain('px-3');
+    expect(groupLabel.className).not.toContain('ml-');
+    // 胶囊文字内缩仍是 12px（胶囊盒 24..224 → 文字 36，与设计图实测 37 对齐）
+    const firstItem = nav.querySelector('button') as HTMLElement;
+    expect(firstItem.className).toContain('px-3');
+    expect(firstItem.className).toContain('w-[200px]');
+  });
+
+  it('下钻层左栏的返回按钮与层标题不自带缩进：随左栏容器落到同一 24px 基线', async () => {
+    await renderApp('/settings/knowledge/uploads');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    expect(nav.className).toContain('pl-6');
+    const back = within(nav).getByRole('button', {
+      name: drawerCopy.backAria(modules.knowledge),
+    });
+    expect(back.className).not.toContain('ml-');
+    expect(back.className).not.toContain('pl-');
+    const title = nav.querySelector('[data-drill-title-slot]') as HTMLElement;
+    expect(title.className).not.toContain('ml-');
+    expect(title.className).not.toContain('pl-');
   });
 
   it('抽屉内打开的 Radix 浮层根节点自带作用域属性（浮层不走 DOM 继承）', async () => {
@@ -243,11 +281,8 @@ describe('抽屉作用域挂载与左栏新显示名（drawer-visual-system）',
     expect(row.className).not.toContain('md:px-10');
     // 窄屏（<768px）单栏化仍保留必需留白，桌面断点归零
     expect(row.className).toContain('px-5 md:px-0');
-    // 左栏仍固定 240px；胶囊仍 200×40 + 24px 左缩进
+    // 左栏仍固定 240px（胶囊网格与 24px 内缩基线由「左栏 24px 内缩由容器承载」用例把关）
     expect(nav.className).toContain('w-60');
-    const firstItem = nav.querySelector('button') as HTMLElement;
-    expect(firstItem.className).toContain('ml-6');
-    expect(firstItem.className).toContain('w-[200px]');
     // 页头保留自己的内缩（与左栏胶囊的 24px 不是同一套值，不得被本次对齐带走）
     const header = dialog.querySelector('header') as HTMLElement;
     expect(header.className).toContain('px-5');
