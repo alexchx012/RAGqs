@@ -17,6 +17,7 @@ export {
   type SegmentedControlProps,
   type SegmentedOption,
 } from './SegmentedControl';
+export { SettingsCard, type SettingsCardProps } from './SettingsCard';
 export { SkeletonCard, SkeletonRow, SkeletonText } from './Skeleton';
 export {
   EmptyState,
