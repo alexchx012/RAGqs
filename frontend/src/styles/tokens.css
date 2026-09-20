@@ -73,6 +73,8 @@
   /* 分段控件几何：全局 32px/4px；抽屉作用域覆盖为 40px/2px */
   --segmented-height: 32px;
   --segmented-padding: 4px;
+  /* 分段控件标签字号：全局 14px；抽屉作用域覆盖为 15px（设计图实测墨迹高 12px） */
+  --segmented-font-size: 14px;
 }
 
 /*
@@ -144,6 +146,8 @@
   /* 分段控件几何全局默认值：抽屉作用域在下方覆盖为 40px/2px */
   --segmented-height: 32px;
   --segmented-padding: 4px;
+  /* 分段控件标签字号全局默认值：抽屉作用域在下方覆盖为 15px */
+  --segmented-font-size: 14px;
 }
 
 /* 暗色主题：token 名不变，值按 共用基座 §2.1 对照表切换。 */
@@ -180,6 +184,7 @@
   --radius-cards: 16px;
   --segmented-height: 40px;
   --segmented-padding: 2px;
+  --segmented-font-size: 15px;
   --surface-drawer-canvas: #f7f7f8;
 }
 

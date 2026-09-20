@@ -34,9 +34,9 @@ export const zhCN = {
       navAria: '模块导航', // 措辞后定：抽屉左栏导航区 aria-label（与 dialog 标题区分）
       topPlaceholderBody: '从左侧选择要查看的模块。', // 措辞后定
       modules: {
-        profile: '个人资料', // 措辞后定
-        security: '安全', // 措辞后定
-        appearance: '外观', // 措辞后定
+        general: '常规设置', // 措辞后定（原「外观」，settings-ui-ux-refresh 改名）
+        account: '账号设置', // 措辞后定（原「个人资料」，settings-ui-ux-refresh 改名）
+        security: '安全设置', // 措辞后定（原「安全」，settings-ui-ux-refresh 改名）
         knowledge: '知识库', // 措辞后定
         dashboard: '总览', // 措辞后定
         approvals: '审批中心', // 措辞后定

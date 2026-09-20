@@ -175,10 +175,12 @@ describe('左栏选中态一致性：个人段（A3）', () => {
   it('四模块与知识库下钻层连续切换一致', async () => {
     const probe = await renderApp('/settings');
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    // 左栏顺序即新显示名顺序（常规设置 → 账号设置 → 安全设置 → 知识库），
+    // 模块 id 与路由路径不变：常规设置 = /settings/appearance、账号设置 = /settings/profile。
     const sequence = [
-      { id: 'profile', title: modules.profile },
+      { id: 'appearance', title: modules.general },
+      { id: 'profile', title: modules.account },
       { id: 'security', title: modules.security },
-      { id: 'appearance', title: modules.appearance },
       { id: 'knowledge', title: modules.knowledge },
     ];
     for (const step of sequence) {

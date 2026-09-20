@@ -4,12 +4,15 @@
  * 标题 20px 500 + 说明行 15px slate-strong；底部 ghost「取消」+ filled「确认」（danger 变体红底白字）。
  * 进入 opacity 0→1 + scale 0.97→1 --duration-base --ease-out，关闭反向（keyframes 在 ui.css）；
  * Esc / 遮罩 / 取消均关闭；焦点圈定与关闭后焦点返回由 Radix 自带；打开期间 useEscShield 挂空盾。
+ * 抽屉作用域：内容 portal 到 document.body，读不到抽屉子树的 [data-drawer-scope] 变量，
+ * 故在抽屉内使用时给内容根节点自带该属性（见 drawer-scope-context）。
  */
 
 import * as Dialog from '@radix-ui/react-dialog';
 import { useRef, type ReactNode } from 'react';
 import { copy } from '../copy';
 import { useEscShield } from '../lib/esc-stack-provider';
+import { useDrawerScope } from '../shell/drawer/drawer-scope-context';
 import { Pill } from './Pill';
 
 export interface ConfirmDialogProps {
@@ -46,6 +49,7 @@ export function ConfirmDialog({
   children,
 }: ConfirmDialogProps) {
   useEscShield(open);
+  const scoped = useDrawerScope();
   // 受控用法无 Dialog.Trigger：渲染期（Radix 挂载并自动聚焦之前）记下触发焦点，
   // 关闭时在 onCloseAutoFocus 中恢复（preventDefault 跳过 Radix 对 Trigger 的默认聚焦）。
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -57,6 +61,7 @@ export function ConfirmDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="ui-dialog-overlay fixed inset-0 bg-ink-black/24" />
         <Dialog.Content
+          data-drawer-scope={scoped ? '' : undefined}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             restoreFocusRef.current?.focus();

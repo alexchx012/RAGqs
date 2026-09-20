@@ -104,4 +104,12 @@ describe('SegmentedControl', () => {
     expect((thumb as HTMLElement).className).toContain('bottom-[var(--segmented-padding)]');
     expect((thumb as HTMLElement).className).toContain('left-[var(--segmented-padding)]');
   });
+
+  it('标签字号经 --segmented-font-size 变量驱动（全局 14px / 抽屉作用域 15px），无硬编码 text-[14px]', () => {
+    render(<SegmentedControl options={OPTIONS} value="fast" onChange={() => {}} ariaLabel="字号" />);
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio.className).toContain('text-[length:var(--segmented-font-size)]');
+      expect(radio.className).not.toContain('text-[14px]');
+    }
+  });
 });

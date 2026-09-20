@@ -6,12 +6,15 @@
  * 浮层宽 160px paper-white + radius-elevatedcards +
  * shadow-subtle；菜单项高 36px 15px，hover/highlighted 底 mist-gray；danger 项危险红文字。
  * 进出动效与浮层层级 keyframes 在 ui.css；Esc 与点外部关闭由 Radix 处理，打开期间 useEscShield 挂空盾。
+ * 抽屉作用域：内容 portal 到 document.body，读不到抽屉子树的 [data-drawer-scope] 变量，
+ * 故在抽屉内使用时给内容根节点自带该属性（见 drawer-scope-context）。
  */
 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Ellipsis } from 'lucide-react';
 import { useState } from 'react';
 import { useEscShield } from '../lib/esc-stack-provider';
+import { useDrawerScope } from '../shell/drawer/drawer-scope-context';
 
 export interface MeatballMenuItem {
   key: string;
@@ -31,6 +34,7 @@ export interface MeatballMenuProps {
 export function MeatballMenu({ items, ariaLabel, alwaysVisible = false }: MeatballMenuProps) {
   const [open, setOpen] = useState(false);
   useEscShield(open);
+  const scoped = useDrawerScope();
   return (
     <DropdownMenu.Root open={open} onOpenChange={setOpen} modal={false}>
       <DropdownMenu.Trigger asChild>
@@ -52,6 +56,7 @@ export function MeatballMenu({ items, ariaLabel, alwaysVisible = false }: Meatba
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
+          data-drawer-scope={scoped ? '' : undefined}
           sideOffset={4}
           align="end"
           className={

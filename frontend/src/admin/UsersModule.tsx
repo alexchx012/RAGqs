@@ -41,6 +41,7 @@ import { createIdempotencyKey } from '../chat/idempotency';
 import { copy } from '../copy';
 import { EyeIcon, EyeOffIcon } from '../pages/login/LoginPage';
 import { formatDrawerLocation } from '../router/drawer-params';
+import { useDrawerScope } from '../shell/drawer/drawer-scope-context';
 import {
   Chip,
   EmptyState,
@@ -171,6 +172,8 @@ interface FilterChipProps {
 
 function FilterChip({ ariaLabel, allLabel, options, value, onChange }: FilterChipProps) {
   const [open, setOpen] = useState(false);
+  // 抽屉作用域（drawer-visual-system）：筛选浮层 portal 到 body，须给内容根节点自带作用域属性
+  const scoped = useDrawerScope();
   const currentLabel = options.find((option) => option.value === value)?.label ?? allLabel;
   const choose = (next: string | null) => {
     onChange(next);
@@ -189,6 +192,7 @@ function FilterChip({ ariaLabel, allLabel, options, value, onChange }: FilterChi
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
+          data-drawer-scope={scoped ? '' : undefined}
           side="bottom"
           sideOffset={8}
           align="start"

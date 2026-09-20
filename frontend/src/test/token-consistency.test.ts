@@ -237,6 +237,8 @@ describe('抽屉作用域（settings-ui-ux-refresh）', () => {
     expect(scopeBlock).toContain('--radius-cards: 16px;');
     expect(scopeBlock).toContain('--segmented-height: 40px;');
     expect(scopeBlock).toContain('--segmented-padding: 2px;');
+    // 分段控件标签字号：设计图实测 15px（全局 14px 见下方「全局默认值保持不变」用例）
+    expect(scopeBlock).toContain('--segmented-font-size: 15px;');
 
     expect(tokensCss).toContain("[data-theme='dark'] [data-drawer-scope]");
     expect(scopeBlock).toContain(`--surface-drawer-canvas: ${DRAWER_CANVAS[1]};`);
@@ -251,5 +253,6 @@ describe('抽屉作用域（settings-ui-ux-refresh）', () => {
     expect(lightScope).toContain('--radius-cards: 24px;');
     expect(lightScope).toContain('--segmented-height: 32px;');
     expect(lightScope).toContain('--segmented-padding: 4px;');
+    expect(lightScope).toContain('--segmented-font-size: 14px;');
   });
 });

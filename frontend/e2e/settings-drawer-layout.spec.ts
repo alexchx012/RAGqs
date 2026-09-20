@@ -22,9 +22,9 @@ test.use({ viewport: { width: 1440, height: 900 } });
 /** 切换顺序刻意避开「点击当前已选模块」的空操作，保证每次都是真实过渡。 */
 const SWITCH_ORDER = [
   copy.shell.drawer.modules.security,
-  copy.shell.drawer.modules.appearance,
+  copy.shell.drawer.modules.general,
   copy.shell.drawer.modules.knowledge,
-  copy.shell.drawer.modules.profile,
+  copy.shell.drawer.modules.account,
 ];
 
 const VIEWPORT_WIDTH = 1440;
