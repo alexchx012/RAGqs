@@ -88,6 +88,7 @@ export const zhCN = {
   },
   controls: {
     cancel: '取消', // 措辞后定
+    save: '保存', // 措辞后定
     confirm: '确认', // 措辞后定
     paginatorPrev: '上一页', // 措辞后定
     paginatorNext: '下一页', // 措辞后定
