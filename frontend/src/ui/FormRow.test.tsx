@@ -1,6 +1,7 @@
 /*
  * FormRow 测试（drawer-visual-system）：两栏行——左列固定 260px（标签 + 灰色说明）、
  * 列间距 24px、右列弹性；行上下各 20px；行间 1px 分隔线；只读行不渲染输入控件。
+ * 左列断点断言按空白切分精确比对：子串断言会被 md: 前缀满足。
  */
 
 import { render, screen } from '@testing-library/react';
@@ -18,7 +19,11 @@ describe('FormRow', () => {
     expect(row.className).toContain('py-5');
     expect(row.className).toContain('gap-6');
     const labelCol = screen.getByTestId('form-row-label');
-    expect(labelCol.className).toContain('w-[260px]');
+    // 精确断言：260px 只在 md 断点生效。用 toContain('w-[260px]') 会被 md:w-[260px]
+    // 的子串满足，回归成裸 w-[260px]（窄屏也固定 260px）时逃过断言。
+    const labelClasses = labelCol.className.split(/\s+/);
+    expect(labelClasses).toContain('md:w-[260px]');
+    expect(labelClasses).not.toContain('w-[260px]');
     expect(labelCol.className).toContain('shrink-0');
   });
 
@@ -32,10 +37,21 @@ describe('FormRow', () => {
     expect(screen.getByText('说明文字')).toBeInTheDocument();
   });
 
-  it('只读行渲染纯文本值，不渲染任何输入控件', () => {
-    render(<FormRow label="部门" readOnlyValue="Finance" />);
+  it('只读行与可编辑行并存时，只有可编辑行渲染输入控件', () => {
+    // 只读行单独渲染时「查不到输入框」恒成立（没有 children 本就不会有控件），
+    // 必须与可编辑行并存才能证明只读分支真的不渲染 children。
+    render(
+      <>
+        <FormRow label="显示名">
+          <input aria-label="显示名输入" />
+        </FormRow>
+        <FormRow label="部门" readOnlyValue="Finance" />
+      </>,
+    );
+    expect(screen.getByLabelText('显示名输入')).toBeInTheDocument();
     expect(screen.getByText('Finance')).toBeInTheDocument();
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByLabelText('部门输入')).toBeNull();
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
   });
 
   it('组件始终渲染行间分隔线，末行由父容器关闭', () => {

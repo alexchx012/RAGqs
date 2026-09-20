@@ -75,6 +75,16 @@ async function renderAppearance(api: SettingsApi, theme: ThemeController) {
   return { store, result };
 }
 
+/** 卡片渲染完成（保存键可用）即视为草稿就绪。 */
+async function renderModule(api: SettingsApi, theme: ThemeController) {
+  const rendered = await renderAppearance(api, theme);
+  await screen.findByRole('radiogroup', { name: copy.settings.appearance.themeAria });
+  return rendered;
+}
+
+const saveButton = () => screen.getByRole('button', { name: copy.controls.save });
+const cancelButton = () => screen.getByRole('button', { name: copy.controls.cancel });
+
 afterEach(() => {
   for (const controller of controllers) {
     controller.dispose();
@@ -105,54 +115,137 @@ describe('AppearanceModule', () => {
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
 
-  it('persists every selection as a complete snapshot and applies it immediately', async () => {
-    const initial = preferences();
-    const { api, updatePreferences } = createPreferencesApi(initial);
+  it('places the two rows inside one settings card, footer as its direct last child', async () => {
+    const { api } = createPreferencesApi(preferences());
+    await renderModule(api, createThemeController());
+
+    expect(screen.getAllByTestId('settings-card')).toHaveLength(1);
+    expect(screen.getAllByTestId('form-row')).toHaveLength(2);
+    const card = screen.getByTestId('settings-card');
+    const footer = screen.getByTestId('form-footer');
+    // FormFooter 的负外边距抵消卡片 p-8，要求它是卡片的直接子节点且为最后一个子节点
+    expect(card.lastElementChild).toBe(footer);
+  });
+
+  it('只渲染主题与对话字号两行（界面语言/消息时间戳不在本期范围）', async () => {
+    const { api } = createPreferencesApi(preferences());
+    await renderModule(api, createThemeController());
+
+    const labels = screen.getAllByTestId('form-row-label').map((cell) => cell.textContent ?? '');
+    expect(labels).toHaveLength(2);
+    expect(labels[0]).toContain(copy.settings.appearance.themeTitle);
+    expect(labels[1]).toContain(copy.settings.appearance.fontSizeTitle);
+  });
+
+  it('分段控件改动只改草稿，点保存才写偏好', async () => {
+    const { api, updatePreferences } = createPreferencesApi(preferences());
     const theme = createThemeController();
     const user = userEvent.setup();
 
-    await renderAppearance(api, theme);
-    await screen.findByRole('radio', { name: copy.settings.appearance.themeSystem });
-
+    await renderModule(api, theme);
     await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+
+    // 草稿即时反映选择，但偏好未被写入
+    expect(screen.getByRole('radio', { name: copy.settings.appearance.themeDark })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(updatePreferences).not.toHaveBeenCalled();
+    expect(theme.getPreference()).toBe('system');
+
+    await user.click(saveButton());
+
     await waitFor(() =>
-      expect(updatePreferences).toHaveBeenLastCalledWith({
+      expect(updatePreferences).toHaveBeenCalledWith({
         theme: 'dark',
         chat_font_size: 'standard',
         ab_opt_out: false,
       }),
     );
     expect(theme.getPreference()).toBe('dark');
+  });
 
+  it('保存提交完整快照，含未在本模块渲染的字段', async () => {
+    const { api, updatePreferences } = createPreferencesApi(preferences({ ab_opt_out: true }));
+    const user = userEvent.setup();
+
+    await renderModule(api, createThemeController());
     await user.click(screen.getByRole('radio', { name: copy.settings.appearance.fontLarge }));
-    await waitFor(() =>
-      expect(updatePreferences).toHaveBeenLastCalledWith({
-        theme: 'dark',
-        chat_font_size: 'large',
-        ab_opt_out: false,
-      }),
-    );
+    await user.click(saveButton());
+
+    await waitFor(() => expect(updatePreferences).toHaveBeenCalledTimes(1));
+    expect(updatePreferences).toHaveBeenCalledWith({
+      theme: 'system',
+      chat_font_size: 'large',
+      ab_opt_out: true,
+    });
     expect(document.documentElement.dataset.chatFontSize).toBe('large');
   });
 
-  it('rolls back the optimistic selection and shows an accessible error when saving fails', async () => {
+  it('取消丢弃草稿，不写偏好', async () => {
+    const { api, updatePreferences } = createPreferencesApi(preferences());
+    const theme = createThemeController();
+    const user = userEvent.setup();
+
+    await renderModule(api, theme);
+    await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(cancelButton());
+
+    expect(updatePreferences).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('radio', { name: copy.settings.appearance.themeSystem }),
+    ).toHaveAttribute('aria-checked', 'true');
+    expect(theme.getPreference()).toBe('system');
+  });
+
+  it('草稿与已提交快照一致时保存不产生请求', async () => {
+    const { api, updatePreferences } = createPreferencesApi(preferences());
+    const user = userEvent.setup();
+
+    await renderModule(api, createThemeController());
+    await user.click(saveButton());
+
+    expect(updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('保存进行中禁用两个操作键', async () => {
+    const save = deferred<UserPreferences>();
+    const getPreferences = vi.fn(async () => preferences());
+    const updatePreferences = vi.fn<SettingsApi['updatePreferences']>(() => save.promise);
+    const api = { getPreferences, updatePreferences } as unknown as SettingsApi;
+    const user = userEvent.setup();
+
+    await renderModule(api, createThemeController());
+    await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(saveButton());
+
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+    expect(cancelButton()).toBeDisabled();
+
+    await act(async () => {
+      save.resolve(preferences({ theme: 'dark' }));
+      await save.promise;
+    });
+    expect(saveButton()).toBeEnabled();
+  });
+
+  it('保存失败时回滚运行时并显示可读错误', async () => {
     const initial = preferences();
     const { api, updatePreferences } = createPreferencesApi(initial);
     updatePreferences.mockRejectedValueOnce(new Error('offline'));
     const theme = createThemeController();
     const user = userEvent.setup();
 
-    await renderAppearance(api, theme);
-    await screen.findByRole('radio', { name: copy.settings.appearance.themeSystem });
+    await renderModule(api, theme);
     await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(saveButton());
 
     expect(await screen.findByRole('alert')).toHaveTextContent(copy.settings.appearance.saveError);
     expect(theme.getPreference()).toBe('system');
     expect(document.documentElement.dataset.chatFontSize).toBe('standard');
-    expect(screen.getByRole('radio', { name: copy.settings.appearance.themeSystem })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    expect(
+      screen.getByRole('radio', { name: copy.settings.appearance.themeSystem }),
+    ).toHaveAttribute('aria-checked', 'true');
   });
 
   it('shows a load error and retries without inventing a saved preference', async () => {
@@ -174,6 +267,29 @@ describe('AppearanceModule', () => {
     );
     expect(theme.getPreference()).toBe('light');
     expect(getPreferences).toHaveBeenCalledTimes(2);
+  });
+
+  it('加载完成前不渲染草稿表单', async () => {
+    const pending = deferred<UserPreferences>();
+    const getPreferences = vi.fn<SettingsApi['getPreferences']>(() => pending.promise);
+    const api = {
+      getPreferences,
+      updatePreferences: vi.fn(async (next: UserPreferences) => next),
+    } as unknown as SettingsApi;
+    const theme = createThemeController();
+
+    await renderAppearance(api, theme);
+    await waitFor(() => expect(getPreferences).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByRole('status')).toHaveTextContent(copy.settings.appearance.loading);
+    expect(screen.queryByTestId('settings-card')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.controls.save })).not.toBeInTheDocument();
+
+    await act(async () => {
+      pending.resolve(preferences());
+      await pending.promise;
+    });
+    expect(await screen.findByTestId('settings-card')).toBeInTheDocument();
   });
 
   it('keeps the new session snapshot when an older initial GET resolves afterward', async () => {
@@ -234,9 +350,9 @@ describe('AppearanceModule', () => {
     const theme = createThemeController();
     const user = userEvent.setup();
 
-    const { store } = await renderAppearance(api, theme);
-    await screen.findByRole('radio', { name: copy.settings.appearance.themeSystem });
+    const { store } = await renderModule(api, theme);
     await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(saveButton());
     await waitFor(() => expect(updatePreferences).toHaveBeenCalledTimes(1));
     expect(theme.getPreference()).toBe('dark');
 
@@ -268,9 +384,9 @@ describe('AppearanceModule', () => {
     const theme = createThemeController();
     const user = userEvent.setup();
 
-    const { result } = await renderAppearance(api, theme);
-    await screen.findByRole('radio', { name: copy.settings.appearance.themeSystem });
+    const { result } = await renderModule(api, theme);
     await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(saveButton());
     await waitFor(() => expect(updatePreferences).toHaveBeenCalledTimes(1));
     expect(theme.getPreference()).toBe('dark');
 
@@ -295,10 +411,11 @@ describe('AppearanceModule', () => {
     const theme = createThemeController();
     const user = userEvent.setup();
 
-    const { result } = await renderAppearance(api, theme);
-    await screen.findByRole('radio', { name: copy.settings.appearance.themeSystem });
+    const { result } = await renderModule(api, theme);
     await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
+    await user.click(saveButton());
     await waitFor(() => expect(updatePreferences).toHaveBeenCalledTimes(1));
+    expect(theme.getPreference()).toBe('dark');
     result.unmount();
 
     await act(async () => {

@@ -31,4 +31,9 @@ describe('SettingsCard', () => {
     render(<SettingsCard>卡片内容</SettingsCard>);
     expect(screen.getByText('卡片内容')).toBeInTheDocument();
   });
+
+  it('裁切越界子元素（满宽页脚为方角，不裁会画到卡片圆角之外）', () => {
+    render(<SettingsCard>内容</SettingsCard>);
+    expect(screen.getByTestId('settings-card').className).toContain('overflow-hidden');
+  });
 });
