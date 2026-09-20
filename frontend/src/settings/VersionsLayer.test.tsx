@@ -104,6 +104,29 @@ async function renderLayer(api: SettingsApi, path: readonly string[]) {
   return result;
 }
 
+describe('VersionsLayer 设置基座（抽屉视觉基座：容器）', () => {
+  it('层内容位于一张设置卡片内：版本列表在卡内，卡内无小节标题', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsFor(documentId));
+    const api = {
+      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
+      listVersions,
+    } as unknown as SettingsApi;
+
+    await renderLayer(api, ['knowledge', 'versions', 'docA']);
+
+    expect(await screen.findByText(copy.settings.knowledge.versions.active)).toBeInTheDocument();
+    const cards = screen.getAllByTestId('settings-card');
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+    expect(card).toContainElement(screen.getByText(copy.settings.knowledge.versions.versionNumber(2)));
+    expect(card).toContainElement(screen.getByText(copy.settings.knowledge.versions.versionNumber(1)));
+    // R14：卡内不出现 h1–h6 小节标题
+    expect(card.querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0);
+    // 版本列表保持自身布局：不套 FormRow
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+  });
+});
+
 describe('VersionsLayer documentId 代际（review Medium 2）', () => {
   it('410 document_version_purged 显示已清除提示并刷新版本列表', async () => {
     const listVersions = vi.fn(async (documentId: string) => versionsFor(documentId));

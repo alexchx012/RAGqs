@@ -262,6 +262,53 @@ describe('KnowledgeModule 知识库首页', () => {
   });
 });
 
+describe('KnowledgeModule 设置基座（抽屉视觉基座：容器与对话框规格）', () => {
+  it('首页内容位于一张设置卡片内；列表与工具行不套 FormRow、卡内无小节标题', async () => {
+    const api = createSettingsApi();
+    const store = await createAuthedStore();
+    await renderKnowledge(store, api);
+
+    expect(await screen.findByText('员工手册.pdf')).toBeInTheDocument();
+
+    const cards = screen.getAllByTestId('settings-card');
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+    // 知识库不是两栏表单：工具行（搜索框 + 上传入口）与文档列表整体落在卡内
+    expect(card).toContainElement(screen.getByLabelText(copy.settings.knowledge.documents.searchAria));
+    expect(card).toContainElement(
+      screen.getByRole('button', { name: copy.settings.knowledge.upload.button }),
+    );
+    expect(card).toContainElement(screen.getByText('员工手册.pdf'));
+    // 数据列表保持自身布局：不套 FormRow，也没有保存型页脚（本页没有草稿-保存语义）
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+    // R14：卡内不出现 h1–h6 小节标题（本页卡片标题由 3.8 独立任务负责，不在本任务发明文案）
+    expect(card.querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0);
+  });
+
+  it('配额申请对话框按钮统一走抽屉按钮规格（36px + --radius-buttons）', async () => {
+    const api = createSettingsApi();
+    // 申请入口仅在配额耗尽时出现（共用基座 §5.6）
+    api.getQuota = vi.fn(async () => ({ ...SAMPLE_QUOTA, used: 500 }));
+    const store = await createAuthedStore();
+    const user = userEvent.setup();
+    await renderKnowledge(store, api);
+
+    await user.click(
+      await screen.findByRole('button', { name: copy.settings.knowledge.quota.requestMore }),
+    );
+    const dialog = screen.getByRole('dialog', {
+      name: copy.settings.knowledge.quota.requestDialogTitle,
+    });
+    // 精确断言：先按空白切出类名数组（toContain 子串会被 md:h-9 / h-96 之类满足）
+    const confirm = within(dialog).getByRole('button', { name: copy.controls.confirm });
+    expect(confirm.className.split(/\s+/)).toContain('rounded-[var(--radius-buttons)]');
+    expect(confirm.className.split(/\s+/)).toContain('h-9');
+    const cancel = within(dialog).getByRole('button', { name: copy.controls.cancel });
+    expect(cancel.className.split(/\s+/)).toContain('h-9');
+  });
+});
+
 describe('KnowledgeModule mutation 代际与 single-flight（review A1/A5）', () => {
   it('删除进行中 Esc 取消：旧 mutation 失效，迟到成功不写入视图（列表/页码不变）', async () => {
     let resolveDelete!: () => void;

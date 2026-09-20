@@ -164,6 +164,20 @@ describe('NewVersionDialog 上传新版本（§6.4）', () => {
   });
 });
 
+describe('NewVersionDialog 设置基座（对话框按钮规格）', () => {
+  it('对话框按钮统一走抽屉按钮规格（36px + --radius-buttons）', async () => {
+    const api = createContractApi();
+    await renderDialog(api, vi.fn());
+
+    const confirm = await screen.findByRole('button', { name: copy.controls.confirm });
+    // 精确断言：先按空白切出类名数组（子串匹配会被 md:h-9 之类满足）
+    expect(confirm.className.split(/\s+/)).toContain('rounded-[var(--radius-buttons)]');
+    expect(confirm.className.split(/\s+/)).toContain('h-9');
+    const cancel = screen.getByRole('button', { name: copy.controls.cancel });
+    expect(cancel.className.split(/\s+/)).toContain('h-9');
+  });
+});
+
 describe('NewVersionDialog completion 隔离（review A3）', () => {
   it('提交中 Esc 关闭（token 失效）：迟到成功不触发 onSubmitted/onConflictRefresh', async () => {
     let resolveUpload!: (value: unknown) => void;

@@ -1,5 +1,8 @@
 /*
  * 知识库模块首页（settings-personal §4；共用基座 §5.6）。
+ * - 设置基座（抽屉视觉基座）：整页内容落在一张 SettingsCard 内，卡片具名区域取自 sectionLabel。
+ *   知识库不是两栏表单——配额计数器、工具行、文档列表保持各自布局，不套 FormRow；本页没有
+ *   草稿-保存语义，故没有 FormFooter；卡内不出现 h1–h6 小节标题（R14，卡片标题属 3.8 任务）。
  * - 顶行：无边框「上传结果」（进行中任务带数量徽标）+「我的投稿」（user/minister）；
  *   右侧配额计数器一行小字（未满 slate / 耗尽整行危险红，仅耗尽时出现「申请增加页数」；
  *   unlimited 显示「不限」；pending_request 常驻行）。
@@ -7,6 +10,7 @@
  *   非法值即时显示危险红边 + 15px 提示，空/非法禁用确认键；201 后关闭并淡入常驻行；
  *   409 pending_request_exists 提示；写操作携带 Idempotency-Key（网络未知重试同键，
  *   明确业务响应清键不自动重发，含 idempotency_key_conflict）。
+ *   对话框操作键统一 36px（h-9 + --radius-buttons）；对话框本身留在卡片之外（fixed 浮层）。
  * - 文档列表：消费服务端 spaces 返回的实际 space_id（个人库 = kind=personal && permission=manage；
  *   不拼 personal:${user.id}）；工具行=搜索框 + 上传按钮；manage 行操作：
  *   上传新版本（真实 §6.4 链路）/版本记录/重建索引/删除；active_operation 非空时隐藏全部冲突入口。
@@ -25,6 +29,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { MeatballMenu } from '../ui/MeatballMenu';
 import { Paginator } from '../ui/Paginator';
 import { Pill } from '../ui/Pill';
+import { SettingsCard } from '../ui/SettingsCard';
 import { StatusDot } from '../ui/StatusDot';
 import { TextLink } from '../ui/TextLink';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
@@ -403,138 +408,147 @@ export function KnowledgeModule() {
   const totalPages = Math.max(1, Math.ceil(documentTotal / PAGE_SIZE));
 
   return (
-    <section aria-label={copy.settings.knowledge.sectionLabel} className="pb-10">
-      {/* 顶行（共用基座 §5.6）：左=无边框「上传结果」（进行中任务带数量徽标）+「我的投稿」（user/minister）；
-          右=配额计数器一行小字（未满 slate / 耗尽整行危险红；运维与超管显示「不限」） */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            data-drill-row="uploads"
-            onClick={() => drillUploads()}
-            className="ui-text-entry inline-flex items-center gap-1.5 px-2.5 py-1 text-[15px] text-ink-black"
-          >
-            {copy.settings.knowledge.uploads.historyEntry}
-            {uploadPendingCount > 0 && (
-              <span className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black">
-                {uploadPendingCount}
-              </span>
-            )}
-          </button>
-          {isMember && (
+    // 外层 section 不再挂 aria-label：卡片自身是具名区域，重复挂名会形成嵌套同名 landmark。
+    <section className="pb-10">
+      {/* 设置基座（抽屉视觉基座）：整页内容落在一张卡片内。知识库不是两栏表单——
+          配额计数器、工具行与文档列表保持各自布局，不套 FormRow；本页没有草稿-保存语义，
+          因此没有 FormFooter（上传/删除等是即时动作，不进草稿）。
+          卡片标题（3.8）不在本任务范围，卡内不出现任何 h1–h6 小节标题（R14）。
+          各对话框留在卡片之外：它们是 fixed 浮层，不属于卡片的内容流。 */}
+      <SettingsCard ariaLabel={copy.settings.knowledge.sectionLabel}>
+        {/* 顶行（共用基座 §5.6）：左=无边框「上传结果」（进行中任务带数量徽标）+「我的投稿」（user/minister）；
+            右=配额计数器一行小字（未满 slate / 耗尽整行危险红；运维与超管显示「不限」） */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              data-drill-row="submissions"
-              onClick={() => drillSubmissions()}
-              className="ui-text-entry inline-flex items-center px-2.5 py-1 text-[15px] text-ink-black"
+              data-drill-row="uploads"
+              onClick={() => drillUploads()}
+              className="ui-text-entry inline-flex items-center gap-1.5 px-2.5 py-1 text-[15px] text-ink-black"
             >
-              {copy.settings.knowledge.submissions.entry}
+              {copy.settings.knowledge.uploads.historyEntry}
+              {uploadPendingCount > 0 && (
+                <span className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black">
+                  {uploadPendingCount}
+                </span>
+              )}
             </button>
-          )}
-        </div>
-        <div className="flex flex-col items-end">
-          {quotaError ? (
-            <div className="flex items-center gap-2">
-              <p className="text-[15px] text-danger">{copy.states.error}</p>
-              <TextLink onClick={() => void loadQuota()}>{copy.states.retry}</TextLink>
-            </div>
-          ) : quota !== null ? (
-            quota.unlimited ? (
-              <p className="text-[15px] text-slate-strong">{copy.settings.knowledge.quota.unlimited}</p>
-            ) : (
-              // 耗尽整行变危险红：150ms 变色（共用基座 §5.6），不瞬时跳色
-              <p
-                className={
-                  'text-[15px] transition-colors duration-[var(--duration-fast)] ' +
-                  (quota.used >= quota.effective_limit ? 'text-danger' : 'text-slate-strong')
-                }
+            {isMember && (
+              <button
+                type="button"
+                data-drill-row="submissions"
+                onClick={() => drillSubmissions()}
+                className="ui-text-entry inline-flex items-center px-2.5 py-1 text-[15px] text-ink-black"
               >
-                {copy.settings.knowledge.quota.usedOfLimit(quota.used, quota.effective_limit)}
-              </p>
-            )
-          ) : null}
-          {isMember && quota !== null && !quota.unlimited && quota.used >= quota.effective_limit && (
-            <Pill
-              variant="ghost"
-              ghostBorder="ink"
-              size="xs"
-              className="ui-fade-enter-fast mt-2"
-              onClick={() => setRequestDialogOpen(true)}
-            >
-              {copy.settings.knowledge.quota.requestMore}
-            </Pill>
+                {copy.settings.knowledge.submissions.entry}
+              </button>
+            )}
+          </div>
+          <div className="flex flex-col items-end">
+            {quotaError ? (
+              <div className="flex items-center gap-2">
+                <p className="text-[15px] text-danger">{copy.states.error}</p>
+                <TextLink onClick={() => void loadQuota()}>{copy.states.retry}</TextLink>
+              </div>
+            ) : quota !== null ? (
+              quota.unlimited ? (
+                <p className="text-[15px] text-slate-strong">{copy.settings.knowledge.quota.unlimited}</p>
+              ) : (
+                // 耗尽整行变危险红：150ms 变色（共用基座 §5.6），不瞬时跳色
+                <p
+                  className={
+                    'text-[15px] transition-colors duration-[var(--duration-fast)] ' +
+                    (quota.used >= quota.effective_limit ? 'text-danger' : 'text-slate-strong')
+                  }
+                >
+                  {copy.settings.knowledge.quota.usedOfLimit(quota.used, quota.effective_limit)}
+                </p>
+              )
+            ) : null}
+            {isMember && quota !== null && !quota.unlimited && quota.used >= quota.effective_limit && (
+              <Pill
+                variant="ghost"
+                ghostBorder="ink"
+                size="xs"
+                className="ui-fade-enter-fast mt-2"
+                onClick={() => setRequestDialogOpen(true)}
+              >
+                {copy.settings.knowledge.quota.requestMore}
+              </Pill>
+            )}
+            {quota !== null && quota.pending_request !== null && (
+              <p className="mt-2 text-caption text-slate-strong">{copy.settings.knowledge.quota.pendingRequest}</p>
+            )}
+          </div>
+        </div>
+
+        {/* 部长：部门库管理下钻项（右栏带下级菜单的项，整行 48px + ›；无 manage 空间不渲染） */}
+        {isMinister && manageSpaces.length > 0 && (
+          <button
+            type="button"
+            data-drill-row="manage"
+            onClick={() => drillManage()}
+            className="mt-6 flex h-12 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
+          >
+            <span className="text-body text-ink-black">{copy.settings.knowledge.manage.title}</span>
+            <ChevronRight aria-hidden="true" className="h-4 w-4 text-slate-gray" />
+          </button>
+        )}
+
+        {/* 工具行（共用基座 §5.6）：搜索框占满剩余宽度 + 右侧上传按钮（全角色唯一上传入口） */}
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <form className="flex min-w-0 flex-1 items-center gap-3" onSubmit={submitSearch} role="search">
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={copy.settings.knowledge.documents.searchPlaceholder}
+              aria-label={copy.settings.knowledge.documents.searchAria}
+              className="h-9 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
+            />
+          </form>
+          <Pill size="sm" onClick={openUpload}>
+            {copy.settings.knowledge.upload.button}
+          </Pill>
+        </div>
+
+        {/* 文档列表 */}
+        <div className="mt-6">
+          {documentsLoading ? (
+            <LoadingRows count={3} />
+          ) : documentsError ? (
+            <ErrorState onRetry={() => void loadDocuments(committedQuery, documentPage)} />
+          ) : documents.length === 0 ? (
+            <EmptyState text={copy.settings.knowledge.documents.empty} />
+          ) : (
+            <ul className="divide-y divide-[var(--color-hairline)]">
+              {documents.map((doc) => (
+                <KnowledgeDocumentRow
+                  key={doc.id}
+                  doc={doc}
+                  manage={doc.active_operation === null}
+                  onUploadNewVersion={() => openNewVersion(doc)}
+                  onVersions={() => drillVersions(doc.id)}
+                  onReindex={() => setPendingReindexDoc(doc)}
+                  onDelete={() => setPendingDeleteDoc(doc)}
+                />
+              ))}
+            </ul>
           )}
-          {quota !== null && quota.pending_request !== null && (
-            <p className="mt-2 text-caption text-slate-strong">{copy.settings.knowledge.quota.pendingRequest}</p>
+          {!documentsLoading && !documentsError && documentTotal > PAGE_SIZE && (
+            <div className="mt-6">
+              <Paginator page={documentPage} totalPages={totalPages} onChange={changePage} />
+            </div>
           )}
         </div>
-      </div>
 
-      {/* 部长：部门库管理下钻项（右栏带下级菜单的项，整行 48px + ›；无 manage 空间不渲染） */}
-      {isMinister && manageSpaces.length > 0 && (
-        <button
-          type="button"
-          data-drill-row="manage"
-          onClick={() => drillManage()}
-          className="mt-6 flex h-12 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left transition-colors duration-[var(--duration-fast)] hover:bg-mist-gray"
-        >
-          <span className="text-body text-ink-black">{copy.settings.knowledge.manage.title}</span>
-          <ChevronRight aria-hidden="true" className="h-4 w-4 text-slate-gray" />
-        </button>
-      )}
-
-      {/* 工具行（共用基座 §5.6）：搜索框占满剩余宽度 + 右侧上传按钮（全角色唯一上传入口） */}
-      <div className="mt-4 flex items-center justify-between gap-4">
-        <form className="flex min-w-0 flex-1 items-center gap-3" onSubmit={submitSearch} role="search">
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder={copy.settings.knowledge.documents.searchPlaceholder}
-            aria-label={copy.settings.knowledge.documents.searchAria}
-            className="h-9 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
-          />
-        </form>
-        <Pill size="sm" onClick={openUpload}>
-          {copy.settings.knowledge.upload.button}
-        </Pill>
-      </div>
-
-      {/* 文档列表 */}
-      <div className="mt-6">
-        {documentsLoading ? (
-          <LoadingRows count={3} />
-        ) : documentsError ? (
-          <ErrorState onRetry={() => void loadDocuments(committedQuery, documentPage)} />
-        ) : documents.length === 0 ? (
-          <EmptyState text={copy.settings.knowledge.documents.empty} />
-        ) : (
-          <ul className="divide-y divide-[var(--color-hairline)]">
-            {documents.map((doc) => (
-              <KnowledgeDocumentRow
-                key={doc.id}
-                doc={doc}
-                manage={doc.active_operation === null}
-                onUploadNewVersion={() => openNewVersion(doc)}
-                onVersions={() => drillVersions(doc.id)}
-                onReindex={() => setPendingReindexDoc(doc)}
-                onDelete={() => setPendingDeleteDoc(doc)}
-              />
-            ))}
-          </ul>
+        {actionError !== null && (
+          <p role="alert" className="mt-4 text-caption text-danger">
+            {actionError}
+          </p>
         )}
-        {!documentsLoading && !documentsError && documentTotal > PAGE_SIZE && (
-          <div className="mt-6">
-            <Paginator page={documentPage} totalPages={totalPages} onChange={changePage} />
-          </div>
-        )}
-      </div>
 
-      {actionError !== null && (
-        <p role="alert" className="mt-4 text-caption text-danger">
-          {actionError}
-        </p>
-      )}
+      </SettingsCard>
 
       {/* 配额申请对话框：模态 400px；保留原始非法输入；非法值即时危险红边 + 15px 提示；空/非法禁用确认键 */}
       <QuotaRequestDialog
@@ -772,11 +786,13 @@ function QuotaRequestDialog({
             </p>
           )}
         </div>
+        {/* 对话框操作键统一 36px（h-9）：Pill 默认尺寸即 h-9 + rounded-[var(--radius-buttons)]，
+            抽屉作用域下圆角自动解析为 8px。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill variant="ghost" size="sm" disabled={pending} onClick={() => onOpenChange(false)}>
+          <Pill variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill size="sm" loading={pending} disabled={!canConfirm} onClick={onConfirm}>
+          <Pill loading={pending} disabled={!canConfirm} onClick={onConfirm}>
             {copy.controls.confirm}
           </Pill>
         </div>

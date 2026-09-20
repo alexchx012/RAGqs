@@ -8,6 +8,9 @@
  * - 通过：202 后行 250ms 淡出收起 + 页头下轻提示；驳回：对话框可选填单行输入框，填了随铃铛送达。
  * - 失败：duplicate_document 仅行内提示行不移除不刷新；version_conflict 刷新该行 version 后重试；
  *   submission_already_reviewed / submission_scope_changed / 投稿人冻结删除均刷新列表。
+ * - 设置基座（抽屉视觉基座）：部门库管理与投稿审核各自落在一张 SettingsCard 内；两层的列表都是
+ *   数据列表（保持自身布局、不套 FormRow），两层都无草稿-保存语义故无 FormFooter；卡内不出现
+ *   h1–h6 小节标题（R14，投稿审核的内容标题降级为普通文本，文案不变）。对话框留在卡片之外。
  */
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
@@ -20,6 +23,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { Paginator } from '../ui/Paginator';
 import { Pill } from '../ui/Pill';
+import { SettingsCard } from '../ui/SettingsCard';
 import { TextLink } from '../ui/TextLink';
 import { useAuthState, useAuthStore } from '../auth/AuthProvider';
 import { useSettings } from './SettingsProvider';
@@ -123,64 +127,70 @@ export function ManageLayer(_props: { readonly path: readonly string[] }) {
   };
 
   return (
-    <section aria-label={copy.settings.knowledge.manage.title} className="pb-10">
-      {/* 投稿审核下钻入口：部门库管理下的正确子层（返回回到本层并保留空间上下文） */}
-      <div className="mb-4">
-        <button
-          type="button"
-          data-drill-row="approvals"
-          onClick={() => drillApprovals()}
-          className="flex h-10 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray"
-        >
-          <span className="flex items-center gap-2">
-            {copy.settings.knowledge.manage.approvals}
-            {pendingApprovals !== null && pendingApprovals > 0 && (
-              <span
-                aria-label={copy.settings.knowledge.manage.approvalsBadgeAria(pendingApprovals)}
-                className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black"
-              >
-                {pendingApprovals}
-              </span>
-            )}
-          </span>
-          <ChevronRight size={16} className="text-slate-gray" aria-hidden />
-        </button>
-      </div>
-      {/* 部门空间切换（多部门部长场景） */}
-      {manageSpaces.length > 1 && (
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          {manageSpaces.map((space) => (
-            <button
-              key={space.id}
-              type="button"
-              aria-pressed={selectedSpaceId === space.id}
-              onClick={() => selectSpace(space.id)}
-              className={`inline-flex h-8 items-center rounded-[var(--radius-buttons)] border px-3 text-[14px] ${
-                selectedSpaceId === space.id
-                  ? 'border-ink-black bg-mist-gray text-ink-black'
-                  : 'border-[var(--color-hairline)] text-ink-black'
-              }`}
-            >
-              {space.name}
-            </button>
-          ))}
+    // 外层 section 不再挂 aria-label：具名区域落在卡片上，避免嵌套同名 landmark。
+    <section className="pb-10">
+      {/* 设置基座（抽屉视觉基座）：投稿审核入口、部门切换与部门文档列表同属一张卡片的内容流。
+          部门文档列表与个人库同构，保持自身布局不套 FormRow；本层无草稿-保存语义故无 FormFooter；
+          卡内不出现 h1–h6 小节标题（R14）。上传新版本对话框留在卡片之外（fixed 浮层）。 */}
+      <SettingsCard ariaLabel={copy.settings.knowledge.manage.title}>
+        {/* 投稿审核下钻入口：部门库管理下的正确子层（返回回到本层并保留空间上下文） */}
+        <div className="mb-4">
+          <button
+            type="button"
+            data-drill-row="approvals"
+            onClick={() => drillApprovals()}
+            className="flex h-10 w-full items-center justify-between rounded-[var(--radius-images)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray"
+          >
+            <span className="flex items-center gap-2">
+              {copy.settings.knowledge.manage.approvals}
+              {pendingApprovals !== null && pendingApprovals > 0 && (
+                <span
+                  aria-label={copy.settings.knowledge.manage.approvalsBadgeAria(pendingApprovals)}
+                  className="inline-flex items-center rounded-[var(--radius-buttons)] bg-mist-gray px-1.5 text-[12px] font-w480 text-ink-black"
+                >
+                  {pendingApprovals}
+                </span>
+              )}
+            </span>
+            <ChevronRight size={16} className="text-slate-gray" aria-hidden />
+          </button>
         </div>
-      )}
-      {spacesLoading ? (
-        <LoadingRows count={2} />
-      ) : spacesError ? (
-        <ErrorState onRetry={() => void loadManageSpaces()} />
-      ) : selectedSpaceId === null ? (
-        <EmptyState text={copy.states.empty} />
-      ) : (
-        <ManageDocuments
-          spaceId={selectedSpaceId}
-          onUploadNewVersion={(doc) => setNewVersionTarget(doc)}
-          onReloadRequested={(reload) => {
-            docListReloadRef.current = reload;
-          }}
-        />
-      )}
+        {/* 部门空间切换（多部门部长场景） */}
+        {manageSpaces.length > 1 && (
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {manageSpaces.map((space) => (
+              <button
+                key={space.id}
+                type="button"
+                aria-pressed={selectedSpaceId === space.id}
+                onClick={() => selectSpace(space.id)}
+                className={`inline-flex h-8 items-center rounded-[var(--radius-buttons)] border px-3 text-[14px] ${
+                  selectedSpaceId === space.id
+                    ? 'border-ink-black bg-mist-gray text-ink-black'
+                    : 'border-[var(--color-hairline)] text-ink-black'
+                }`}
+              >
+                {space.name}
+              </button>
+            ))}
+          </div>
+        )}
+        {spacesLoading ? (
+          <LoadingRows count={2} />
+        ) : spacesError ? (
+          <ErrorState onRetry={() => void loadManageSpaces()} />
+        ) : selectedSpaceId === null ? (
+          <EmptyState text={copy.states.empty} />
+        ) : (
+          <ManageDocuments
+            spaceId={selectedSpaceId}
+            onUploadNewVersion={(doc) => setNewVersionTarget(doc)}
+            onReloadRequested={(reload) => {
+              docListReloadRef.current = reload;
+            }}
+          />
+        )}
+      </SettingsCard>
 
       <NewVersionDialog
         target={newVersionTarget}
@@ -696,96 +706,103 @@ export function ApprovalsLayer(_props: { readonly path: readonly string[] }) {
   );
 
   return (
-    <section aria-label={copy.settings.knowledge.manage.approvals} className="pb-10">
-      <button
-        type="button"
-        onClick={goBackToManage}
-        className="mb-3 flex items-center gap-1 text-caption text-slate-strong transition-colors duration-150 hover:text-ink-black"
-      >
-        <ChevronRight size={14} className="rotate-180" aria-hidden />
-        {copy.shell.drawer.modules.manage}
-      </button>
-      <h2 className="text-subheading font-medium text-ink-black">{copy.settings.knowledge.manage.approvals}</h2>
-      {notice !== null && (
-        <p role="status" className="mt-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-strong">
-          {notice}
-        </p>
-      )}
-      {actionError !== null && (
-        <p role="alert" className="mt-3 text-caption text-danger">
-          {actionError}
-        </p>
-      )}
-      <div className="mt-4">
-        {loading ? (
-          <LoadingRows count={3} />
-        ) : loadError ? (
-          <ErrorState onRetry={() => void loadApprovals()} />
-        ) : approvals.length === 0 ? (
-          <EmptyState text={copy.settings.knowledge.manage.approvalsEmpty} />
-        ) : (
-          <ul className="divide-y divide-[var(--color-hairline)]">
-            {approvalsPageItems.map((approval) => (
-              <li
-                key={approval.submission_id}
-                data-approval-id={approval.submission_id}
-                className={`py-4 transition-opacity duration-[var(--duration-base)] ${
-                  fading.has(approval.submission_id) ? 'opacity-0' : 'opacity-100'
-                }`}
-              >
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-w450 text-ink-black">{approval.name}</p>
-                    <p className="mt-1 text-caption text-slate-strong">
-                      {approval.submitter.display_name}
-                      {approval.submitter.department !== null ? ` · ${approval.submitter.department.name}` : ''} ·{' '}
-                      {approval.media_kind} / {formatFileSize(approval.size_bytes)} ·{' '}
-                      {approval.target_space_name} ·{' '}
-                      {copy.settings.knowledge.manage.submittedAt(formatDateTime(approval.created_at))}
-                    </p>
-                    {rowErrors.get(approval.submission_id) !== undefined && (
-                      <p role="alert" className="mt-1 text-caption text-danger">
-                        {rowErrors.get(approval.submission_id)}
+    // 外层 section 不再挂 aria-label：具名区域落在卡片上，避免嵌套同名 landmark。
+    <section className="pb-10">
+      {/* 设置基座（抽屉视觉基座）：返回入口、内容标题与审核列表同属一张卡片的内容流。
+          审核列表保持自身布局，不套 FormRow；本层无草稿-保存语义故无 FormFooter。
+          内容标题降级为普通文本（文案与字级不变）：R14 禁止卡内出现 h1–h6 小节标题，
+          标题语义由卡片自身的 aria-label 承载（抽屉左栏已显示层名）。 */}
+      <SettingsCard ariaLabel={copy.settings.knowledge.manage.approvals}>
+        <button
+          type="button"
+          onClick={goBackToManage}
+          className="mb-3 flex items-center gap-1 text-caption text-slate-strong transition-colors duration-150 hover:text-ink-black"
+        >
+          <ChevronRight size={14} className="rotate-180" aria-hidden />
+          {copy.shell.drawer.modules.manage}
+        </button>
+        <p className="text-subheading font-medium text-ink-black">{copy.settings.knowledge.manage.approvals}</p>
+        {notice !== null && (
+          <p role="status" className="mt-3 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-strong">
+            {notice}
+          </p>
+        )}
+        {actionError !== null && (
+          <p role="alert" className="mt-3 text-caption text-danger">
+            {actionError}
+          </p>
+        )}
+        <div className="mt-4">
+          {loading ? (
+            <LoadingRows count={3} />
+          ) : loadError ? (
+            <ErrorState onRetry={() => void loadApprovals()} />
+          ) : approvals.length === 0 ? (
+            <EmptyState text={copy.settings.knowledge.manage.approvalsEmpty} />
+          ) : (
+            <ul className="divide-y divide-[var(--color-hairline)]">
+              {approvalsPageItems.map((approval) => (
+                <li
+                  key={approval.submission_id}
+                  data-approval-id={approval.submission_id}
+                  className={`py-4 transition-opacity duration-[var(--duration-base)] ${
+                    fading.has(approval.submission_id) ? 'opacity-0' : 'opacity-100'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[15px] font-w450 text-ink-black">{approval.name}</p>
+                      <p className="mt-1 text-caption text-slate-strong">
+                        {approval.submitter.display_name}
+                        {approval.submitter.department !== null ? ` · ${approval.submitter.department.name}` : ''} ·{' '}
+                        {approval.media_kind} / {formatFileSize(approval.size_bytes)} ·{' '}
+                        {approval.target_space_name} ·{' '}
+                        {copy.settings.knowledge.manage.submittedAt(formatDateTime(approval.created_at))}
                       </p>
-                    )}
+                      {rowErrors.get(approval.submission_id) !== undefined && (
+                        <p role="alert" className="mt-1 text-caption text-danger">
+                          {rowErrors.get(approval.submission_id)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <TextLink onClick={() => void openContent(approval)}>
+                        {copy.settings.knowledge.manage.viewContent}
+                      </TextLink>
+                      {/* A44：通过 loading 只落在对应行；决策在飞时行内操作统一禁用 */}
+                      <Pill
+                        size="sm"
+                        loading={approvingId === approval.submission_id}
+                        disabled={approvingId !== null || rejecting}
+                        onClick={() => void decide(approval, true)}
+                      >
+                        {copy.settings.knowledge.manage.approve}
+                      </Pill>
+                      <Pill
+                        variant="ghost"
+                        size="sm"
+                        disabled={approvingId !== null || rejecting}
+                        onClick={() => setPendingReject(approval)}
+                      >
+                        {copy.settings.knowledge.manage.reject}
+                      </Pill>
+                    </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <TextLink onClick={() => void openContent(approval)}>
-                      {copy.settings.knowledge.manage.viewContent}
-                    </TextLink>
-                    {/* A44：通过 loading 只落在对应行；决策在飞时行内操作统一禁用 */}
-                    <Pill
-                      size="sm"
-                      loading={approvingId === approval.submission_id}
-                      disabled={approvingId !== null || rejecting}
-                      onClick={() => void decide(approval, true)}
-                    >
-                      {copy.settings.knowledge.manage.approve}
-                    </Pill>
-                    <Pill
-                      variant="ghost"
-                      size="sm"
-                      disabled={approvingId !== null || rejecting}
-                      onClick={() => setPendingReject(approval)}
-                    >
-                      {copy.settings.knowledge.manage.reject}
-                    </Pill>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-        {!loading && !loadError && approvalsTotalPages > 1 && (
-          <div className="mt-6">
-            <Paginator
-              page={approvalsSafePage}
-              totalPages={approvalsTotalPages}
-              onChange={setPage}
-            />
-          </div>
-        )}
-      </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!loading && !loadError && approvalsTotalPages > 1 && (
+            <div className="mt-6">
+              <Paginator
+                page={approvalsSafePage}
+                totalPages={approvalsTotalPages}
+                onChange={setPage}
+              />
+            </div>
+          )}
+        </div>
+      </SettingsCard>
 
       {/* 驳回对话框：可选填单行输入框（placeholder「可填一句原因」），填了随铃铛送达投稿人 */}
       <RejectDialog
@@ -852,11 +869,13 @@ function RejectDialog({ open, onOpenChange, reason, onReasonChange, pending, onC
           placeholder={copy.settings.knowledge.manage.rejectReasonPlaceholder}
           className="mt-4 h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-body text-ink-black focus:border-ink-black"
         />
+        {/* 对话框操作键统一 36px（h-9）：Pill 默认尺寸即 h-9 + rounded-[var(--radius-buttons)]，
+            抽屉作用域下圆角自动解析为 8px。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill type="button" variant="ghost" size="sm" disabled={pending} onClick={() => onOpenChange(false)}>
+          <Pill type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill type="submit" size="sm" loading={pending}>
+          <Pill type="submit" loading={pending}>
             {copy.settings.knowledge.manage.reject}
           </Pill>
         </div>
