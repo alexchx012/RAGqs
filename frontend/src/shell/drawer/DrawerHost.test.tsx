@@ -50,6 +50,45 @@ function versionsResponse(documentId: string) {
   };
 }
 
+/** 文档列表中的一行（文档行「⋯」→ 版本 是参数化下钻层的真实入口）。 */
+const SAMPLE_DOC = {
+  id: 'doc_1',
+  document_version_id: 'dv_1',
+  version: 1,
+  name: '员工手册.pdf',
+  media_kind: 'pdf',
+  version_status: 'active',
+  active_operation: null,
+  uploaded_at: '2026-07-20T02:00:00Z',
+  usage: { pages: 50, images: 40 },
+};
+
+/** 知识库下钻所需的 settings api 子集：manage 权限的个人库或部门库 + 一行文档 + 版本记录。 */
+function knowledgeApi(
+  listVersions: (documentId: string) => Promise<unknown>,
+  kind: 'personal' | 'department' = 'personal',
+): SettingsApi {
+  const space =
+    kind === 'personal'
+      ? { id: 'personal:u_1', kind: 'personal', name: '个人库', permission: 'manage', document_count: 1 }
+      : { id: 'department:d_1', kind: 'department', name: '财务部', permission: 'manage', document_count: 1 };
+  return {
+    listUploadSpaces: vi.fn(async () => ({ items: [space] })),
+    listManageSpaces: vi.fn(async () => ({ items: [space] })),
+    listApprovals: vi.fn(async () => ({ items: [] })),
+    listDocuments: vi.fn(async () => ({ items: [SAMPLE_DOC], total: 1, page: 1, page_size: 20 })),
+    listVersions,
+  } as unknown as SettingsApi;
+}
+
+/** 左栏内与左栏外（右栏内容列）各挂几个该类名的元素。 */
+function splitByColumn(dialog: HTMLElement, selector: string): [number, number] {
+  const nav = dialog.querySelector('nav');
+  const nodes = Array.from(dialog.querySelectorAll(selector));
+  const inNav = nodes.filter((node) => nav?.contains(node) === true).length;
+  return [inNav, nodes.length - inNav];
+}
+
 async function renderApp(
   path: string,
   role: TestRole = 'user',
@@ -196,18 +235,11 @@ describe('下钻、返回与 Esc 逐层', () => {
   it('下钻为两相整页过渡：离开相两栏同上滑渐隐，进入相两栏同自下渐显，页头不参与', async () => {
     const probe = await renderApp('/settings/knowledge');
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
-    const nav = dialog.querySelector('nav');
-    /** 左栏内与左栏外（右栏内容列）各挂几个该类名的元素。 */
-    const splitByColumn = (selector: string): [number, number] => {
-      const nodes = Array.from(dialog.querySelectorAll(selector));
-      const inNav = nodes.filter((node) => nav?.contains(node) === true).length;
-      return [inNav, nodes.length - inNav];
-    };
     // 同步触发，抓住离开相（真实计时器 250ms 内的中间态）
     fireEvent.click(within(dialog).getByRole('button', { name: modules.submissions }));
     expect(probe.textContent).toBe('/settings/knowledge/submissions');
     // 离开相：左栏与右栏各挂一个上滑渐隐类（同一提交 → 同帧起步，视觉上等价于整页位移）
-    expect(splitByColumn('.drill-page-leave-up')).toEqual([1, 1]);
+    expect(splitByColumn(dialog, '.drill-page-leave-up')).toEqual([1, 1]);
     // 进入相尚未开始：新页两栏都还没挂渐显类（否则动画会在 drill-hidden 期间跑完）
     expect(dialog.querySelectorAll('.drill-page-arrive-from-below')).toHaveLength(0);
     // 页头（关闭按钮 + 页级标题 + 铃铛）不参与整页过渡
@@ -215,7 +247,7 @@ describe('下钻、返回与 Esc 逐层', () => {
     // FLIP 飞字效果整体缺席
     expect(document.querySelector('.drill-flip-clone')).toBeNull();
     // 进入相：新页两栏各挂一个自下渐显类
-    await waitFor(() => expect(splitByColumn('.drill-page-arrive-from-below')).toEqual([1, 1]));
+    await waitFor(() => expect(splitByColumn(dialog, '.drill-page-arrive-from-below')).toEqual([1, 1]));
     // 收尾后回到稳态：不留任何过渡标记
     await waitFor(() => expect(dialog.querySelector('[class*="drill-page-"]')).toBeNull());
   });
@@ -360,6 +392,79 @@ describe('下钻、返回与 Esc 逐层', () => {
       within(dialog).getByText(copy.settings.knowledge.versions.versionNumber(2)),
     ).toBeInTheDocument();
     expect(within(dialog).queryByText(copy.settings.knowledge.versions.empty)).toBeNull();
+  });
+
+  it('参数化下钻层返回为整页下滑过渡：左栏不再瞬时切换（离开相两栏同挂下滑类）', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsResponse(documentId));
+    const probe = await renderApp('/settings/knowledge/versions/docA', 'user', {
+      settingsApi: knowledgeApi(listVersions),
+    });
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    // 等参数生效（本层渲染 docA 的版本记录）后再触发返回
+    expect(
+      await within(dialog).findByText(copy.settings.knowledge.versions.versionNumber(2)),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: drawerCopy.backAria(modules.knowledge) }),
+    );
+    expect(probe.textContent).toBe('/settings/knowledge');
+    // 修复前：过渡按 URL 段数判定，3 段 → 1 段既非下钻也非返回，落到同层切换
+    // （drill-exit 只挂右栏、左栏原地瞬换）；修复后：按层链深度判定（2 层 → 1 层）= 整页返回。
+    expect(dialog.querySelectorAll('.drill-exit')).toHaveLength(0);
+    expect(splitByColumn(dialog, '.drill-page-leave-down')).toEqual([1, 1]);
+    await waitFor(() =>
+      expect(splitByColumn(dialog, '.drill-page-arrive-from-above')).toEqual([1, 1]),
+    );
+    await waitFor(() => expect(dialog.querySelector('[class*="drill-page-"]')).toBeNull());
+  });
+
+  it('进入参数化下钻层为整页上滑下钻：左栏也随之上滑渐隐（不再瞬时换栏）', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsResponse(documentId));
+    const probe = await renderApp('/settings/knowledge', 'user', {
+      settingsApi: knowledgeApi(listVersions),
+    });
+    const user = userEvent.setup();
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    // 真实入口：文档行「⋯」→ 版本（列表来自 manage 权限的个人库）
+    await user.click(
+      within(dialog).getByRole('button', {
+        name: copy.settings.knowledge.documents.rowMenuAria(SAMPLE_DOC.name),
+      }),
+    );
+    // 菜单 portal 到 body，不经 dialog 查询；同步派发选中以抓住离开相（真实计时器 250ms 内）
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: copy.settings.knowledge.documents.versions }),
+    );
+    expect(probe.textContent).toBe('/settings/knowledge/versions/doc_1');
+    expect(listVersions).toHaveBeenCalledWith('doc_1');
+    // 修复前：同层切换（左栏无动画类、右栏 drill-exit）；修复后：左栏（模块列表）与右栏同挂上滑渐隐类
+    expect(dialog.querySelectorAll('.drill-exit')).toHaveLength(0);
+    expect(splitByColumn(dialog, '.drill-page-leave-up')).toEqual([1, 1]);
+    await waitFor(() =>
+      expect(splitByColumn(dialog, '.drill-page-arrive-from-below')).toEqual([1, 1]),
+    );
+    await waitFor(() => expect(dialog.querySelector('[class*="drill-page-"]')).toBeNull());
+  });
+
+  it('层链深度不变的横向切换仍是同层切换：部门库管理 → 版本记录不升级为整页过渡', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsResponse(documentId));
+    const probe = await renderApp('/settings/knowledge/manage', 'minister', {
+      settingsApi: knowledgeApi(listVersions, 'department'),
+    });
+    const user = userEvent.setup();
+    const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
+    await user.click(
+      within(dialog).getByRole('button', {
+        name: copy.settings.knowledge.documents.rowMenuAria(SAMPLE_DOC.name),
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: copy.settings.knowledge.documents.versions }),
+    );
+    expect(probe.textContent).toBe('/settings/knowledge/versions/doc_1');
+    // 深度 2 → 2：只动右栏内容（from 侧右栏 drill-exit），两栏都不得挂整页过渡类
+    expect(dialog.querySelectorAll('[class*="drill-page-"]')).toHaveLength(0);
+    expect(splitByColumn(dialog, '.drill-exit')).toEqual([0, 1]);
   });
 
   it('左上角关闭按钮关闭抽屉并回到聊天主页', async () => {

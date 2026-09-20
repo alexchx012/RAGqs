@@ -8,6 +8,7 @@
  * - 两相整页下钻动画（§5.2）：当前页主体（左栏 + 右栏）作为整体上滑渐隐（250ms --ease-in-out），
  *   随后新页主体自下方 8px 上移渐显（250ms --ease-out）；返回为完整镜像（下滑渐隐 / 自上方落位）。
  *   页头（关闭按钮 + 页级标题 + 铃铛）不参与过渡。同层切换（左栏换选）仍只动右栏内容。
+ *   下钻 / 返回按注册层链深度判定（参数化层的参数尾段不计一层），并以前缀同链约束排除换链导航。
  * - 下钻层数不限：由 registry 递归 children 表达，无硬编码上限（规格 §2）。
  * - Esc 逐层向上：下钻层先返回上一层，顶层关闭抽屉（经全局 Esc 栈，Radix 浮层由空盾隔离）。
  * - 窄屏（<768px）：左右两栏单栏化——首屏模块名列表，点模块整页下钻，复用同一套动画。
@@ -335,10 +336,18 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
     if (reducedMotion) {
       if (transition !== null) setTransition(null);
     } else {
-      const drillDown = to.length === from.length + 1 && isPrefix(from, to);
-      const back = from.length === to.length + 1 && isPrefix(to, from);
+      // 过渡类型按**注册层链深度**判定，不按 URL 段数：参数化下钻层（versions/<documentId>）的
+      // 尾段是参数、不注册为层（resolve 停在 versions 层，exact=false），层链深度与不带参数时
+      // 相同；按段数比较会把它算成「跨了两段」，进出该层都落进同层切换分支——左栏瞬时换栏、
+      // 只有右栏淡变。层链是「层」的唯一权威表达。
+      const fromDepth = registry.resolve(shownSegment, from, role).layers.length;
+      const toDepth = resolved.layers.length;
+      // 前缀同链约束保留：换链时深度差也可能为 1（铃铛跨段跳转、selectModule 整体替换 drill），
+      // 只有路径前缀关系能确认两次导航在同一条层链上。
+      const drillDown = toDepth === fromDepth + 1 && isPrefix(from, to);
+      const back = fromDepth === toDepth + 1 && isPrefix(to, from);
       // 桌面端顶层 ↔ 模块选中为同层切换（§5.2 左栏换选），不走整页过渡
-      const desktopSwitch = !narrow && from.length <= 1 && to.length <= 1;
+      const desktopSwitch = !narrow && fromDepth <= 1 && toDepth <= 1;
       if ((!drillDown && !back) || desktopSwitch || resolved.layers.length === 0) {
         // 同层切换（§5.2）：左右栏不换，右栏先旧内容原地淡出 150ms（--duration-fast），
         // 再接新内容自下而上淡入 250ms（--duration-base，drill-switch）。
