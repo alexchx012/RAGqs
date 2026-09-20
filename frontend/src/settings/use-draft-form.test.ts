@@ -69,4 +69,22 @@ describe('useDraftForm', () => {
     act(() => result.current.set({ size: 'large' }));
     expect(result.current.draft).toEqual({ theme: 'dark', size: 'large' });
   });
+
+  it('submitted 由 null 变为快照后，commit 能提交完整草稿（守卫 submittedRef 同步的一行）', () => {
+    const save = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ submitted }: { submitted: Prefs | null }) => useDraftForm<Prefs>(submitted, save),
+      { initialProps: { submitted: null as Prefs | null } },
+    );
+    // 加载期：草稿为 null，commit 为 no-op
+    expect(result.current.draft).toBeNull();
+    act(() => result.current.commit());
+    expect(save).not.toHaveBeenCalled();
+
+    // 加载完成：submitted 落地后应能正常改草稿并提交
+    rerender({ submitted: BASE });
+    act(() => result.current.set({ theme: 'dark' }));
+    act(() => result.current.commit());
+    expect(save).toHaveBeenCalledWith({ theme: 'dark', size: 'standard' });
+  });
 });
