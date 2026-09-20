@@ -919,7 +919,7 @@ function EditUserDialog({
             value="__loading__"
             aria-label={copyUsers.colDepartment}
             className={
-              'h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] ' +
+              'h-10 w-full rounded-[var(--radius-inputs)] border border-hairline ' +
               'bg-paper-white px-3 text-[15px] text-ink-black'
             }
           >
@@ -940,7 +940,7 @@ function EditUserDialog({
             className={
               'h-10 w-full rounded-[var(--radius-inputs)] border bg-paper-white px-3 text-[15px] ' +
               `text-ink-black focus:border-ink-black ${
-                departmentError !== null ? 'border-danger' : 'border-[var(--color-hairline)]'
+                departmentError !== null ? 'border-danger' : 'border-hairline'
               }`
             }
           >
@@ -970,11 +970,14 @@ function EditUserDialog({
         )}
         <p className="mt-2 text-[15px] text-smoke-gray">{copyUsers.sessionRevokedNote}</p>
       </div>
+        {/* 对话框操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）：
+            与个人段表单对话框（上传文档 / 上传新版本 / 配额申请）同规格。
+            R17 的 32px 例外只针对共享 ui/ConfirmDialog，不适用于管理段自有对话框。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill type="button" variant="ghost" size="sm" disabled={saving} onClick={onClose}>
+          <Pill type="button" variant="ghost" disabled={saving} onClick={onClose}>
             {copy.controls.cancel}
           </Pill>
-          <Pill type="submit" size="sm" loading={saving} disabled={saving}>
+          <Pill type="submit" loading={saving} disabled={saving}>
             {copyUsers.save}
           </Pill>
         </div>
@@ -1204,7 +1207,7 @@ function CreateUserDialog({ actorRole, onClose, onCreated, onAbort }: CreateUser
             value={VALUE_NONE}
             aria-label={copyUsers.colDepartment}
             className={
-              'h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] ' +
+              'h-10 w-full rounded-[var(--radius-inputs)] border border-hairline ' +
               'bg-paper-white px-3 text-[15px] text-ink-black'
             }
           >
@@ -1223,7 +1226,7 @@ function CreateUserDialog({ actorRole, onClose, onCreated, onAbort }: CreateUser
             className={
               'h-10 w-full rounded-[var(--radius-inputs)] border bg-paper-white px-3 text-[15px] ' +
               `text-ink-black focus:border-ink-black ${
-                departmentError !== null ? 'border-danger' : 'border-[var(--color-hairline)]'
+                departmentError !== null ? 'border-danger' : 'border-hairline'
               }`
             }
           >
@@ -1294,11 +1297,12 @@ function CreateUserDialog({ actorRole, onClose, onCreated, onAbort }: CreateUser
         )}
         <p className="mt-2 text-[15px] text-smoke-gray">{copyUsers.passwordOfflineNote}</p>
       </div>
+        {/* 对话框操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）：同个人段表单对话框。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill type="button" variant="ghost" size="sm" disabled={saving} onClick={onClose}>
+          <Pill type="button" variant="ghost" disabled={saving} onClick={onClose}>
             {copy.controls.cancel}
           </Pill>
-          <Pill type="submit" size="sm" loading={saving} disabled={saving}>
+          <Pill type="submit" loading={saving} disabled={saving}>
             {copy.controls.confirm}
           </Pill>
         </div>
@@ -1347,11 +1351,12 @@ function DisableUserDialog({
           {error}
         </p>
       )}
+      {/* 危险确认操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）：确认键沿用 danger 实底。 */}
       <div className="mt-6 flex justify-end gap-2">
-        <Pill variant="ghost" size="sm" disabled={confirming} onClick={onClose}>
+        <Pill variant="ghost" disabled={confirming} onClick={onClose}>
           {copy.controls.cancel}
         </Pill>
-        <Pill size="sm" danger loading={confirming} disabled={confirming} onClick={onConfirm}>
+        <Pill danger loading={confirming} disabled={confirming} onClick={onConfirm}>
           {copyUsers.disableConfirm}
         </Pill>
       </div>

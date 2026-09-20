@@ -811,3 +811,48 @@ describe('部门库（§7.3）', () => {
     expect(await screen.findByText(copyDocs.empty)).toBeInTheDocument();
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+/** 类名逐 token 比对：toContain 会被子串误命中（如 `border-b-0` 满足 `border-b`）。 */
+function classTokens(element: HTMLElement): readonly string[] {
+  return element.className.split(/\s+/);
+}
+
+describe('抽屉视觉基座：管理段控件与数据页布局（D5）', () => {
+  it('知识空间数据页保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    const token = loginToken('ops-wang');
+    await renderSpaces(
+      <PublicSpaceLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    await screen.findByText('公共制度汇编.pdf');
+    // D5：知识空间列表与图谱维护区保持自身布局约束，不压进表单卡片
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+  });
+
+  it('图谱构建确认对话框操作键统一 36px，且发起行为不变', async () => {
+    const token = loginToken('ops-wang');
+    const adminApi = contractAdminApi(token);
+    await renderSpaces(
+      <PublicSpaceLayer />,
+      opsUser(),
+      adminApi,
+      contractSettingsApi(token),
+    );
+    await screen.findByText(copyGraph.title);
+    fireEvent.click(screen.getByRole('button', { name: copyGraph.buildRebuild }));
+    const dialog = await screen.findByRole('dialog', { name: copyGraph.confirmTitleRebuild });
+    for (const name of [copy.controls.cancel, copyGraph.confirmStart]) {
+      const button = within(dialog).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-9');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+    fireEvent.click(within(dialog).getByRole('button', { name: copyGraph.confirmStart }));
+    await waitFor(() => expect(adminApi.createGraphBuild).toHaveBeenCalledTimes(1));
+  });
+});

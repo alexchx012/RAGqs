@@ -438,11 +438,13 @@ function QuotaApproveDialog({
             </p>
           )}
         </div>
+        {/* 对话框操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）：同个人段表单对话框
+            （配额申请对话框同规格）；R17 的 32px 例外只针对共享 ui/ConfirmDialog。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill type="button" variant="ghost" size="sm" disabled={confirming} onClick={() => onOpenChange(false)}>
+          <Pill type="button" variant="ghost" disabled={confirming} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill type="submit" size="sm" loading={confirming} disabled={confirming || valueInvalid}>
+          <Pill type="submit" loading={confirming} disabled={confirming || valueInvalid}>
             {copy.controls.confirm}
           </Pill>
         </div>
@@ -657,7 +659,7 @@ export function ApprovalSubmissionsLayer() {
               value={departmentFilter}
               onChange={(event) => setDepartmentFilter(event.target.value)}
               aria-label={copyApprovals.filterDepartmentAria}
-              className="h-8 rounded-[var(--radius-buttons)] border border-[var(--color-hairline)] bg-paper-white px-3 text-[14px] text-ink-black focus:border-ink-black"
+              className="h-10 rounded-[var(--radius-inputs)] border border-hairline bg-paper-white px-3 text-[14px] text-ink-black focus:border-ink-black"
             >
               <option value="all">{copyApprovals.filterAll}</option>
               {departmentNames.map((name) => (
@@ -855,11 +857,12 @@ function SubmissionRejectDialog({
           placeholder={copyManage.rejectReasonPlaceholder}
           className="mt-4 h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] bg-paper-white px-3 text-[15px] text-ink-black placeholder:text-smoke-gray focus:border-ink-black"
         />
+        {/* 对话框操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）：同个人段表单对话框。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill type="button" variant="ghost" size="sm" disabled={pending} onClick={() => onOpenChange(false)}>
+          <Pill type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill type="submit" size="sm" loading={pending}>
+          <Pill type="submit" loading={pending}>
             {copyManage.reject}
           </Pill>
         </div>

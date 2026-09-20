@@ -533,3 +533,65 @@ describe('空态与能力边界', () => {
     }
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+/** 类名逐 token 比对：toContain 会被子串误命中（如 `border-b-0` 满足 `border-b`）。 */
+function classTokens(element: HTMLElement): readonly string[] {
+  return element.className.split(/\s+/);
+}
+
+describe('抽屉视觉基座：管理段控件与数据页布局（D5）', () => {
+  it('部门表数据页保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    await renderLayer();
+    await screen.findByText('财务部');
+    // D5：数据表按自身所需宽度铺开，不被 880px 表单卡片截断
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+  });
+
+  it('停用危险确认键为抽屉作用域规格（36px + radius-buttons + danger 实底），提交行为不变', async () => {
+    const { api } = await renderLayer();
+    await screen.findByText('空壳部');
+    const dialog = await openDeactivate('空壳部');
+    const confirm = within(dialog).getByRole('button', {
+      name: copyDepartments.deactivateConfirm,
+    });
+    expect(classTokens(confirm)).toContain('h-9');
+    expect(classTokens(confirm)).toContain('rounded-[var(--radius-buttons)]');
+    expect(classTokens(confirm)).toContain('bg-danger');
+    await userEvent.click(confirm);
+    await waitFor(() =>
+      expect(api.deactivateDepartment).toHaveBeenCalledWith('d_empty', 1, expect.any(String)),
+    );
+  });
+
+  it('新增 / 改名对话框：操作键统一 36px，名称输入为抽屉控件规格', async () => {
+    await renderLayer();
+    await screen.findByText('空壳部');
+    const create = await openCreate();
+    for (const name of [copyControls.cancel, copyControls.confirm]) {
+      const button = within(create).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-9');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+    const createInput = within(create).getByLabelText(copyDepartments.nameLabel);
+    expect(classTokens(createInput)).toContain('h-10');
+    expect(classTokens(createInput)).toContain('rounded-[var(--radius-inputs)]');
+  });
+
+  it('改名对话框：操作键统一 36px，名称输入为抽屉控件规格', async () => {
+    await renderLayer();
+    await screen.findByText('空壳部');
+    const rename = await openRename('空壳部');
+    for (const name of [copyControls.cancel, copy.admin.users.save]) {
+      const button = within(rename).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-9');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+    const input = within(rename).getByLabelText(copyDepartments.nameLabel);
+    expect(classTokens(input)).toContain('h-10');
+    expect(classTokens(input)).toContain('rounded-[var(--radius-inputs)]');
+  });
+});

@@ -743,3 +743,104 @@ describe('投稿审核（§8.4–8.5）', () => {
     expect(adminApi.listApprovalSubmissions).toHaveBeenCalledWith();
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+/** 类名逐 token 比对：toContain 会被子串误命中（如 `border-b-0` 满足 `border-b`）。 */
+function classTokens(element: HTMLElement): readonly string[] {
+  return element.className.split(/\s+/);
+}
+
+describe('抽屉视觉基座：管理段控件与数据页布局（D5）', () => {
+  it('审批数据页保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    const token = loginToken('ops-wang');
+    await renderApprovals(
+      <QuotaRequestsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    await screen.findByText('minister-li');
+    // D5：任务/审批列表按自身所需宽度铺开，不被 880px 表单卡片截断
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+  });
+
+  it('批准对话框操作键统一 36px（与个人段表单对话框同规格）', async () => {
+    const token = loginToken('ops-wang');
+    await renderApprovals(
+      <QuotaRequestsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    await user.click(within(rowOf('minister-li')).getByRole('button', { name: copyApprovals.approve }));
+    const dialog = await screen.findByRole('dialog', { name: copyApprovals.approveDialogTitle });
+    for (const name of [copy.controls.cancel, copy.controls.confirm]) {
+      const button = within(dialog).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-9');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+  });
+
+  it('投稿驳回对话框操作键统一 36px', async () => {
+    const token = loginToken('ops-wang');
+    await renderApprovals(
+      <ApprovalSubmissionsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    await user.click(within(rowOf('行业研报汇总.pdf')).getByRole('button', { name: copyManage.reject }));
+    const dialog = await screen.findByRole('dialog', { name: copyManage.rejectDialogTitle });
+    for (const name of [copy.controls.cancel, copyManage.reject]) {
+      const button = within(dialog).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-9');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+  });
+
+  it('部门库筛选下拉为抽屉控件规格（40px / radius-inputs / hairline / 白底）', async () => {
+    const token = loginToken('admin');
+    await renderApprovals(
+      <ApprovalSubmissionsLayer />,
+      adminUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    await screen.findByText('行业研报汇总.pdf');
+    await user.click(screen.getByRole('radio', { name: copyApprovals.filterDepartment }));
+    const select = await screen.findByRole('combobox', { name: copyApprovals.filterDepartmentAria });
+    const tokens = classTokens(select);
+    expect(tokens).toContain('h-10');
+    expect(tokens).toContain('rounded-[var(--radius-inputs)]');
+    expect(tokens).toContain('border-hairline');
+    expect(tokens).toContain('bg-paper-white');
+    // 原生 select 未被重置外观：右侧下拉指示保留
+    expect(tokens).not.toContain('appearance-none');
+  });
+
+  it('共享 ConfirmDialog（驳回确认）按 R17 保持 32px，不越出抽屉作用域', async () => {
+    const token = loginToken('ops-wang');
+    await renderApprovals(
+      <QuotaRequestsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    await user.click(within(rowOf('minister-li')).getByRole('button', { name: copyApprovals.reject }));
+    const dialog = await screen.findByRole('dialog', { name: copyApprovals.rejectDialogTitle });
+    for (const name of [copy.controls.cancel, copyApprovals.reject]) {
+      const button = within(dialog).getByRole('button', { name });
+      // R17：delta spec 只对表单页脚规定 36px，对话框按钮不在规定内；该原语与聊天区共用
+      expect(classTokens(button)).toContain('h-8');
+      // 圆角与危险色仍由抽屉作用域 token 提供（不写死 hex）
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+  });
+});

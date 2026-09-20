@@ -584,17 +584,16 @@ export function DepartmentsLayer() {
               )}
             </p>
           )}
+          {/* 危险确认操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）。 */}
           <div className="mt-6 flex justify-end gap-2">
             <Pill
               variant="ghost"
-              size="sm"
               disabled={submitting}
               onClick={closeDeactivate}
             >
               {copy.controls.cancel}
             </Pill>
             <Pill
-              size="sm"
               danger
               loading={submitting}
               disabled={submitting}
@@ -689,11 +688,12 @@ function DepartmentNameDialog({
             <p className="mt-2 text-[15px] text-smoke-gray">{copyDepartments.nameNote}</p>
           )}
         </div>
+        {/* 对话框操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）：同个人段表单对话框。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill type="button" variant="ghost" size="sm" disabled={submitting} onClick={onClose}>
+          <Pill type="button" variant="ghost" disabled={submitting} onClick={onClose}>
             {copy.controls.cancel}
           </Pill>
-          <Pill type="submit" size="sm" loading={submitting} disabled={confirmDisabled}>
+          <Pill type="submit" loading={submitting} disabled={confirmDisabled}>
             {confirmLabel}
           </Pill>
         </div>

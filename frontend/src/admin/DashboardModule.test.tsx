@@ -516,3 +516,23 @@ describe('总览 dashboard：卡六态之加载 / 错误', () => {
     expect(backlog.querySelector('[data-card-state="error"]')).toBeNull();
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+describe('抽屉视觉基座：指标页不受表单卡片宽度约束（D5）', () => {
+  it('指标卡网格保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    const { container } = renderDashboard(
+      fakeAdminApi({ getDashboard: vi.fn(async (window: MetricsWindow) => opsDashboard(window)) }),
+    );
+    await screen.findByText('任务与健康');
+    // D5：dashboard 指标卡网格按自身所需宽度铺开，不被 880px 表单卡片截断
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+    // 指标卡网格仍是自适应多列（未被表单单列布局替换）
+    const grids = Array.from(container.querySelectorAll('div')).filter((node) =>
+      node.className.includes('minmax(240px,1fr)'),
+    );
+    expect(grids.length).toBeGreaterThan(0);
+  });
+});

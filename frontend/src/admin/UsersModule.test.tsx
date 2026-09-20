@@ -811,3 +811,72 @@ describe('ops 视图边界、权限矩阵与下钻', () => {
     expect(adminResolved.layers.map((layer) => layer.id)).toEqual(['users', 'departments']);
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+/** 类名逐 token 比对：toContain 会被子串误命中（如 `border-b-0` 满足 `border-b`）。 */
+function classTokens(element: HTMLElement): readonly string[] {
+  return element.className.split(/\s+/);
+}
+
+/** 下拉控件的抽屉规格：高 40px、圆角 --radius-inputs、描边走 hairline token、白底。 */
+function expectSelectSpec(select: HTMLElement): void {
+  const tokens = classTokens(select);
+  expect(tokens).toContain('h-10');
+  expect(tokens).toContain('rounded-[var(--radius-inputs)]');
+  expect(tokens).toContain('border-hairline');
+  expect(tokens).toContain('bg-paper-white');
+}
+
+describe('抽屉视觉基座：管理段控件与数据页布局（D5）', () => {
+  it('用户表数据页保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('张三');
+    // D5：880px 是表单可读性约束，不是全局容器约束——数据表不被压进表单卡片
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+    // 表结构仍是六列数据栅格（未被表单行替换）
+    const table = screen.getByRole('table', { name: copy.shell.drawer.modules.usersOps });
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
+  });
+
+  it('危险确认键为抽屉作用域规格（36px + radius-buttons + danger 实底），提交行为不变', async () => {
+    const { api } = await renderModule(adminUser());
+    await screen.findByText('张三');
+    const dialog = await openDisable('张三');
+    const danger = within(dialog).getByRole('button', { name: copyUsers.disableConfirm });
+    expect(classTokens(danger)).toContain('h-9');
+    expect(classTokens(danger)).toContain('rounded-[var(--radius-buttons)]');
+    expect(classTokens(danger)).toContain('bg-danger');
+    // 行为不变：仍以该行版本 + 幂等键提交一次永久禁用
+    await userEvent.click(danger);
+    await waitFor(() =>
+      expect(api.deleteUser).toHaveBeenCalledWith('u_user', 1, expect.any(String)),
+    );
+  });
+
+  it('新增对话框：操作键统一 36px，部门下拉为抽屉控件规格', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('张三');
+    const create = await openCreate();
+    for (const name of [copyControls.cancel, copyControls.confirm]) {
+      const button = within(create).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-9');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+    expectSelectSpec(await waitDepartmentSelect(create));
+  });
+
+  it('编辑对话框：操作键统一 36px，部门下拉为抽屉控件规格', async () => {
+    await renderModule(adminUser());
+    await screen.findByText('张三');
+    const edit = await openEdit('张三');
+    for (const name of [copyControls.cancel, copyUsers.save]) {
+      const button = within(edit).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-9');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+    expectSelectSpec(await waitDepartmentSelect(edit));
+  });
+});
