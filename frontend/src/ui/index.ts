@@ -6,6 +6,7 @@
 export { Chip, type ChipProps } from './Chip';
 export { ConfirmDialog, type ConfirmDialogProps } from './ConfirmDialog';
 export { CountBadge, type CountBadgeProps } from './CountBadge';
+export { FormRow, type FormRowProps } from './FormRow';
 export { HeaderNotice, type HeaderNoticeProps } from './HeaderNotice';
 export { HoverCard, type HoverCardProps } from './HoverCard';
 export { MeatballMenu, type MeatballMenuItem, type MeatballMenuProps } from './MeatballMenu';
