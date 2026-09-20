@@ -88,4 +88,20 @@ describe('SegmentedControl', () => {
     expect(slider().className).toContain('bg-paper-white');
     expect(screen.getByRole('radio', { name: 'deep' }).className).toContain('text-ink-black');
   });
+
+  it('几何经变量驱动：容器读 --segmented-height / --segmented-padding，无硬编码 h-8/p-1', () => {
+    render(<SegmentedControl options={OPTIONS} value="fast" onChange={() => {}} ariaLabel="测试" />);
+    const group = screen.getByRole('radiogroup');
+    expect(group.className).toContain('h-[var(--segmented-height)]');
+    expect(group.className).toContain('p-[var(--segmented-padding)]');
+    expect(group.className).not.toContain('h-8');
+    expect(group.className).not.toContain('p-1');
+
+    // 滑块条件挂载：render 内的 useLayoutEffect 完成首次实测后才出现
+    const thumb = group.querySelector('span[aria-hidden="true"]');
+    expect(thumb).not.toBeNull();
+    expect((thumb as HTMLElement).className).toContain('top-[var(--segmented-padding)]');
+    expect((thumb as HTMLElement).className).toContain('bottom-[var(--segmented-padding)]');
+    expect((thumb as HTMLElement).className).toContain('left-[var(--segmented-padding)]');
+  });
 });
