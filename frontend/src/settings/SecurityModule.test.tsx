@@ -14,6 +14,7 @@ import type { ThemeController } from '../theme/theme';
 import type { SettingsApi } from './api';
 import { SecurityModule } from './SecurityModule';
 import { SettingsProvider } from './SettingsProvider';
+import type { UserPreferences } from './types';
 
 function testUser(): User {
   return {
@@ -99,6 +100,66 @@ function serverError(): ApiError {
     details: {},
     requestId: null,
   });
+}
+
+/** 默认偏好快照：主题跟随系统、隐私开关关闭。 */
+const PREFERENCES: UserPreferences = {
+  theme: 'system',
+  chat_font_size: 'standard',
+  ab_opt_out: false,
+};
+
+/*
+ * 保存回声必须还原真实 API 的对象身份行为：api/client.ts 的 `response.json()` 每次返回
+ * **新对象**。若 mock 直接回声传入引用，useDraftForm 就观察不到 submitted 变化，会掩盖
+ * 「保存落地即重置草稿」这类缺陷（Task 8 教训）。故统一经本函数：取值相同、身份必新。
+ */
+function echoPreferences(next: UserPreferences): UserPreferences {
+  return { ...next };
+}
+
+const saveButton = () => screen.getByRole('button', { name: copy.controls.save });
+const cancelButton = () => screen.getByRole('button', { name: copy.controls.cancel });
+const privacySwitch = () =>
+  screen.getByRole('switch', { name: copy.settings.security.abOptOutLabel });
+
+interface ModuleOptions {
+  /** 覆盖 SettingsApi 方法（getPreferences / updatePreferences / changePassword…）。 */
+  readonly settings?: Record<string, unknown>;
+  /** 覆盖 AuthApi（listSessions / revokeSession / revokeAllSessions…）。 */
+  readonly auth?: Partial<AuthApi>;
+  /** 默认等待隐私草稿就绪（页脚出现）；加载态/错误态用例传 false。 */
+  readonly waitForDraft?: boolean;
+}
+
+/** 设置模块默认装配：已认证 store + 偏好快照 + 可覆盖的 API。 */
+async function renderModule(options: ModuleOptions = {}) {
+  const { store } = await createAuthedStore(options.auth ?? {});
+  const getPreferences = vi.fn(async () => PREFERENCES);
+  const updatePreferences = vi.fn(async (next: UserPreferences) => echoPreferences(next));
+  const changePassword = vi.fn(async () => {});
+  const api = {
+    getPreferences,
+    updatePreferences,
+    changePassword,
+    ...(options.settings ?? {}),
+  } as unknown as SettingsApi;
+
+  renderSecurity(store, api);
+  if (options.waitForDraft !== false) {
+    await screen.findByTestId('form-footer');
+  }
+  return { store, getPreferences, updatePreferences, changePassword };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
 }
 
 describe('SecurityModule', () => {
@@ -246,31 +307,46 @@ describe('SecurityModule', () => {
     expect(await screen.findByText(copy.settings.security.passwordSessionNote)).toBeInTheDocument();
   });
 
-  it('toggles password visibility on the old and new password fields (A37)', async () => {
+  it('三个密码字段默认掩码，点眼睛切换明文且不改字段取值，再次点击恢复掩码（A37）', async () => {
     const { store } = await createAuthedStore();
     const settingsApi = { changePassword: vi.fn(async () => {}) } as unknown as SettingsApi;
     const user = userEvent.setup();
 
     renderSecurity(store, settingsApi);
 
-    const oldInput = screen.getByLabelText(copy.settings.security.oldPasswordLabel);
-    const oldField = oldInput.closest('div') as HTMLElement;
-    await user.type(oldInput, 'password123');
-    await user.click(within(oldField).getByRole('button', { name: copy.login.showPassword }));
-    expect(oldInput).toHaveAttribute('type', 'text');
-    expect(within(oldField).getByRole('button', { name: copy.login.hidePassword })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    for (const label of [
+      copy.settings.security.oldPasswordLabel,
+      copy.settings.security.newPasswordLabel,
+      copy.settings.security.confirmPasswordLabel,
+    ]) {
+      const input = screen.getByLabelText(label);
+      // 三个字段各有同名的眼睛按钮，按所在表单行取用
+      const row = input.closest('[data-testid="form-row"]') as HTMLElement | null;
+      expect(row).not.toBeNull();
+      const scope = within(row as HTMLElement);
 
-    const newInput = screen.getByLabelText(copy.settings.security.newPasswordLabel);
-    const newField = newInput.closest('div') as HTMLElement;
-    await user.type(newInput, 'newpassword1');
-    await user.click(within(newField).getByRole('button', { name: copy.login.showPassword }));
-    expect(newInput).toHaveAttribute('type', 'text');
-    // 再次点击恢复掩码
-    await user.click(within(newField).getByRole('button', { name: copy.login.hidePassword }));
-    expect(newInput).toHaveAttribute('type', 'password');
+      await user.type(input, 'Abcd1234');
+      expect(input).toHaveAttribute('type', 'password');
+
+      const showToggle = scope.getByRole('button', { name: copy.settings.security.showPassword });
+      expect(showToggle).toHaveAttribute('aria-pressed', 'false');
+      // 眼睛图标是可聚焦按钮（辅助技术可达）
+      showToggle.focus();
+      expect(showToggle).toHaveFocus();
+      await user.click(showToggle);
+
+      expect(input).toHaveAttribute('type', 'text');
+      // 切换显示形态不得改变字段取值
+      expect(input).toHaveValue('Abcd1234');
+      expect(
+        scope.getByRole('button', { name: copy.settings.security.hidePassword }),
+      ).toHaveAttribute('aria-pressed', 'true');
+
+      // 再次点击恢复掩码，取值仍不变
+      await user.click(scope.getByRole('button', { name: copy.settings.security.hidePassword }));
+      expect(input).toHaveAttribute('type', 'password');
+      expect(input).toHaveValue('Abcd1234');
+    }
   });
 
   it('rejects a locally invalid new password with the exact rule before sending a request', async () => {
@@ -604,74 +680,321 @@ describe('SecurityModule 会话 fence（review Major 1：A 的会话列表不在
   });
 });
 
-describe('SecurityModule 隐私区卡（共用基座 §5.4）', () => {
-  it('隐私区卡呈现标题 + 说明 + 开关，开关反映已加载的 ab_opt_out 偏好', async () => {
-    const { store } = await createAuthedStore();
-    const settingsApi = {
-      changePassword: vi.fn(async () => {}),
-      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: true })),
-      updatePreferences: vi.fn(async (next: { theme: string; chat_font_size: string; ab_opt_out: boolean }) => next),
-    } as unknown as SettingsApi;
+describe('SecurityModule 表单结构（设置基座）', () => {
+  it('三张设置卡片：密码卡三行、会话卡按会话成行、隐私卡一行，每张卡的行容器关闭末行分隔线', async () => {
+    await renderModule({
+      auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
+    });
 
-    renderSecurity(store, settingsApi);
+    const cards = screen.getAllByTestId('settings-card');
+    expect(cards).toHaveLength(3);
+    // 卡片顺序：修改密码 / 活跃会话 / 隐私
+    expect(cards[0]).toHaveAccessibleName(copy.settings.security.passwordTitle);
+    expect(cards[1]).toHaveAccessibleName(copy.settings.security.sessionsTitle);
+    expect(cards[2]).toHaveAccessibleName(copy.settings.security.privacyTitle);
 
-    expect(await screen.findByText(copy.settings.security.privacyTitle)).toBeInTheDocument();
-    // 加载期只渲染标题 + loading 行，开关标签需等待偏好加载完成
-    expect(await screen.findByText(copy.settings.security.abOptOutLabel)).toBeInTheDocument();
-    expect(screen.getByText(copy.settings.security.abOptOutDescription)).toBeInTheDocument();
-    expect(
-      await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel }),
-    ).toHaveAttribute('data-state', 'checked');
+    const rows = screen.getAllByTestId('form-row');
+    expect(rows).toHaveLength(6);
+    // 行分隔线由「直接包裹这组行的父容器」关闭（FormRow 始终渲染 border-b，不做「是否最后一行」判断）
+    for (const group of [rows.slice(0, 3), rows.slice(3, 5), rows.slice(5)]) {
+      const container = group[0].parentElement as HTMLElement;
+      expect(container.className.split(/\s+/)).toContain('[&>*:last-child]:border-b-0');
+      expect(Array.from(container.children)).toEqual(group);
+      expect(container.lastElementChild).toBe(group[group.length - 1]);
+    }
+    // 该规则不得加在卡片上：隐私卡里 FormFooter 是最后一个子节点，加在卡片上命中的会是页脚
+    for (const card of cards) {
+      expect(card.className.split(/\s+/)).not.toContain('[&>*:last-child]:border-b-0');
+    }
   });
 
-  it('切换开关以完整快照写回偏好（ab_opt_out 语义不变）', async () => {
-    const { store } = await createAuthedStore();
-    const initial = { theme: 'dark', chat_font_size: 'large', ab_opt_out: false } as const;
-    const updatePreferences = vi.fn(async (next: typeof initial) => next);
+  it('隐私卡的 FormFooter 是卡片直接子节点且为最后一个子节点', async () => {
+    await renderModule();
+
+    const privacyCard = screen.getAllByTestId('settings-card')[2];
+    const footer = screen.getByTestId('form-footer');
+    expect(footer.parentElement).toBe(privacyCard);
+    expect(privacyCard.lastElementChild).toBe(footer);
+    // 全页只有隐私草稿一份页脚：会话/密码动作是即时动作与显式提交，不产生第二个「保存」
+    expect(screen.getAllByTestId('form-footer')).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: copy.controls.save })).toHaveLength(1);
+  });
+
+  it('密码行标签关联对应输入框，id 与改造前一致；密码规则说明留在新密码框下方', async () => {
+    await renderModule();
+
+    const cells = screen.getAllByTestId('form-row-label').slice(0, 3);
+    const labels = cells.map((cell) => cell.textContent ?? '');
+    expect(labels[0]).toContain(copy.settings.security.oldPasswordLabel);
+    expect(labels[1]).toContain(copy.settings.security.newPasswordLabel);
+    expect(labels[2]).toContain(copy.settings.security.confirmPasswordLabel);
+    expect(cells.map((cell) => cell.querySelector('label')?.getAttribute('for'))).toEqual([
+      'settings-old-password',
+      'settings-new-password',
+      'settings-confirm-password',
+    ]);
+
+    const rule = screen.getByText(copy.settings.security.passwordRule);
+    const newRow = screen
+      .getByLabelText(copy.settings.security.newPasswordLabel)
+      .closest('[data-testid="form-row"]') as HTMLElement;
+    expect(newRow).toContainElement(rule);
+    // 规则说明跟在框下方，而不是被挪进左列的灰色说明位（左列只放标签）
+    expect(newRow.querySelector('[data-testid="form-row-label"]')).not.toContainElement(rule);
+  });
+
+  it('会话卡每个会话一行：设备名在标签位、最近活跃时间在说明位、行尾是退出动作', async () => {
+    await renderModule({
+      auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
+    });
+
+    const sessionRows = screen.getAllByTestId('form-row').slice(3, 5);
+    expect(sessionRows[0].querySelector('[data-testid="form-row-label"]')?.textContent).toContain(
+      CURRENT_SESSION.device,
+    );
+    expect(sessionRows[1].querySelector('[data-testid="form-row-label"]')?.textContent).toContain(
+      OTHER_SESSION.device,
+    );
+    // 最近活跃时间落在行的说明位（文案模板取自 copy，不硬编码 "最近活跃"）
+    expect(sessionRows[0].textContent).toContain(copy.settings.security.lastActiveAt(''));
+    // 行尾动作：当前设备行为「退出登录」，其余为「退出此设备」
+    expect(
+      within(sessionRows[0]).getByRole('button', { name: copy.settings.security.logoutCurrent }),
+    ).toBeInTheDocument();
+    expect(
+      within(sessionRows[1]).getByRole('button', { name: copy.settings.security.logoutOther }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('SecurityModule 即时动作边界（退出类动作不进草稿）', () => {
+  it('退出全部设备用危险色，二次确认后立即执行，不经过「保存」', async () => {
+    const { store } = await createAuthedStore({
+      listSessions: vi.fn(async () => [CURRENT_SESSION]),
+    });
+    const revokeAllSessions = vi.spyOn(store, 'revokeAllSessions');
+    const updatePreferences = vi.fn(async (next: UserPreferences) => echoPreferences(next));
     const settingsApi = {
       changePassword: vi.fn(async () => {}),
-      getPreferences: vi.fn(async () => initial),
       updatePreferences,
     } as unknown as SettingsApi;
     const user = userEvent.setup();
 
     renderSecurity(store, settingsApi);
-    const toggle = await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel });
-    expect(toggle).toHaveAttribute('data-state', 'unchecked');
+    const signOutAll = await screen.findByRole('button', { name: copy.settings.security.logoutAll });
+    // 危险色走抽屉作用域 token（text-danger），不写死 hex
+    expect(signOutAll.className.split(/\s+/)).toContain('text-danger');
+    expect(signOutAll.className).not.toMatch(/#[0-9a-f]{3,8}/i);
 
-    await user.click(toggle);
+    // A38 危险确认框：确认后立即执行，不等「保存」
+    await user.click(signOutAll);
+    const dialog = await screen.findByRole('dialog', {
+      name: copy.settings.security.logoutAllConfirmTitle,
+    });
+    await user.click(within(dialog).getByRole('button', { name: copy.settings.security.logoutAll }));
+
+    await waitFor(() => expect(revokeAllSessions).toHaveBeenCalledTimes(1));
+    expect(updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('退出此设备点击即执行，不使隐私草稿进入待保存态，也不因「取消」撤销', async () => {
+    const { store } = await createAuthedStore({
+      listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]),
+    });
+    const revokeSession = vi.spyOn(store, 'revokeSession');
+    const updatePreferences = vi.fn(async (next: UserPreferences) => echoPreferences(next));
+    const settingsApi = {
+      changePassword: vi.fn(async () => {}),
+      updatePreferences,
+    } as unknown as SettingsApi;
+    const user = userEvent.setup();
+
+    renderSecurity(store, settingsApi);
+    await screen.findByText(OTHER_SESSION.device);
+
+    await user.click(screen.getByRole('button', { name: copy.settings.security.logoutOther }));
     await waitFor(() =>
-      expect(updatePreferences).toHaveBeenLastCalledWith({
+      expect(revokeSession).toHaveBeenCalledWith(OTHER_SESSION.id, { current: false }),
+    );
+
+    // 即时动作不使表单 dirty：「保存」不产生偏好写入，「取消」也不撤销已生效的退出
+    await user.click(cancelButton());
+    await user.click(saveButton());
+    expect(updatePreferences).not.toHaveBeenCalled();
+    expect(screen.queryByText(OTHER_SESSION.device)).not.toBeInTheDocument();
+  });
+
+  it('退出全部设备 / 退出此设备 / 退出登录三个动作都以危险色呈现，可访问名即动作本身', async () => {
+    await renderModule({
+      auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
+    });
+
+    for (const name of [
+      copy.settings.security.logoutAll,
+      copy.settings.security.logoutOther,
+      copy.settings.security.logoutCurrent,
+    ]) {
+      const action = screen.getByRole('button', { name });
+      expect(action.className.split(/\s+/)).toContain('text-danger');
+      expect(action).toBeEnabled();
+    }
+  });
+});
+
+describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4 / §5.5）', () => {
+  it('隐私区卡呈现标题 + 说明 + 开关，开关反映已加载的 ab_opt_out 偏好', async () => {
+    await renderModule({
+      settings: { getPreferences: vi.fn(async () => ({ ...PREFERENCES, ab_opt_out: true })) },
+    });
+
+    expect(screen.getByText(copy.settings.security.privacyTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.settings.security.abOptOutLabel)).toBeInTheDocument();
+    expect(screen.getByText(copy.settings.security.abOptOutDescription)).toBeInTheDocument();
+    expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('隐私开关走草稿：切换只改本地草稿，点「保存」才写偏好', async () => {
+    const { updatePreferences } = await renderModule();
+    const user = userEvent.setup();
+
+    expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
+    await user.click(privacySwitch());
+
+    // 草稿即时反映选择，但偏好未被写入
+    expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
+    expect(updatePreferences).not.toHaveBeenCalled();
+
+    await user.click(saveButton());
+
+    await waitFor(() =>
+      expect(updatePreferences).toHaveBeenCalledWith(expect.objectContaining({ ab_opt_out: true })),
+    );
+    expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('保存提交完整快照，含未在本模块渲染的字段', async () => {
+    const { updatePreferences } = await renderModule({
+      settings: {
+        getPreferences: vi.fn(async () => ({ theme: 'dark', chat_font_size: 'large', ab_opt_out: false })),
+      },
+    });
+    const user = userEvent.setup();
+
+    await user.click(privacySwitch());
+    await user.click(saveButton());
+
+    await waitFor(() =>
+      expect(updatePreferences).toHaveBeenCalledWith({
         theme: 'dark',
         chat_font_size: 'large',
         ab_opt_out: true,
       }),
     );
-    expect(
-      await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel }),
-    ).toHaveAttribute('data-state', 'checked');
   });
 
-  it('保存失败回滚开关并出现错误行', async () => {
-    const { store } = await createAuthedStore();
-    const initial = { theme: 'system', chat_font_size: 'standard', ab_opt_out: false } as const;
-    const updatePreferences = vi.fn(async (_next: typeof initial) => {
-      throw new Error('offline');
-    });
-    const settingsApi = {
-      changePassword: vi.fn(async () => {}),
-      getPreferences: vi.fn(async () => initial),
-      updatePreferences,
-    } as unknown as SettingsApi;
+  it('「取消」丢弃草稿：开关回到已提交取值，不写偏好', async () => {
+    const { updatePreferences } = await renderModule();
     const user = userEvent.setup();
 
-    renderSecurity(store, settingsApi);
-    const toggle = await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel });
-    await user.click(toggle);
+    await user.click(privacySwitch());
+    expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
 
-    expect(await screen.findByText(copy.settings.security.preferencesSaveError)).toBeInTheDocument();
+    await user.click(cancelButton());
+
+    expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
+    expect(updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('草稿与已提交快照一致时保存不产生请求', async () => {
+    const { updatePreferences } = await renderModule();
+    const user = userEvent.setup();
+
+    await user.click(saveButton());
+
+    expect(updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('保存进行中隐私开关不可交互且禁用态可见（R11 保存期禁用契约）', async () => {
+    // 回归守卫：真实 API 的保存响应每次都是新对象（api/client.ts `response.json()`），
+    // useDraftForm 见 submitted 变化即重置草稿。若保存窗口内开关仍可改，那笔在途编辑会在
+    // 响应落地时被静默丢弃。
+    const save = deferred<UserPreferences>();
+    const updatePreferences = vi.fn<SettingsApi['updatePreferences']>(() => save.promise);
+    await renderModule({ settings: { updatePreferences } });
+    const user = userEvent.setup();
+
+    await user.click(privacySwitch());
+    await user.click(saveButton());
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+
+    expect(cancelButton()).toBeDisabled();
+    expect(privacySwitch()).toBeDisabled();
+    // 禁用态可见：纳入草稿的控件的禁用外壳带 R11 要求的两个类
+    const shell = privacySwitch().closest('fieldset');
+    expect(shell).not.toBeNull();
+    expect(shell?.className.split(/\s+/)).toContain('disabled:opacity-60');
+    expect(shell?.className.split(/\s+/)).toContain('disabled:cursor-not-allowed');
+
+    // 在途点击被吞掉：草稿仍是提交前那次选择
+    await user.click(privacySwitch());
+    expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
+
+    // 保存落地（新对象身份 → 草稿重置为服务端快照）后仍是这次选择，且再点保存是 no-op
+    await act(async () => {
+      save.resolve(echoPreferences({ ...PREFERENCES, ab_opt_out: true }));
+      await save.promise;
+    });
+    expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
+    await user.click(saveButton());
+    expect(updatePreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it('保存失败：开关回滚到已提交取值并就地提示', async () => {
+    const updatePreferences = vi.fn(async (_next: UserPreferences) => {
+      throw new Error('offline');
+    });
+    await renderModule({ settings: { updatePreferences } });
+    const user = userEvent.setup();
+
+    await user.click(privacySwitch());
+    await user.click(saveButton());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      copy.settings.security.preferencesSaveError,
+    );
+    expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
+  });
+
+  it('偏好加载完成前只渲染标题与加载行，不渲染开关与页脚', async () => {
+    const pending = deferred<UserPreferences>();
+    const getPreferences = vi.fn<SettingsApi['getPreferences']>(() => pending.promise);
+
+    await renderModule({ settings: { getPreferences }, waitForDraft: false });
+
+    expect(screen.getByText(copy.settings.security.privacyTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.settings.security.preferencesLoading)).toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('form-footer')).not.toBeInTheDocument();
+
+    await act(async () => {
+      pending.resolve(echoPreferences(PREFERENCES));
+      await pending.promise;
+    });
+    expect(await screen.findByTestId('form-footer')).toBeInTheDocument();
+    expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
+  });
+
+  it('偏好加载失败：卡片内就地错误行 + 重试文字链，不渲染开关', async () => {
+    const getPreferences = vi.fn<SettingsApi['getPreferences']>(async () => {
+      throw new Error('offline');
+    });
+
+    await renderModule({ settings: { getPreferences }, waitForDraft: false });
+
     expect(
-      screen.getByRole('switch', { name: copy.settings.security.abOptOutLabel }),
-    ).toHaveAttribute('data-state', 'unchecked');
+      await screen.findByText(copy.settings.security.preferencesLoadError),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: copy.states.retry })).toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
 });

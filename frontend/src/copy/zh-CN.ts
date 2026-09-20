@@ -123,6 +123,8 @@ export const zhCN = {
       oldPasswordLabel: '当前密码', // 措辞后定
       newPasswordLabel: '新密码', // 措辞后定
       confirmPasswordLabel: '再次输入新密码', // 措辞后定
+      showPassword: '显示密码', // 措辞后定：密码框眼睛图标的可访问名（点击后转明文）
+      hidePassword: '隐藏密码', // 措辞后定：密码框眼睛图标的可访问名（点击后转掩码）
       passwordMismatch: '两次输入的新密码不一致', // 措辞后定
       changePassword: '修改密码', // 措辞后定
       passwordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
