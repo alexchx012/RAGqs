@@ -121,8 +121,10 @@ export const zhCN = {
       sectionLabel: '安全', // 措辞后定
       passwordTitle: '修改密码', // 措辞后定
       oldPasswordLabel: '当前密码', // 措辞后定
+      oldPasswordHint: '输入正在使用的密码以验证身份', // 措辞后定：左列说明（设计图）
       newPasswordLabel: '新密码', // 措辞后定
       confirmPasswordLabel: '再次输入新密码', // 措辞后定
+      confirmPasswordHint: '再次输入新密码以确保一致', // 措辞后定：左列说明（设计图）
       showOldPassword: '显示当前密码', // 措辞后定：眼睛按钮可访问名按字段限定（同页三个按钮必须可区分）
       hideOldPassword: '隐藏当前密码', // 措辞后定
       showNewPassword: '显示新密码', // 措辞后定
@@ -131,9 +133,9 @@ export const zhCN = {
       hideConfirmPassword: '隐藏确认新密码', // 措辞后定
       passwordMismatch: '两次输入的新密码不一致', // 措辞后定
       changePassword: '修改密码', // 措辞后定
-      passwordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
-      invalidPasswordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
-      passwordSessionNote: '修改密码成功后，所有设备将退出登录', // 措辞后定：提交区固定注明（A37）
+      passwordRule: '至少 8 位，且需同时包含字母和数字', // 措辞后定：设计图表述，作为「新密码」行的左列说明
+      invalidPasswordRule: '至少 8 位，且需同时包含字母和数字', // 措辞后定：与左列说明同措辞（同一条规则）
+      passwordSessionNote: '修改密码成功后，所有设备将退出登录', // 措辞后定：作为「活跃会话」行的左列说明（A37）
       logoutAllConfirmTitle: '退出全部设备？', // 措辞后定：退出全部设备二次确认（A38）
       logoutAllConfirmDescription: '将撤销本账号全部设备的会话，包括当前使用的这台设备，之后需重新登录。', // 措辞后定
       wrongOldPassword: '当前密码不正确', // 措辞后定

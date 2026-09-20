@@ -301,20 +301,19 @@ describe('SecurityModule', () => {
     expect(screen.getByRole('button', { name: copy.settings.security.logoutAll })).toBeEnabled();
   });
 
-  it('shows the all-devices sign-out note next to the submit action (A37)', async () => {
+  it('shows the all-devices sign-out note as the 活跃会话 row description, not in the footer (A37)', async () => {
     const { store } = await createAuthedStore();
     const settingsApi = { changePassword: vi.fn(async () => {}) } as unknown as SettingsApi;
     renderSecurity(store, settingsApi);
 
-    // R14：设计图的行序列是连续的两栏表单行，页脚才是提交区——A37 的固定说明落在页脚内（按钮左侧），
-    // 不再作为行与行之间的一行文字
+    // R14 精修：设计图的行序列里没有独立的 A37 行，说明改作「活跃会话」行的左列说明；
+    // 页脚只留共享原语的「取消 / 保存」两个键（statusSlot 不传）
     const note = await screen.findByText(copy.settings.security.passwordSessionNote);
+    const sessionsRow = screen.getAllByTestId('form-row')[3];
+    expect(sessionsRow.querySelector('[data-testid="form-row-label"]')).toContainElement(note);
     const footer = screen.getByTestId('form-footer');
-    expect(footer).toContainElement(note);
-    expect(
-      note.compareDocumentPosition(screen.getByRole('button', { name: copy.controls.save })) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(footer).not.toContainElement(note);
+    expect(Array.from(footer.children)).toHaveLength(2);
   });
 
   it('三个密码字段默认掩码，点眼睛切换明文且不改字段取值，再次点击恢复掩码（A37）', async () => {
@@ -817,7 +816,41 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片、连�
     }
   });
 
-  it('密码行标签关联对应输入框，id 与改造前一致；密码规则说明留在新密码框下方', async () => {
+  it('三行密码各有左列说明（措辞取自设计图），控件列不再重复同一段文字', async () => {
+    await renderModule();
+
+    const rows = screen.getAllByTestId('form-row').slice(0, 3);
+    const fields = [
+      {
+        label: copy.settings.security.oldPasswordLabel,
+        hint: copy.settings.security.oldPasswordHint,
+      },
+      {
+        label: copy.settings.security.newPasswordLabel,
+        hint: copy.settings.security.passwordRule,
+      },
+      {
+        label: copy.settings.security.confirmPasswordLabel,
+        hint: copy.settings.security.confirmPasswordHint,
+      },
+    ];
+
+    fields.forEach((field, index) => {
+      const labelCell = rows[index].querySelector('[data-testid="form-row-label"]') as HTMLElement;
+      expect(labelCell.textContent).toContain(field.label);
+      expect(labelCell.textContent).toContain(field.hint);
+      // 说明只在左列；右列不再出现同一段文字（旧结构把规则放在框下方）
+      const controlCell = labelCell.nextElementSibling as HTMLElement;
+      expect(controlCell.textContent).not.toContain(field.hint);
+    });
+
+    // 三行结构一致（每行左列都是「标签 + 一条说明」），行高因此趋于一致（实测数字见报告）
+    for (const row of rows) {
+      expect(row.querySelectorAll('[data-testid="form-row-label"] p')).toHaveLength(1);
+    }
+  });
+
+  it('密码行标签关联对应输入框，id 与改造前一致', async () => {
     await renderModule();
 
     const cells = screen.getAllByTestId('form-row-label').slice(0, 3);
@@ -830,14 +863,6 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片、连�
       'settings-new-password',
       'settings-confirm-password',
     ]);
-
-    const rule = screen.getByText(copy.settings.security.passwordRule);
-    const newRow = screen
-      .getByLabelText(copy.settings.security.newPasswordLabel)
-      .closest('[data-testid="form-row"]') as HTMLElement;
-    expect(newRow).toContainElement(rule);
-    // 规则说明跟在框下方，而不是被挪进左列的灰色说明位（左列只放标签）
-    expect(newRow.querySelector('[data-testid="form-row-label"]')).not.toContainElement(rule);
   });
 
   it('会话行每个会话一行：设备名在标签位、最近活跃时间在说明位、行尾是退出动作', async () => {

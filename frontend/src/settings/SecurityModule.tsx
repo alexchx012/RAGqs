@@ -13,8 +13,9 @@
  *
  * 页脚提交语义（R13）：一个页脚提交本页可提交的全部内容——密码字段非空则走改密，隐私草稿有改动则写偏好
  * （useDraftForm.commit 自带 dirty 门槛），两者都没有则 no-op；「取消」清空三个密码字段（含就地错误行）
- * 并丢弃隐私草稿。正在提交（改密或偏好任一在途）时两个键都禁用。A37 的「改密后全设备退出」固定说明也
- * 落在页脚（提交区）内：设计图的行序列里没有它这一行。
+ * 并丢弃隐私草稿。正在提交（改密或偏好任一在途）时两个键都禁用。页脚不传 statusSlot（本模块没有「已保存」
+ * 式的临时反馈）。每个字段的辅助文字一律走 FormRow 的 description（左列），不占控件列、不额外撑高行：
+ * 三行密码各有一条设计图说明，「活跃会话」行的说明是 A37 的「改密后全设备退出」提示。
  *
  * 组装约束：全部行由**同一层**容器承载 [&>*:last-child]:border-b-0，关闭的正是卡片最后一行（隐私行）的
  * 分隔线；该规则不得加在卡片上——卡片的直接末子节点是 FormFooter，加在卡片上命中的会是页脚。FormFooter
@@ -344,7 +345,11 @@ export function SecurityModule() {
             }}
             noValidate
           >
-            <FormRow label={copy.settings.security.oldPasswordLabel} htmlFor="settings-old-password">
+            <FormRow
+              label={copy.settings.security.oldPasswordLabel}
+              description={copy.settings.security.oldPasswordHint}
+              htmlFor="settings-old-password"
+            >
               <div className="relative">
                 <input
                   id="settings-old-password"
@@ -369,7 +374,11 @@ export function SecurityModule() {
               )}
             </FormRow>
 
-            <FormRow label={copy.settings.security.newPasswordLabel} htmlFor="settings-new-password">
+            <FormRow
+              label={copy.settings.security.newPasswordLabel}
+              description={copy.settings.security.passwordRule}
+              htmlFor="settings-new-password"
+            >
               <div className="relative">
                 <input
                   id="settings-new-password"
@@ -387,8 +396,6 @@ export function SecurityModule() {
                   hideLabel={copy.settings.security.hideNewPassword}
                 />
               </div>
-              {/* 规则说明跟在框下方（不走 FormRow 的 description：那是左列灰色说明位） */}
-              <p className="mt-2 text-caption text-slate-strong">{copy.settings.security.passwordRule}</p>
               {passwordErrors.newPassword !== null && (
                 <p role="alert" className="mt-2 text-caption text-danger">
                   {passwordErrors.newPassword}
@@ -398,6 +405,7 @@ export function SecurityModule() {
 
             <FormRow
               label={copy.settings.security.confirmPasswordLabel}
+              description={copy.settings.security.confirmPasswordHint}
               htmlFor="settings-confirm-password"
             >
               <div className="relative">
@@ -427,9 +435,13 @@ export function SecurityModule() {
             <button type="submit" className="hidden" />
           </form>
 
-          {/* 活跃会话行：右列是「退出全部设备」即时动作；会话区的三条状态行渲染在本行右列内，
-              避免成为行容器的直接子节点（那会抢走末行的分隔线关闭规则）。 */}
-          <FormRow label={copy.settings.security.sessionsTitle}>
+          {/* 活跃会话行：左列说明是 A37 的全设备退出提示；右列是「退出全部设备」即时动作，
+              会话区的三条状态行也渲染在本行右列内——避免成为行容器的直接子节点（那会抢走末行的
+              分隔线关闭规则）。 */}
+          <FormRow
+            label={copy.settings.security.sessionsTitle}
+            description={copy.settings.security.passwordSessionNote}
+          >
             <div className="flex flex-col items-end gap-2">
               <TextLink
                 danger
@@ -534,15 +546,9 @@ export function SecurityModule() {
         )}
 
         {/* FormFooter 是卡片的直接子节点且为最后一个子节点（负外边距抵消卡片 p-8）。
-            A37 的固定说明经 statusSlot 落在提交区那一行的左侧，不占行序列里的额外一行。 */}
-        <FormFooter
-          onCancel={cancelPage}
-          onSave={savePage}
-          saving={pageSaving}
-          statusSlot={
-            <p className="text-caption text-slate-strong">{copy.settings.security.passwordSessionNote}</p>
-          }
-        />
+            不传 statusSlot：本模块没有「已保存」式的临时反馈，A37 说明已改作「活跃会话」行的左列说明，
+            页脚只保留共享原语默认的「取消 / 保存」两个键。 */}
+        <FormFooter onCancel={cancelPage} onSave={savePage} saving={pageSaving} />
       </SettingsCard>
 
       {/* A38：退出全部设备 = 撤销含当前设备在内的全部会话，danger 二次确认后再执行 */}
