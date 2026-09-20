@@ -232,6 +232,28 @@ describe('抽屉作用域挂载与左栏新显示名（drawer-visual-system）',
     expect(pane.className).not.toContain('mx-auto');
   });
 
+  it('两栏行无栏间 gap 与桌面横向留白：内容区紧贴左栏右缘，窄屏保留 px-5', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    const row = nav.parentElement as HTMLElement;
+    // 设计图几何：内容区紧跟左栏右缘（1440 视口下自 x=240 起、到 x=1440 止，宽 1200），
+    // 栏间无 gap、桌面无页面横向留白；880px 卡片居中 → 左缘 240 + (1200 − 880) / 2 = 400。
+    expect(row.className).not.toContain('gap-');
+    expect(row.className).not.toContain('md:px-10');
+    // 窄屏（<768px）单栏化仍保留必需留白，桌面断点归零
+    expect(row.className).toContain('px-5 md:px-0');
+    // 左栏仍固定 240px；胶囊仍 200×40 + 24px 左缩进
+    expect(nav.className).toContain('w-60');
+    const firstItem = nav.querySelector('button') as HTMLElement;
+    expect(firstItem.className).toContain('ml-6');
+    expect(firstItem.className).toContain('w-[200px]');
+    // 页头保留自己的内缩（与左栏胶囊的 24px 不是同一套值，不得被本次对齐带走）
+    const header = dialog.querySelector('header') as HTMLElement;
+    expect(header.className).toContain('px-5');
+    expect(header.className).toContain('md:px-10');
+  });
+
   it('抽屉内打开的管理段筛选浮层同样自带作用域属性（UsersModule Popover）', async () => {
     await renderApp('/admin/users', 'ops');
     const dialog = await screen.findByRole('dialog', { name: modules.usersOps });

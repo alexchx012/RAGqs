@@ -837,7 +837,11 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
           <h1 className="font-sohne text-body-lg font-medium leading-body-lg">{currentTitle}</h1>
           <div className="ml-auto">{headerRight}</div>
         </header>
-        <div className="mt-10 flex min-h-0 flex-1 gap-10 px-5 md:px-10">
+        {/* 两栏行（drawer-visual-system 左栏与内容区几何）：桌面断点无页面横向留白、无栏间 gap——
+            左栏仍 240px，内容区紧跟其右缘自 x=240 起到 x=1440 止（宽 1200），
+            880px 卡片居中后左缘 400（设计图实测 401，±1px 属抗锯齿范围）。
+            窄屏保留 px-5 以免单栏贴边；页头自己的内缩（px-5 md:px-10）是另一套值，不在此行内。 */}
+        <div className="mt-10 flex min-h-0 flex-1 px-5 md:px-0">
           {!narrowListView && (
             <nav
               className={`${narrow ? 'hidden' : ''} w-60 shrink-0 overflow-y-auto bg-paper-white`}
