@@ -246,10 +246,10 @@ describe('抽屉作用域（settings-ui-ux-refresh）', () => {
     expect(lightScope).toContain('--color-ink-black: #17191c;');
     expect(lightScope).toContain('--color-hairline: #ececec;');
     expect(lightScope).toContain('--color-danger: #b6492f;');
-    expect(tokensCss).toContain('--radius-buttons: 9999px;');
-    expect(tokensCss).toContain('--radius-inputs: 16px;');
-    expect(tokensCss).toContain('--radius-cards: 24px;');
-    expect(tokensCss).toContain('--segmented-height: 32px;');
-    expect(tokensCss).toContain('--segmented-padding: 4px;');
+    expect(lightScope).toContain('--radius-buttons: 9999px;');
+    expect(lightScope).toContain('--radius-inputs: 16px;');
+    expect(lightScope).toContain('--radius-cards: 24px;');
+    expect(lightScope).toContain('--segmented-height: 32px;');
+    expect(lightScope).toContain('--segmented-padding: 4px;');
   });
 });
