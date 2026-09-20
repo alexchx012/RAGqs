@@ -248,7 +248,7 @@ describe('ProfileModule 表单结构（设置基座）', () => {
     expect(subtitle.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('区域只在卡片上命名一次（无嵌套同名 landmark）', async () => {
+  it('区域只在卡片上命名一次，且区域名即可见标题（无嵌套同名 landmark）', async () => {
     const currentUser = testUser();
     const { api } = createProfileApi(currentUser);
     const store = await createAuthedStore(currentUser);
@@ -259,9 +259,13 @@ describe('ProfileModule 表单结构（设置基座）', () => {
     const regions = screen.getAllByRole('region');
     expect(regions).toHaveLength(1);
     expect(regions[0]).toBe(screen.getByTestId('settings-card'));
-    expect(regions[0]).toHaveAccessibleName(copy.settings.profile.sectionLabel);
+    // 区域名必须等于卡内可见标题（不再取可能与标题漂移的 sectionLabel「个人资料」）
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(regions[0]).toHaveAccessibleName(heading.textContent ?? '');
+    expect(regions[0]).toHaveAccessibleName(copy.settings.profile.cardTitle);
+    expect(regions[0]).not.toHaveAttribute('aria-label');
     // 标题元素自身不挂 aria-label（同一元素上标题 + aria-label 会被重复朗读）
-    expect(screen.getByRole('heading', { level: 2 })).not.toHaveAttribute('aria-label');
+    expect(heading).not.toHaveAttribute('aria-label');
   });
 
   it('显示名行的标签关联输入框；只读行的标签不关联任何控件', async () => {

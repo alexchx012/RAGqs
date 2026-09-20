@@ -181,7 +181,7 @@ describe('AppearanceModule', () => {
     expect(subtitle.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('区域只在卡片上命名一次（外层 section 不具名，无嵌套同名 landmark）', async () => {
+  it('区域只在卡片上命名一次，且区域名即可见标题（无嵌套同名 landmark）', async () => {
     const { api } = createPreferencesApi(preferences());
     await renderModule(api, createThemeController());
 
@@ -189,9 +189,13 @@ describe('AppearanceModule', () => {
     const regions = screen.getAllByRole('region');
     expect(regions).toHaveLength(1);
     expect(regions[0]).toBe(screen.getByTestId('settings-card'));
-    expect(regions[0]).toHaveAccessibleName(copy.settings.appearance.sectionLabel);
+    // 区域名必须等于卡内可见标题（不再取可能与标题漂移的 sectionLabel「外观」）
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(regions[0]).toHaveAccessibleName(heading.textContent ?? '');
+    expect(regions[0]).toHaveAccessibleName(copy.settings.appearance.cardTitle);
+    expect(regions[0]).not.toHaveAttribute('aria-label');
     // 标题元素自身不挂 aria-label（同一元素上标题 + aria-label 会被重复朗读）
-    expect(screen.getByRole('heading', { level: 2 })).not.toHaveAttribute('aria-label');
+    expect(heading).not.toHaveAttribute('aria-label');
   });
 
   it('只渲染主题与对话字号两行（界面语言/消息时间戳不在本期范围）', async () => {

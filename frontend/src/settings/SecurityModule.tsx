@@ -3,6 +3,8 @@
  * FormFooter 基座。设计图是**卡片标题 + 灰色副标题 + 连续的两栏表单行序列、没有小节标题**，故卡内自上而下就是：
  * 「安全设置 / 管理登录密码与设备会话」标题块 → 当前密码 / 新密码 / 再次输入新密码 → 活跃会话（右列是
  * 「退出全部设备」）→ 各设备会话行 → 隐私（右列是开关）。
+ * 卡片区域名即该可见标题（SettingsCard 内部用 aria-labelledby 指向 h2），故本模块不再传 ariaLabel
+ * （copy.settings.security.sectionLabel 因此不再被引用，保留在文案表待台账统一清理）。
  *
  * 三条语义边界（本模块的核心）：
  * - 密码字段 = 显式提交的命令：输入只改本地 state，页脚「保存」才发请求（校验失败就地提示）。
@@ -334,7 +336,6 @@ export function SecurityModule() {
   return (
     <section className="pb-10">
       <SettingsCard
-        ariaLabel={copy.settings.security.sectionLabel}
         title={copy.settings.security.cardTitle}
         description={copy.settings.security.cardDescription}
       >

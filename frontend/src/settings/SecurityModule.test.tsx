@@ -717,7 +717,7 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片、连�
 
     const cards = screen.getAllByTestId('settings-card');
     expect(cards).toHaveLength(1);
-    expect(cards[0]).toHaveAccessibleName(copy.settings.security.sectionLabel);
+    expect(cards[0]).toHaveAccessibleName(copy.settings.security.cardTitle);
     // R14 + 3.8：设计图是「卡片标题 + 副标题 + 连续的两栏表单行」，卡内只有卡片标题一个标题元素，
     // 没有 h2 小节标题（分区由表单行的标签表达）
     expect(screen.queryAllByRole('heading')).toHaveLength(1);
@@ -757,15 +757,19 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片、连�
     ).toBeTruthy();
   });
 
-  it('区域只在卡片上命名一次（无嵌套同名 landmark）', async () => {
+  it('区域只在卡片上命名一次，且区域名即可见标题（无嵌套同名 landmark）', async () => {
     await renderModule();
 
     const regions = screen.getAllByRole('region');
     expect(regions).toHaveLength(1);
     expect(regions[0]).toBe(screen.getByTestId('settings-card'));
-    expect(regions[0]).toHaveAccessibleName(copy.settings.security.sectionLabel);
+    // 区域名必须等于卡内可见标题（不再取可能与标题漂移的 sectionLabel「安全」）
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(regions[0]).toHaveAccessibleName(heading.textContent ?? '');
+    expect(regions[0]).toHaveAccessibleName(copy.settings.security.cardTitle);
+    expect(regions[0]).not.toHaveAttribute('aria-label');
     // 标题元素自身不挂 aria-label（同一元素上标题 + aria-label 会被重复朗读）
-    expect(screen.getByRole('heading', { level: 2 })).not.toHaveAttribute('aria-label');
+    expect(heading).not.toHaveAttribute('aria-label');
   });
 
   it('只有一个承载末行分隔线关闭规则的行容器，且它的最后一个子节点是末行（隐私行）', async () => {

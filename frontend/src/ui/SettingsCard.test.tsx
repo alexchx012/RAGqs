@@ -105,7 +105,7 @@ describe('SettingsCard', () => {
     expect(screen.getByTestId('settings-card').querySelectorAll('p')).toHaveLength(0);
   });
 
-  it('标题元素不挂 aria-label：区域名只在卡片 section 上命名一次', () => {
+  it('同时给 title 与 ariaLabel 时区域名以可见标题为准（aria-labelledby 指向卡内 h2）', () => {
     render(
       <SettingsCard ariaLabel="安全" title="安全设置" description="管理登录密码与设备会话">
         内容
@@ -114,9 +114,25 @@ describe('SettingsCard', () => {
 
     const card = screen.getByTestId('settings-card');
     const heading = screen.getByRole('heading', { level: 2, name: '安全设置' });
-    expect(card).toHaveAccessibleName('安全');
+    // 区域名 = 卡内可见标题：卡片有了标题后，区域名的权威来源就是它，
+    // 不再取可能与标题漂移的 ariaLabel（D4 改名前为「安全」，改名为「安全设置」）。
+    expect(card).toHaveAccessibleName('安全设置');
+    expect(card.getAttribute('aria-labelledby')).toBe(heading.id);
+    expect(heading.id).not.toBe('');
+    expect(screen.getAllByRole('region')).toHaveLength(1);
+    // 命名只出现一次：section 上不同时挂 aria-label，标题元素自身也不挂
+    expect(card).not.toHaveAttribute('aria-label');
     expect(heading).not.toHaveAttribute('aria-label');
     expect(heading).not.toHaveAttribute('aria-labelledby');
-    expect(screen.getAllByRole('region')).toHaveLength(1);
+  });
+
+  it('只给 ariaLabel（知识库六张卡片的形态）时区域名仍等于传入值', () => {
+    render(<SettingsCard ariaLabel="知识库">内容</SettingsCard>);
+
+    const card = screen.getByTestId('settings-card');
+    expect(card).toHaveAccessibleName('知识库');
+    expect(card.getAttribute('aria-label')).toBe('知识库');
+    expect(card).not.toHaveAttribute('aria-labelledby');
+    expect(card.innerHTML).toBe('内容');
   });
 });

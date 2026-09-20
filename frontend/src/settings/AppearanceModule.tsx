@@ -4,7 +4,9 @@
  * 「取消」丢弃草稿；保存失败由 use-preferences 回滚并置 saveError。
  * 界面语言与消息时间戳不在本期范围（后端无对应偏好字段），本模块不渲染也不留占位行。
  * 三态（loading / loadError / saveError）与 aria-busy 沿用既有语义。
- * 卡片标题与灰色副标题由 SettingsCard 的 title/description 渲染（设计图原文，见 copy 的 cardTitle/cardDescription）。
+ * 卡片标题与灰色副标题由 SettingsCard 的 title/description 渲染（设计图原文，见 copy 的 cardTitle/cardDescription）；
+ * 卡片区域名即该可见标题（SettingsCard 内部用 aria-labelledby 指向 h2），故本模块不再传 ariaLabel
+ * （copy.settings.appearance.sectionLabel 因此不再被引用，保留在文案表待台账统一清理）。
  * 区域只在卡片上命名一次：外层 section 不再挂 aria-label，避免与 SettingsCard 形成嵌套同名 landmark
  * （Task 8 遗留缺陷；账号设置与安全设置两个模块本就没有外层具名）。
  * 保存进行中禁用两个分段控件（见 DraftFieldSet）：use-preferences 的 saving 契约要求消费方
@@ -83,7 +85,6 @@ export function AppearanceModule() {
           卡片整体不渲染，避免出现控件绑不上草稿的空壳。 */}
       {!loading && !loadError && draft !== null && (
         <SettingsCard
-          ariaLabel={copy.settings.appearance.sectionLabel}
           title={copy.settings.appearance.cardTitle}
           description={copy.settings.appearance.cardDescription}
         >
