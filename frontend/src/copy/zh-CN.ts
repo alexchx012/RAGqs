@@ -97,10 +97,10 @@ export const zhCN = {
   settings: {
     profile: {
       sectionLabel: '个人资料', // 措辞后定
+      avatarLabel: '头像', // 措辞后定：头像行标签
       avatarAlt: '个人头像', // 措辞后定
-      avatarInputLabel: '更换头像', // 措辞后定
+      avatarInputLabel: '更换头像', // 措辞后定：头像行即时动作按钮
       displayNameLabel: '显示名', // 措辞后定
-      save: '保存', // 措辞后定
       saved: '已保存', // 措辞后定：保存成功小字（15px 成功绿，约 2s 后淡出）
       saveError: '保存失败，请稍后重试', // 措辞后定
       avatarError: '头像上传失败，请稍后重试', // 措辞后定
@@ -115,7 +115,7 @@ export const zhCN = {
       roleMinister: '部长', // 措辞后定
       roleOps: '运维', // 措辞后定
       roleAdmin: '管理员', // 措辞后定
-      adminManaged: '由管理员维护', // 措辞后定
+      adminManaged: '由管理员维护，如需修改请联系管理员', // 措辞后定：姓名/部门/角色只读行的说明
     },
     security: {
       sectionLabel: '安全', // 措辞后定
