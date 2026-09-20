@@ -137,6 +137,27 @@ describe('AppearanceModule', () => {
     expect(card.lastElementChild).toBe(footer);
   });
 
+  it('行容器承载末行分隔线关闭规则，卡片直接子节点为「行容器 + 页脚」', async () => {
+    const { api } = createPreferencesApi(preferences());
+    await renderModule(api, createThemeController());
+
+    const card = screen.getByTestId('settings-card');
+    // 卡片直接子节点顺序固定：行容器 + FormFooter
+    expect(Array.from(card.children)).toHaveLength(2);
+    expect(card.children[0].tagName).toBe('DIV');
+    expect(card.children[1]).toBe(screen.getByTestId('form-footer'));
+
+    // 末行分隔线必须由「直接包裹这组行的父容器」关闭，而不是卡片本身：
+    // 卡片里 FormFooter 是最后一个子节点，加在卡片上的 :last-child 命中的会是页脚，
+    // 去掉的将是页脚的下边框。FormRow 始终渲染 border-b，故这里同时确认两者。
+    const rows = screen.getAllByTestId('form-row');
+    const rowContainer = card.children[0];
+    expect(rowContainer.className).toContain('[&>*:last-child]:border-b-0');
+    expect(Array.from(rowContainer.children)).toEqual(rows);
+    expect(rows[rows.length - 1].className).toContain('border-b');
+    expect(card.className).not.toContain('[&>*:last-child]:border-b-0');
+  });
+
   it('只渲染主题与对话字号两行（界面语言/消息时间戳不在本期范围）', async () => {
     const { api } = createPreferencesApi(preferences());
     await renderModule(api, createThemeController());

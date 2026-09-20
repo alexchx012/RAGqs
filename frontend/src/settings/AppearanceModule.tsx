@@ -84,34 +84,39 @@ export function AppearanceModule() {
           卡片整体不渲染，避免出现控件绑不上草稿的空壳。 */}
       {!loading && !loadError && draft !== null && (
         <SettingsCard ariaLabel={copy.settings.appearance.sectionLabel}>
-          <FormRow
-            label={copy.settings.appearance.themeTitle}
-            description={copy.settings.appearance.themeDescription}
-          >
-            {/* 保存进行中禁用整块控件，避免在途编辑被静默丢弃（详见 DraftFieldSet 注释）。 */}
-            <DraftFieldSet saving={saving}>
-              <SegmentedControl
-                options={THEME_OPTIONS}
-                value={draft.theme}
-                onChange={(value) => set({ theme: value as ThemePreferenceValue })}
-                ariaLabel={copy.settings.appearance.themeAria}
-              />
-            </DraftFieldSet>
-          </FormRow>
+          {/* 两行的父容器负责关闭末行分隔线（FormRow 始终渲染 border-b）。
+              该类不能加在卡片上：卡片里 FormFooter 是最后一个子节点，卡片上的 :last-child
+              命中的是页脚，被去掉的会是页脚的下边框；FormFooter 必须仍是卡片的直接子节点且留在最后。 */}
+          <div className="[&>*:last-child]:border-b-0">
+            <FormRow
+              label={copy.settings.appearance.themeTitle}
+              description={copy.settings.appearance.themeDescription}
+            >
+              {/* 保存进行中禁用整块控件，避免在途编辑被静默丢弃（详见 DraftFieldSet 注释）。 */}
+              <DraftFieldSet saving={saving}>
+                <SegmentedControl
+                  options={THEME_OPTIONS}
+                  value={draft.theme}
+                  onChange={(value) => set({ theme: value as ThemePreferenceValue })}
+                  ariaLabel={copy.settings.appearance.themeAria}
+                />
+              </DraftFieldSet>
+            </FormRow>
 
-          <FormRow
-            label={copy.settings.appearance.fontSizeTitle}
-            description={copy.settings.appearance.fontSizeDescription}
-          >
-            <DraftFieldSet saving={saving}>
-              <SegmentedControl
-                options={FONT_SIZE_OPTIONS}
-                value={draft.chat_font_size}
-                onChange={(value) => set({ chat_font_size: value as ChatFontSize })}
-                ariaLabel={copy.settings.appearance.fontSizeAria}
-              />
-            </DraftFieldSet>
-          </FormRow>
+            <FormRow
+              label={copy.settings.appearance.fontSizeTitle}
+              description={copy.settings.appearance.fontSizeDescription}
+            >
+              <DraftFieldSet saving={saving}>
+                <SegmentedControl
+                  options={FONT_SIZE_OPTIONS}
+                  value={draft.chat_font_size}
+                  onChange={(value) => set({ chat_font_size: value as ChatFontSize })}
+                  ariaLabel={copy.settings.appearance.fontSizeAria}
+                />
+              </DraftFieldSet>
+            </FormRow>
+          </div>
 
           {saveError && (
             <p role="alert" className="pt-4 text-caption text-danger">
