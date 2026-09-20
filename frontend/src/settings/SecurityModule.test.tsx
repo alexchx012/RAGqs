@@ -306,7 +306,15 @@ describe('SecurityModule', () => {
     const settingsApi = { changePassword: vi.fn(async () => {}) } as unknown as SettingsApi;
     renderSecurity(store, settingsApi);
 
-    expect(await screen.findByText(copy.settings.security.passwordSessionNote)).toBeInTheDocument();
+    // R14：设计图的行序列是连续的两栏表单行，页脚才是提交区——A37 的固定说明落在页脚内（按钮左侧），
+    // 不再作为行与行之间的一行文字
+    const note = await screen.findByText(copy.settings.security.passwordSessionNote);
+    const footer = screen.getByTestId('form-footer');
+    expect(footer).toContainElement(note);
+    expect(
+      note.compareDocumentPosition(screen.getByRole('button', { name: copy.controls.save })) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('三个密码字段默认掩码，点眼睛切换明文且不改字段取值，再次点击恢复掩码（A37）', async () => {
@@ -702,8 +710,8 @@ describe('SecurityModule 会话 fence（review Major 1：A 的会话列表不在
   });
 });
 
-describe('SecurityModule 表单结构（设置基座：整页一张卡片）', () => {
-  it('页面只有一张设置卡片，卡内依次是密码三行、会话行、隐私行，行容器关闭末行分隔线', async () => {
+describe('SecurityModule 表单结构（设置基座：整页一张卡片、连续两栏行）', () => {
+  it('页面只有一张设置卡片，卡内没有小节标题，行序为「三个密码行 → 活跃会话行 → 会话行 → 隐私行」', async () => {
     await renderModule({
       auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
     });
@@ -711,26 +719,43 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片）', (
     const cards = screen.getAllByTestId('settings-card');
     expect(cards).toHaveLength(1);
     expect(cards[0]).toHaveAccessibleName(copy.settings.security.sectionLabel);
+    // R14：设计图是连续的两栏表单行，卡内不再有 h2 小节标题（标题只存在于卡片 aria-label）
+    expect(screen.queryAllByRole('heading')).toHaveLength(0);
+    expect(cards[0].querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0);
 
     const rows = screen.getAllByTestId('form-row');
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     const labels = screen.getAllByTestId('form-row-label').map((cell) => cell.textContent ?? '');
     expect(labels[0]).toContain(copy.settings.security.oldPasswordLabel);
     expect(labels[1]).toContain(copy.settings.security.newPasswordLabel);
     expect(labels[2]).toContain(copy.settings.security.confirmPasswordLabel);
-    expect(labels[3]).toContain(CURRENT_SESSION.device);
-    expect(labels[4]).toContain(OTHER_SESSION.device);
-    expect(labels[5]).toContain(copy.settings.security.abOptOutLabel);
+    expect(labels[3]).toContain(copy.settings.security.sessionsTitle);
+    expect(labels[4]).toContain(CURRENT_SESSION.device);
+    expect(labels[5]).toContain(OTHER_SESSION.device);
+    expect(labels[6]).toContain(copy.settings.security.abOptOutLabel);
+  });
 
-    // 每一行都由「直接包裹这组行的父容器」关闭末行分隔线（FormRow 始终渲染 border-b，
-    // 不做「是否最后一行」判断），且这些行容器都在同一张卡内
+  it('只有一个承载末行分隔线关闭规则的行容器，且它的最后一个子节点是末行（隐私行）', async () => {
+    await renderModule({
+      auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
+    });
+
+    const card = screen.getByTestId('settings-card');
+    const rows = screen.getAllByTestId('form-row');
+    // 末行（隐私行）的直接父节点就是那个承载规则的容器（密码三行套在 form 里，父节点是 form）
+    const container = rows[rows.length - 1].parentElement as HTMLElement;
+    expect(container.className.split(/\s+/)).toContain('[&>*:last-child]:border-b-0');
+    expect(card).toContainElement(container);
+    expect(container.lastElementChild).toBe(rows[rows.length - 1]);
+    // 容器是卡片的第一个子节点；条件渲染的提示都在容器之外，不会顶掉末行的分隔线关闭规则
+    expect(card.children[0]).toBe(container);
     for (const row of rows) {
-      const container = row.parentElement as HTMLElement;
-      expect(container.className.split(/\s+/)).toContain('[&>*:last-child]:border-b-0');
-      expect(cards[0]).toContainElement(container);
+      // 每一行都在这个容器内（密码三行隔着一层 form，其余行是直接子节点）
+      expect(container).toContainElement(row);
+      expect(row.closest('[data-testid="settings-card"]')).toBe(card);
     }
     // 该规则不得加在卡片上：卡片的最后一个子节点是 FormFooter，加在卡片上命中的会是页脚
-    expect(cards[0].className.split(/\s+/)).not.toContain('[&>*:last-child]:border-b-0');
+    expect(card.className.split(/\s+/)).not.toContain('[&>*:last-child]:border-b-0');
   });
 
   it('FormFooter 是唯一卡片的直接子节点且为最后一个子节点', async () => {
@@ -743,6 +768,53 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片）', (
     // 全页只有一份页脚、一个「保存」：退出类动作是即时动作，不产生第二个提交入口
     expect(screen.getAllByTestId('form-footer')).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: copy.controls.save })).toHaveLength(1);
+  });
+
+  it('活跃会话行：左列标签「活跃会话」，右列是「退出全部设备」危险链接（即时动作）', async () => {
+    await renderModule({
+      auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
+    });
+
+    const row = screen.getAllByTestId('form-row')[3];
+    const labelCell = row.querySelector('[data-testid="form-row-label"]') as HTMLElement;
+    expect(labelCell.textContent).toContain(copy.settings.security.sessionsTitle);
+
+    const signOutAll = within(row).getByRole('button', { name: copy.settings.security.logoutAll });
+    // 控件在右列，不在左列标签位
+    expect(labelCell).not.toContainElement(signOutAll);
+    expect(signOutAll.className.split(/\s+/)).toContain('text-danger');
+  });
+
+  it('隐私行：左列标签 + 说明，右列是开关', async () => {
+    await renderModule();
+
+    const rows = screen.getAllByTestId('form-row');
+    const row = rows[rows.length - 1];
+    const labelCell = row.querySelector('[data-testid="form-row-label"]') as HTMLElement;
+    expect(labelCell.textContent).toContain(copy.settings.security.abOptOutLabel);
+    expect(labelCell.textContent).toContain(copy.settings.security.abOptOutDescription);
+
+    const toggle = within(row).getByRole('switch', {
+      name: copy.settings.security.abOptOutLabel,
+    });
+    expect(labelCell).not.toContainElement(toggle);
+  });
+
+  it('密码三行套在 form 内（Enter 隐式提交的载体），表单是行容器的第一个子节点', async () => {
+    await renderModule();
+
+    const rows = screen.getAllByTestId('form-row');
+    const container = rows[rows.length - 1].parentElement as HTMLElement;
+    const form = container.querySelector('form') as HTMLFormElement;
+    expect(form).not.toBeNull();
+    expect(container.children[0]).toBe(form);
+    // 三个密码行在 form 内，其余行在 form 外
+    for (const row of rows.slice(0, 3)) {
+      expect(form).toContainElement(row);
+    }
+    for (const row of rows.slice(3)) {
+      expect(form).not.toContainElement(row);
+    }
   });
 
   it('密码行标签关联对应输入框，id 与改造前一致；密码规则说明留在新密码框下方', async () => {
@@ -773,7 +845,7 @@ describe('SecurityModule 表单结构（设置基座：整页一张卡片）', (
       auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
     });
 
-    const sessionRows = screen.getAllByTestId('form-row').slice(3, 5);
+    const sessionRows = screen.getAllByTestId('form-row').slice(4, 6);
     expect(sessionRows[0].querySelector('[data-testid="form-row-label"]')?.textContent).toContain(
       CURRENT_SESSION.device,
     );
@@ -867,12 +939,11 @@ describe('SecurityModule 即时动作边界（退出类动作不进草稿）', (
 });
 
 describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4 / §5.5）', () => {
-  it('隐私区卡呈现标题 + 说明 + 开关，开关反映已加载的 ab_opt_out 偏好', async () => {
+  it('隐私行呈现标签 + 说明 + 开关，开关反映已加载的 ab_opt_out 偏好', async () => {
     await renderModule({
       settings: { getPreferences: vi.fn(async () => ({ ...PREFERENCES, ab_opt_out: true })) },
     });
 
-    expect(screen.getByText(copy.settings.security.privacyTitle)).toBeInTheDocument();
     expect(screen.getByText(copy.settings.security.abOptOutLabel)).toBeInTheDocument();
     expect(screen.getByText(copy.settings.security.abOptOutDescription)).toBeInTheDocument();
     expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
@@ -981,15 +1052,16 @@ describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4
     expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
   });
 
-  it('偏好加载完成前隐私区只渲染标题与加载行；此间点「保存」是 no-op', async () => {
+  it('偏好加载完成前只渲染加载行、不渲染隐私行；此间点「保存」是 no-op', async () => {
     const pending = deferred<UserPreferences>();
     const getPreferences = vi.fn<SettingsApi['getPreferences']>(() => pending.promise);
 
     const { updatePreferences } = await renderModule({ settings: { getPreferences }, waitForDraft: false });
 
-    expect(screen.getByText(copy.settings.security.privacyTitle)).toBeInTheDocument();
     expect(screen.getByText(copy.settings.security.preferencesLoading)).toBeInTheDocument();
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    // 隐私行是草稿就绪后才渲染的最后一行；加载期行序到会话区为止
+    expect(screen.getAllByTestId('form-row')).toHaveLength(4);
 
     // R13：页脚常驻（同一份页脚也承担改密提交），但草稿未就绪时提交不产生偏好写入
     await userEvent.setup().click(saveButton());

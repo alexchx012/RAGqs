@@ -234,11 +234,17 @@ test('right pane hides the scrollbar yet still scrolls to the end without clippi
   });
   await expect.poll(() => pane.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 
-  // 且没有靠裁掉内容换「无滚动条」：最后一段标题完整落在可视区内
-  const privacy = page.getByRole('heading', { name: copy.settings.security.privacyTitle });
-  await expect(privacy).toBeVisible();
-  const privacyBox = await box(privacy);
+  // 且没有靠裁掉内容换「无滚动条」：最后一行（隐私行，含右侧开关）完整落在可视区内。
+  // R14：安全设置是连续的两栏表单行、不再有小节标题，故末段内容按最后一行 + 其开关定位，而不是 heading。
+  const lastRow = page.locator('[data-testid="form-row"]').last();
+  const privacySwitch = page.getByRole('switch', { name: copy.settings.security.abOptOutLabel });
+  await expect(lastRow).toBeVisible();
+  await expect(privacySwitch).toBeVisible();
+  const privacyBox = await box(lastRow);
+  const switchBox = await box(privacySwitch);
   const paneBox = await box(pane);
-  expect(privacyBox.y).toBeGreaterThanOrEqual(paneBox.y - 0.5);
-  expect(privacyBox.y + privacyBox.height).toBeLessThanOrEqual(paneBox.y + paneBox.height + 0.5);
+  for (const measured of [privacyBox, switchBox]) {
+    expect(measured.y).toBeGreaterThanOrEqual(paneBox.y - 0.5);
+    expect(measured.y + measured.height).toBeLessThanOrEqual(paneBox.y + paneBox.height + 0.5);
+  }
 });
