@@ -67,6 +67,7 @@ function renderSecurity(store: AuthSessionStore, api: SettingsApi) {
   );
 }
 
+/** 填写三个密码框并点卡片页脚「保存」提交改密（R13 后可见提交入口只剩页脚那一个）。 */
 async function enterPasswordChange(
   user: ReturnType<typeof userEvent.setup>,
   oldPassword = 'password123',
@@ -75,7 +76,7 @@ async function enterPasswordChange(
   await user.type(screen.getByLabelText(copy.settings.security.oldPasswordLabel), oldPassword);
   await user.type(screen.getByLabelText(copy.settings.security.newPasswordLabel), newPassword);
   await user.type(screen.getByLabelText(copy.settings.security.confirmPasswordLabel), newPassword);
-  await user.click(screen.getByRole('button', { name: copy.settings.security.changePassword }));
+  await user.click(screen.getByRole('button', { name: copy.controls.save }));
 }
 
 const CURRENT_SESSION: DeviceSession = {
@@ -128,7 +129,7 @@ interface ModuleOptions {
   readonly settings?: Record<string, unknown>;
   /** 覆盖 AuthApi（listSessions / revokeSession / revokeAllSessions…）。 */
   readonly auth?: Partial<AuthApi>;
-  /** 默认等待隐私草稿就绪（页脚出现）；加载态/错误态用例传 false。 */
+  /** 默认等待隐私草稿就绪（开关出现）；加载态/错误态用例传 false。 */
   readonly waitForDraft?: boolean;
 }
 
@@ -147,7 +148,8 @@ async function renderModule(options: ModuleOptions = {}) {
 
   renderSecurity(store, api);
   if (options.waitForDraft !== false) {
-    await screen.findByTestId('form-footer');
+    // 草稿就绪 = 开关出现。R13 后页脚常驻（它同时承担改密提交），不能再拿页脚当草稿就绪信号。
+    await screen.findByRole('switch', { name: copy.settings.security.abOptOutLabel });
   }
   return { store, getPreferences, updatePreferences, changePassword };
 }
@@ -314,13 +316,33 @@ describe('SecurityModule', () => {
 
     renderSecurity(store, settingsApi);
 
-    for (const label of [
-      copy.settings.security.oldPasswordLabel,
-      copy.settings.security.newPasswordLabel,
-      copy.settings.security.confirmPasswordLabel,
-    ]) {
-      const input = screen.getByLabelText(label);
-      // 三个字段各有同名的眼睛按钮，按所在表单行取用
+    const fields = [
+      {
+        label: copy.settings.security.oldPasswordLabel,
+        show: copy.settings.security.showOldPassword,
+        hide: copy.settings.security.hideOldPassword,
+      },
+      {
+        label: copy.settings.security.newPasswordLabel,
+        show: copy.settings.security.showNewPassword,
+        hide: copy.settings.security.hideNewPassword,
+      },
+      {
+        label: copy.settings.security.confirmPasswordLabel,
+        show: copy.settings.security.showConfirmPassword,
+        hide: copy.settings.security.hideConfirmPassword,
+      },
+    ];
+
+    // 可访问名按字段限定：同页三个眼睛按钮各有唯一名字，读屏用户才分得清是哪个字段
+    // （初始都是掩码态，故此刻按钮名是各自的「显示…」）
+    for (const field of fields) {
+      expect(screen.getAllByRole('button', { name: field.show })).toHaveLength(1);
+    }
+
+    for (const field of fields) {
+      const input = screen.getByLabelText(field.label);
+      // 眼睛按钮与该字段同一行
       const row = input.closest('[data-testid="form-row"]') as HTMLElement | null;
       expect(row).not.toBeNull();
       const scope = within(row as HTMLElement);
@@ -328,7 +350,7 @@ describe('SecurityModule', () => {
       await user.type(input, 'Abcd1234');
       expect(input).toHaveAttribute('type', 'password');
 
-      const showToggle = scope.getByRole('button', { name: copy.settings.security.showPassword });
+      const showToggle = scope.getByRole('button', { name: field.show });
       expect(showToggle).toHaveAttribute('aria-pressed', 'false');
       // 眼睛图标是可聚焦按钮（辅助技术可达）
       showToggle.focus();
@@ -338,12 +360,12 @@ describe('SecurityModule', () => {
       expect(input).toHaveAttribute('type', 'text');
       // 切换显示形态不得改变字段取值
       expect(input).toHaveValue('Abcd1234');
-      expect(
-        scope.getByRole('button', { name: copy.settings.security.hidePassword }),
-      ).toHaveAttribute('aria-pressed', 'true');
+      // 明文态的「隐藏…」名同样全页唯一（此刻只有本字段是明文）
+      expect(screen.getAllByRole('button', { name: field.hide })).toHaveLength(1);
+      expect(scope.getByRole('button', { name: field.hide })).toHaveAttribute('aria-pressed', 'true');
 
       // 再次点击恢复掩码，取值仍不变
-      await user.click(scope.getByRole('button', { name: copy.settings.security.hidePassword }));
+      await user.click(scope.getByRole('button', { name: field.hide }));
       expect(input).toHaveAttribute('type', 'password');
       expect(input).toHaveValue('Abcd1234');
     }
@@ -680,42 +702,45 @@ describe('SecurityModule 会话 fence（review Major 1：A 的会话列表不在
   });
 });
 
-describe('SecurityModule 表单结构（设置基座）', () => {
-  it('三张设置卡片：密码卡三行、会话卡按会话成行、隐私卡一行，每张卡的行容器关闭末行分隔线', async () => {
+describe('SecurityModule 表单结构（设置基座：整页一张卡片）', () => {
+  it('页面只有一张设置卡片，卡内依次是密码三行、会话行、隐私行，行容器关闭末行分隔线', async () => {
     await renderModule({
       auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
     });
 
     const cards = screen.getAllByTestId('settings-card');
-    expect(cards).toHaveLength(3);
-    // 卡片顺序：修改密码 / 活跃会话 / 隐私
-    expect(cards[0]).toHaveAccessibleName(copy.settings.security.passwordTitle);
-    expect(cards[1]).toHaveAccessibleName(copy.settings.security.sessionsTitle);
-    expect(cards[2]).toHaveAccessibleName(copy.settings.security.privacyTitle);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toHaveAccessibleName(copy.settings.security.sectionLabel);
 
     const rows = screen.getAllByTestId('form-row');
     expect(rows).toHaveLength(6);
-    // 行分隔线由「直接包裹这组行的父容器」关闭（FormRow 始终渲染 border-b，不做「是否最后一行」判断）
-    for (const group of [rows.slice(0, 3), rows.slice(3, 5), rows.slice(5)]) {
-      const container = group[0].parentElement as HTMLElement;
+    const labels = screen.getAllByTestId('form-row-label').map((cell) => cell.textContent ?? '');
+    expect(labels[0]).toContain(copy.settings.security.oldPasswordLabel);
+    expect(labels[1]).toContain(copy.settings.security.newPasswordLabel);
+    expect(labels[2]).toContain(copy.settings.security.confirmPasswordLabel);
+    expect(labels[3]).toContain(CURRENT_SESSION.device);
+    expect(labels[4]).toContain(OTHER_SESSION.device);
+    expect(labels[5]).toContain(copy.settings.security.abOptOutLabel);
+
+    // 每一行都由「直接包裹这组行的父容器」关闭末行分隔线（FormRow 始终渲染 border-b，
+    // 不做「是否最后一行」判断），且这些行容器都在同一张卡内
+    for (const row of rows) {
+      const container = row.parentElement as HTMLElement;
       expect(container.className.split(/\s+/)).toContain('[&>*:last-child]:border-b-0');
-      expect(Array.from(container.children)).toEqual(group);
-      expect(container.lastElementChild).toBe(group[group.length - 1]);
+      expect(cards[0]).toContainElement(container);
     }
-    // 该规则不得加在卡片上：隐私卡里 FormFooter 是最后一个子节点，加在卡片上命中的会是页脚
-    for (const card of cards) {
-      expect(card.className.split(/\s+/)).not.toContain('[&>*:last-child]:border-b-0');
-    }
+    // 该规则不得加在卡片上：卡片的最后一个子节点是 FormFooter，加在卡片上命中的会是页脚
+    expect(cards[0].className.split(/\s+/)).not.toContain('[&>*:last-child]:border-b-0');
   });
 
-  it('隐私卡的 FormFooter 是卡片直接子节点且为最后一个子节点', async () => {
+  it('FormFooter 是唯一卡片的直接子节点且为最后一个子节点', async () => {
     await renderModule();
 
-    const privacyCard = screen.getAllByTestId('settings-card')[2];
+    const card = screen.getByTestId('settings-card');
     const footer = screen.getByTestId('form-footer');
-    expect(footer.parentElement).toBe(privacyCard);
-    expect(privacyCard.lastElementChild).toBe(footer);
-    // 全页只有隐私草稿一份页脚：会话/密码动作是即时动作与显式提交，不产生第二个「保存」
+    expect(footer.parentElement).toBe(card);
+    expect(card.lastElementChild).toBe(footer);
+    // 全页只有一份页脚、一个「保存」：退出类动作是即时动作，不产生第二个提交入口
     expect(screen.getAllByTestId('form-footer')).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: copy.controls.save })).toHaveLength(1);
   });
@@ -743,7 +768,7 @@ describe('SecurityModule 表单结构（设置基座）', () => {
     expect(newRow.querySelector('[data-testid="form-row-label"]')).not.toContainElement(rule);
   });
 
-  it('会话卡每个会话一行：设备名在标签位、最近活跃时间在说明位、行尾是退出动作', async () => {
+  it('会话行每个会话一行：设备名在标签位、最近活跃时间在说明位、行尾是退出动作', async () => {
     await renderModule({
       auth: { listSessions: vi.fn(async () => [CURRENT_SESSION, OTHER_SESSION]) },
     });
@@ -905,15 +930,6 @@ describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4
     expect(updatePreferences).not.toHaveBeenCalled();
   });
 
-  it('草稿与已提交快照一致时保存不产生请求', async () => {
-    const { updatePreferences } = await renderModule();
-    const user = userEvent.setup();
-
-    await user.click(saveButton());
-
-    expect(updatePreferences).not.toHaveBeenCalled();
-  });
-
   it('保存进行中隐私开关不可交互且禁用态可见（R11 保存期禁用契约）', async () => {
     // 回归守卫：真实 API 的保存响应每次都是新对象（api/client.ts `response.json()`），
     // useDraftForm 见 submitted 变化即重置草稿。若保存窗口内开关仍可改，那笔在途编辑会在
@@ -965,26 +981,29 @@ describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4
     expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
   });
 
-  it('偏好加载完成前只渲染标题与加载行，不渲染开关与页脚', async () => {
+  it('偏好加载完成前隐私区只渲染标题与加载行；此间点「保存」是 no-op', async () => {
     const pending = deferred<UserPreferences>();
     const getPreferences = vi.fn<SettingsApi['getPreferences']>(() => pending.promise);
 
-    await renderModule({ settings: { getPreferences }, waitForDraft: false });
+    const { updatePreferences } = await renderModule({ settings: { getPreferences }, waitForDraft: false });
 
     expect(screen.getByText(copy.settings.security.privacyTitle)).toBeInTheDocument();
     expect(screen.getByText(copy.settings.security.preferencesLoading)).toBeInTheDocument();
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('form-footer')).not.toBeInTheDocument();
+
+    // R13：页脚常驻（同一份页脚也承担改密提交），但草稿未就绪时提交不产生偏好写入
+    await userEvent.setup().click(saveButton());
+    expect(updatePreferences).not.toHaveBeenCalled();
+    expect(await screen.findByTestId('form-footer')).toBeInTheDocument();
 
     await act(async () => {
       pending.resolve(echoPreferences(PREFERENCES));
       await pending.promise;
     });
-    expect(await screen.findByTestId('form-footer')).toBeInTheDocument();
     expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
   });
 
-  it('偏好加载失败：卡片内就地错误行 + 重试文字链，不渲染开关', async () => {
+  it('偏好加载失败：卡内就地错误行 + 重试文字链，不渲染开关', async () => {
     const getPreferences = vi.fn<SettingsApi['getPreferences']>(async () => {
       throw new Error('offline');
     });
@@ -996,5 +1015,129 @@ describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: copy.states.retry })).toBeInTheDocument();
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+  });
+});
+
+describe('SecurityModule 页脚提交语义（R13：整页一张卡片、一个页脚）', () => {
+  const typePasswords = async (
+    user: ReturnType<typeof userEvent.setup>,
+    oldPassword = 'password123',
+    newPassword = 'newpassword1',
+  ): Promise<void> => {
+    await user.type(screen.getByLabelText(copy.settings.security.oldPasswordLabel), oldPassword);
+    await user.type(screen.getByLabelText(copy.settings.security.newPasswordLabel), newPassword);
+    await user.type(screen.getByLabelText(copy.settings.security.confirmPasswordLabel), newPassword);
+  };
+
+  it('密码字段非空时「保存」提交改密，未改动的隐私草稿不写偏好', async () => {
+    const { changePassword, updatePreferences } = await renderModule();
+    const user = userEvent.setup();
+
+    await typePasswords(user);
+    // 只是输入不改请求（显式提交语义不变）
+    expect(changePassword).not.toHaveBeenCalled();
+
+    await user.click(saveButton());
+
+    await waitFor(() =>
+      expect(changePassword).toHaveBeenCalledWith({
+        old_password: 'password123',
+        new_password: 'newpassword1',
+      }),
+    );
+    expect(updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('两者都有改动时「保存」一并提交改密与隐私偏好', async () => {
+    const { changePassword, updatePreferences } = await renderModule();
+    const user = userEvent.setup();
+
+    await typePasswords(user);
+    await user.click(privacySwitch());
+    await user.click(saveButton());
+
+    await waitFor(() =>
+      expect(changePassword).toHaveBeenCalledWith({
+        old_password: 'password123',
+        new_password: 'newpassword1',
+      }),
+    );
+    await waitFor(() =>
+      expect(updatePreferences).toHaveBeenCalledWith(expect.objectContaining({ ab_opt_out: true })),
+    );
+  });
+
+  it('两者都没有改动时「保存」是 no-op', async () => {
+    const { changePassword, updatePreferences } = await renderModule();
+    const user = userEvent.setup();
+
+    await user.click(saveButton());
+
+    expect(changePassword).not.toHaveBeenCalled();
+    expect(updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('密码校验失败：就地报错且不发请求，隐私草稿仍照常提交', async () => {
+    const { changePassword, updatePreferences } = await renderModule();
+    const user = userEvent.setup();
+
+    await typePasswords(user, 'password123', 'letters');
+    await user.click(privacySwitch());
+    await user.click(saveButton());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      copy.settings.security.invalidPasswordRule,
+    );
+    expect(changePassword).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(updatePreferences).toHaveBeenCalledWith(expect.objectContaining({ ab_opt_out: true })),
+    );
+  });
+
+  it('「取消」清空三个密码字段（含就地错误行）并复位隐私开关，不提交任何请求', async () => {
+    const { changePassword, updatePreferences } = await renderModule();
+    const user = userEvent.setup();
+
+    // 先制造一条就地错误行（本地校验失败，不发请求）
+    await typePasswords(user, 'password123', 'letters');
+    await user.click(saveButton());
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(changePassword).not.toHaveBeenCalled();
+
+    // 再留下一个未保存的隐私草稿
+    await user.click(privacySwitch());
+    expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
+
+    await user.click(cancelButton());
+
+    for (const label of [
+      copy.settings.security.oldPasswordLabel,
+      copy.settings.security.newPasswordLabel,
+      copy.settings.security.confirmPasswordLabel,
+    ]) {
+      expect(screen.getByLabelText(label)).toHaveValue('');
+    }
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
+    expect(changePassword).not.toHaveBeenCalled();
+    expect(updatePreferences).not.toHaveBeenCalled();
+  });
+
+  it('密码框内按 Enter 仍提交改密（可见提交键移到页脚后不得失去隐式提交）', async () => {
+    const { changePassword } = await renderModule();
+    const user = userEvent.setup();
+
+    await typePasswords(user);
+    await user.type(
+      screen.getByLabelText(copy.settings.security.confirmPasswordLabel),
+      '{Enter}',
+    );
+
+    await waitFor(() =>
+      expect(changePassword).toHaveBeenCalledWith({
+        old_password: 'password123',
+        new_password: 'newpassword1',
+      }),
+    );
   });
 });

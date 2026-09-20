@@ -1,27 +1,34 @@
 /*
- * 安全设置：三张设置卡片（修改密码 / 活跃会话 / 隐私），共用 SettingsCard + FormRow + FormFooter 基座。
+ * 安全设置：整页**一张** SettingsCard（R13 裁决，按新设计图像素实测：卡片是连续白区，
+ * 三段内容之间没有灰色间隙，页脚只有一个），共用 SettingsCard + FormRow + FormFooter 基座。
+ * 卡内自上而下：密码三行（+ 全设备退出说明）→ 活跃会话（含「退出全部设备」）→ 隐私开关 → 页脚。
  *
  * 三条语义边界（本模块的核心）：
- * - 密码字段 = 显式提交：输入只改本地 state，点「修改密码」才发请求，校验失败就地提示。三个字段不进
- *   useDraftForm——页脚的「保存」只属于隐私偏好草稿，改密是事务性提交（成功后全部会话失效），两者不同。
+ * - 密码字段 = 显式提交的命令：输入只改本地 state，页脚「保存」才发请求（校验失败就地提示）。
+ *   密码不是偏好（提交后会撤销其它会话），故不进 useDraftForm。
  * - 退出类动作（退出全部设备 / 退出此设备 / 退出登录）= 即时动作：点击即执行（退出全部设备沿用 A38 的
  *   danger 二次确认），不进草稿、不使表单 dirty、不因「取消」而撤销。文字色走 text-danger——抽屉作用域
  *   把它解析为 #D64545（全局仍是旧值），故不写死 hex。
- * - 隐私开关 = 草稿-保存：接 useDraftForm，「保存」才经 usePreferences 写偏好，「取消」丢弃草稿。
+ * - 隐私开关 = 草稿-保存：接 useDraftForm，页脚「保存」才经 usePreferences 写偏好，「取消」丢弃草稿。
+ *
+ * 页脚提交语义（R13）：一个页脚提交本页可提交的全部内容——密码字段非空则走改密，隐私草稿有改动则写偏好
+ * （useDraftForm.commit 自带 dirty 门槛），两者都没有则 no-op；「取消」清空三个密码字段（含就地错误行）
+ * 并丢弃隐私草稿。正在提交（改密或偏好任一在途）时两个键都禁用。
  *
  * 组装约束：每组 FormRow 由一层容器承载 [&>*:last-child]:border-b-0 关闭末行分隔线（FormRow 始终渲染
- * border-b，自己不做「是否最后一行」判断）；该规则不得加在卡片上——隐私卡里 FormFooter 是最后一个子节点，
- * 加在卡片上命中的会是页脚。FormFooter 必须是 SettingsCard 的直接子节点且留在最后（负外边距抵消卡片
- * p-8）。条件渲染的元素（保存失败提示、加载/错误行、动作错误行）都放在行容器之外，避免成为容器的
- * :last-child。
+ * border-b，自己不做「是否最后一行」判断）；该规则不得加在卡片上——卡片的直接末子节点是 FormFooter，
+ * 加在卡片上命中的会是页脚。FormFooter 必须是卡片的直接子节点且留在最后（负外边距抵消卡片 p-8）；
+ * 因此它不能放进 <form>，卡内只在密码字段那一段留一个 <form>。条件渲染的元素（保存失败提示、加载/错误
+ * 行、动作错误行）都放在行容器之外，避免成为容器的 :last-child。
  *
  * submitted 取 usePreferences 的快照 state（稳定引用）：传真值字面量会让每次渲染都换身份，useDraftForm
  * 见 submitted 变化即重置草稿 → 改草稿 → 重渲染 → 再重置，足以进入渲染死循环（Task 8 实测：用例挂住、
  * 0 条执行）。真实保存响应每次都是新对象（api/client.ts 的 `response.json()`），保存成功后 submitted
  * 换身份是预期行为，草稿据此重置为服务端快照。
  *
- * 眼睛图标沿用归档 change `fix-settings-scroll-and-password-eye` 的实现与可访问名约定（24px 视觉钮 +
- * ui-touch-target 外扩至 44px 命中区；aria-label 在「显示密码 / 隐藏密码」之间切换），不另起第二套。
+ * 眼睛图标沿用归档 change `fix-settings-scroll-and-password-eye` 的实现（24px 视觉钮 + ui-touch-target
+ * 外扩至 44px 命中区、aria-pressed 反映是否明文）；可访问名按 R13 改为字段限定（显示/隐藏当前密码、
+ * 新密码、确认新密码）——同页三个同名按钮读屏无法区分。
  */
 import {
   useCallback,
@@ -40,7 +47,6 @@ import { EyeIcon, EyeOffIcon } from '../pages/login/LoginPage';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { FormFooter } from '../ui/FormFooter';
 import { FormRow } from '../ui/FormRow';
-import { Pill } from '../ui/Pill';
 import { SettingsCard } from '../ui/SettingsCard';
 import { Switch } from '../ui/Switch';
 import { TextLink } from '../ui/TextLink';
@@ -69,14 +75,19 @@ function sessionTime(value: string): string {
 function PasswordVisibilityToggle({
   visible,
   onToggle,
+  showLabel,
+  hideLabel,
 }: {
   readonly visible: boolean;
   readonly onToggle: () => void;
+  /** 按字段限定的可访问名（R13）：同页三个眼睛按钮必须各自唯一。 */
+  readonly showLabel: string;
+  readonly hideLabel: string;
 }) {
   return (
     <button
       type="button"
-      aria-label={visible ? copy.settings.security.hidePassword : copy.settings.security.showPassword}
+      aria-label={visible ? hideLabel : showLabel}
       aria-pressed={visible}
       onClick={onToggle}
       className="ui-touch-target absolute top-1/2 right-2 flex h-6 w-6 -translate-y-1/2 items-center
@@ -112,7 +123,7 @@ export function SecurityModule() {
   const { api } = useSettings();
   const authStore = useAuthStore();
   const authState = useAuthState();
-  // 隐私区卡（共用基座 §5.4）：ab_opt_out 开关读写偏好，与外观模块共用同一套偏好机制。
+  // 隐私区（共用基座 §5.4）：ab_opt_out 开关读写偏好，与外观模块共用同一套偏好机制。
   const preferencesSync = usePreferences();
   const [sessions, setSessions] = useState<readonly DeviceSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
@@ -124,7 +135,7 @@ export function SecurityModule() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordErrors, setPasswordErrors] = useState<PasswordErrors>(EMPTY_PASSWORD_ERRORS);
   const [submittingPassword, setSubmittingPassword] = useState(false);
-  // A37：新旧密码框可见性切换
+  // A37：三个密码框可见性切换
   const [showOldPassword, setShowOldPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -179,6 +190,10 @@ export function SecurityModule() {
     }
   }, [sessionKey]);
 
+  function clearPasswordErrors(): void {
+    setPasswordErrors(EMPTY_PASSWORD_ERRORS);
+  }
+
   function onOldPasswordChange(event: ChangeEvent<HTMLInputElement>): void {
     setOldPassword(event.target.value);
     setPasswordErrors((errors) => ({ ...errors, oldPassword: null }));
@@ -194,8 +209,8 @@ export function SecurityModule() {
     setPasswordErrors((errors) => ({ ...errors, confirmPassword: null }));
   }
 
-  async function changePassword(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  /** 改密的显式提交：本地校验 → 请求 → 成功即清理全部服务端会话（既有语义原样保留）。 */
+  async function submitPasswordChange(): Promise<void> {
     if (submittingPassword) {
       return;
     }
@@ -217,7 +232,7 @@ export function SecurityModule() {
     }
 
     setSubmittingPassword(true);
-    setPasswordErrors(EMPTY_PASSWORD_ERRORS);
+    clearPasswordErrors();
     // 捕获发起改密时的逻辑会话 identity：若响应延迟期间用户已 logout/login，不得清理新会话。
     const initiatedAuthSessionId = authStore.getAuthSessionId();
     try {
@@ -287,15 +302,46 @@ export function SecurityModule() {
 
   const authenticated = authState.status === 'authenticated';
   const sessionActionsDisabled = !authenticated || sessionActionPending !== null;
+  const pageSaving = submittingPassword || preferencesSync.saving;
+
+  /**
+   * 页脚「保存」：提交本页可提交的内容。密码字段非空即走改密（校验失败就地报错、不发请求），
+   * 隐私草稿有改动即写偏好（commit 自带 dirty 门槛）；两者都没有则 no-op。
+   */
+  function savePage(): void {
+    if (pageSaving) {
+      return;
+    }
+    if (oldPassword !== '' || newPassword !== '' || confirmPassword !== '') {
+      void submitPasswordChange();
+    }
+    commit();
+  }
+
+  /** 页脚「取消」：清空三个密码字段（含就地错误行）并丢弃隐私草稿。 */
+  function cancelPage(): void {
+    setOldPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    clearPasswordErrors();
+    reset();
+  }
 
   return (
-    <section className="flex flex-col gap-12 pb-10">
-      {/* 修改密码卡：三个密码字段是显式提交，不纳入草稿；页脚「保存」只属于隐私草稿 */}
-      <SettingsCard ariaLabel={copy.settings.security.passwordTitle}>
+    <section className="pb-10">
+      <SettingsCard ariaLabel={copy.settings.security.sectionLabel}>
         <h2 className="text-subheading font-medium text-ink-black">
           {copy.settings.security.passwordTitle}
         </h2>
-        <form onSubmit={(event) => void changePassword(event)} noValidate>
+        {/* <form> 只包密码字段这一段的提交语义：FormFooter 必须是卡片的直接末子节点，故页脚不能进 form。
+            表单内保留一个隐藏的默认提交键，让密码框内按 Enter 仍走隐式提交（可见提交键在页脚）。 */}
+        <form
+          onSubmit={(event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+            void submitPasswordChange();
+          }}
+          noValidate
+        >
           <div className="[&>*:last-child]:border-b-0">
             <FormRow label={copy.settings.security.oldPasswordLabel} htmlFor="settings-old-password">
               <div className="relative">
@@ -311,6 +357,8 @@ export function SecurityModule() {
                 <PasswordVisibilityToggle
                   visible={showOldPassword}
                   onToggle={() => setShowOldPassword((value) => !value)}
+                  showLabel={copy.settings.security.showOldPassword}
+                  hideLabel={copy.settings.security.hideOldPassword}
                 />
               </div>
               {passwordErrors.oldPassword !== null && (
@@ -334,6 +382,8 @@ export function SecurityModule() {
                 <PasswordVisibilityToggle
                   visible={showNewPassword}
                   onToggle={() => setShowNewPassword((value) => !value)}
+                  showLabel={copy.settings.security.showNewPassword}
+                  hideLabel={copy.settings.security.hideNewPassword}
                 />
               </div>
               {/* 规则说明跟在框下方（不走 FormRow 的 description：那是左列灰色说明位） */}
@@ -362,6 +412,8 @@ export function SecurityModule() {
                 <PasswordVisibilityToggle
                   visible={showConfirmPassword}
                   onToggle={() => setShowConfirmPassword((value) => !value)}
+                  showLabel={copy.settings.security.showConfirmPassword}
+                  hideLabel={copy.settings.security.hideConfirmPassword}
                 />
               </div>
               {passwordErrors.confirmPassword !== null && (
@@ -371,22 +423,14 @@ export function SecurityModule() {
               )}
             </FormRow>
           </div>
-
-          <div className="flex flex-col gap-3 pt-5 md:flex-row md:items-center md:justify-between">
-            {/* A37：提交区固定注明全设备退出（与改密的服务端行为一致） */}
-            <p className="text-caption text-slate-strong">
-              {copy.settings.security.passwordSessionNote}
-            </p>
-            <Pill type="submit" loading={submittingPassword}>
-              {copy.settings.security.changePassword}
-            </Pill>
-          </div>
+          {/* A37：固定注明全设备退出（与改密的服务端行为一致；提交入口是卡片页脚的「保存」） */}
+          <p className="pt-4 text-caption text-slate-strong">
+            {copy.settings.security.passwordSessionNote}
+          </p>
+          <button type="submit" className="hidden" />
         </form>
-      </SettingsCard>
 
-      {/* 活跃会话卡：每会话一行（FormRow），行尾退出动作是即时动作 */}
-      <SettingsCard ariaLabel={copy.settings.security.sessionsTitle}>
-        <h2 className="text-subheading font-medium text-ink-black">
+        <h2 className="mt-8 text-subheading font-medium text-ink-black">
           {copy.settings.security.sessionsTitle}
         </h2>
         {sessionsLoading ? (
@@ -443,7 +487,7 @@ export function SecurityModule() {
             {sessionActionError}
           </p>
         )}
-        {/* 卡底部「退出全部设备」：即时动作，A38 危险确认后再执行 */}
+        {/* 会话区底部「退出全部设备」：即时动作，A38 危险确认后再执行 */}
         <div className="flex justify-end pt-4">
           <TextLink
             danger
@@ -454,11 +498,8 @@ export function SecurityModule() {
             {copy.settings.security.logoutAll}
           </TextLink>
         </div>
-      </SettingsCard>
 
-      {/* 隐私卡：唯一纳入草稿的字段；页脚「取消 / 保存」只作用于它 */}
-      <SettingsCard ariaLabel={copy.settings.security.privacyTitle}>
-        <h2 className="text-subheading font-medium text-ink-black">
+        <h2 className="mt-8 text-subheading font-medium text-ink-black">
           {copy.settings.security.privacyTitle}
         </h2>
         {preferencesSync.loading ? (
@@ -474,40 +515,34 @@ export function SecurityModule() {
           </div>
         ) : (
           draft !== null && (
-            <>
-              <div className="[&>*:last-child]:border-b-0">
-                <FormRow
-                  label={copy.settings.security.abOptOutLabel}
-                  description={copy.settings.security.abOptOutDescription}
-                >
-                  <div className="flex justify-end">
-                    <DraftFieldSet saving={preferencesSync.saving}>
-                      <Switch
-                        checked={draft.ab_opt_out}
-                        onCheckedChange={(checked) => set({ ab_opt_out: checked })}
-                        disabled={preferencesSync.saving}
-                        ariaLabel={copy.settings.security.abOptOutLabel}
-                      />
-                    </DraftFieldSet>
-                  </div>
-                </FormRow>
-              </div>
-
-              {preferencesSync.saveError && (
-                <p role="alert" className="pt-4 text-caption text-danger">
-                  {copy.settings.security.preferencesSaveError}
-                </p>
-              )}
-
-              {/* FormFooter 是卡片的直接子节点且为最后一个子节点（负外边距抵消卡片 p-8） */}
-              <FormFooter
-                onCancel={reset}
-                onSave={commit}
-                saving={preferencesSync.saving}
-              />
-            </>
+            <div className="[&>*:last-child]:border-b-0">
+              <FormRow
+                label={copy.settings.security.abOptOutLabel}
+                description={copy.settings.security.abOptOutDescription}
+              >
+                <div className="flex justify-end">
+                  <DraftFieldSet saving={preferencesSync.saving}>
+                    <Switch
+                      checked={draft.ab_opt_out}
+                      onCheckedChange={(checked) => set({ ab_opt_out: checked })}
+                      disabled={preferencesSync.saving}
+                      ariaLabel={copy.settings.security.abOptOutLabel}
+                    />
+                  </DraftFieldSet>
+                </div>
+              </FormRow>
+            </div>
           )
         )}
+
+        {preferencesSync.saveError && (
+          <p role="alert" className="pt-4 text-caption text-danger">
+            {copy.settings.security.preferencesSaveError}
+          </p>
+        )}
+
+        {/* FormFooter 是卡片的直接子节点且为最后一个子节点（负外边距抵消卡片 p-8） */}
+        <FormFooter onCancel={cancelPage} onSave={savePage} saving={pageSaving} />
       </SettingsCard>
 
       {/* A38：退出全部设备 = 撤销含当前设备在内的全部会话，danger 二次确认后再执行 */}
