@@ -69,6 +69,10 @@
 
   /* 窄屏断点 768px：base 为窄屏，md: 起为桌面（与 Tailwind 默认值对齐，显式声明） */
   --breakpoint-md: 48rem;
+
+  /* 分段控件几何：全局 32px/4px；抽屉作用域覆盖为 40px/2px */
+  --segmented-height: 32px;
+  --segmented-padding: 4px;
 }
 
 /*
@@ -136,6 +140,10 @@
   --duration-slow: 400ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 分段控件几何全局默认值：抽屉作用域在下方覆盖为 40px/2px */
+  --segmented-height: 32px;
+  --segmented-padding: 4px;
 }
 
 /* 暗色主题：token 名不变，值按 共用基座 §2.1 对照表切换。 */
@@ -157,4 +165,29 @@
   --color-danger: #d1826f;
   --color-warning: #d3a24f;
   --color-success: #8ab69b;
+}
+
+/* 抽屉作用域（settings-ui-ux-refresh）：设计图确立的设置抽屉视觉规范。
+ * 自定义属性按最近祖先声明生效，故在抽屉根容器重声明即可让子树内既有组件换值——
+ * 组件已通过 var() 间接引用这些 token（见 token-consistency 与编译产物核对）。
+ * 注意：浮层依赖 DOM 继承生效；若将来引入 portal，必须同步为浮层挂载本作用域。 */
+[data-drawer-scope] {
+  --color-ink-black: #1a1a18;
+  --color-hairline: #e4e3e7;
+  --color-danger: #d64545;
+  --radius-buttons: 8px;
+  --radius-inputs: 8px;
+  --radius-cards: 16px;
+  --segmented-height: 40px;
+  --segmented-padding: 2px;
+  --surface-drawer-canvas: #f7f7f8;
+}
+
+/* 暗色必须显式声明：否则本作用域会覆盖 :root[data-theme='dark'] 的暗色值，
+ * 把近黑变回 #1a1a18，在深底上不可读。 */
+[data-theme='dark'] [data-drawer-scope] {
+  --color-ink-black: #f2f2f3;
+  --color-hairline: #2f333b;
+  --color-danger: #d1826f;
+  --surface-drawer-canvas: #202329;
 }

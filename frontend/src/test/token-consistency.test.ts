@@ -59,6 +59,19 @@ const FUNCTIONAL_COLORS: Record<string, [string, string]> = {
 
 const HAIRLINE: [string, string] = ['#ececec', '#2f333b'];
 
+/** 抽屉作用域覆盖值（settings-ui-ux-refresh）：设计图实测值，仅作用于抽屉子树。 */
+const DRAWER_SCOPE_LIGHT: Record<string, string> = {
+  'ink-black': '#1a1a18',
+  hairline: '#e4e3e7',
+  danger: '#d64545',
+};
+const DRAWER_SCOPE_DARK: Record<string, string> = {
+  'ink-black': '#f2f2f3',
+  hairline: '#2f333b',
+  danger: '#d1826f',
+};
+const DRAWER_CANVAS: [string, string] = ['#f7f7f8', '#202329'];
+
 function collectHexes(css: string): string[] {
   return [...css.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((match) => match[0].toLowerCase());
 }
@@ -99,6 +112,9 @@ describe('设计 token 与 Steep 事实源一致', () => {
         ...Object.values(DARK_COLORS),
         ...Object.values(FUNCTIONAL_COLORS).flat(),
         ...HAIRLINE,
+        ...Object.values(DRAWER_SCOPE_LIGHT),
+        ...Object.values(DRAWER_SCOPE_DARK),
+        ...DRAWER_CANVAS,
       ].map((value) => value.toLowerCase()),
     );
     const hexes = collectHexes(`${tokensCss}\n${baseCss}`);
@@ -203,5 +219,37 @@ describe('设计 token 与 Steep 事实源一致', () => {
     expect(baseCss).toContain(':focus-visible');
     expect(baseCss).toContain('outline: 2px solid var(--color-ink-black);');
     expect(baseCss).toContain('prefers-reduced-motion: reduce');
+  });
+});
+
+describe('抽屉作用域（settings-ui-ux-refresh）', () => {
+  it('作用域块存在并声明全部覆盖值', () => {
+    const scopeStart = tokensCss.indexOf('[data-drawer-scope]');
+    expect(scopeStart).toBeGreaterThan(-1);
+    const scopeBlock = tokensCss.slice(scopeStart);
+
+    expect(scopeBlock).toContain(`--color-ink-black: ${DRAWER_SCOPE_LIGHT['ink-black']};`);
+    expect(scopeBlock).toContain(`--color-hairline: ${DRAWER_SCOPE_LIGHT.hairline};`);
+    expect(scopeBlock).toContain(`--color-danger: ${DRAWER_SCOPE_LIGHT.danger};`);
+    expect(scopeBlock).toContain(`--surface-drawer-canvas: ${DRAWER_CANVAS[0]};`);
+    expect(scopeBlock).toContain('--radius-buttons: 8px;');
+    expect(scopeBlock).toContain('--radius-inputs: 8px;');
+    expect(scopeBlock).toContain('--radius-cards: 16px;');
+    expect(scopeBlock).toContain('--segmented-height: 40px;');
+    expect(scopeBlock).toContain('--segmented-padding: 2px;');
+
+    expect(tokensCss).toContain("[data-theme='dark'] [data-drawer-scope]");
+    expect(scopeBlock).toContain(`--surface-drawer-canvas: ${DRAWER_CANVAS[1]};`);
+  });
+
+  it('全局默认值保持不变（作用域不得反向污染全局）', () => {
+    expect(lightScope).toContain('--color-ink-black: #17191c;');
+    expect(lightScope).toContain('--color-hairline: #ececec;');
+    expect(lightScope).toContain('--color-danger: #b6492f;');
+    expect(tokensCss).toContain('--radius-buttons: 9999px;');
+    expect(tokensCss).toContain('--radius-inputs: 16px;');
+    expect(tokensCss).toContain('--radius-cards: 24px;');
+    expect(tokensCss).toContain('--segmented-height: 32px;');
+    expect(tokensCss).toContain('--segmented-padding: 4px;');
   });
 });
