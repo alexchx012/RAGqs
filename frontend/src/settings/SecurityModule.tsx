@@ -4,7 +4,7 @@
  * 「安全设置 / 管理登录密码与设备会话」标题块 → 当前密码 / 新密码 / 再次输入新密码 → 活跃会话（右列是
  * 「退出全部设备」）→ 各设备会话行 → 隐私（右列是开关）。
  * 卡片区域名即该可见标题（SettingsCard 内部用 aria-labelledby 指向 h2），故本模块不再传 ariaLabel
- * （copy.settings.security.sectionLabel 因此不再被引用，保留在文案表待台账统一清理）。
+ * （旧文案键 copy.settings.security.sectionLabel 已随本次清理删除，区域名一律取自可见标题）。
  *
  * 三条语义边界（本模块的核心）：
  * - 密码字段 = 显式提交的命令：输入只改本地 state，页脚「保存」才发请求（校验失败就地提示）。

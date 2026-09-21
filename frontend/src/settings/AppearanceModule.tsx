@@ -6,7 +6,7 @@
  * 三态（loading / loadError / saveError）与 aria-busy 沿用既有语义。
  * 卡片标题与灰色副标题由 SettingsCard 的 title/description 渲染（设计图原文，见 copy 的 cardTitle/cardDescription）；
  * 卡片区域名即该可见标题（SettingsCard 内部用 aria-labelledby 指向 h2），故本模块不再传 ariaLabel
- * （copy.settings.appearance.sectionLabel 因此不再被引用，保留在文案表待台账统一清理）。
+ * （旧文案键 copy.settings.appearance.sectionLabel 已随本次清理删除，区域名一律取自可见标题）。
  * 区域只在卡片上命名一次：外层 section 不再挂 aria-label，避免与 SettingsCard 形成嵌套同名 landmark
  * （Task 8 遗留缺陷；账号设置与安全设置两个模块本就没有外层具名）。
  * 保存进行中禁用两个分段控件（见 DraftFieldSet）：use-preferences 的 saving 契约要求消费方

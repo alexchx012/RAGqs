@@ -22,7 +22,7 @@
  * 卡片只渲染一次具名区域：外层 section 不再挂 aria-label，避免与 SettingsCard 形成嵌套同名 landmark。
  * 卡片标题与灰色副标题由 SettingsCard 的 title/description 渲染（设计图原文，见 copy 的 cardTitle/cardDescription）；
  * 卡片区域名即该可见标题（SettingsCard 内部用 aria-labelledby 指向 h2），故本模块不再传 ariaLabel
- * （copy.settings.profile.sectionLabel 因此不再被引用，保留在文案表待台账统一清理）。
+ * （旧文案键 copy.settings.profile.sectionLabel 已随本次清理删除，区域名一律取自可见标题）。
  * A39 保留：显示名有未保存更改时，Esc / 页头关闭钮 / 刷新三个关闭入口先弹「放弃未保存的更改」确认。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';

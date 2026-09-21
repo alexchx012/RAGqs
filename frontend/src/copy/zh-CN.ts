@@ -96,7 +96,6 @@ export const zhCN = {
   },
   settings: {
     profile: {
-      sectionLabel: '个人资料', // 措辞后定
       cardTitle: '账号设置', // 设计图原文：卡片标题（20px 字级）
       cardDescription: '管理你的个人资料与展示信息', // 设计图原文：卡片灰色副标题（15px 字级）
       avatarLabel: '头像', // 措辞后定：头像行标签
@@ -120,10 +119,8 @@ export const zhCN = {
       adminManaged: '由管理员维护，如需修改请联系管理员', // 措辞后定：姓名/部门/角色只读行的说明
     },
     security: {
-      sectionLabel: '安全', // 措辞后定
       cardTitle: '安全设置', // 设计图原文：卡片标题（20px 字级）
       cardDescription: '管理登录密码与设备会话', // 设计图原文：卡片灰色副标题（15px 字级）
-      passwordTitle: '修改密码', // 措辞后定
       oldPasswordLabel: '当前密码', // 措辞后定
       oldPasswordHint: '输入正在使用的密码以验证身份', // 措辞后定：左列说明（设计图）
       newPasswordLabel: '新密码', // 措辞后定
@@ -136,7 +133,6 @@ export const zhCN = {
       showConfirmPassword: '显示确认新密码', // 措辞后定
       hideConfirmPassword: '隐藏确认新密码', // 措辞后定
       passwordMismatch: '两次输入的新密码不一致', // 措辞后定
-      changePassword: '修改密码', // 措辞后定
       passwordRule: '至少 8 位，且需同时包含字母和数字', // 措辞后定：设计图表述，作为「新密码」行的左列说明
       invalidPasswordRule: '至少 8 位，且需同时包含字母和数字', // 措辞后定：与左列说明同措辞（同一条规则）
       passwordSessionNote: '修改密码成功后，所有设备将退出登录', // 措辞后定：作为「活跃会话」行的左列说明（A37）
@@ -153,7 +149,6 @@ export const zhCN = {
       logoutOther: '退出此设备', // 措辞后定
       logoutAll: '退出全部设备', // 措辞后定
       sessionActionError: '会话操作失败，请稍后重试', // 措辞后定
-      privacyTitle: '隐私', // 措辞后定
       abOptOutLabel: '不参与答案对比测试', // 措辞后定
       abOptOutDescription: '采样由系统决定，用户只有退出权；已创建的对比对不受影响。', // 措辞后定
       preferencesLoading: '正在加载隐私设置', // 措辞后定
@@ -161,7 +156,6 @@ export const zhCN = {
       preferencesSaveError: '保存失败，已恢复上次设置，请稍后重试', // 措辞后定
     },
     appearance: {
-      sectionLabel: '外观', // 措辞后定
       cardTitle: '常规设置', // 设计图原文：卡片标题（20px 字级）
       cardDescription: '管理界面外观与基础显示行为', // 设计图原文：卡片灰色副标题（15px 字级）
       themeTitle: '主题', // 措辞后定
