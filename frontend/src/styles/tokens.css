@@ -147,12 +147,6 @@
   --duration-slow: 400ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-
-  /* 分段控件几何全局默认值：抽屉作用域在下方覆盖为 40px/2px */
-  --segmented-height: 32px;
-  --segmented-padding: 4px;
-  /* 分段控件标签字号全局默认值：抽屉作用域在下方覆盖为 15px */
-  --segmented-font-size: 14px;
 }
 
 /* 暗色主题：token 名不变，值按 共用基座 §2.1 对照表切换。 */
