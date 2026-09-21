@@ -1018,10 +1018,14 @@ describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4
     const { updatePreferences } = await renderModule();
     const user = userEvent.setup();
 
+    // 开关状态不单独依赖颜色：Radix Switch 以 role="switch" + aria-checked 暴露状态
+    // （data-state 是它的内部实现属性，不构成无障碍契约）。
+    expect(privacySwitch()).toHaveAttribute('aria-checked', 'false');
     expect(privacySwitch()).toHaveAttribute('data-state', 'unchecked');
     await user.click(privacySwitch());
 
     // 草稿即时反映选择，但偏好未被写入
+    expect(privacySwitch()).toHaveAttribute('aria-checked', 'true');
     expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
     expect(updatePreferences).not.toHaveBeenCalled();
 
@@ -1030,6 +1034,7 @@ describe('SecurityModule 隐私开关的草稿-保存语义（共用基座 §5.4
     await waitFor(() =>
       expect(updatePreferences).toHaveBeenCalledWith(expect.objectContaining({ ab_opt_out: true })),
     );
+    expect(privacySwitch()).toHaveAttribute('aria-checked', 'true');
     expect(privacySwitch()).toHaveAttribute('data-state', 'checked');
   });
 
