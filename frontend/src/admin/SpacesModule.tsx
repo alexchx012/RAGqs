@@ -776,11 +776,12 @@ function GraphBuildConfirmDialog({
         <p className="mt-1 text-[15px] text-slate-gray">
           {referenceEstimate !== null ? graph.confirmEstimate(referenceEstimate) : graph.confirmEstimatePending}
         </p>
+        {/* 对话框操作键统一 36px（Pill 默认尺寸即 h-9 + --radius-buttons）：同个人段表单对话框。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill variant="ghost" size="sm" disabled={confirming} onClick={() => onOpenChange(false)}>
+          <Pill variant="ghost" disabled={confirming} onClick={() => onOpenChange(false)}>
             {copy.controls.cancel}
           </Pill>
-          <Pill size="sm" loading={confirming} disabled={confirming} onClick={onConfirm}>
+          <Pill loading={confirming} disabled={confirming} onClick={onConfirm}>
             {graph.confirmStart}
           </Pill>
         </div>

@@ -76,25 +76,64 @@ function LocationProbe() {
   return <output data-testid="profile-location">{location.pathname}</output>;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
+/*
+ * 保存回声必须还原真实 API 的对象身份行为：api/client.ts 的 `response.json()` 每次返回
+ * **新对象**。若 mock 直接回声传入的引用，草稿层就观察不到 submitted 变化，会掩盖
+ * 「保存落地即重置草稿」这类缺陷（Task 8 教训）。故统一经本函数：取值相同、身份必新。
+ */
+function createProfileApi(user: User) {
+  const updateProfile = vi.fn(async (input: { display_name: string }) => ({
+    ...user,
+    display_name: input.display_name,
+  }));
+  const uploadAvatar = vi.fn(async () => ({ avatar_url: '/avatars/after.png' }));
+  return {
+    api: { updateProfile, uploadAvatar } as unknown as SettingsApi,
+    updateProfile,
+    uploadAvatar,
+  };
+}
+
+const saveButton = () => screen.getByRole('button', { name: copy.controls.save });
+const cancelButton = () => screen.getByRole('button', { name: copy.controls.cancel });
+const displayNameInput = () =>
+  screen.getByLabelText(copy.settings.profile.displayNameLabel) as HTMLInputElement;
+/** 头像的隐藏 file input：可访问名与触发按钮同文案，靠 aria-label 关联（按钮名来自文本内容）。 */
+const avatarFileInput = () =>
+  screen.getByLabelText(copy.settings.profile.avatarInputLabel) as HTMLInputElement;
+const avatarTrigger = () =>
+  screen.getByRole('button', { name: copy.settings.profile.avatarInputLabel });
+const formRows = () => screen.getAllByTestId('form-row');
+const rowLabelCells = () => screen.getAllByTestId('form-row-label');
+/** 某行标签关联的控件 id（只读行与头像行不该有关联控件）。 */
+const labelFor = (cell: HTMLElement) => cell.querySelector('label')?.getAttribute('for') ?? null;
+
+function avatarFile(name = 'next-avatar.png'): File {
+  return new File(['avatar'], name, { type: 'image/png' });
+}
+
 describe('ProfileModule', () => {
   it('only submits the edited display name and synchronizes the returned presentation value', async () => {
     const user = userEvent.setup();
     const currentUser = testUser();
-    const updateProfile = vi.fn(async (input: { display_name: string }) => ({
-      ...currentUser,
-      display_name: input.display_name,
-    }));
-    const api = {
-      updateProfile,
-      uploadAvatar: vi.fn(async () => ({ avatar_url: '/avatars/unused.png' })),
-    } as unknown as SettingsApi;
+    const { api, updateProfile } = createProfileApi(currentUser);
     const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
-    const input = screen.getByLabelText(copy.settings.profile.displayNameLabel);
+    const input = displayNameInput();
     await user.clear(input);
     await user.type(input, '新名字');
-    await user.click(screen.getByRole('button', { name: copy.settings.profile.save }));
+    await user.click(saveButton());
 
     await waitFor(() => {
       expect(updateProfile).toHaveBeenCalledWith({ display_name: '新名字' });
@@ -105,150 +144,411 @@ describe('ProfileModule', () => {
 
   it('uploads one avatar file and immediately updates the rendered avatar source from the response', async () => {
     const user = userEvent.setup();
-    const uploadAvatar = vi.fn(async () => ({ avatar_url: '/avatars/after.png' }));
-    const api = {
-      updateProfile: vi.fn(async (input: { display_name: string }) => ({
-        ...testUser(),
-        display_name: input.display_name,
-      })),
-      uploadAvatar,
-    } as unknown as SettingsApi;
-    const store = await createAuthedStore(testUser());
+    const currentUser = testUser();
+    const { api, uploadAvatar } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
     const avatar = screen.getByRole('img', { name: copy.settings.profile.avatarAlt });
     expect(avatar).toHaveAttribute('src', '/avatars/before.png');
 
-    const file = new File(['avatar'], 'next-avatar.png', { type: 'image/png' });
-    await user.upload(screen.getByLabelText(copy.settings.profile.avatarInputLabel), file);
+    const file = avatarFile();
+    await user.upload(avatarFileInput(), file);
 
     await waitFor(() => expect(uploadAvatar).toHaveBeenCalledWith(file));
     expect(avatar).toHaveAttribute('src', '/avatars/after.png');
     expect(store.getState().user?.avatar_url).toBe('/avatars/after.png');
   });
 
-  it('keeps real name, department, and role read-only with administrator-maintained guidance', async () => {
-    const store = await createAuthedStore(testUser());
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
-
-    renderProfile(store, api);
-
-    await screen.findByText(copy.settings.profile.realNameLabel);
-    expect(screen.getByText(copy.settings.profile.realNameLabel)).toBeInTheDocument();
-    expect(screen.getByText('张三')).toBeInTheDocument();
-    expect(screen.getByText(copy.settings.profile.departmentLabel)).toBeInTheDocument();
-    expect(screen.getByText('财务部')).toBeInTheDocument();
-    expect(screen.getByText(copy.settings.profile.roleLabel)).toBeInTheDocument();
-    expect(screen.getByText(copy.settings.profile.roleUser)).toBeInTheDocument();
-    expect(screen.getAllByText(copy.settings.profile.adminManaged)).toHaveLength(3);
-  });
-});
-
-describe('ProfileModule 保存交互（共用基座 §5.3）', () => {
-  it('无未保存变更时不渲染「保存」「取消」', async () => {
-    const store = await createAuthedStore(testUser());
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
-
-    renderProfile(store, api);
-    await screen.findByText(copy.settings.profile.realNameLabel);
-
-    expect(screen.queryByRole('button', { name: copy.settings.profile.save })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: copy.controls.cancel })).not.toBeInTheDocument();
-  });
-
-  it('编辑后出现「保存」「取消」；「取消」回退未保存变更', async () => {
-    const user = userEvent.setup();
-    const store = await createAuthedStore(testUser());
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
-
-    renderProfile(store, api);
-    const input = screen.getByLabelText(copy.settings.profile.displayNameLabel);
-    await user.clear(input);
-    await user.type(input, '新名字');
-
-    const saveButton = await screen.findByRole('button', { name: copy.settings.profile.save });
-    const cancelButton = screen.getByRole('button', { name: copy.controls.cancel });
-    expect(saveButton).toBeInTheDocument();
-    expect(cancelButton).toBeInTheDocument();
-
-    await user.click(cancelButton);
-    expect(input).toHaveValue('张三');
-    expect(screen.queryByRole('button', { name: copy.settings.profile.save })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: copy.controls.cancel })).not.toBeInTheDocument();
-    expect(api.updateProfile).not.toHaveBeenCalled();
-  });
-
-  it('保存成功：按钮旁淡入「已保存」小字，约 2s 后淡出消失', async () => {
-    const user = userEvent.setup();
+  it('姓名/部门/角色渲染为只读文本行，不渲染输入控件', async () => {
     const currentUser = testUser();
-    const updateProfile = vi.fn(async (input: { display_name: string }) => ({
-      ...currentUser,
-      display_name: input.display_name,
-    }));
-    const api = {
-      updateProfile,
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
+    const { api } = createProfileApi(currentUser);
     const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
-    const input = screen.getByLabelText(copy.settings.profile.displayNameLabel);
+    await screen.findAllByTestId('form-row');
+
+    for (const text of ['张三', '财务部', copy.settings.profile.roleUser]) {
+      expect(screen.getByText(text)).toBeInTheDocument();
+    }
+    // 三行只读字段各有一条「由管理员维护」说明
+    expect(screen.getAllByText(copy.settings.profile.adminManaged)).toHaveLength(3);
+    // 只读行不套输入控件：全文只有显示名一个文本输入框
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+    expect(screen.getAllByRole('textbox')[0]).toHaveAttribute('id', 'settings-display-name');
+  });
+});
+
+describe('ProfileModule 表单结构（设置基座）', () => {
+  it('五行渲染在同一张设置卡片内，页脚为卡片最后一个直接子节点', async () => {
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findByTestId('settings-card');
+
+    expect(screen.getAllByTestId('settings-card')).toHaveLength(1);
+    expect(formRows()).toHaveLength(5);
+    // 行分隔线由父容器关闭末行（FormRow 始终渲染 border-b，不做「是否最后一行」判断）
+    const rowsParent = formRows()[0].parentElement;
+    expect(rowsParent?.className).toContain('[&>*:last-child]:border-b-0');
+    expect(rowsParent?.lastElementChild).toBe(formRows()[4]);
+    const card = screen.getByTestId('settings-card');
+    const footer = screen.getByTestId('form-footer');
+    // FormFooter 的负外边距抵消卡片 p-8，要求它是卡片的直接子节点且为最后一个子节点
+    expect(card.lastElementChild).toBe(footer);
+  });
+
+  it('行标签自上而下为：头像、显示名、姓名、部门、角色', async () => {
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findAllByTestId('form-row');
+
+    const labels = rowLabelCells().map((cell) => cell.textContent ?? '');
+    expect(labels).toHaveLength(5);
+    expect(labels[0]).toContain(copy.settings.profile.avatarLabel);
+    expect(labels[1]).toContain(copy.settings.profile.displayNameLabel);
+    expect(labels[2]).toContain(copy.settings.profile.realNameLabel);
+    expect(labels[3]).toContain(copy.settings.profile.departmentLabel);
+    expect(labels[4]).toContain(copy.settings.profile.roleLabel);
+    // 只读行带「由管理员维护」说明，可编辑行不带
+    expect(labels[1]).not.toContain(copy.settings.profile.adminManaged);
+    for (const index of [2, 3, 4]) {
+      expect(labels[index]).toContain(copy.settings.profile.adminManaged);
+    }
+  });
+
+  it('卡片在第一个表单行之前渲染模块标题与灰色副标题（措辞逐字取自设计图）', async () => {
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findByTestId('settings-card');
+
+    const card = screen.getByTestId('settings-card');
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(heading).toHaveTextContent('账号设置');
+    expect(heading.tagName).toBe('H2');
+    expect(heading.className.split(/\s+/)).toContain('text-body-lg');
+
+    const subtitle = screen.getByText('管理你的个人资料与展示信息');
+    expect(subtitle.tagName).toBe('P');
+    expect(subtitle.className.split(/\s+/)).toContain('text-caption');
+    expect(subtitle.className.split(/\s+/)).toContain('text-slate-strong');
+
+    // 设计结构是「卡片标题 + 副标题 + 连续的两栏表单行」：卡内恰有 1 个标题元素，没有小节标题
+    expect(card.querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(1);
+    const firstRow = formRows()[0];
+    expect(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(subtitle.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('区域只在卡片上命名一次，且区域名即可见标题（无嵌套同名 landmark）', async () => {
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findByTestId('settings-card');
+
+    const regions = screen.getAllByRole('region');
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toBe(screen.getByTestId('settings-card'));
+    // 区域名必须等于卡内可见标题（不再取可能与标题漂移的 sectionLabel「个人资料」）
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(regions[0]).toHaveAccessibleName(heading.textContent ?? '');
+    expect(regions[0]).toHaveAccessibleName(copy.settings.profile.cardTitle);
+    expect(regions[0]).not.toHaveAttribute('aria-label');
+    // 标题元素自身不挂 aria-label（同一元素上标题 + aria-label 会被重复朗读）
+    expect(heading).not.toHaveAttribute('aria-label');
+  });
+
+  it('显示名行的标签关联输入框；只读行的标签不关联任何控件', async () => {
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findAllByTestId('form-row');
+
+    const cells = rowLabelCells();
+    // 只有显示名行有可关联的控件；只读行渲染纯文本，头像行是按钮（非 labelable）
+    expect(labelFor(cells[1])).toBe('settings-display-name');
+    expect(labelFor(cells[0])).toBeNull();
+    for (const index of [2, 3, 4]) {
+      expect(labelFor(cells[index])).toBeNull();
+    }
+    expect(displayNameInput()).toHaveAttribute('id', 'settings-display-name');
+  });
+});
+
+describe('ProfileModule 草稿-保存语义', () => {
+  it('显示名改动只改草稿，点「保存」才提交', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const { api, updateProfile } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const input = displayNameInput();
+    await user.clear(input);
+    await user.type(input, 'lisi');
+
+    expect(input).toHaveValue('lisi');
+    expect(updateProfile).not.toHaveBeenCalled();
+    expect(store.getState().user?.display_name).toBe('张三');
+
+    await user.click(saveButton());
+
+    await waitFor(() => expect(updateProfile).toHaveBeenCalledWith({ display_name: 'lisi' }));
+  });
+
+  it('「取消」丢弃草稿，不产生提交请求', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const { api, updateProfile } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const input = displayNameInput();
     await user.clear(input);
     await user.type(input, '新名字');
-    await user.click(screen.getByRole('button', { name: copy.settings.profile.save }));
+    await user.click(cancelButton());
 
-    // 成功反馈出现在按钮旁（操作行内），随后约 2s 淡出卸载
+    expect(input).toHaveValue('张三');
+    expect(updateProfile).not.toHaveBeenCalled();
+    expect(store.getState().user?.display_name).toBe('张三');
+  });
+
+  it('草稿与已提交快照一致时保存不产生请求', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const { api, updateProfile } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findByTestId('form-footer');
+    await user.click(saveButton());
+
+    expect(updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('保存进行中禁用显示名输入框与两个操作键（在途编辑不得被静默丢弃）', async () => {
+    // 回归守卫：use-preferences / 保存路径的既有契约要求「保存进行中禁用可交互控件」。
+    // 真实 API 的保存响应每次都是新对象（api/client.ts `response.json()`），useDraftForm 见
+    // submitted 变化即重置草稿——窗口内若还能改，那笔在途编辑会在响应落地时被静默丢弃。
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const save = deferred<User>();
+    const updateProfile = vi.fn<SettingsApi['updateProfile']>(() => save.promise);
+    const api = { updateProfile, uploadAvatar: vi.fn() } as unknown as SettingsApi;
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const input = displayNameInput();
+    await user.clear(input);
+    await user.type(input, '新名字');
+    // 先取按钮元素再点：旧实现保存中把按钮内容换成加载点、按钮失去「保存」可访问名
+    const submit = saveButton();
+    await user.click(submit);
+    await waitFor(() => expect(submit).toBeDisabled());
+
+    expect(input).toBeDisabled();
+    expect(cancelButton()).toBeDisabled();
+    // 可见禁用表现
+    expect(input.className).toContain('disabled:opacity-60');
+    expect(input.className).toContain('disabled:cursor-not-allowed');
+
+    await act(async () => {
+      save.resolve({ ...currentUser, display_name: '新名字' });
+      await save.promise;
+    });
+    expect(submit).toBeEnabled();
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue('新名字');
+  });
+
+  it('保存失败：就地错误行，按钮恢复可点，不显示「已保存」', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const updateProfile = vi.fn(async (_input: { display_name: string }) => {
+      throw new Error('offline');
+    });
+    const api = { updateProfile, uploadAvatar: vi.fn() } as unknown as SettingsApi;
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const input = displayNameInput();
+    await user.clear(input);
+    await user.type(input, '新名字');
+    await user.click(saveButton());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.settings.profile.saveError);
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    expect(input).toBeEnabled();
+    expect(screen.queryByText(copy.settings.profile.saved)).not.toBeInTheDocument();
+    // 失败后草稿保留这次编辑（未被静默回滚成服务端快照）
+    expect(input).toHaveValue('新名字');
+  });
+
+  it('保存成功：「已保存」落在页脚行内（左侧），不额外撑高页脚', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const footer = screen.getByTestId('form-footer');
+    const footerClass = footer.className;
+    const cardChildren = screen.getByTestId('settings-card').childElementCount;
+
+    const input = displayNameInput();
+    await user.clear(input);
+    await user.type(input, '新名字');
+    await user.click(saveButton());
+
+    const feedback = await screen.findByText(copy.settings.profile.saved);
+    // 反馈在页脚内部（与按钮同排、在左侧），而不是在页脚之上另起一行
+    expect(footer).toContainElement(feedback);
+    expect(feedback.closest('[data-testid="form-footer"]')).toBe(footer);
+    expect(
+      feedback.compareDocumentPosition(cancelButton()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // 页脚仍是同一组高度/内边距类，卡片直接子节点数不变 → 反馈出现不改变页脚高度与纵向节奏
+    expect(footer.className).toBe(footerClass);
+    expect(screen.getByTestId('settings-card').childElementCount).toBe(cardChildren);
+  });
+
+  it('保存成功：显示「已保存」小字，约 2s 后淡出消失', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const input = displayNameInput();
+    await user.clear(input);
+    await user.type(input, '新名字');
+    await user.click(saveButton());
+
+    // 成功反馈随后约 2s 淡出卸载
     const feedback = await screen.findByText(copy.settings.profile.saved);
     expect(feedback).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText(copy.settings.profile.saved)).not.toBeInTheDocument(), {
       timeout: 3000,
     });
   });
+});
 
-  it('保存失败：就地错误行且按钮恢复可点', async () => {
+describe('ProfileModule 即时动作边界（头像）', () => {
+  it('更换头像即时执行：按钮触发文件选择，选中即上传，不进入显示名草稿', async () => {
     const user = userEvent.setup();
-    const updateProfile = vi.fn(async (_input: { display_name: string }) => {
-      throw new Error('offline');
-    });
-    const api = {
-      updateProfile,
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
-    const store = await createAuthedStore(testUser());
+    const currentUser = testUser();
+    const { api, updateProfile, uploadAvatar } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
-    const input = screen.getByLabelText(copy.settings.profile.displayNameLabel);
-    await user.clear(input);
-    await user.type(input, '新名字');
-    await user.click(screen.getByRole('button', { name: copy.settings.profile.save }));
+    await screen.findByTestId('form-footer');
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(copy.settings.profile.saveError);
-    const saveButton = screen.getByRole('button', { name: copy.settings.profile.save });
-    await waitFor(() => expect(saveButton).toBeEnabled());
-    expect(screen.queryByText(copy.settings.profile.saved)).not.toBeInTheDocument();
+    // 触发按钮把点击转给隐藏的 file input（按钮本身是键盘可达的控件）
+    const fileInput = avatarFileInput();
+    const clickSpy = vi.spyOn(fileInput, 'click');
+    await user.click(avatarTrigger());
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    clickSpy.mockRestore();
+
+    const file = avatarFile();
+    await user.upload(fileInput, file);
+    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledWith(file));
+    // 即时动作：不等「保存」，也不经 updateProfile
+    expect(updateProfile).not.toHaveBeenCalled();
+
+    // 不使表单进入 dirty：再点「保存」不产生提交
+    await user.click(saveButton());
+    expect(updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('更换头像不丢弃显示名的在途草稿', async () => {
+    // 头像上传成功后会话用户对象整体换身份（createCurrentUserPresentationSync 以新对象落 avatar_url）。
+    // 若 submitted 随 user 身份重建，useDraftForm 会把草稿重置回服务端快照，
+    // 用户正在编辑的显示名会被静默丢弃。故 submitted 只随显示名取值换身份。
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    const { api, updateProfile, uploadAvatar } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    const input = displayNameInput();
+    await user.clear(input);
+    await user.type(input, '未保存名字');
+
+    await user.upload(avatarFileInput(), avatarFile());
+    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(store.getState().user?.avatar_url).toBe('/avatars/after.png'));
+
+    expect(input).toHaveValue('未保存名字');
+    await user.click(saveButton());
+    await waitFor(() =>
+      expect(updateProfile).toHaveBeenCalledWith({ display_name: '未保存名字' }),
+    );
+  });
+
+  it('头像上传后重置 input：重选同一文件可再次上传；上传中按钮显示加载反馈', async () => {
+    const user = userEvent.setup();
+    const currentUser = testUser();
+    let resolveUpload!: () => void;
+    const uploadAvatar = vi.fn(
+      () =>
+        new Promise<{ avatar_url: string }>((resolve) => {
+          resolveUpload = () => resolve({ avatar_url: '/avatars/after.png' });
+        }),
+    );
+    const api = { updateProfile: vi.fn(), uploadAvatar } as unknown as SettingsApi;
+    const store = await createAuthedStore(currentUser);
+
+    renderProfile(store, api);
+    await screen.findByTestId('form-footer');
+    const file = avatarFile('same-avatar.png');
+    const input = avatarFileInput();
+    await user.upload(input, file);
+    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(1));
+
+    // 上传中：按钮文案切换为「上传中…」并禁用，file input 同步禁用
+    expect(
+      screen.getByRole('button', { name: copy.settings.profile.avatarUploading }),
+    ).toBeDisabled();
+    expect(input).toBeDisabled();
+
+    await act(async () => {
+      resolveUpload();
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: copy.settings.profile.avatarUploading }),
+      ).not.toBeInTheDocument(),
+    );
+
+    // A39：onChange 后 input value 已重置 → 重选同一文件再次触发上传
+    await user.upload(input, file);
+    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(2));
   });
 });
 
 describe('ProfileModule 关闭拦截与头像（A39）', () => {
   it('显示名有未保存更改时按 Esc 弹「放弃未保存的更改」确认；取消保留修改', async () => {
     const user = userEvent.setup();
-    const store = await createAuthedStore(testUser());
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
+    const currentUser = testUser();
+    const { api, updateProfile } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
-    const input = await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    const input = displayNameInput();
     await user.clear(input);
     await user.type(input, '未保存名字');
 
@@ -261,20 +561,18 @@ describe('ProfileModule 关闭拦截与头像（A39）', () => {
     // 取消：留在模块，修改保留
     await user.click(screen.getByRole('button', { name: copy.controls.cancel }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByLabelText(copy.settings.profile.displayNameLabel)).toHaveValue('未保存名字');
-    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(displayNameInput()).toHaveValue('未保存名字');
+    expect(updateProfile).not.toHaveBeenCalled();
   });
 
   it('确认放弃：回退显示名并关闭抽屉（导航到根路径）', async () => {
     const user = userEvent.setup();
-    const store = await createAuthedStore(testUser());
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
+    const currentUser = testUser();
+    const { api, updateProfile } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
-    const input = await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    const input = displayNameInput();
     await user.clear(input);
     await user.type(input, '未保存名字');
 
@@ -283,21 +581,19 @@ describe('ProfileModule 关闭拦截与头像（A39）', () => {
     await user.click(screen.getByRole('button', { name: copy.settings.profile.unsavedConfirm }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByLabelText(copy.settings.profile.displayNameLabel)).toHaveValue('张三');
-    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(displayNameInput()).toHaveValue('张三');
+    expect(updateProfile).not.toHaveBeenCalled();
     expect(screen.getByTestId('profile-location').textContent).toBe('/');
   });
 
   it('显示名有未保存更改时点抽屉页头关闭钮弹确认，取消后不关闭（A39）', async () => {
     const user = userEvent.setup();
-    const store = await createAuthedStore(testUser());
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
+    const currentUser = testUser();
+    const { api, updateProfile } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
-    const input = await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    const input = displayNameInput();
     await user.clear(input);
     await user.type(input, '未保存名字');
 
@@ -312,58 +608,19 @@ describe('ProfileModule 关闭拦截与头像（A39）', () => {
     await user.click(screen.getByRole('button', { name: copy.controls.cancel }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByTestId('profile-location').textContent).toBe('/settings');
-    expect(screen.getByLabelText(copy.settings.profile.displayNameLabel)).toHaveValue('未保存名字');
-    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(displayNameInput()).toHaveValue('未保存名字');
+    expect(updateProfile).not.toHaveBeenCalled();
   });
 
   it('无未保存更改时按 Esc 不弹确认', async () => {
     const user = userEvent.setup();
-    const store = await createAuthedStore(testUser());
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar: vi.fn(),
-    } as unknown as SettingsApi;
+    const currentUser = testUser();
+    const { api } = createProfileApi(currentUser);
+    const store = await createAuthedStore(currentUser);
 
     renderProfile(store, api);
-    await screen.findByLabelText(copy.settings.profile.displayNameLabel);
+    await screen.findByTestId('form-footer');
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  });
-
-  it('头像上传后重置 input：重选同一文件可再次上传；上传中 label 显示加载反馈', async () => {
-    const user = userEvent.setup();
-    let resolveUpload!: () => void;
-    const uploadAvatar = vi.fn(
-      (_file: File) =>
-        new Promise<{ avatar_url: string }>((resolve) => {
-          resolveUpload = () => resolve({ avatar_url: '/avatars/after.png' });
-        }),
-    );
-    const api = {
-      updateProfile: vi.fn(),
-      uploadAvatar,
-    } as unknown as SettingsApi;
-    const store = await createAuthedStore(testUser());
-
-    renderProfile(store, api);
-    const file = new File(['avatar'], 'same-avatar.png', { type: 'image/png' });
-    const input = screen.getByLabelText(copy.settings.profile.avatarInputLabel) as HTMLInputElement;
-    await user.upload(input, file);
-    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(1));
-
-    // 上传中：label 文案切换为「上传中…」
-    expect(screen.getByText(copy.settings.profile.avatarUploading)).toBeInTheDocument();
-
-    await act(async () => {
-      resolveUpload();
-      await Promise.resolve();
-    });
-    await waitFor(() =>
-      expect(screen.queryByText(copy.settings.profile.avatarUploading)).not.toBeInTheDocument(),
-    );
-
-    // A39：onChange 后 input value 已重置 → 重选同一文件再次触发上传
-    await user.upload(input, file);
-    await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(2));
   });
 });

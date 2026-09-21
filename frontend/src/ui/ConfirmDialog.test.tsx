@@ -1,6 +1,8 @@
 /*
  * ConfirmDialog 测试（共用基座 §5.6）：标题/说明渲染、取消与确认、Esc 关闭、
  * 焦点圈定与关闭后焦点返回触发元素（Radix 自带）。组件内 useEscShield 需要 EscStackProvider。
+ * 抽屉作用域（drawer-visual-system）：抽屉内触发的确认框 portal 到 body，CSS 变量不随 DOM
+ * 继承，组件须给 portal 内容根节点自带 data-drawer-scope。
  */
 
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -9,17 +11,21 @@ import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { copy } from '../copy';
 import { EscStackProvider } from '../lib/esc-stack-provider';
+import { DrawerScopeContext } from '../shell/drawer/drawer-scope-context';
 import { ConfirmDialog } from './ConfirmDialog';
 
 function Harness({
   onConfirm = vi.fn(),
   danger = false,
+  scoped = false,
 }: {
   onConfirm?: () => void;
   danger?: boolean;
+  /** true：模拟抽屉内用法（DrawerScopeContext 为真）。 */
+  scoped?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  return (
+  const tree = (
     <EscStackProvider>
       <button type="button" onClick={() => setOpen(true)}>
         open dialog
@@ -35,10 +41,19 @@ function Harness({
       />
     </EscStackProvider>
   );
+  return scoped ? (
+    <DrawerScopeContext.Provider value={true}>{tree}</DrawerScopeContext.Provider>
+  ) : (
+    tree
+  );
 }
 
 function renderDialog(props: { onConfirm?: () => void; danger?: boolean } = {}) {
   return render(<Harness {...props} />);
+}
+
+function renderScopedDialog(props: { onConfirm?: () => void; danger?: boolean } = {}) {
+  return render(<Harness {...props} scoped />);
 }
 
 async function openDialog(user: ReturnType<typeof userEvent.setup>) {
@@ -112,6 +127,23 @@ describe('ConfirmDialog', () => {
     expect(confirm).toHaveFocus();
     await user.tab({ shift: true });
     expect(cancel).toHaveFocus();
+  });
+
+  it('抽屉作用域内：portal 内容根节点自带 data-drawer-scope（浮层不走 DOM 继承）', async () => {
+    renderScopedDialog();
+    const user = userEvent.setup();
+    const dialog = await openDialog(user);
+
+    expect(dialog).toHaveAttribute('data-drawer-scope', '');
+    expect(dialog.closest('[data-drawer-scope]')).toBe(dialog);
+  });
+
+  it('抽屉作用域外：不挂 data-drawer-scope（聊天主页等既有用法不变）', async () => {
+    renderDialog();
+    const user = userEvent.setup();
+    const dialog = await openDialog(user);
+
+    expect(dialog).not.toHaveAttribute('data-drawer-scope');
   });
 
   it('confirming 期间：取消/确认键禁用 + 确认键 aria-busy；Esc 关闭请求转发 onOpenChange（review A2）', async () => {

@@ -40,27 +40,30 @@ const ADMIN_SEGMENT_ROLES = ['ops', 'admin'] as const;
 
 export function createPlaceholderModules(): DrawerModule[] {
   return [
-    // 个人段（全角色；顺序固定）。Profile/Security 在首次登记时合成真实 render，绝不二次 register 同 ID。
+    // 个人段（全角色；顺序固定）：左栏显示顺序以 drawer-visual-system 规格为准——
+    // 常规设置(/settings/appearance) → 账号设置(/settings/profile) → 安全设置(/settings/security)
+    // → 知识库(/settings/knowledge)；模块 id 与路由路径不变，只有显示名与排列次序变化。
+    // Profile/Security 在首次登记时合成真实 render，绝不二次 register 同 ID。
     {
-      id: 'profile',
-      title: modules.profile,
+      id: 'appearance',
+      title: modules.general,
       segment: 'personal',
       order: 10,
+      render: () => createElement(AppearanceModule),
+    },
+    {
+      id: 'profile',
+      title: modules.account,
+      segment: 'personal',
+      order: 20,
       render: () => createElement(ProfileModule),
     },
     {
       id: 'security',
       title: modules.security,
       segment: 'personal',
-      order: 20,
-      render: () => createElement(SecurityModule),
-    },
-    {
-      id: 'appearance',
-      title: modules.appearance,
-      segment: 'personal',
       order: 30,
-      render: () => createElement(AppearanceModule),
+      render: () => createElement(SecurityModule),
     },
     {
       id: 'knowledge',

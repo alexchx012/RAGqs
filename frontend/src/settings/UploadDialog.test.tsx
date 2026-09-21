@@ -152,6 +152,20 @@ describe('UploadDialog 上传对话框（经契约 mock）', () => {
     ).toBeInTheDocument();
   });
 
+  it('对话框按钮统一走抽屉按钮规格（36px + --radius-buttons）', async () => {
+    const api = createContractApi();
+    await renderUpload(api);
+
+    const confirm = await screen.findByRole('button', {
+      name: copy.settings.knowledge.upload.upload,
+    });
+    // 精确断言：先按空白切出类名数组（子串匹配会被 md:h-9 之类满足）
+    expect(confirm.className.split(/\s+/)).toContain('rounded-[var(--radius-buttons)]');
+    expect(confirm.className.split(/\s+/)).toContain('h-9');
+    const cancel = screen.getByRole('button', { name: copy.controls.cancel });
+    expect(cancel.className.split(/\s+/)).toContain('h-9');
+  });
+
   it('重复选择/拖入同一文件（name+size+lastModified）去重为一条（A40）', async () => {
     const api = createContractApi();
     const user = userEvent.setup();

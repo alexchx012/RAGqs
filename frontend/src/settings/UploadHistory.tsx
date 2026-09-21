@@ -2,6 +2,9 @@
  * 上传结果历史呈现（Major3 / review A2）：最近一次上传响应的逐文件结果，稳定可访问。
  * 供知识库首页工具行下方与上传结果层顶部共用；按 auth session 隔离（sessionKey），
  * 旧会话写入不覆盖新会话槽位；通过 subscribe 在写入后刷新（页面已挂载时最小订阅机制）。
+ * 设置基座：本块整体位于上传结果层的 SettingsCard 内，区块标题因此不再是 h3 而是普通文本
+ * （R14：设置卡内不出现 h1–h6 小节标题）——文案与视觉字级不变，只去掉标题语义；
+ * 区块自身仍是带发丝边的独立小块，不构成第二张设置卡片（R13）。
  */
 
 import { useEffect, useState } from 'react';
@@ -29,9 +32,9 @@ export function UploadHistorySection({ sessionKey }: { readonly sessionKey: stri
   return (
     <section aria-label={copy.settings.knowledge.uploads.historyTitle} className="rounded-[var(--radius-elevatedcards)] border border-[var(--color-hairline)] p-4">
       <div className="flex items-center justify-between gap-4">
-        <h3 className="text-subheading font-medium text-ink-black">
+        <p className="text-subheading font-medium text-ink-black">
           {copy.settings.knowledge.uploads.historyTitle}
-        </h3>
+        </p>
         <p className="text-caption text-slate-strong">
           {entry.target !== null
             ? `${copy.settings.knowledge.uploads.historyTarget(entry.target.name)} · ${copy.settings.knowledge.uploads.historyAt(formatTime(entry.at))}`

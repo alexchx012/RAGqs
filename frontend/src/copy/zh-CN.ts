@@ -34,9 +34,9 @@ export const zhCN = {
       navAria: '模块导航', // 措辞后定：抽屉左栏导航区 aria-label（与 dialog 标题区分）
       topPlaceholderBody: '从左侧选择要查看的模块。', // 措辞后定
       modules: {
-        profile: '个人资料', // 措辞后定
-        security: '安全', // 措辞后定
-        appearance: '外观', // 措辞后定
+        general: '常规设置', // 措辞后定（原「外观」，settings-ui-ux-refresh 改名）
+        account: '账号设置', // 措辞后定（原「个人资料」，settings-ui-ux-refresh 改名）
+        security: '安全设置', // 措辞后定（原「安全」，settings-ui-ux-refresh 改名）
         knowledge: '知识库', // 措辞后定
         dashboard: '总览', // 措辞后定
         approvals: '审批中心', // 措辞后定
@@ -88,6 +88,7 @@ export const zhCN = {
   },
   controls: {
     cancel: '取消', // 措辞后定
+    save: '保存', // 措辞后定
     confirm: '确认', // 措辞后定
     paginatorPrev: '上一页', // 措辞后定
     paginatorNext: '下一页', // 措辞后定
@@ -95,11 +96,12 @@ export const zhCN = {
   },
   settings: {
     profile: {
-      sectionLabel: '个人资料', // 措辞后定
+      cardTitle: '账号设置', // 设计图原文：卡片标题（20px 字级）
+      cardDescription: '管理你的个人资料与展示信息', // 设计图原文：卡片灰色副标题（15px 字级）
+      avatarLabel: '头像', // 措辞后定：头像行标签
       avatarAlt: '个人头像', // 措辞后定
-      avatarInputLabel: '更换头像', // 措辞后定
+      avatarInputLabel: '更换头像', // 措辞后定：头像行即时动作按钮
       displayNameLabel: '显示名', // 措辞后定
-      save: '保存', // 措辞后定
       saved: '已保存', // 措辞后定：保存成功小字（15px 成功绿，约 2s 后淡出）
       saveError: '保存失败，请稍后重试', // 措辞后定
       avatarError: '头像上传失败，请稍后重试', // 措辞后定
@@ -114,19 +116,26 @@ export const zhCN = {
       roleMinister: '部长', // 措辞后定
       roleOps: '运维', // 措辞后定
       roleAdmin: '管理员', // 措辞后定
-      adminManaged: '由管理员维护', // 措辞后定
+      adminManaged: '由管理员维护，如需修改请联系管理员', // 措辞后定：姓名/部门/角色只读行的说明
     },
     security: {
-      sectionLabel: '安全', // 措辞后定
-      passwordTitle: '修改密码', // 措辞后定
+      cardTitle: '安全设置', // 设计图原文：卡片标题（20px 字级）
+      cardDescription: '管理登录密码与设备会话', // 设计图原文：卡片灰色副标题（15px 字级）
       oldPasswordLabel: '当前密码', // 措辞后定
+      oldPasswordHint: '输入正在使用的密码以验证身份', // 措辞后定：左列说明（设计图）
       newPasswordLabel: '新密码', // 措辞后定
       confirmPasswordLabel: '再次输入新密码', // 措辞后定
+      confirmPasswordHint: '再次输入新密码以确保一致', // 措辞后定：左列说明（设计图）
+      showOldPassword: '显示当前密码', // 措辞后定：眼睛按钮可访问名按字段限定（同页三个按钮必须可区分）
+      hideOldPassword: '隐藏当前密码', // 措辞后定
+      showNewPassword: '显示新密码', // 措辞后定
+      hideNewPassword: '隐藏新密码', // 措辞后定
+      showConfirmPassword: '显示确认新密码', // 措辞后定
+      hideConfirmPassword: '隐藏确认新密码', // 措辞后定
       passwordMismatch: '两次输入的新密码不一致', // 措辞后定
-      changePassword: '修改密码', // 措辞后定
-      passwordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
-      invalidPasswordRule: '密码至少 8 位，且包含字母和数字', // 措辞后定
-      passwordSessionNote: '修改密码成功后，所有设备将退出登录', // 措辞后定：提交区固定注明（A37）
+      passwordRule: '至少 8 位，且需同时包含字母和数字', // 措辞后定：设计图表述，作为「新密码」行的左列说明
+      invalidPasswordRule: '至少 8 位，且需同时包含字母和数字', // 措辞后定：与左列说明同措辞（同一条规则）
+      passwordSessionNote: '修改密码成功后，所有设备将退出登录', // 措辞后定：作为「活跃会话」行的左列说明（A37）
       logoutAllConfirmTitle: '退出全部设备？', // 措辞后定：退出全部设备二次确认（A38）
       logoutAllConfirmDescription: '将撤销本账号全部设备的会话，包括当前使用的这台设备，之后需重新登录。', // 措辞后定
       wrongOldPassword: '当前密码不正确', // 措辞后定
@@ -140,7 +149,6 @@ export const zhCN = {
       logoutOther: '退出此设备', // 措辞后定
       logoutAll: '退出全部设备', // 措辞后定
       sessionActionError: '会话操作失败，请稍后重试', // 措辞后定
-      privacyTitle: '隐私', // 措辞后定
       abOptOutLabel: '不参与答案对比测试', // 措辞后定
       abOptOutDescription: '采样由系统决定，用户只有退出权；已创建的对比对不受影响。', // 措辞后定
       preferencesLoading: '正在加载隐私设置', // 措辞后定
@@ -148,7 +156,8 @@ export const zhCN = {
       preferencesSaveError: '保存失败，已恢复上次设置，请稍后重试', // 措辞后定
     },
     appearance: {
-      sectionLabel: '外观', // 措辞后定
+      cardTitle: '常规设置', // 设计图原文：卡片标题（20px 字级）
+      cardDescription: '管理界面外观与基础显示行为', // 设计图原文：卡片灰色副标题（15px 字级）
       themeTitle: '主题', // 措辞后定
       themeDescription: '选择界面主题，跟随系统会根据设备设置自动切换', // 措辞后定
       themeAria: '主题', // 措辞后定

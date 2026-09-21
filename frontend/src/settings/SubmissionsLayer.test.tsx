@@ -370,6 +370,35 @@ describe('SubmissionsLayer 409 epoch fence（review A2）', () => {
   });
 });
 
+describe('SubmissionsLayer 设置基座（抽屉视觉基座：容器）', () => {
+  it('层内容位于一张设置卡片内：筛选 chip 与列表都在卡内，卡内无小节标题', async () => {
+    // 空投稿列表：空态与筛选 chip 都必须落在卡内（不依赖契约 mock 的种子数据）
+    const api = {
+      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
+      listSubmissions: vi.fn(async () => ({ items: [] })),
+    } as unknown as SettingsApi;
+    await renderLayer(api);
+
+    const cards = await screen.findAllByTestId('settings-card');
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+    // 六档筛选 chip 是列表工具行的一部分，整组落在卡内
+    expect(card).toContainElement(
+      screen.getByRole('button', {
+        name: copy.settings.knowledge.submissions.filterAria(
+          copy.settings.knowledge.submissions.filters.all,
+        ),
+      }),
+    );
+    expect(card).toContainElement(await screen.findByText(copy.settings.knowledge.submissions.empty));
+    // R14：卡内不出现 h1–h6 小节标题
+    expect(card.querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0);
+    // 投稿列表保持自身布局：不套 FormRow，也没有保存型页脚
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+  });
+});
+
 describe('SubmissionsLayer 查看内容下载行为', () => {
   it('下载原件而不打开 Blob 预览窗口', async () => {
     const { accessToken } = mockAuth.login('zhangsan', 'password123', 'blob-life');

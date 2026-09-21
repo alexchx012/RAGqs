@@ -10,6 +10,8 @@
  * - 删除：204 后行 opacity→0 收拢移除；无回收站与恢复入口。
  * - 失败处理：行尾危险红错误行 + 重试文字链；409 version_conflict 刷新后基于最新 version 重新确认；
  *   409 submission_state_conflict 刷新列表按最新状态呈现。
+ * - 设置基座（抽屉视觉基座）：筛选 chip 与投稿列表落在一张 SettingsCard 内；列表保持自身布局，
+ *   不套 FormRow，本层无草稿-保存语义故无 FormFooter；卡内不出现 h1–h6（R14）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -18,6 +20,7 @@ import { copy } from '../copy';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { Paginator } from '../ui/Paginator';
+import { SettingsCard } from '../ui/SettingsCard';
 import { TextLink } from '../ui/TextLink';
 import { useSettings } from './SettingsProvider';
 import { downloadSubmissionContent } from './download-submission-content';
@@ -435,89 +438,96 @@ export function SubmissionsLayer() {
   );
 
   return (
-    <section aria-label={copy.settings.knowledge.submissions.title} className="pb-10">
-      {/* 六档筛选 chip（超出分段控件合理宽度故用 chip；切换即重新请求） */}
-      <div className="flex flex-wrap items-center gap-2" role="group" aria-label={copy.settings.knowledge.submissions.title}>
-        {FILTERS.map((entry) => (
-          <button
-            key={entry.value}
-            type="button"
-            aria-pressed={filter === entry.value}
-            aria-label={copy.settings.knowledge.submissions.filterAria(entry.label)}
-            onClick={() => {
-              mutationEpochRef.current += 1;
-              // 视图切换：释放旧 mutation 的 confirming（受控 Dialog 不会自动回调 onOpenChange）
-              setConfirmingWithdraw(false);
-              setConfirmingDelete(false);
-              setPage(1); // A47：筛选切换重置页码
-              if (entry.value !== filter && !loading) {
-                // 切换动效：当前视图向上滑出渐隐（SWITCH_EXIT_MS），数据就绪后提交新视图滑入
-                animatedSwitchRef.current = true;
-                switchExitDoneRef.current = false;
-                if (switchExitTimerRef.current !== null) {
-                  window.clearTimeout(switchExitTimerRef.current);
+    // 外层 section 不再挂 aria-label：具名区域落在卡片上，避免嵌套同名 landmark。
+    <section className="pb-10">
+      {/* 设置基座（抽屉视觉基座）：筛选 chip 与投稿列表同属一张卡片的内容流。
+          投稿列表保持自身布局，不套 FormRow；本层无草稿-保存语义故无 FormFooter；
+          卡内不出现 h1–h6 小节标题（R14）。两个确认框留在卡片之外（fixed 浮层）。 */}
+      <SettingsCard ariaLabel={copy.settings.knowledge.submissions.title}>
+        {/* 六档筛选 chip（超出分段控件合理宽度故用 chip；切换即重新请求） */}
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label={copy.settings.knowledge.submissions.title}>
+          {FILTERS.map((entry) => (
+            <button
+              key={entry.value}
+              type="button"
+              aria-pressed={filter === entry.value}
+              aria-label={copy.settings.knowledge.submissions.filterAria(entry.label)}
+              onClick={() => {
+                mutationEpochRef.current += 1;
+                // 视图切换：释放旧 mutation 的 confirming（受控 Dialog 不会自动回调 onOpenChange）
+                setConfirmingWithdraw(false);
+                setConfirmingDelete(false);
+                setPage(1); // A47：筛选切换重置页码
+                if (entry.value !== filter && !loading) {
+                  // 切换动效：当前视图向上滑出渐隐（SWITCH_EXIT_MS），数据就绪后提交新视图滑入
+                  animatedSwitchRef.current = true;
+                  switchExitDoneRef.current = false;
+                  if (switchExitTimerRef.current !== null) {
+                    window.clearTimeout(switchExitTimerRef.current);
+                  }
+                  switchExitTimerRef.current = window.setTimeout(() => {
+                    switchExitDoneRef.current = true;
+                    commitSwitchView();
+                  }, SWITCH_EXIT_MS);
+                  setSwitchPhase('exit');
                 }
-                switchExitTimerRef.current = window.setTimeout(() => {
-                  switchExitDoneRef.current = true;
-                  commitSwitchView();
-                }, SWITCH_EXIT_MS);
-                setSwitchPhase('exit');
-              }
-              setFilter(entry.value);
-            }}
-            className={`inline-flex h-8 items-center rounded-[var(--radius-buttons)] border px-3 text-[14px] transition-colors duration-[var(--duration-fast)] ${
-              filter === entry.value
-                ? 'border-ink-black bg-ink-black text-paper-white'
-                : 'border-[var(--color-hairline)] bg-transparent text-ink-black hover:bg-mist-gray'
-            }`}
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
+                setFilter(entry.value);
+              }}
+              className={`inline-flex h-8 items-center rounded-[var(--radius-buttons)] border px-3 text-[14px] transition-colors duration-[var(--duration-fast)] ${
+                filter === entry.value
+                  ? 'border-ink-black bg-ink-black text-paper-white'
+                  : 'border-[var(--color-hairline)] bg-transparent text-ink-black hover:bg-mist-gray'
+              }`}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
 
-      {/* 内容区整区切换动效：exit 向上滑出渐隐后提交新视图，enter 自下滑入渐显 */}
-      <div className="ui-view-switch" data-phase={switchPhase}>
-        {loading ? (
-          <div className="mt-4">
-            <LoadingRows count={3} />
-          </div>
-        ) : loadError ? (
-          <div className="mt-4">
-            <ErrorState onRetry={() => void loadSubmissions(filter)} />
-          </div>
-        ) : submissions.length === 0 ? (
-          <div className="mt-4">
-            <EmptyState text={copy.settings.knowledge.submissions.empty} />
-          </div>
-        ) : (
-          <>
-            <ul className="mt-4 divide-y divide-[var(--color-hairline)]">
-              {pageItems.map((submission) => (
-                <SubmissionRow
-                  key={submission.submission_id}
-                  submission={submission}
-                  error={rowErrors.get(submission.submission_id) ?? null}
-                  statusChanged={statusChangedIds.has(submission.submission_id)}
-                  onView={() => void openContent(submission)}
-                  onWithdraw={() => setPendingWithdraw(submission)}
-                  onDelete={() => setPendingDelete(submission)}
-                />
-              ))}
-            </ul>
-            {totalPages > 1 && (
-              <div className="mt-6">
-                <Paginator page={safePage} totalPages={totalPages} onChange={setPage} />
-              </div>
-            )}
-          </>
+        {/* 内容区整区切换动效：exit 向上滑出渐隐后提交新视图，enter 自下滑入渐显 */}
+        <div className="ui-view-switch" data-phase={switchPhase}>
+          {loading ? (
+            <div className="mt-4">
+              <LoadingRows count={3} />
+            </div>
+          ) : loadError ? (
+            <div className="mt-4">
+              <ErrorState onRetry={() => void loadSubmissions(filter)} />
+            </div>
+          ) : submissions.length === 0 ? (
+            <div className="mt-4">
+              <EmptyState text={copy.settings.knowledge.submissions.empty} />
+            </div>
+          ) : (
+            <>
+              <ul className="mt-4 divide-y divide-[var(--color-hairline)]">
+                {pageItems.map((submission) => (
+                  <SubmissionRow
+                    key={submission.submission_id}
+                    submission={submission}
+                    error={rowErrors.get(submission.submission_id) ?? null}
+                    statusChanged={statusChangedIds.has(submission.submission_id)}
+                    onView={() => void openContent(submission)}
+                    onWithdraw={() => setPendingWithdraw(submission)}
+                    onDelete={() => setPendingDelete(submission)}
+                  />
+                ))}
+              </ul>
+              {totalPages > 1 && (
+                <div className="mt-6">
+                  <Paginator page={safePage} totalPages={totalPages} onChange={setPage} />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        {actionError !== null && (
+          <p role="alert" className="mt-4 text-caption text-danger">
+            {actionError}
+          </p>
         )}
-      </div>
-      {actionError !== null && (
-        <p role="alert" className="mt-4 text-caption text-danger">
-          {actionError}
-        </p>
-      )}
+
+      </SettingsCard>
 
       <ConfirmDialog
         open={pendingWithdraw !== null}

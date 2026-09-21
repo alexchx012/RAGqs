@@ -112,7 +112,7 @@ describe('抽屉开合与 URL 同步', () => {
     await renderApp('/settings');
     const dialog = await screen.findByRole('dialog', { name: drawerCopy.personalTitle });
     expect(within(dialog).getByText(drawerCopy.personalSegmentLabel)).toBeInTheDocument();
-    for (const name of [modules.profile, modules.security, modules.appearance, modules.knowledge]) {
+    for (const name of [modules.general, modules.account, modules.security, modules.knowledge]) {
       expect(within(dialog).getByRole('button', { name })).toBeInTheDocument();
     }
     expect(within(dialog).getByText(drawerCopy.topPlaceholderBody)).toBeInTheDocument();
@@ -168,6 +168,134 @@ describe('抽屉开合与 URL 同步', () => {
 
     await waitFor(() => expect(probe.textContent).toBe('/'));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+});
+
+describe('抽屉作用域挂载与左栏新显示名（drawer-visual-system）', () => {
+  it('个人段左栏按新显示名与顺序渲染，且不出现旧名', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    const labels = Array.from(nav.querySelectorAll('button')).map((b) => b.textContent ?? '');
+    expect(labels.slice(0, 4)).toEqual(['常规设置', '账号设置', '安全设置', '知识库']);
+    expect(nav.textContent).not.toContain('外观');
+    expect(nav.textContent).not.toContain('个人资料');
+  });
+
+  it('抽屉根容器挂载作用域属性，左栏胶囊为 200×40 圆角 8px', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog');
+    const scoped = dialog.querySelector('[data-drawer-scope]');
+    expect(scoped).not.toBeNull();
+    const active = Array.from(dialog.querySelectorAll('nav button')).find((b) =>
+      (b.className ?? '').includes('bg-mist-gray'),
+    ) as HTMLElement;
+    expect(active.className).toContain('w-[200px]');
+    expect(active.className).toContain('h-10');
+    expect(active.className).toContain('rounded-[var(--radius-buttons)]');
+    // 24px 内缩由左栏容器 pl-6 承载（裁决 R10），胶囊不再自带 ml-6；
+    // 容器基线与分组标签对齐见「左栏 24px 内缩由容器承载」用例。
+  });
+
+  it('左栏 24px 内缩由容器承载：分组标签与胶囊文字共用同一基线，胶囊不自带 ml-6', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    // 24px 基线移到左栏容器：左 24 + 胶囊 200 + 右 16 = 240（与设计图胶囊 24..224 一致）
+    expect(nav.className).toContain('pl-6');
+    expect(nav.className).toContain('pr-4');
+    // 胶囊不再自带缩进，否则 24 + 24 = 48 双重内缩
+    for (const item of Array.from(nav.querySelectorAll('button'))) {
+      expect(item.className).not.toContain('ml-6');
+    }
+    // 分组标签是左栏容器的子节点，只保留自身 px-3 → 文字落在 24 + 12 = 36（设计图实测 36.5）
+    const groupLabel = within(nav).getByText(drawerCopy.personalSegmentLabel);
+    expect(nav.contains(groupLabel)).toBe(true);
+    expect(groupLabel.className).toContain('px-3');
+    expect(groupLabel.className).not.toContain('ml-');
+    // 胶囊文字内缩仍是 12px（胶囊盒 24..224 → 文字 36，与设计图实测 37 对齐）
+    const firstItem = nav.querySelector('button') as HTMLElement;
+    expect(firstItem.className).toContain('px-3');
+    expect(firstItem.className).toContain('w-[200px]');
+  });
+
+  it('下钻层左栏的返回按钮与层标题不自带缩进：随左栏容器落到同一 24px 基线', async () => {
+    await renderApp('/settings/knowledge/uploads');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    expect(nav.className).toContain('pl-6');
+    const back = within(nav).getByRole('button', {
+      name: drawerCopy.backAria(modules.knowledge),
+    });
+    expect(back.className).not.toContain('ml-');
+    expect(back.className).not.toContain('pl-');
+    const title = nav.querySelector('[data-drill-title-slot]') as HTMLElement;
+    expect(title.className).not.toContain('ml-');
+    expect(title.className).not.toContain('pl-');
+  });
+
+  it('抽屉内打开的 Radix 浮层根节点自带作用域属性（浮层不走 DOM 继承）', async () => {
+    const listVersions = vi.fn(async (documentId: string) => versionsResponse(documentId));
+    await renderApp('/settings/knowledge', 'user', { settingsApi: knowledgeApi(listVersions) });
+    const dialog = await screen.findByRole('dialog');
+    const user = userEvent.setup();
+    // 文档行「⋯」菜单：Radix DropdownMenu 默认 portal 到 document.body
+    await user.click(
+      within(dialog).getByRole('button', {
+        name: copy.settings.knowledge.documents.rowMenuAria(SAMPLE_DOC.name),
+      }),
+    );
+    const menu = await screen.findByRole('menu');
+    expect(menu.closest('[data-drawer-scope]')).not.toBeNull();
+    // 菜单入口打开的删除确认框：Radix Dialog 同样 portal 到 document.body
+    await user.click(
+      within(menu).getByRole('menuitem', { name: copy.settings.knowledge.documents.delete }),
+    );
+    const confirm = await screen.findByRole('dialog', {
+      name: copy.settings.knowledge.documents.deleteConfirmTitle,
+    });
+    expect(confirm.closest('[data-drawer-scope]')).not.toBeNull();
+  });
+
+  it('内容区改抽屉画布底色且不限宽：880px 卡片居中只由卡片自身负责', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    // 左栏保持纸白，右栏内容区改用抽屉作用域画布底色（--surface-drawer-canvas 只在作用域内定义）
+    expect(nav.className).toContain('bg-paper-white');
+    const pane = nav.nextElementSibling as HTMLElement;
+    expect(pane.className).toContain('bg-[var(--surface-drawer-canvas)]');
+    // 内容区不得再引入第二层 max-width / 居中容器：否则 880px 卡片会被双重收缩
+    expect(pane.className).not.toContain('max-w-');
+    expect(pane.className).not.toContain('mx-auto');
+  });
+
+  it('两栏行无栏间 gap 与桌面横向留白：内容区紧贴左栏右缘，窄屏保留 px-5', async () => {
+    await renderApp('/settings');
+    const dialog = await screen.findByRole('dialog');
+    const nav = dialog.querySelector('nav') as HTMLElement;
+    const row = nav.parentElement as HTMLElement;
+    // 设计图几何：内容区紧跟左栏右缘（1440 视口下自 x=240 起、到 x=1440 止，宽 1200），
+    // 栏间无 gap、桌面无页面横向留白；880px 卡片居中 → 左缘 240 + (1200 − 880) / 2 = 400。
+    expect(row.className).not.toContain('gap-');
+    expect(row.className).not.toContain('md:px-10');
+    // 窄屏（<768px）单栏化仍保留必需留白，桌面断点归零
+    expect(row.className).toContain('px-5 md:px-0');
+    // 左栏仍固定 240px（胶囊网格与 24px 内缩基线由「左栏 24px 内缩由容器承载」用例把关）
+    expect(nav.className).toContain('w-60');
+    // 页头保留自己的内缩（与左栏胶囊的 24px 不是同一套值，不得被本次对齐带走）
+    const header = dialog.querySelector('header') as HTMLElement;
+    expect(header.className).toContain('px-5');
+    expect(header.className).toContain('md:px-10');
+  });
+
+  it('抽屉内打开的管理段筛选浮层同样自带作用域属性（UsersModule Popover）', async () => {
+    await renderApp('/admin/users', 'ops');
+    const dialog = await screen.findByRole('dialog', { name: modules.usersOps });
+    const user = userEvent.setup();
+    await user.click(within(dialog).getByRole('button', { name: copy.admin.users.departmentFilter }));
+    const group = await screen.findByRole('radiogroup', { name: copy.admin.users.departmentFilter });
+    expect(group.closest('[data-drawer-scope]')).not.toBeNull();
   });
 });
 
@@ -608,6 +736,8 @@ describe('抽屉页头铃铛与窄屏单栏化', () => {
     // 焦点在浮层内（jsdom 无自动聚焦布局，显式给面板内容挂 tabindex 后聚焦）：
     // Tab 不被抽屉陷阱 preventDefault（Radix 自管循环/焦点流）
     const inside = popper.firstElementChild as HTMLElement;
+    // 抽屉内触发的提醒面板 portal 到抽屉外：作用域属性由组件自带（不依赖 DOM 继承）
+    expect(inside.closest('[data-drawer-scope]')).not.toBeNull();
     inside.setAttribute('tabindex', '-1');
     inside.focus();
     expect(popper.contains(document.activeElement)).toBe(true);

@@ -1,19 +1,25 @@
 /*
  * MeatballMenu 测试（共用基座 §3.2）：键盘展开与导航选择、danger 项红字、Esc 关闭。
  * 组件内 useEscShield 需要 EscStackProvider。
+ * 抽屉作用域（drawer-visual-system）：菜单浮层 portal 到 body，CSS 变量不随 DOM 继承，
+ * 抽屉内用法须给 portal 内容根节点自带 data-drawer-scope，抽屉外用法保持原样。
  */
 
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { EscStackProvider } from '../lib/esc-stack-provider';
+import { DrawerScopeContext } from '../shell/drawer/drawer-scope-context';
 import { MeatballMenu, type MeatballMenuItem } from './MeatballMenu';
 
-function renderMenu(items: MeatballMenuItem[]) {
-  return render(
+function renderMenu(items: MeatballMenuItem[], scoped = false) {
+  const tree = (
     <EscStackProvider>
       <MeatballMenu items={items} ariaLabel="row actions" alwaysVisible />
-    </EscStackProvider>,
+    </EscStackProvider>
+  );
+  return render(
+    scoped ? <DrawerScopeContext.Provider value={true}>{tree}</DrawerScopeContext.Provider> : tree,
   );
 }
 
@@ -83,5 +89,24 @@ describe('MeatballMenu', () => {
     const trigger = screen.getByRole('button', { name: 'row actions' });
     expect(trigger.className).toContain('ui-touch-target');
     expect(trigger.className).toContain('ui-meatball-trigger');
+  });
+
+  it('抽屉作用域内：菜单浮层根节点自带 data-drawer-scope（portal 不走 DOM 继承）', async () => {
+    renderMenu(createItems(), true);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'row actions' }));
+    const menu = await screen.findByRole('menu');
+
+    expect(menu).toHaveAttribute('data-drawer-scope', '');
+    expect(menu.closest('[data-drawer-scope]')).toBe(menu);
+  });
+
+  it('抽屉作用域外：不挂 data-drawer-scope（聊天主页会话行等既有用法不变）', async () => {
+    renderMenu(createItems());
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'row actions' }));
+    const menu = await screen.findByRole('menu');
+
+    expect(menu).not.toHaveAttribute('data-drawer-scope');
   });
 });

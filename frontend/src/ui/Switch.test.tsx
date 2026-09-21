@@ -36,6 +36,14 @@ describe('Switch', () => {
     expect(control.className).toContain('data-[state=checked]:bg-ink-black');
   });
 
+  it('轨道保持全圆：抽屉作用域不得把胶囊压成圆角矩形', () => {
+    render(<Switch checked={false} onCheckedChange={() => {}} ariaLabel="privacy" />);
+    const tokens = screen.getByRole('switch').className.split(/\s+/);
+    // 抽屉作用域把 --radius-buttons 覆盖为 8px，依赖该 token 会让轨道在抽屉内静默变形
+    expect(tokens).toContain('rounded-full');
+    expect(tokens).not.toContain('rounded-[var(--radius-buttons)]');
+  });
+
   it('点击与键盘 Space 均切换并回调', async () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);

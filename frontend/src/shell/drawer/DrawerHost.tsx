@@ -12,6 +12,10 @@
  * - 下钻层数不限：由 registry 递归 children 表达，无硬编码上限（规格 §2）。
  * - Esc 逐层向上：下钻层先返回上一层，顶层关闭抽屉（经全局 Esc 栈，Radix 浮层由空盾隔离）。
  * - 窄屏（<768px）：左右两栏单栏化——首屏模块名列表，点模块整页下钻，复用同一套动画。
+ * - 抽屉作用域（drawer-visual-system §抽屉作用域不外溢）：抽屉根容器挂 [data-drawer-scope]，
+ *   作用域内的 token 覆盖（近黑 / 发丝边 / 危险色 / 圆角 / 分段控件几何）只作用于抽屉子树，
+ *   聊天主页保持全局值；内容区底色改用 --surface-drawer-canvas，左栏保持 paper white。
+ *   抽屉内 portal 到 body 的 Radix 浮层拿不到 DOM 继承，改经 DrawerScopeContext 自带属性。
  */
 
 import {
@@ -36,6 +40,7 @@ import {
   type DrawerSegment,
 } from '../../router/drawer-params';
 import { useDrawerRegistry } from './DrawerRegistryProvider';
+import { DrawerScopeContext } from './drawer-scope-context';
 import type { DrawerLayer } from './registry';
 
 const SLIDE_MS = 400;
@@ -553,11 +558,13 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       <ul className="flex flex-col gap-0.5">
         {modules.map((module) => (
           <li key={module.id}>
+            {/* 导航项自身不带左缩进：24px 基线由左栏容器（nav 的 pl-6）承载（裁决 R10），
+                否则会与容器叠加成 48px 双重内缩。 */}
             <button
               type="button"
               data-drill-row={narrow ? module.id : undefined}
               onClick={() => selectModule(segment, module.id)}
-              className={`flex h-10 w-full items-center justify-between gap-2 rounded-[var(--radius-images)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray ${
+              className={`flex h-10 w-[200px] items-center justify-between gap-2 rounded-[var(--radius-buttons)] px-3 text-left text-body transition-colors duration-150 hover:bg-mist-gray ${
                 selected === module.id ? 'bg-mist-gray font-w480' : 'font-normal'
               }`}
             >
@@ -569,7 +576,9 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       </ul>
     );
     return (
-      <div data-nav-variant="modules" className={phaseClass}>
+      // 窄屏（<768px）单栏化时模块列表改在内容区整页渲染（左栏不渲染），缩进基线需由本容器
+      // 自己补 24px；桌面端同一缩进由左栏 nav 的 pl-6 承载，此处不得重复叠加。
+      <div data-nav-variant="modules" className={`${narrow ? 'pl-6' : ''} ${phaseClass}`}>
         <p className="px-3 pb-1 text-caption text-slate-strong">{drawerCopy.personalSegmentLabel}</p>
         {list(personalModules, 'personal')}
         {adminModules.length > 0 && (
@@ -785,7 +794,9 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
 
   const narrowListView = narrow && shownDrill.length === 0 && !transitioning;
 
-  return (
+  // 作用域 provider 包住整棵抽屉树（R3）：抽屉内 portal 到 body 的浮层在 React 树上仍是其后代，
+  // 据此给自身内容根节点补挂 data-drawer-scope（DOM 继承到不了 body 下的浮层）。
+  const drawerBody = (
     <div
       ref={dialogRef}
       tabIndex={-1}
@@ -799,6 +810,7 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
         data-slide={slide}
         data-dragging={dragOffset !== null ? 'true' : undefined}
         data-rebound={rebound ? 'true' : undefined}
+        data-drawer-scope=""
         className="drawer-panel absolute inset-0 flex flex-col bg-paper-white shadow-[var(--shadow-subtle-2)]"
         style={dragOffset !== null ? { transform: `translateY(${dragOffset}px)` } : undefined}
         onPointerDown={onPointerDown}
@@ -825,15 +837,18 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
           >
             <X size={20} aria-hidden />
           </button>
-          <h1 className="font-sohne text-heading-sm font-medium leading-heading-sm tracking-heading-sm md:font-signifier md:text-heading md:font-normal md:leading-heading md:tracking-heading">
-            {currentTitle}
-          </h1>
+          {/* 页头小标题（drawer-visual-system §2.2）：个人段「设置」、管理段当前模块名，Sohne 500 20px */}
+          <h1 className="font-sohne text-body-lg font-medium leading-body-lg">{currentTitle}</h1>
           <div className="ml-auto">{headerRight}</div>
         </header>
-        <div className="mt-10 flex min-h-0 flex-1 gap-10 px-5 md:px-10">
+        {/* 两栏行（drawer-visual-system 左栏与内容区几何）：桌面断点无页面横向留白、无栏间 gap——
+            左栏仍 240px，内容区紧跟其右缘自 x=240 起到 x=1440 止（宽 1200），
+            880px 卡片居中后左缘 400（设计图实测 401，±1px 属抗锯齿范围）。
+            窄屏保留 px-5 以免单栏贴边；页头自己的内缩（px-5 md:px-10）是另一套值，不在此行内。 */}
+        <div className="mt-10 flex min-h-0 flex-1 px-5 md:px-0">
           {!narrowListView && (
             <nav
-              className={`${narrow ? 'hidden' : ''} w-60 shrink-0 overflow-y-auto`}
+              className={`${narrow ? 'hidden' : ''} w-60 shrink-0 overflow-y-auto bg-paper-white pl-6 pr-4`}
               aria-label={drawerCopy.navAria}
             >
               {navArea}
@@ -851,10 +866,12 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
               （反向的 arrive-from-above 自 -8px 起步，越出滚动口顶部的那 8px 不可滚动，无需余量）。
               hide-scrollbar：右栏保留滚动能力但不显示滚动条。
               overflow-x-hidden：兜底——横向没有可滚动内容，任何漏网的外扩都不得变成横向滚动。
-              内容列不再限宽（原 max-w-[724px] 与 共用基座设计.md 的 720px 条款一并移除）。 */}
+              内容列不再限宽（原 max-w-[724px] 与 共用基座设计.md 的 720px 条款一并移除）：
+              880px 卡片的水平居中只由 SettingsCard 的 mx-auto max-w-[880px] 单点负责，
+              本容器不得再加第二层限宽或居中容器，否则卡片会被双重收缩。 */}
           <div
             ref={contentRef}
-            className="hide-scrollbar min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pt-1 pb-2 pl-1 pr-3 -mt-1 -ml-1 -mr-3"
+            className="hide-scrollbar min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--surface-drawer-canvas)] pt-1 pb-2 pl-1 pr-3 -mt-1 -ml-1 -mr-3"
           >
             {narrowListView ? renderModuleList('') : contentArea}
           </div>
@@ -862,4 +879,6 @@ export function DrawerHost({ headerRight }: { headerRight?: ReactNode }) {
       </div>
     </div>
   );
+
+  return <DrawerScopeContext.Provider value={true}>{drawerBody}</DrawerScopeContext.Provider>;
 }

@@ -11,6 +11,8 @@
  *   commit 渲染（render effect 登记已渲染事件 ID）后才逐个 ack；离开本层不 ack；已 ack 去重；
  *   ack 成功后按既有轮询刷新未读数。
  * - 上传结果历史（Major3）：本层顶部呈现最近一次上传响应的逐文件结果（会话内存档）。
+ * - 设置基座（抽屉视觉基座）：整层内容落在一张 SettingsCard 内；任务卡/历史块是数据列表与独立小块，
+ *   保持自身布局，不套 FormRow，本层无草稿-保存语义故无 FormFooter；卡内不出现 h1–h6（R14）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -22,6 +24,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingCards } from '../ui/states';
 import { Paginator } from '../ui/Paginator';
 import { Pill } from '../ui/Pill';
+import { SettingsCard } from '../ui/SettingsCard';
 import type { IngestionJob } from './types';
 import { UploadHistorySection } from './UploadHistory';
 import { clearLayerNotices, takeLayerNotice } from './layer-notice';
@@ -359,48 +362,53 @@ export function UploadsLayer() {
   };
 
   return (
-    <section aria-label={copy.settings.knowledge.uploads.title} className="pb-10">
-      {layerNotice !== null && (
-        <p role="status" className="mb-4 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-strong">
-          {layerNotice}
-        </p>
-      )}
-      {hasMore && (
-        <p className="mb-4 text-caption text-slate-strong">{copy.settings.knowledge.uploads.recentWindow}</p>
-      )}
-      {/* 上传结果历史：最近一次上传响应逐文件结果（不随上传对话框卸载丢失） */}
-      <UploadHistorySection sessionKey={sessionKey} />
-      {loading ? (
-        <LoadingCards count={2} />
-      ) : loadError ? (
-        <ErrorState onRetry={() => void loadJobs()} />
-      ) : jobs.length === 0 ? (
-        <EmptyState text={copy.settings.knowledge.uploads.empty} />
-      ) : (
-        <ul className="mt-4 flex flex-col gap-3">
-          {pageJobs.map((job) => (
-            <JobCard
-              key={job.job_id}
-              job={job}
-              batchHint={job.upload_batch_id === null ? null : (batchSummaries.get(job.upload_batch_id) ?? null)}
-              spaceName={job.space_id === '' ? '' : (spaceNames.get(job.space_id) ?? job.space_id)}
-              replaying={replayingJobId === job.job_id}
-              onCancel={() => setPendingCancel(job)}
-              onReplay={() => void replayJob(job)}
-            />
-          ))}
-        </ul>
-      )}
-      {!loading && !loadError && jobsTotalPages > 1 && (
-        <div className="mt-6">
-          <Paginator page={safePage} totalPages={jobsTotalPages} onChange={setPage} />
-        </div>
-      )}
-      {actionError !== null && (
-        <p role="alert" className="mt-4 text-caption text-danger">
-          {actionError}
-        </p>
-      )}
+    // 外层 section 不再挂 aria-label：具名区域落在卡片上，重复挂名会形成嵌套同名 landmark。
+    <section className="pb-10">
+      {/* 设置基座（抽屉视觉基座）：层内容落在一张卡片内。任务卡是数据列表，保持自身布局
+          不套 FormRow，本层也没有草稿-保存语义故没有 FormFooter；卡内不出现 h1–h6（R14）。 */}
+      <SettingsCard ariaLabel={copy.settings.knowledge.uploads.title}>
+        {layerNotice !== null && (
+          <p role="status" className="mb-4 rounded-[var(--radius-images)] bg-mist-gray px-3 py-2 text-[15px] text-slate-strong">
+            {layerNotice}
+          </p>
+        )}
+        {hasMore && (
+          <p className="mb-4 text-caption text-slate-strong">{copy.settings.knowledge.uploads.recentWindow}</p>
+        )}
+        {/* 上传结果历史：最近一次上传响应逐文件结果（不随上传对话框卸载丢失） */}
+        <UploadHistorySection sessionKey={sessionKey} />
+        {loading ? (
+          <LoadingCards count={2} />
+        ) : loadError ? (
+          <ErrorState onRetry={() => void loadJobs()} />
+        ) : jobs.length === 0 ? (
+          <EmptyState text={copy.settings.knowledge.uploads.empty} />
+        ) : (
+          <ul className="mt-4 flex flex-col gap-3">
+            {pageJobs.map((job) => (
+              <JobCard
+                key={job.job_id}
+                job={job}
+                batchHint={job.upload_batch_id === null ? null : (batchSummaries.get(job.upload_batch_id) ?? null)}
+                spaceName={job.space_id === '' ? '' : (spaceNames.get(job.space_id) ?? job.space_id)}
+                replaying={replayingJobId === job.job_id}
+                onCancel={() => setPendingCancel(job)}
+                onReplay={() => void replayJob(job)}
+              />
+            ))}
+          </ul>
+        )}
+        {!loading && !loadError && jobsTotalPages > 1 && (
+          <div className="mt-6">
+            <Paginator page={safePage} totalPages={jobsTotalPages} onChange={setPage} />
+          </div>
+        )}
+        {actionError !== null && (
+          <p role="alert" className="mt-4 text-caption text-danger">
+            {actionError}
+          </p>
+        )}
+      </SettingsCard>
 
       <ConfirmDialog
         open={pendingCancel !== null}

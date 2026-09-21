@@ -7,6 +7,9 @@
  *   未知网络/超时复用同键同体，业务响应（含 idempotency_key_conflict）清键不自动重发；
  *   目标切换/关闭时 clear()，杜绝 A 文件上传到 B 文档。
  * - 服务端返回 deduplicated（job_id 为 null）时提示「内容重复」，不产生任务。
+ * - 设置基座（抽屉视觉基座）：对话框是 fixed 浮层、不套 SettingsCard；底部两个操作键统一 36px
+ *   （Pill 默认尺寸 h-9 + --radius-buttons，抽屉作用域下圆角 8px）；行内的「选择文件」键保持
+ *   原尺寸——它不是对话框操作键。
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -184,11 +187,13 @@ export function NewVersionDialog({ target, onClose, onSubmitted, onConflictRefre
             {error}
           </p>
         )}
+        {/* 对话框操作键统一 36px（h-9）：Pill 默认尺寸即 h-9 + rounded-[var(--radius-buttons)]，
+            抽屉作用域下圆角自动解析为 8px。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill variant="ghost" size="sm" disabled={submitting} onClick={requestClose}>
+          <Pill variant="ghost" disabled={submitting} onClick={requestClose}>
             {copy.controls.cancel}
           </Pill>
-          <Pill size="sm" loading={submitting} disabled={file === null} onClick={() => void confirmUpload()}>
+          <Pill loading={submitting} disabled={file === null} onClick={() => void confirmUpload()}>
             {copy.controls.confirm}
           </Pill>
         </div>

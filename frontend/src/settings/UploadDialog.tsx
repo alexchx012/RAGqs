@@ -10,6 +10,9 @@
  * - Idempotency-Key 绑定 target(space)+payload(文件指纹)：未知网络/超时复用同键同体，
  *   明确业务响应清键不自动重发（含 idempotency_key_conflict）。
  * - 上传结果历史按 sessionKey 隔离写入（旧会话回调拒绝落库）。
+ * - 设置基座（抽屉视觉基座）：对话框是 fixed 浮层、不套 SettingsCard；底部两个操作键统一 36px
+ *   （Pill 默认尺寸 h-9 + --radius-buttons，抽屉作用域下圆角 8px）。行内控件（移除文件 ×、
+ *   空间列表重试）保持原有小尺寸——它们不是对话框操作键，高度参与行内节奏。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -419,12 +422,13 @@ export function UploadDialog({ open, onOpenChange, sessionKey }: UploadDialogPro
           </p>
         )}
 
+        {/* 对话框操作键统一 36px（h-9）：Pill 默认尺寸即 h-9 + rounded-[var(--radius-buttons)]，
+            抽屉作用域下圆角自动解析为 8px。 */}
         <div className="mt-6 flex justify-end gap-2">
-          <Pill variant="ghost" size="sm" disabled={phase === 'uploading'} onClick={requestClose}>
+          <Pill variant="ghost" disabled={phase === 'uploading'} onClick={requestClose}>
             {copy.controls.cancel}
           </Pill>
           <Pill
-            size="sm"
             loading={phase === 'uploading'}
             disabled={phase === 'uploading' || selectedSpace === null || files.length === 0}
             onClick={() => void confirmUpload()}

@@ -8,6 +8,8 @@
  * - 410 document_version_purged 刷新本层、该行转内容不可用。
  * - documentId 来自抽屉下钻路径（/settings/knowledge/versions/<documentId>）；无 id 时清空旧状态。
  * - 预览：新窗口打开原文预览页（fe-doc-preview /preview/:document_id），带明确 version id、不带 message_id（只读形态）。
+ * - 设置基座（抽屉视觉基座）：版本列表落在一张 SettingsCard 内；版本行保持自身布局，不套 FormRow，
+ *   本层无草稿-保存语义故无 FormFooter；卡内不出现 h1–h6（R14）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -19,6 +21,7 @@ import { formatDrawerLocation } from '../router/drawer-params';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, LoadingRows } from '../ui/states';
 import { Pill } from '../ui/Pill';
+import { SettingsCard } from '../ui/SettingsCard';
 import { useSettings } from './SettingsProvider';
 import { setLayerNotice } from './layer-notice';
 import { createIdempotencyScope, isBusinessResponse } from './idempotency';
@@ -185,64 +188,70 @@ export function VersionsLayer({ path }: { readonly path: readonly string[] }) {
       new Date(version.purge_after_at).valueOf() <= Date.now());
 
   return (
-    <section aria-label={copy.settings.knowledge.versions.title} className="pb-10">
-      {documentId === '' ? (
-        <EmptyState text={copy.settings.knowledge.versions.empty} />
-      ) : loading ? (
-        <LoadingRows count={3} />
-      ) : loadError ? (
-        <ErrorState onRetry={() => void loadVersions()} />
-      ) : versions.length === 0 ? (
-        <EmptyState text={copy.settings.knowledge.versions.empty} />
-      ) : (
-        <ul className="divide-y divide-[var(--color-hairline)]">
-          {versions.map((version) => (
-            <li key={version.document_version_id} className="py-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-body text-ink-black">
-                      {copy.settings.knowledge.versions.versionNumber(version.version_number)}
+    // 外层 section 不再挂 aria-label：具名区域落在卡片上，避免嵌套同名 landmark。
+    <section className="pb-10">
+      {/* 设置基座（抽屉视觉基座）：版本列表落在一张卡片内。版本行是数据列表，保持自身布局
+          不套 FormRow；本层无草稿-保存语义故无 FormFooter；卡内不出现 h1–h6（R14）。
+          恢复确认框留在卡片之外（fixed 浮层）。 */}
+      <SettingsCard ariaLabel={copy.settings.knowledge.versions.title}>
+        {documentId === '' ? (
+          <EmptyState text={copy.settings.knowledge.versions.empty} />
+        ) : loading ? (
+          <LoadingRows count={3} />
+        ) : loadError ? (
+          <ErrorState onRetry={() => void loadVersions()} />
+        ) : versions.length === 0 ? (
+          <EmptyState text={copy.settings.knowledge.versions.empty} />
+        ) : (
+          <ul className="divide-y divide-[var(--color-hairline)]">
+            {versions.map((version) => (
+              <li key={version.document_version_id} className="py-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-body text-ink-black">
+                        {copy.settings.knowledge.versions.versionNumber(version.version_number)}
+                      </p>
+                      {version.status === 'active' && (
+                        <span className="rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-0.5 text-caption text-slate-strong">
+                          {copy.settings.knowledge.versions.active}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-caption text-slate-strong">
+                      {copy.settings.knowledge.versions.createdAt(formatDateTime(version.created_at))}
                     </p>
-                    {version.status === 'active' && (
-                      <span className="rounded-[var(--radius-buttons)] bg-mist-gray px-2 py-0.5 text-caption text-slate-strong">
-                        {copy.settings.knowledge.versions.active}
-                      </span>
+                    {contentUnavailable(version) && (
+                      <p className="mt-1 text-caption text-slate-strong">
+                        {copy.settings.knowledge.versions.contentUnavailable}
+                      </p>
                     )}
                   </div>
-                  <p className="mt-1 text-caption text-slate-strong">
-                    {copy.settings.knowledge.versions.createdAt(formatDateTime(version.created_at))}
-                  </p>
-                  {contentUnavailable(version) && (
-                    <p className="mt-1 text-caption text-slate-strong">
-                      {copy.settings.knowledge.versions.contentUnavailable}
-                    </p>
+                  {!contentUnavailable(version) && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      {canPreview(version) && (
+                        <Pill variant="ghost" size="xs" onClick={() => openPreview(version)}>
+                          {copy.settings.knowledge.versions.preview}
+                        </Pill>
+                      )}
+                      {canRestore(version) && (
+                        <Pill variant="ghost" size="xs" onClick={() => setPendingRestore(version)}>
+                          {copy.settings.knowledge.versions.restore}
+                        </Pill>
+                      )}
+                    </div>
                   )}
                 </div>
-                {!contentUnavailable(version) && (
-                  <div className="flex shrink-0 items-center gap-2">
-                    {canPreview(version) && (
-                      <Pill variant="ghost" size="xs" onClick={() => openPreview(version)}>
-                        {copy.settings.knowledge.versions.preview}
-                      </Pill>
-                    )}
-                    {canRestore(version) && (
-                      <Pill variant="ghost" size="xs" onClick={() => setPendingRestore(version)}>
-                        {copy.settings.knowledge.versions.restore}
-                      </Pill>
-                    )}
-                  </div>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {actionError !== null && (
-        <p role="alert" className="mt-4 text-caption text-danger">
-          {actionError}
-        </p>
-      )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {actionError !== null && (
+          <p role="alert" className="mt-4 text-caption text-danger">
+            {actionError}
+          </p>
+        )}
+      </SettingsCard>
 
       <ConfirmDialog
         open={pendingRestore !== null}

@@ -177,6 +177,62 @@ describe('UploadsLayer 上传结果层（Major7 ack 时序 + Major3 历史）', 
   });
 });
 
+describe('UploadsLayer 设置基座（抽屉视觉基座：容器）', () => {
+  it('层内容位于一张设置卡片内；上传历史标题改为非标题文本（R14）', async () => {
+    // 空任务列表：空态与上传历史都必须落在卡内（读取接口按本用例给定，不依赖契约 mock 的种子数据）
+    const api = {
+      getPreferences: vi.fn(async () => ({ theme: 'system', chat_font_size: 'standard', ab_opt_out: false })),
+      listJobs: vi.fn(async () => ({ items: [], limit: 50, max_limit: 200, has_more: false })),
+    } as unknown as SettingsApi;
+    const notifications = new NotificationsStore({
+      list: vi.fn(async () => ({ items: [] })),
+      unreadCount: vi.fn(async () => ({ count: 0 })),
+      markRead: vi.fn(async () => {}),
+      markAllRead: vi.fn(async () => {}),
+      ack: vi.fn(async () => {}),
+    });
+    // 写入一条上传历史：历史块必须在卡内（且不再以 h3 形式出现）
+    recordUploadHistory(
+      {
+        response: {
+          upload_batch_id: 'ub_base',
+          items: [
+            {
+              accepted: true,
+              name: '基座文档.pdf',
+              space_id: 'personal:u_user',
+              document_id: 'doc_base',
+              document_version_id: 'ver_base',
+              job_id: 'job_base',
+              publication_id: 'pub_base',
+              deduplicated: false,
+              status: 'pending',
+            },
+          ],
+        },
+        target: { id: 'personal:u_user', kind: 'personal', name: '个人库', permission: 'manage', document_count: 3 },
+        at: new Date().toISOString(),
+      },
+      'tok_login:u_user',
+    );
+
+    await renderLayer(api, notifications);
+
+    const historyTitle = await screen.findByText(copy.settings.knowledge.uploads.historyTitle);
+    const cards = screen.getAllByTestId('settings-card');
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+    expect(card).toContainElement(historyTitle);
+    expect(card).toContainElement(screen.getByText(/基座文档\.pdf/));
+    expect(card).toContainElement(await screen.findByText(copy.settings.knowledge.uploads.empty));
+    // R14：卡内不出现 h1–h6 小节标题（历史块标题降级为普通文本，文案不变）
+    expect(card.querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0);
+    expect(historyTitle.tagName).toBe('P');
+    // 任务卡列表保持自身布局：不套 FormRow
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+  });
+});
+
 describe('UploadsLayer ack 终态（review：404/409 终止重试）', () => {
   it('ack 404 终态：只调用一次，不再逐轮重试', async () => {
     const { accessToken } = mockAuth.login('zhangsan', 'password123', 'ack404');

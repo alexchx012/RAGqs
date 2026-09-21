@@ -11,12 +11,15 @@
  *   hover bg-mist-gray；脱敏 title 原样展示、不做任何恢复。
  * - 状态：加载 3 条骨架（bg-mist-gray 呼吸）；空态 24px 图标 + 一行说明；
  *   错误态说明 + 重试文字链。禁整页 spinner、禁 toast。
+ * - 抽屉作用域（drawer-visual-system）：面板 portal 到 document.body，读不到抽屉子树的
+ *   [data-drawer-scope] 变量，故抽屉页头铃铛打开时给内容根节点自带该属性。
  */
 
 import * as Popover from '@radix-ui/react-popover';
 import { BellOff } from 'lucide-react';
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { copy } from '../copy';
+import { useDrawerScope } from '../shell/drawer/drawer-scope-context';
 import { NOTIFICATION_INTENT_CLASS, resolveNotificationMapping } from './mapping';
 import { formatRelativeTime } from './relative-time';
 import type { NotificationsStore } from './store';
@@ -122,6 +125,7 @@ function NotificationRow({ item, onMarkRead, onNavigate }: NotificationRowProps)
 export function NotificationPanel({ store, onNavigate }: NotificationPanelProps) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const state = useSyncExternalStore(subscribe, () => store.getState());
+  const scoped = useDrawerScope();
   // A41：单条/全部已读失败不再静默吞——就地错误行 + 重试
   const [readError, setReadError] = useState<ReadActionError>(null);
 
@@ -171,6 +175,7 @@ export function NotificationPanel({ store, onNavigate }: NotificationPanelProps)
   return (
     <Popover.Portal>
       <Popover.Content
+        data-drawer-scope={scoped ? '' : undefined}
         side="bottom"
         align="end"
         sideOffset={8}

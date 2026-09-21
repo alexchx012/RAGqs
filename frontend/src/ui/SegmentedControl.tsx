@@ -1,6 +1,8 @@
 /*
  * 分段控件（共用基座 §3.3 努力档位分段开关、§5.5 外观分段控件，全站统一规格）。
- * 容器 mist-gray 底、radius-buttons、padding 4px、高 32px；选中滑块 paper-white 底 +
+ * 容器 mist-gray 底、radius-buttons、内边距与高度读 --segmented-padding / --segmented-height
+ * （全局默认 32px 高 / 4px 内边距，设置抽屉作用域内为 40px / 2px）；标签字号读
+ * --segmented-font-size（全局 14px，抽屉作用域 15px）；选中滑块 paper-white 底 +
  * shadow-subtle + ink 文（三段统一，不设高亮例外段）；未选段 slate 文、hover 变 ink；
  * 滑块按等分宽度平移 --duration-base --ease-in-out；键盘左右方向键切换（roving tabindex，
  * radiogroup 语义）。
@@ -66,15 +68,15 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
       role="radiogroup"
       aria-label={ariaLabel}
       onKeyDown={onKeyDown}
-      className="relative flex h-8 items-center rounded-[var(--radius-buttons)] bg-mist-gray p-1"
+      className="relative flex h-[var(--segmented-height)] items-center rounded-[var(--radius-buttons)] bg-mist-gray p-[var(--segmented-padding)]"
     >
-      {/* 首测前不挂载滑块：无条件渲染会落在 left-1（第一段）起点，测量后的首次定位会
+      {/* 首测前不挂载滑块：无条件渲染会落在内边距起点（第一段处），测量后的首次定位会
           播放 left/width 过渡——进入模块时表现为「滑块从第一格滑向选中段」。条件挂载让
           滑块以正确位置首次出现（新元素无过渡起点，直接落位），后续切换仍播滑动过渡。 */}
       {thumb !== null && (
         <span
           aria-hidden="true"
-          className="absolute top-1 bottom-1 left-1 rounded-[var(--radius-buttons)] bg-paper-white shadow-[var(--shadow-subtle)] transition-[left,width] duration-[var(--duration-base)] ease-[var(--ease-in-out)]"
+          className="absolute top-[var(--segmented-padding)] bottom-[var(--segmented-padding)] left-[var(--segmented-padding)] rounded-[var(--radius-buttons)] bg-paper-white shadow-[var(--shadow-subtle)] transition-[left,width] duration-[var(--duration-base)] ease-[var(--ease-in-out)]"
           style={{ left: `${thumb.left}px`, width: `${thumb.width}px`, transform: 'none' }}
         />
       )}
@@ -92,7 +94,8 @@ export function SegmentedControl({ options, value, onChange, ariaLabel }: Segmen
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(option.value)}
             className={
-              'relative z-10 flex-1 rounded-[var(--radius-buttons)] px-2 text-[14px] ' +
+              'relative z-10 flex-1 rounded-[var(--radius-buttons)] px-2 ' +
+              'text-[length:var(--segmented-font-size)] ' +
               `whitespace-nowrap transition-colors duration-[var(--duration-base)] ${
                 active ? 'text-ink-black' : 'text-slate-strong hover:text-ink-black'
               }`

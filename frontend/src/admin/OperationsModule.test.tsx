@@ -522,3 +522,60 @@ describe('指标看板（§9.2，A44）', () => {
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+/** 类名逐 token 比对：toContain 会被子串误命中（如 `border-b-0` 满足 `border-b`）。 */
+function classTokens(element: HTMLElement): readonly string[] {
+  return element.className.split(/\s+/);
+}
+
+describe('抽屉视觉基座：管理段控件与数据页布局（D5）', () => {
+  it('任务队列数据页保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    const token = loginToken('ops-wang');
+    await renderLayer(
+      <OpsJobsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    await screen.findByRole('table', { name: copyOperations.jobs });
+    // D5：任务队列按自身所需宽度铺开，不被 880px 表单卡片截断
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+  });
+
+  it('指标看板保持自身指标卡网格：不套 880px 表单卡片', async () => {
+    const token = loginToken('ops-wang');
+    await renderLayer(
+      <OperationsMetricsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    await screen.findByText('缓存命中率');
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+  });
+
+  it('取消任务确认走共享 ConfirmDialog：按 R17 保持 32px，不越出抽屉作用域', async () => {
+    const token = loginToken('ops-wang');
+    await renderLayer(
+      <OpsJobsLayer />,
+      opsUser(),
+      contractAdminApi(token),
+      contractSettingsApi(token),
+    );
+    const user = userEvent.setup();
+    const li = await screen.findByText(nameCell('月度归档.pdf')).then(() => rowOf('月度归档.pdf'));
+    await user.click(within(li).getByRole('button', { name: copyUploads.cancel }));
+    const dialog = await screen.findByRole('dialog', { name: copyUploads.cancelConfirmTitle });
+    for (const name of [copy.controls.cancel, copyUploads.cancel]) {
+      const button = within(dialog).getByRole('button', { name });
+      // R17：delta spec 只对表单页脚规定 36px，对话框按钮不在规定内；该原语与聊天区共用
+      expect(classTokens(button)).toContain('h-8');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+  });
+});

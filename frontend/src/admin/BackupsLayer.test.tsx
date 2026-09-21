@@ -448,3 +448,58 @@ describe('「策略」分段（规格 §9：版本化保存 / 422 映射）', ()
     expect(screen.getByText(copyBackups.policyVersion(1))).toBeInTheDocument();
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+/** 类名逐 token 比对：toContain 会被子串误命中（如 `border-b-0` 满足 `border-b`）。 */
+function classTokens(element: HTMLElement): readonly string[] {
+  return element.className.split(/\s+/);
+}
+
+describe('抽屉视觉基座：管理段控件与数据页布局（D5）', () => {
+  it('备份 / 恢复数据页保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    const token = loginToken('ops-wang');
+    clearActiveRestore();
+    await renderLayer(<BackupsLayer />, opsUser(), contractAdminApi(token));
+    await screen.findByRole('table', { name: copyBackups.backupTableAria });
+    // D5：备份与恢复是被点名的数据页——保持自身布局，不压进表单卡片
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+  });
+
+  it('恢复来源下拉为抽屉控件规格（40px / radius-inputs / hairline / 白底）', async () => {
+    const token = loginToken('ops-wang');
+    clearActiveRestore();
+    await renderLayer(<BackupsLayer />, opsUser(), contractAdminApi(token), [
+      '/admin/operations/backups?view=restores',
+    ]);
+    const select = await screen.findByRole('combobox', { name: copyBackups.sourceLabel });
+    const tokens = classTokens(select);
+    expect(tokens).toContain('h-10');
+    expect(tokens).toContain('rounded-[var(--radius-inputs)]');
+    expect(tokens).toContain('border-hairline');
+    expect(tokens).toContain('bg-paper-white');
+    // 原生 select 未被重置外观：右侧下拉指示保留
+    expect(tokens).not.toContain('appearance-none');
+  });
+
+  it('恢复危险确认走共享 ConfirmDialog：按 R17 保持 32px，危险色走 token', async () => {
+    const token = loginToken('ops-wang');
+    clearActiveRestore();
+    await renderLayer(<BackupsLayer />, opsUser(), contractAdminApi(token), [
+      '/admin/operations/backups?view=restores',
+    ]);
+    fireEvent.change(
+      await screen.findByRole('combobox', { name: copyBackups.sourceLabel }),
+      { target: { value: OPS_BACKUP_SEED_IDS.completeBackup } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: copyBackups.startRestore }));
+    const dialog = await screen.findByRole('dialog', { name: copyBackups.restoreDialogTitle });
+    for (const name of [copy.controls.cancel, copyBackups.restoreConfirm]) {
+      const button = within(dialog).getByRole('button', { name });
+      expect(classTokens(button)).toContain('h-8');
+      expect(classTokens(button)).toContain('rounded-[var(--radius-buttons)]');
+    }
+  });
+});

@@ -517,3 +517,21 @@ describe('影子评测触发入口（§11.4，A39）', () => {
     expect(screen.queryByText(/触发|运行影子|重新评测/)).toBeNull();
   });
 });
+
+/* ---------- 抽屉视觉基座（管理段复用同一左栏与控件；数据页不套 880px 表单卡片） ---------- */
+
+describe('抽屉视觉基座：管理段控件与数据页布局（D5）', () => {
+  it('评测与校准页面保持自身布局：不套 880px 表单卡片，也不套表单原语', async () => {
+    const token = loginToken('ops-wang');
+    await renderEvaluation(<EvaluationModule />, opsUser(), contractAdminApi(token));
+
+    await screen.findByText(evaluation.windowCardTitle);
+    // D5：窗口状态卡 / 两张榜单是数据页，保持自身布局与表格宽度
+    expect(screen.queryByTestId('settings-card')).toBeNull();
+    expect(screen.queryAllByTestId('form-row')).toHaveLength(0);
+    expect(screen.queryAllByTestId('form-footer')).toHaveLength(0);
+    expect(
+      screen.getByRole('table', { name: evaluation.leaderboardTitle }),
+    ).toBeInTheDocument();
+  });
+});

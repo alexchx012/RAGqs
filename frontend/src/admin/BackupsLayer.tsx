@@ -659,7 +659,7 @@ function RestoresSegment() {
             disabled={sources.length === 0}
             onChange={(event) => setSelectedBackupId(event.target.value)}
             className={
-              'h-10 w-full rounded-[var(--radius-inputs)] border border-[var(--color-hairline)] ' +
+              'h-10 w-full rounded-[var(--radius-inputs)] border border-hairline ' +
               'bg-paper-white px-3 font-mono text-[15px] text-ink-black disabled:text-smoke-gray'
             }
           >

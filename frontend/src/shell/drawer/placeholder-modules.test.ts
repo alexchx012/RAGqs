@@ -21,11 +21,13 @@ const ids = (layers: readonly { id: string }[]) => layers.map((layer) => layer.i
 describe('内置占位模块：个人段（全角色四模块，顺序固定）', () => {
   it.each(ALL_ROLES)('%s 角色看到且仅看到四个固定模块', (role) => {
     const list = createDrawerRegistry().listModules('personal', role);
-    expect(ids(list)).toEqual(['profile', 'security', 'appearance', 'knowledge']);
+    // 显示顺序以抽屉视觉规格为准：常规设置(/settings/appearance) → 账号设置(/settings/profile)
+    // → 安全设置(/settings/security) → 知识库(/settings/knowledge)；模块 id 与路由路径不变。
+    expect(ids(list)).toEqual(['appearance', 'profile', 'security', 'knowledge']);
     expect(list.map((module) => module.title)).toEqual([
-      modules.profile,
+      modules.general,
+      modules.account,
       modules.security,
-      modules.appearance,
       modules.knowledge,
     ]);
   });

@@ -1,5 +1,25 @@
+/*
+ * 常规设置（外观）：主题与对话字号两项偏好走草稿-保存。
+ * 分段控件只改本地草稿（useDraftForm），点「保存」才经 usePreferences 提交完整快照，
+ * 「取消」丢弃草稿；保存失败由 use-preferences 回滚并置 saveError。
+ * 界面语言与消息时间戳不在本期范围（后端无对应偏好字段），本模块不渲染也不留占位行。
+ * 三态（loading / loadError / saveError）与 aria-busy 沿用既有语义。
+ * 卡片标题与灰色副标题由 SettingsCard 的 title/description 渲染（设计图原文，见 copy 的 cardTitle/cardDescription）；
+ * 卡片区域名即该可见标题（SettingsCard 内部用 aria-labelledby 指向 h2），故本模块不再传 ariaLabel
+ * （旧文案键 copy.settings.appearance.sectionLabel 已随本次清理删除，区域名一律取自可见标题）。
+ * 区域只在卡片上命名一次：外层 section 不再挂 aria-label，避免与 SettingsCard 形成嵌套同名 landmark
+ * （Task 8 遗留缺陷；账号设置与安全设置两个模块本就没有外层具名）。
+ * 保存进行中禁用两个分段控件（见 DraftFieldSet）：use-preferences 的 saving 契约要求消费方
+ * 禁用相关控件，且保存落地会重置草稿，窗口内可改会导致在途编辑被静默丢弃。
+ * FormFooter 是 SettingsCard 的直接子节点且必须留在最后（负外边距抵消卡片 p-8）。
+ */
+import type { ReactNode } from 'react';
 import { copy } from '../copy';
+import { FormFooter } from '../ui/FormFooter';
+import { FormRow } from '../ui/FormRow';
 import { SegmentedControl, type SegmentedOption } from '../ui/SegmentedControl';
+import { SettingsCard } from '../ui/SettingsCard';
+import { useDraftForm } from './use-draft-form';
 import { usePreferences } from './use-preferences';
 import type { ChatFontSize, ThemePreferenceValue } from './types';
 
@@ -14,37 +34,35 @@ const FONT_SIZE_OPTIONS: SegmentedOption[] = [
   { value: 'large', label: copy.settings.appearance.fontLarge },
 ];
 
+/*
+ * 分段控件的禁用外壳。保存进行中必须禁用可交互控件：use-preferences 对 saving 的契约是
+ * 「消费方据此禁用相关控件」；且真实保存响应每次都是新对象（api/client.ts 的 response.json()），
+ * useDraftForm 见 submitted 身份变化即重置草稿——窗口内若还能改，那笔在途编辑会被静默丢弃。
+ * fieldset 原生 disabled 让后代控件不可交互；disabled:opacity-60 + disabled:cursor-not-allowed
+ * 让禁用态可见。不需要 enabled:opacity-100：浏览器 UA 样式与 Tailwind preflight 都不给 disabled
+ * fieldset 加 opacity:0，opacity 的初始值本来就是 1，写上去只是重复声明（与 SecurityModule 的
+ * DraftFieldSet 同形；Task 8 曾据此写下相反因果，已被审查证伪）。
+ */
+function DraftFieldSet({ saving, children }: { saving: boolean; children: ReactNode }) {
+  return (
+    <fieldset
+      disabled={saving}
+      className="m-0 min-w-0 border-0 p-0 transition-opacity duration-[var(--duration-base)] disabled:opacity-60 disabled:cursor-not-allowed"
+    >
+      {children}
+    </fieldset>
+  );
+}
+
 export function AppearanceModule() {
   const { preferences, loading, loadError, saveError, saving, reload, save } = usePreferences();
-
-  const selectTheme = (value: string) => {
-    if (preferences === null || saving) {
-      return;
-    }
-    const themePreference = value as ThemePreferenceValue;
-    if (themePreference === preferences.theme) {
-      return;
-    }
-    save({ ...preferences, theme: themePreference });
-  };
-
-  const selectFontSize = (value: string) => {
-    if (preferences === null || saving) {
-      return;
-    }
-    const chatFontSize = value as ChatFontSize;
-    if (chatFontSize === preferences.chat_font_size) {
-      return;
-    }
-    save({ ...preferences, chat_font_size: chatFontSize });
-  };
+  // submitted 必须是稳定引用（preferences 是 use-preferences 的状态值，草稿保存后随之刷新）。
+  // 传内联快照字面量会让每次渲染都重置草稿：草稿变化触发重渲染 → 新字面量 → 再重置，
+  // 实测直接进入渲染死循环（用例挂住，非仅「吞掉输入」）。
+  const { draft, set, reset, commit } = useDraftForm(preferences, save);
 
   return (
-    <section
-      aria-label={copy.settings.appearance.sectionLabel}
-      aria-busy={loading || saving}
-      className="pb-10"
-    >
+    <section aria-busy={loading || saving} className="pb-10">
       {loading && (
         <p role="status" className="text-caption text-slate-strong">
           {copy.settings.appearance.loading}
@@ -64,44 +82,55 @@ export function AppearanceModule() {
         </div>
       )}
 
-      {!loading && !loadError && preferences !== null && (
-        <>
-          <section aria-labelledby="settings-appearance-theme" className="border-b border-hairline pb-8">
-            <h2 id="settings-appearance-theme" className="text-subheading font-medium text-ink-black">
-              {copy.settings.appearance.themeTitle}
-            </h2>
-            <p className="mt-2 text-caption text-slate-strong">{copy.settings.appearance.themeDescription}</p>
-            <fieldset disabled={saving} className="mt-4 min-w-0 border-0 p-0">
-              <SegmentedControl
-                options={THEME_OPTIONS}
-                value={preferences.theme}
-                onChange={selectTheme}
-                ariaLabel={copy.settings.appearance.themeAria}
-              />
-            </fieldset>
-          </section>
+      {/* 加载态以 draft === null 判断：已提交快照未到位时 useDraftForm 不产出草稿。
+          卡片整体不渲染，避免出现控件绑不上草稿的空壳。 */}
+      {!loading && !loadError && draft !== null && (
+        <SettingsCard
+          title={copy.settings.appearance.cardTitle}
+          description={copy.settings.appearance.cardDescription}
+        >
+          {/* 两行的父容器负责关闭末行分隔线（FormRow 始终渲染 border-b）。
+              该类不能加在卡片上：卡片里 FormFooter 是最后一个子节点，卡片上的 :last-child
+              命中的是页脚，被去掉的会是页脚的下边框；FormFooter 必须仍是卡片的直接子节点且留在最后。 */}
+          <div className="[&>*:last-child]:border-b-0">
+            <FormRow
+              label={copy.settings.appearance.themeTitle}
+              description={copy.settings.appearance.themeDescription}
+            >
+              {/* 保存进行中禁用整块控件，避免在途编辑被静默丢弃（详见 DraftFieldSet 注释）。 */}
+              <DraftFieldSet saving={saving}>
+                <SegmentedControl
+                  options={THEME_OPTIONS}
+                  value={draft.theme}
+                  onChange={(value) => set({ theme: value as ThemePreferenceValue })}
+                  ariaLabel={copy.settings.appearance.themeAria}
+                />
+              </DraftFieldSet>
+            </FormRow>
 
-          <section aria-labelledby="settings-appearance-font-size" className="py-8">
-            <h2 id="settings-appearance-font-size" className="text-subheading font-medium text-ink-black">
-              {copy.settings.appearance.fontSizeTitle}
-            </h2>
-            <p className="mt-2 text-caption text-slate-strong">{copy.settings.appearance.fontSizeDescription}</p>
-            <fieldset disabled={saving} className="mt-4 min-w-0 border-0 p-0">
-              <SegmentedControl
-                options={FONT_SIZE_OPTIONS}
-                value={preferences.chat_font_size}
-                onChange={selectFontSize}
-                ariaLabel={copy.settings.appearance.fontSizeAria}
-              />
-            </fieldset>
-          </section>
+            <FormRow
+              label={copy.settings.appearance.fontSizeTitle}
+              description={copy.settings.appearance.fontSizeDescription}
+            >
+              <DraftFieldSet saving={saving}>
+                <SegmentedControl
+                  options={FONT_SIZE_OPTIONS}
+                  value={draft.chat_font_size}
+                  onChange={(value) => set({ chat_font_size: value as ChatFontSize })}
+                  ariaLabel={copy.settings.appearance.fontSizeAria}
+                />
+              </DraftFieldSet>
+            </FormRow>
+          </div>
 
           {saveError && (
-            <p role="alert" className="text-caption text-danger">
+            <p role="alert" className="pt-4 text-caption text-danger">
               {copy.settings.appearance.saveError}
             </p>
           )}
-        </>
+
+          <FormFooter onCancel={reset} onSave={commit} saving={saving} />
+        </SettingsCard>
       )}
     </section>
   );
