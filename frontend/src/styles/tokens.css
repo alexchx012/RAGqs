@@ -93,6 +93,7 @@
   --color-blush-peach: var(--color-blush-peach);
   --color-sienna-brown: var(--color-sienna-brown);
   --color-hairline: var(--color-hairline);
+  --color-divider: var(--color-divider);
   --color-danger: var(--color-danger);
   --color-warning: var(--color-warning);
   --color-success: var(--color-success);
@@ -116,6 +117,10 @@
 
   /* 发丝边 1px（内容卡一律无边框） */
   --color-hairline: #ececec;
+
+  /* 结构分隔线（行间 / 页脚顶边框）：与「控件描边」hairline 是两个设计取值。
+   * 抽屉外取与 hairline 同值——那里没人消费 border-divider，同值使将来误用时行为不突变。 */
+  --color-divider: #ececec;
 
   /* 功能色例外仅三种（低饱和、小面积；大面积铺底用 10% 透明度） */
   --color-danger: #b6492f;
@@ -165,6 +170,8 @@
   --color-sienna-brown: #dfa88d;
 
   --color-hairline: #2f333b;
+  /* 设计图只有亮色：暗色沿用 hairline 的 #2f333b，不发明新值 */
+  --color-divider: #2f333b;
 
   --color-danger: #d1826f;
   --color-warning: #d3a24f;
@@ -178,6 +185,8 @@
 [data-drawer-scope] {
   --color-ink-black: #1a1a18;
   --color-hairline: #e4e3e7;
+  /* 设计图实测：行分隔线与页脚顶边为 #efeff1，比控件描边 #e4e3e7 更浅，两者不得合并 */
+  --color-divider: #efeff1;
   --color-danger: #d64545;
   --radius-buttons: 8px;
   --radius-inputs: 8px;
@@ -193,6 +202,7 @@
 [data-theme='dark'] [data-drawer-scope] {
   --color-ink-black: #f2f2f3;
   --color-hairline: #2f333b;
+  --color-divider: #2f333b;
   --color-danger: #d1826f;
   --surface-drawer-canvas: #202329;
 }

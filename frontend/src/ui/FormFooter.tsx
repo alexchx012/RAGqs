@@ -1,7 +1,8 @@
 /*
  * 设置表单底部操作区（drawer-visual-system）：独立顶边框 + fog 底，右对齐「取消」「保存」。
- * 取消为白底 hairline 描边，保存为 ink 实底白字；按钮高 36px（h-9），圆角走 --radius-buttons
- * （全局 9999px、抽屉作用域 8px，因此同一组件在抽屉内外各自呈现正确形状）。
+ * 顶边框是结构分隔线，走 border-divider（抽屉作用域 #efeff1）；取消按钮的描边走 border-hairline
+ * （抽屉作用域 #e4e3e7）——两者是不同设计取值，不要合并。保存为 ink 实底白字；按钮高 36px（h-9），
+ * 圆角走 --radius-buttons（全局 9999px、抽屉作用域 8px，因此同一组件在抽屉内外各自呈现正确形状）。
  * 负外边距抵消 SettingsCard 的 p-8，使操作区横向铺满卡片内边缘并与卡片底边贴合。
  * 文案一律取自 copy，不在组件内散落字面量（文案纪律）。
  * saving 为真时禁用两个按钮，与既有偏好保存「保存中禁用相关控件」的语义一致。
@@ -35,7 +36,7 @@ export function FormFooter({
   return (
     <div
       data-testid="form-footer"
-      className="-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-hairline bg-fog-white px-8 py-4"
+      className="-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-divider bg-fog-white px-8 py-4"
     >
       {statusSlot !== undefined && <div className="mr-auto flex items-center">{statusSlot}</div>}
       <button

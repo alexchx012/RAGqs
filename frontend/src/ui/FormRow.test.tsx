@@ -1,7 +1,7 @@
 /*
  * FormRow 测试（drawer-visual-system）：两栏行——左列固定 260px（标签 + 灰色说明）、
- * 列间距 24px、右列弹性；行上下各 20px；行间 1px 分隔线；只读行不渲染输入控件。
- * 左列断点断言按空白切分精确比对：子串断言会被 md: 前缀满足。
+ * 列间距 24px、右列弹性；行上下各 20px；行间 1px 分隔线走 border-divider；只读行不渲染输入控件。
+ * 左列断点与分隔线的 token 断言按空白切分精确比对：子串断言会被 md: 前缀与 border-b-0 满足。
  */
 
 import { render, screen } from '@testing-library/react';
@@ -54,15 +54,23 @@ describe('FormRow', () => {
     expect(screen.getAllByRole('textbox')).toHaveLength(1);
   });
 
-  it('组件始终渲染行间分隔线，末行由父容器关闭', () => {
+  it('行分隔线走 border-divider，不写死 hex、也不复用控件描边 hairline', () => {
     render(
       <FormRow label="主题">
         <input />
       </FormRow>,
     );
     const row = screen.getByTestId('form-row');
-    expect(row.className).toContain('border-b');
-    expect(row.className).toContain('border-hairline');
+    // 逐 token 比对：toContain('border-b') 会被 border-b-0 之类的子串满足，
+    // toContain('border-hairline') 也答不出「分隔线用的是哪个 token」。
+    const tokens = row.className.split(/\s+/);
+    expect(tokens).toContain('border-b');
+    // 结构分隔线是 #EFEFF1（设计图实测），与控件描边 #E4E3E7 是两个取值：
+    // 改回 border-hairline 会在抽屉里把分隔线画成描边色。
+    expect(tokens).toContain('border-divider');
+    expect(tokens).not.toContain('border-hairline');
+    expect(row.className).not.toContain('#');
+    expect(row.className).not.toContain('[color:');
   });
 
   it('窄屏为单列、桌面为两栏', () => {

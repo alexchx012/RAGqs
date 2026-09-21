@@ -5,7 +5,8 @@
  * 由「直接包裹这组行的父容器」用 [&>*:last-child]:border-b-0 关闭末行分隔线。该父容器只要求是这些
  * 行的直接父级，不要求是卡片本身：卡片内若还有 FormFooter 之类的兄弟节点，请给整组行单独一层容器，
  * 否则加在卡片上的 :last-child 命中的是页脚，被去掉的会是页脚的下边框而不是末行的分隔线。
- * 分隔线颜色走 border-hairline（全局 #ececec，抽屉作用域 #e4e3e7），不写死 hex。
+ * 分隔线颜色走 border-divider（全局 #ececec，抽屉作用域 #efeff1）——那是结构分隔线的设计值，
+ * 与控件描边的 border-hairline（抽屉作用域 #e4e3e7）是两个取值，不要合并。不写死 hex。
  * 只读行（readOnlyValue）右列渲染纯文本：禁用输入框会传达「本可编辑但当前不可用」的错误语义。
  */
 import type { ReactNode } from 'react';
@@ -23,7 +24,7 @@ export function FormRow({ label, description, htmlFor, readOnlyValue, children }
   return (
     <div
       data-testid="form-row"
-      className="flex flex-col gap-2 border-b border-hairline py-5 md:flex-row md:gap-6"
+      className="flex flex-col gap-2 border-b border-divider py-5 md:flex-row md:gap-6"
     >
       <div data-testid="form-row-label" className="shrink-0 md:w-[260px]">
         <label htmlFor={htmlFor} className="block text-caption font-w480 text-ink-black">

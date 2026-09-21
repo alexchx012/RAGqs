@@ -1,6 +1,6 @@
 /*
- * FormFooter 测试（drawer-visual-system）：底部操作区——顶边框 + fog 底、右对齐
- * 「取消」（描边）/「保存」（ink 实底）；按钮高 36px、圆角走 --radius-buttons。
+ * FormFooter 测试（drawer-visual-system）：底部操作区——顶边框（结构分隔线，border-divider）+
+ * fog 底、右对齐「取消」（hairline 描边）/「保存」（ink 实底）；按钮高 36px、圆角走 --radius-buttons。
  */
 
 import { render, screen } from '@testing-library/react';
@@ -14,7 +14,7 @@ describe('FormFooter', () => {
     render(<FormFooter onCancel={() => {}} onSave={() => {}} />);
     const bar = screen.getByTestId('form-footer');
     expect(bar.className).toContain('border-t');
-    expect(bar.className).toContain('border-hairline');
+    expect(bar.className).toContain('border-divider');
     expect(bar.className).toContain('bg-fog-white');
     expect(bar.className).toContain('justify-end');
     expect(bar.className).toContain('-mx-8');
@@ -67,11 +67,27 @@ describe('FormFooter', () => {
     render(<FormFooter onCancel={() => {}} onSave={() => {}} />);
     const bar = screen.getByTestId('form-footer');
     expect(bar.className).toBe(
-      '-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-hairline bg-fog-white px-8 py-4',
+      '-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-divider bg-fog-white px-8 py-4',
     );
     expect(bar.children).toHaveLength(2);
     expect(bar.firstElementChild).toBe(screen.getByRole('button', { name: copy.controls.cancel }));
     expect(bar.lastElementChild).toBe(screen.getByRole('button', { name: copy.controls.save }));
+  });
+
+  it('结构分隔线 ≠ 控件描边：页脚顶边框走 border-divider，取消按钮仍走 border-hairline', () => {
+    // 抽屉作用域内两值不同：分隔线 #efeff1、控件描边 #e4e3e7。合并成一个 token
+    // （任一侧改回另一边）都会让这条断言失败——这正是本用例存在的理由。
+    render(<FormFooter onCancel={() => {}} onSave={() => {}} />);
+    const bar = screen.getByTestId('form-footer');
+    const cancel = screen.getByRole('button', { name: copy.controls.cancel });
+    const barTokens = bar.className.split(/\s+/);
+    const cancelTokens = cancel.className.split(/\s+/);
+    expect(barTokens).toContain('border-t');
+    expect(barTokens).toContain('border-divider');
+    expect(barTokens).not.toContain('border-hairline');
+    expect(cancelTokens).toContain('border');
+    expect(cancelTokens).toContain('border-hairline');
+    expect(cancelTokens).not.toContain('border-divider');
   });
 
   it('statusSlot 落在页脚内部、按钮组之前（左侧），页脚自身类名不变', () => {
@@ -87,7 +103,7 @@ describe('FormFooter', () => {
     expect(cancel.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // 页脚仍是同一组高度/内边距类：插槽不改变页脚高度与按钮顺序
     expect(bar.className).toBe(
-      '-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-hairline bg-fog-white px-8 py-4',
+      '-mx-8 -mb-8 mt-2 flex justify-end gap-3 border-t border-divider bg-fog-white px-8 py-4',
     );
     expect(bar.children).toHaveLength(3);
   });

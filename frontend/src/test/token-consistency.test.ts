@@ -59,15 +59,22 @@ const FUNCTIONAL_COLORS: Record<string, [string, string]> = {
 
 const HAIRLINE: [string, string] = ['#ececec', '#2f333b'];
 
+/** 结构分隔线（行间 / 页脚顶边框）：与控件描边 hairline 是两个设计取值。
+ * 全局取与 hairline 同值（抽屉外无人消费，取同值使行为与今天一致），抽屉作用域取设计图实测 #efeff1；
+ * 设计图只有亮色，暗色两个作用域都沿用 hairline 的 #2f333b，不发明新值。 */
+const DIVIDER: [string, string, string] = ['#ececec', '#2f333b', '#efeff1'];
+
 /** 抽屉作用域覆盖值（settings-ui-ux-refresh）：设计图实测值，仅作用于抽屉子树。 */
 const DRAWER_SCOPE_LIGHT: Record<string, string> = {
   'ink-black': '#1a1a18',
   hairline: '#e4e3e7',
+  divider: DIVIDER[2],
   danger: '#d64545',
 };
 const DRAWER_SCOPE_DARK: Record<string, string> = {
   'ink-black': '#f2f2f3',
   hairline: '#2f333b',
+  divider: DIVIDER[1],
   danger: '#d1826f',
 };
 const DRAWER_CANVAS: [string, string] = ['#f7f7f8', '#202329'];
@@ -78,6 +85,17 @@ function collectHexes(css: string): string[] {
 
 function collectColorTokenNames(css: string): string[] {
   return [...css.matchAll(/--color-([a-z0-9-]+):\s*#/g)].map((match) => match[1]);
+}
+
+/** 截出某个选择器的声明块正文。scopeBlock（从 [data-drawer-scope] 切到文件尾）会把随后
+ *  [data-theme='dark'] [data-drawer-scope] 的声明也算进来，于是「暗色声明了 X」这类断言
+ * 会被同名的亮色声明满足——暗色漏声明时它照样通过。 */
+function blockOf(css: string, selector: string): string {
+  const start = css.indexOf(selector);
+  expect(start, `未找到选择器 ${selector}`).toBeGreaterThan(-1);
+  const open = css.indexOf('{', start);
+  const close = css.indexOf('}', open);
+  return css.slice(open + 1, close);
 }
 
 describe('设计 token 与 Steep 事实源一致', () => {
@@ -101,17 +119,24 @@ describe('设计 token 与 Steep 事实源一致', () => {
     }
   });
 
-  it('发丝边统一 #ececec（暗色 #2f333b）', () => {
+  it('发丝边统一 #ececec（暗色 #2f333b）；结构分隔线全局与发丝边同值', () => {
     expect(lightScope).toContain(`--color-hairline: ${HAIRLINE[0]};`);
+    // 抽屉外无人消费 border-divider；全局取与 hairline 同值是为了「万一将来有人用」行为不突变。
+    expect(lightScope).toContain(`--color-divider: ${DIVIDER[0]};`);
+    expect(darkScope).toContain(`--color-divider: ${DIVIDER[1]};`);
   });
 
-  it('色彩纪律：token 表中不允许 9 色 + 次级文字 slate-strong + 发丝边 + 三功能色之外的任何色值', () => {
+  it('色彩纪律：token 表中不允许 9 色 + 次级文字 slate-strong + 发丝边 + 结构分隔线 + 三功能色之外的任何色值', () => {
     const allowedHexes = new Set(
       [
         ...Object.values(LIGHT_COLORS),
         ...Object.values(DARK_COLORS),
         ...Object.values(FUNCTIONAL_COLORS).flat(),
         ...HAIRLINE,
+        // 结构分隔线专用中性色（#ececec/#2f333b/#efeff1）经审查加入白名单：
+        // #efeff1 是设计图实测的行分隔线中性色，与 9 色、功能色、控件描边都不重复，
+        // 属新增一个设计取值而非放宽既有纪律；白名单其余部分未动。
+        ...DIVIDER,
         ...Object.values(DRAWER_SCOPE_LIGHT),
         ...Object.values(DRAWER_SCOPE_DARK),
         ...DRAWER_CANVAS,
@@ -126,6 +151,7 @@ describe('设计 token 与 Steep 事实源一致', () => {
       ...Object.keys(LIGHT_COLORS),
       ...Object.keys(FUNCTIONAL_COLORS).map((name) => name),
       'hairline',
+      'divider',
     ]);
     for (const name of collectColorTokenNames(tokensCss)) {
       expect(allowedNames.has(name), `未授权的颜色 token --color-${name}`).toBe(true);
@@ -230,6 +256,8 @@ describe('抽屉作用域（settings-ui-ux-refresh）', () => {
 
     expect(scopeBlock).toContain(`--color-ink-black: ${DRAWER_SCOPE_LIGHT['ink-black']};`);
     expect(scopeBlock).toContain(`--color-hairline: ${DRAWER_SCOPE_LIGHT.hairline};`);
+    // 结构分隔线在抽屉里是另一个更浅的取值：与上面的控件描边 #e4e3e7 并存，不得合并
+    expect(scopeBlock).toContain(`--color-divider: ${DRAWER_SCOPE_LIGHT.divider};`);
     expect(scopeBlock).toContain(`--color-danger: ${DRAWER_SCOPE_LIGHT.danger};`);
     expect(scopeBlock).toContain(`--surface-drawer-canvas: ${DRAWER_CANVAS[0]};`);
     expect(scopeBlock).toContain('--radius-buttons: 8px;');
@@ -244,9 +272,17 @@ describe('抽屉作用域（settings-ui-ux-refresh）', () => {
     expect(scopeBlock).toContain(`--surface-drawer-canvas: ${DRAWER_CANVAS[1]};`);
   });
 
+  it('抽屉暗色作用域自身声明分隔线 #2f333b：漏了就回落到亮色 #efeff1，在深底上是一条亮线', () => {
+    const darkDrawerBlock = blockOf(tokensCss, "[data-theme='dark'] [data-drawer-scope]");
+    expect(darkDrawerBlock).toContain(`--color-divider: ${DRAWER_SCOPE_DARK.divider};`);
+    expect(darkDrawerBlock).not.toContain(DIVIDER[2]);
+    expect(darkDrawerBlock).toContain(`--color-hairline: ${DRAWER_SCOPE_DARK.hairline};`);
+  });
+
   it('全局默认值保持不变（作用域不得反向污染全局）', () => {
     expect(lightScope).toContain('--color-ink-black: #17191c;');
     expect(lightScope).toContain('--color-hairline: #ececec;');
+    expect(lightScope).toContain('--color-divider: #ececec;');
     expect(lightScope).toContain('--color-danger: #b6492f;');
     expect(lightScope).toContain('--radius-buttons: 9999px;');
     expect(lightScope).toContain('--radius-inputs: 16px;');
