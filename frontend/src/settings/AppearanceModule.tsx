@@ -39,14 +39,15 @@ const FONT_SIZE_OPTIONS: SegmentedOption[] = [
  * 「消费方据此禁用相关控件」；且真实保存响应每次都是新对象（api/client.ts 的 response.json()），
  * useDraftForm 见 submitted 身份变化即重置草稿——窗口内若还能改，那笔在途编辑会被静默丢弃。
  * fieldset 原生 disabled 让后代控件不可交互；disabled:opacity-60 + disabled:cursor-not-allowed
- * 让禁用态可见。enabled:opacity-100 不可省：浏览器对 disabled fieldset 默认 opacity:0，
- * 不加则非保存期整块消失。
+ * 让禁用态可见。不需要 enabled:opacity-100：浏览器 UA 样式与 Tailwind preflight 都不给 disabled
+ * fieldset 加 opacity:0，opacity 的初始值本来就是 1，写上去只是重复声明（与 SecurityModule 的
+ * DraftFieldSet 同形；Task 8 曾据此写下相反因果，已被审查证伪）。
  */
 function DraftFieldSet({ saving, children }: { saving: boolean; children: ReactNode }) {
   return (
     <fieldset
       disabled={saving}
-      className="m-0 min-w-0 border-0 p-0 transition-opacity duration-[var(--duration-base)] enabled:opacity-100 disabled:opacity-60 disabled:cursor-not-allowed"
+      className="m-0 min-w-0 border-0 p-0 transition-opacity duration-[var(--duration-base)] disabled:opacity-60 disabled:cursor-not-allowed"
     >
       {children}
     </fieldset>

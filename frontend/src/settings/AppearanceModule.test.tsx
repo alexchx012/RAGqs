@@ -358,8 +358,9 @@ describe('AppearanceModule', () => {
 
     await renderModule(api, createThemeController());
     const group = screen.getByRole('radiogroup', { name: copy.settings.appearance.themeAria });
-    // 保存前不降透明度（避免 fieldset 默认 opacity:0 让内容整块消失）
-    expect(group.closest('fieldset')?.className).toContain('opacity-100');
+    // 保存前不处于禁用态：断言真实属性而不是某个类名（fieldset 的 opacity 初始值即 1，
+    // 原先钉住 enabled:opacity-100 只是锁住一条 no-op 类）
+    expect(group.closest('fieldset')).not.toBeDisabled();
 
     await user.click(screen.getByRole('radio', { name: copy.settings.appearance.themeDark }));
     await user.click(saveButton());
