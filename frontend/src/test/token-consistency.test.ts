@@ -18,7 +18,6 @@ const baseCss = readSrc('../styles/base.css');
 const DARK_MARKER = ":root[data-theme='dark']";
 const darkIndex = tokensCss.indexOf(DARK_MARKER);
 const lightScope = darkIndex >= 0 ? tokensCss.slice(0, darkIndex) : tokensCss;
-const darkScope = darkIndex >= 0 ? tokensCss.slice(darkIndex) : '';
 
 /** Steep 颜色 9 色（亮色值）。 */
 const LIGHT_COLORS: Record<string, string> = {
@@ -87,9 +86,13 @@ function collectColorTokenNames(css: string): string[] {
   return [...css.matchAll(/--color-([a-z0-9-]+):\s*#/g)].map((match) => match[1]);
 }
 
-/** 截出某个选择器的声明块正文。scopeBlock（从 [data-drawer-scope] 切到文件尾）会把随后
- *  [data-theme='dark'] [data-drawer-scope] 的声明也算进来，于是「暗色声明了 X」这类断言
- * 会被同名的亮色声明满足——暗色漏声明时它照样通过。 */
+/** 截出某个选择器的声明块正文（取紧随选择器之后的第一个 { } 对）。
+ * 用途：assert-on-a-specific-block。naive 的「从某标记切到文件尾」写法会把后面块的
+ * **同名同值**声明一并算进来，于是「块 B 声明了 X」的断言被块 C 的声明满足——块 B 真漏声明时
+ * 它照样通过（假绿）。取值完全相同的重复只有一处：全局暗色 :root[data-theme='dark'] 与
+ * 抽屉暗色 [data-theme='dark'] [data-drawer-scope] 对 ink-black(#f2f2f3) / hairline(#2f333b) /
+ * divider(#2f333b) / danger(#d1826f) 四个 token 逐字节相同，故凡是断言这四者在暗色下的声明，
+ * 必须落在唯一确定的块上（见 darkRootBlock）。 */
 function blockOf(css: string, selector: string): string {
   const start = css.indexOf(selector);
   expect(start, `未找到选择器 ${selector}`).toBeGreaterThan(-1);
@@ -97,6 +100,10 @@ function blockOf(css: string, selector: string): string {
   const close = css.indexOf('}', open);
   return css.slice(open + 1, close);
 }
+
+/** 全局暗色基线块，精确切出。不能用下方 darkScope（它从暗色标记一直切到文件尾，
+ * 会把随后的 [data-drawer-scope] 与 [data-theme='dark'] [data-drawer-scope] 一起卷进来）。 */
+const darkRootBlock = blockOf(tokensCss, ":root[data-theme='dark']");
 
 describe('设计 token 与 Steep 事实源一致', () => {
   it('颜色 9 色亮色值逐项一致', () => {
@@ -107,15 +114,18 @@ describe('设计 token 与 Steep 事实源一致', () => {
 
   it('暗色映射逐项与 共用基座 §2.1 对照表一致（token 名不变换值）', () => {
     for (const [name, value] of Object.entries(DARK_COLORS)) {
-      expect(darkScope).toContain(`--color-${name}: ${value};`);
+      expect(darkRootBlock).toContain(`--color-${name}: ${value};`);
     }
-    expect(darkScope).toContain(`--color-hairline: ${HAIRLINE[1]};`);
+    // 精确块断言：darkScope 切片里 --color-hairline: #2f333b 还出现在抽屉暗色块，
+    // 用 darkScope 的话删掉全局暗色这条声明也照样通过。
+    expect(darkRootBlock).toContain(`--color-hairline: ${HAIRLINE[1]};`);
   });
 
   it('功能色例外仅危险红/警告琥珀/成功绿三种，亮暗值一致', () => {
     for (const [name, [light, dark]] of Object.entries(FUNCTIONAL_COLORS)) {
       expect(lightScope).toContain(`--color-${name}: ${light};`);
-      expect(darkScope).toContain(`--color-${name}: ${dark};`);
+      // danger 暗色值在抽屉暗色块同样出现，必须断言在全局暗色块上
+      expect(darkRootBlock).toContain(`--color-${name}: ${dark};`);
     }
   });
 
@@ -123,7 +133,9 @@ describe('设计 token 与 Steep 事实源一致', () => {
     expect(lightScope).toContain(`--color-hairline: ${HAIRLINE[0]};`);
     // 抽屉外无人消费 border-divider；全局取与 hairline 同值是为了「万一将来有人用」行为不突变。
     expect(lightScope).toContain(`--color-divider: ${DIVIDER[0]};`);
-    expect(darkScope).toContain(`--color-divider: ${DIVIDER[1]};`);
+    // 全局暗色这处声明当前无消费者（border-divider 只在抽屉内用），但 brief 要求四处取值齐备：
+    // 缺了就会在某个主题下静默回落。断言必须落在全局暗色块，否则被抽屉暗色块的同值声明满足。
+    expect(darkRootBlock).toContain(`--color-divider: ${DIVIDER[1]};`);
   });
 
   it('色彩纪律：token 表中不允许 9 色 + 次级文字 slate-strong + 发丝边 + 结构分隔线 + 三功能色之外的任何色值', () => {
