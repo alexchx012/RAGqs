@@ -1,7 +1,7 @@
 /*
  * FormRow 测试（drawer-visual-system）：两栏行——左列固定 260px（标签 + 灰色说明）、
  * 列间距 24px、右列弹性；行上下各 20px；行间 1px 分隔线走 border-divider；只读行不渲染输入控件。
- * 左列断点与分隔线的 token 断言按空白切分精确比对：子串断言会被 md: 前缀与 border-b-0 满足。
+ * 左列断点、行内间距与分隔线的 token 断言按空白切分精确比对：子串断言会被 md: 前缀与 border-b-0 满足。
  */
 
 import { render, screen } from '@testing-library/react';
@@ -16,8 +16,13 @@ describe('FormRow', () => {
       </FormRow>,
     );
     const row = screen.getByTestId('form-row');
-    expect(row.className).toContain('py-5');
-    expect(row.className).toContain('gap-6');
+    // 精确断言：列间距只在 md 断点上是 24px，窄屏是 8px。用 toContain('gap-6') 会被
+    // md:gap-6 的子串满足，回归成裸 gap-6（窄屏也上 24px 列间距）时逃过断言。
+    const rowClasses = row.className.split(/\s+/);
+    expect(rowClasses).toContain('py-5');
+    expect(rowClasses).toContain('gap-2');
+    expect(rowClasses).toContain('md:gap-6');
+    expect(rowClasses).not.toContain('gap-6');
     const labelCol = screen.getByTestId('form-row-label');
     // 精确断言：260px 只在 md 断点生效。用 toContain('w-[260px]') 会被 md:w-[260px]
     // 的子串满足，回归成裸 w-[260px]（窄屏也固定 260px）时逃过断言。
