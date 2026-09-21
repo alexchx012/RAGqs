@@ -89,10 +89,10 @@ function collectColorTokenNames(css: string): string[] {
 /** 截出某个选择器的声明块正文（取紧随选择器之后的第一个 { } 对）。
  * 用途：assert-on-a-specific-block。naive 的「从某标记切到文件尾」写法会把后面块的
  * **同名同值**声明一并算进来，于是「块 B 声明了 X」的断言被块 C 的声明满足——块 B 真漏声明时
- * 它照样通过（假绿）。取值完全相同的重复只有一处：全局暗色 :root[data-theme='dark'] 与
- * 抽屉暗色 [data-theme='dark'] [data-drawer-scope] 对 ink-black(#f2f2f3) / hairline(#2f333b) /
- * divider(#2f333b) / danger(#d1826f) 四个 token 逐字节相同，故凡是断言这四者在暗色下的声明，
- * 必须落在唯一确定的块上（见 darkRootBlock）。 */
+ * 它照样通过（假绿）。本次加固的四条暗色全局断言正踩在这个洞上：它们覆盖的
+ * ink-black(#f2f2f3) / hairline(#2f333b) / divider(#2f333b) / danger(#d1826f) 四个 token，
+ * 在全局暗色 :root[data-theme='dark'] 与抽屉暗色 [data-theme='dark'] [data-drawer-scope]
+ * 逐字节相同，故这四条断言必须落在唯一确定的块上（见 darkRootBlock）。 */
 function blockOf(css: string, selector: string): string {
   const start = css.indexOf(selector);
   expect(start, `未找到选择器 ${selector}`).toBeGreaterThan(-1);
@@ -101,8 +101,10 @@ function blockOf(css: string, selector: string): string {
   return css.slice(open + 1, close);
 }
 
-/** 全局暗色基线块，精确切出。不能用下方 darkScope（它从暗色标记一直切到文件尾，
- * 会把随后的 [data-drawer-scope] 与 [data-theme='dark'] [data-drawer-scope] 一起卷进来）。 */
+/** 全局暗色基线块，精确切出，只含 :root[data-theme='dark'] 自己的声明。
+ * 曾经的写法是从暗色标记一直切到文件尾，会把随后的 [data-drawer-scope] 与
+ * [data-theme='dark'] [data-drawer-scope] 一并卷进来（后者对这四个 token 取值与全局暗色相同，
+ * 于是全局暗色漏声明也照样通过）；现在一律用上面的 blockOf 按精确选择器切块。 */
 const darkRootBlock = blockOf(tokensCss, ":root[data-theme='dark']");
 
 describe('设计 token 与 Steep 事实源一致', () => {
@@ -116,8 +118,8 @@ describe('设计 token 与 Steep 事实源一致', () => {
     for (const [name, value] of Object.entries(DARK_COLORS)) {
       expect(darkRootBlock).toContain(`--color-${name}: ${value};`);
     }
-    // 精确块断言：darkScope 切片里 --color-hairline: #2f333b 还出现在抽屉暗色块，
-    // 用 darkScope 的话删掉全局暗色这条声明也照样通过。
+    // 精确块断言：hairline 的暗色值在抽屉暗色块同样出现，从暗色标记切到文件尾的写法
+    // 会在全局暗色漏声明时照样通过。
     expect(darkRootBlock).toContain(`--color-hairline: ${HAIRLINE[1]};`);
   });
 
