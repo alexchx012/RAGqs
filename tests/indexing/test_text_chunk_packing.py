@@ -48,7 +48,7 @@ def test_merged_chunk_keeps_paragraph_separator_and_first_anchor() -> None:
     chunks = _text_chunks(processor, text)
 
     assert [chunk.locator.get("paragraph") for chunk in chunks] == [1, 3]
-    assert all("\n\n" in chunk.text for chunk in chunks[:1])
+    assert "\n\n" in chunks[0].text
 
 
 def test_single_chunk_section_has_no_paragraph_anchor() -> None:
@@ -180,3 +180,39 @@ def test_pdf_page_locator_falls_back_to_positional_when_content_misses() -> None
     output = _process_pdf(processor)
 
     assert output.chunks[0].locator == {"page": 2, "span": "0:9"}
+
+
+def test_pdf_page_locator_probe_stops_at_paragraph_boundary() -> None:
+    """装箱块首段短于 80 字时，probe 不得跨越 \\n\\n 段界——页重建文本
+    按单换行连接，跨段 probe 必然 miss 而回落位置对应。"""
+
+    processor = _pdf_processor(
+        {
+            "text": "# Guide\nintro line\n\nsecond paragraph marker here",
+            "page_count": 2,
+            "has_text_layer": True,
+            # 位置对应会把合并块指到 page 2；首段内容命中应纠正为 page 1。
+            "chunks": [{"page": 2, "span": "0:9"}],
+            "page_texts": {"1": "intro line\nsecond paragraph marker here", "2": "other"},
+        }
+    )
+
+    output = _process_pdf(processor)
+
+    assert output.chunks[0].locator == {"page": 1, "span": "0:40"}
+
+
+def test_pdf_page_locator_skips_content_search_without_text_layer() -> None:
+    processor = _pdf_processor(
+        {
+            "text": "scanned",
+            "page_count": 3,
+            "has_text_layer": False,
+            "chunks": [{"page": 3, "span": "0:7"}],
+            "page_texts": {"1": "scanned"},
+        }
+    )
+
+    output = _process_pdf(processor)
+
+    assert output.chunks[0].locator == {"page": 3}

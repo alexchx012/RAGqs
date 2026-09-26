@@ -1056,7 +1056,9 @@ class ContentProcessor:
 
                 snippet = chunk.snippet or ""
                 if has_text_layer and snippet and page_texts:
-                    probe = snippet[:80]
+                    # probe 只取块首段：页重建文本按单换行连接，跨 \\n\\n 段界
+                    # 的 probe 对装箱合并块必然 miss。
+                    probe = snippet.split("\n\n", 1)[0][:80]
                     for page_number in sorted(page_texts, key=int):
                         found = page_texts[page_number].find(probe)
                         if found >= 0:
