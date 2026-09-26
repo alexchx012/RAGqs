@@ -310,30 +310,52 @@ def _split_lines_preserving_rows(lines: Sequence[str], *, maximum: int) -> list[
     return parts
 
 
-def _split_blocks_preserving_tables(value: str, *, maximum: int) -> list[str]:
-    """Split text by blank-line blocks; markdown tables stay atomic."""
+def _is_table_block(block: str) -> bool:
+    lines = block.splitlines()
+    return len(lines) >= 2 and all(line.lstrip().startswith("|") for line in lines)
 
-    blocks = [block for block in re.split(r"\n\s*\n", value) if block.strip()]
-    result: list[str] = []
-    buffer = ""
-    for block in blocks:
-        lines = block.splitlines()
-        table_block = len(lines) >= 2 and all(line.lstrip().startswith("|") for line in lines)
-        if table_block:
-            if buffer.strip():
-                result.extend(_split_text(buffer, maximum=maximum))
-                buffer = ""
-            result.append("\n".join(lines))
+
+def _pack_section_paragraphs(
+    paragraphs: Sequence[str], *, target: int, maximum: int
+) -> list[tuple[str, int]]:
+    """整段装箱（B9-locator 修正）：相邻段落合并到装箱目标才落块。
+
+    markdown 表格段保持原子自成块；超过 maximum 的段落按 ceil 份均衡
+    切分（不留固定步长切分的退化尾碎片），续块共享段首段号。返回
+    ``(chunk 正文, 块内首个段号)`` 列表。
+    """
+
+    packed: list[tuple[str, int]] = []
+    buffer: list[str] = []
+    buffer_paragraphs: list[int] = []
+
+    def flush() -> None:
+        if buffer:
+            packed.append(("\n\n".join(buffer), buffer_paragraphs[0]))
+            buffer.clear()
+            buffer_paragraphs.clear()
+
+    for number, paragraph in enumerate(paragraphs, start=1):
+        if _is_table_block(paragraph):
+            flush()
+            packed.append((paragraph, number))
             continue
-        candidate = f"{buffer}\n\n{block}" if buffer else block
-        if len(candidate) > maximum and buffer:
-            result.extend(_split_text(buffer, maximum=maximum))
-            buffer = block
-        else:
-            buffer = candidate
-    if buffer.strip():
-        result.extend(_split_text(buffer, maximum=maximum))
-    return result or [""]
+        if len(paragraph) > maximum:
+            flush()
+            pieces = -(-len(paragraph) // maximum)
+            base, extra = divmod(len(paragraph), pieces)
+            offset = 0
+            for index in range(pieces):
+                size = base + (1 if index < extra else 0)
+                packed.append((paragraph[offset : offset + size], number))
+                offset += size
+            continue
+        if buffer and len("\n\n".join([*buffer, paragraph])) > target:
+            flush()
+        buffer.append(paragraph)
+        buffer_paragraphs.append(number)
+    flush()
+    return packed
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
@@ -717,6 +739,7 @@ class ContentProcessor:
         image_describer: Callable[[bytes, Mapping[str, Any]], Any] | None = None,
         image_ocr: Callable[[bytes, Mapping[str, Any]], str] | None = None,
         text_chunk_max_chars: int = 8_000,
+        text_chunk_target_chars: int = 2_000,
         xlsx_merged_cells_max: int = 10_000,
         ocr_confidence_threshold: float = 0.9,
         usage_submission: UsageSubmissionPort | None = None,
@@ -734,6 +757,7 @@ class ContentProcessor:
         self._image_describer = image_describer
         self._image_ocr = image_ocr
         self._text_chunk_max_chars = text_chunk_max_chars
+        self._text_chunk_target_chars = text_chunk_target_chars
         self._xlsx_merged_cells_max = xlsx_merged_cells_max
         self._ocr_confidence_threshold = float(ocr_confidence_threshold)
         self._usage_submission = usage_submission
@@ -1025,27 +1049,33 @@ class ContentProcessor:
                 else {}
             )
 
-            def _pdf_span(index: int, chunk: IndexChunk) -> str | None:
-                """页内字符偏移：优先 snippet 在页重建文本中的真实定位
-                （同页多处重复可消歧）；未命中回退 mineru 的页文本全幅 span。"""
+            def _pdf_locator(index: int, chunk: IndexChunk) -> dict[str, Any]:
+                """内容级页定位：snippet 前缀按页码升序在页重建文本中搜索，
+                命中即真实页码与页内偏移；未命中（含未提供 page_texts）回退
+                mineru 位置列表的位置对应与页数钳制，不合成假偏移。"""
 
+                snippet = chunk.snippet or ""
+                if has_text_layer and snippet and page_texts:
+                    probe = snippet[:80]
+                    for page_number in sorted(page_texts, key=int):
+                        found = page_texts[page_number].find(probe)
+                        if found >= 0:
+                            return {
+                                "page": int(page_number),
+                                "span": f"{found}:{found + len(snippet)}",
+                            }
                 location = (
                     locations[index]
                     if index < len(locations) and isinstance(locations[index], Mapping)
                     else None
                 )
-                if location is None or not has_text_layer:
-                    return None
-                fallback = location.get("span")
-                page_number = str(int(location.get("page", 1)))
-                page_text = page_texts.get(page_number, "")
-                snippet = chunk.snippet or ""
-                if page_text and snippet:
-                    probe = snippet[:80]
-                    found = page_text.find(probe)
-                    if found >= 0:
-                        return f"{found}:{found + len(snippet)}"
-                return str(fallback) if fallback is not None else None
+                if location is not None:
+                    span = location.get("span") if has_text_layer else None
+                    return {
+                        "page": int(location.get("page", 1)),
+                        **({"span": str(span)} if span is not None else {}),
+                    }
+                return {"page": min(index + 1, max(page_count, 1))}
 
             if kind in {"application/pdf", "pdf"}:
                 if structure_class == "basic":
@@ -1054,18 +1084,7 @@ class ContentProcessor:
                     chunks = [
                         replace(
                             chunk,
-                            locator=(
-                                {
-                                    "page": int(locations[index].get("page", 1)),
-                                    **(
-                                        {"span": span_value}
-                                        if (span_value := _pdf_span(index, chunk)) is not None
-                                        else {}
-                                    ),
-                                }
-                                if index < len(locations) and isinstance(locations[index], Mapping)
-                                else {"page": min(index + 1, max(page_count, 1))}
-                            ),
+                            locator=_pdf_locator(index, chunk),
                             snippet=chunk.snippet if has_text_layer else None,
                         )
                         for index, chunk in enumerate(chunks)
@@ -1598,24 +1617,21 @@ class ContentProcessor:
         chunks: list[IndexChunk] = []
         for section_index, (path, section) in enumerate(sections, start=1):
             block_index = 0
-            # 段落锚点（B9-locator）：同遍产出——先按空行切出原始段落，再对
-            # 超长段落做尺寸切块；同一段落切出的续块共享同一 paragraph。
+            # 段落锚点（B9-locator）与整段装箱：相邻段落合并到装箱目标才落块，
+            # 表格段保持原子；超长段落均衡切分，续块共享段首段号。
             # 单 chunk section 不加锚（既有 locator 形状不变）。
             section_paragraphs = [p for p in re.split(r"\n\s*\n", section) if p.strip()]
-            section_bodies: list[str] = []
-            paragraph_of_body: list[int] = []
-            for paragraph_number, paragraph in enumerate(section_paragraphs, start=1):
-                pieces = _split_blocks_preserving_tables(
-                    paragraph, maximum=self._text_chunk_max_chars
-                )
-                section_bodies.extend(pieces)
-                paragraph_of_body.extend([paragraph_number] * len(pieces))
-            for body, paragraph_number in zip(section_bodies, paragraph_of_body, strict=True):
+            packed = _pack_section_paragraphs(
+                section_paragraphs,
+                target=self._text_chunk_target_chars,
+                maximum=self._text_chunk_max_chars,
+            )
+            for body, paragraph_number in packed:
                 block_index += 1
                 index = len(chunks) + 1
                 compressed = self._compressor.compress(body, context={"section_path": path})
                 locator: dict[str, Any] = {"section_path": path} if path else {}
-                if len(section_bodies) > 1:
+                if len(packed) > 1:
                     locator["paragraph"] = paragraph_number
                 metadata: dict[str, Any] = {
                     "section_path": path,

@@ -165,6 +165,7 @@ class IndexSettings(_StrictModel):
     )
     sparse_data_path: str | None = None
     text_chunk_max_chars: int = Field(default=8_000, ge=1)
+    text_chunk_target_chars: int = Field(default=2_000, ge=1)
     xlsx_merged_cells_max: int = Field(default=10_000, ge=1)
     ocr_confidence_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
     mineru_provider: Literal["disabled", "local"] = "disabled"
@@ -419,6 +420,7 @@ _ENV_KEYS = {
     "RAG_INDEX_SPARSE_INDEX",
     "RAG_INDEX_SPARSE_DATA_PATH",
     "RAG_INDEX_TEXT_CHUNK_MAX_CHARS",
+    "RAG_INDEX_TEXT_CHUNK_TARGET_CHARS",
     "RAG_EFFORT_RAG_CALL_LIMIT_QUICK",
     "RAG_EFFORT_RAG_CALL_LIMIT_THINK",
     "RAG_EFFORT_RAG_CALL_LIMIT_DEEP",
@@ -695,6 +697,7 @@ def load_platform_settings(
                 "sparse_index": _optional(env, "RAG_INDEX_SPARSE_INDEX") or "ragqs_chunks",
                 "sparse_data_path": _optional(env, "RAG_INDEX_SPARSE_DATA_PATH"),
                 "text_chunk_max_chars": _int(env, "RAG_INDEX_TEXT_CHUNK_MAX_CHARS"),
+                "text_chunk_target_chars": _int(env, "RAG_INDEX_TEXT_CHUNK_TARGET_CHARS"),
                 "xlsx_merged_cells_max": _int(env, "RAG_INDEX_XLSX_MERGED_CELLS_MAX"),
                 "ocr_confidence_threshold": _float(env, "RAG_INDEX_OCR_CONFIDENCE_THRESHOLD"),
                 "mineru_provider": _optional(env, "RAG_INDEX_MINERU_PROVIDER") or "disabled",

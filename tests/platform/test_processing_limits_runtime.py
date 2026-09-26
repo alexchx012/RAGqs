@@ -27,9 +27,32 @@ def test_runtime_injects_documents_and_processing_limits() -> None:
 
         assert isinstance(processor, ContentProcessor)
         assert processor._text_chunk_max_chars == 7
+        # 未设置 env 时装箱目标取配置默认 2000。
+        assert processor._text_chunk_target_chars == 2000
         assert processor._xlsx_merged_cells_max == 11
         assert isinstance(documents, DocumentsService)
         assert documents._max_upload_bytes == 9
         assert documents._cleanup_max_attempts == 2
+    finally:
+        runtime.close()
+
+
+def test_runtime_wires_chunk_packing_target_from_env() -> None:
+    settings = load_platform_settings(
+        {
+            "RAG_PLATFORM_PROFILE": "development",
+            "RAG_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+            "RAG_OBJECT_STORAGE_ENDPOINT": "http://localhost:9000",
+            "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
+            "RAG_PROVIDER_NAME": "fake",
+            "RAG_INDEX_TEXT_CHUNK_TARGET_CHARS": "9",
+        }
+    )
+    runtime = build_runtime(settings)
+    try:
+        processor = runtime.resolve("indexing_processor")
+
+        assert isinstance(processor, ContentProcessor)
+        assert processor._text_chunk_target_chars == 9
     finally:
         runtime.close()

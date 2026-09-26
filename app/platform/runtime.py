@@ -674,6 +674,7 @@ def build_runtime(
         image_describer=image_describer,
         image_ocr=image_ocr,
         text_chunk_max_chars=settings.index.text_chunk_max_chars,
+        text_chunk_target_chars=settings.index.text_chunk_target_chars,
         xlsx_merged_cells_max=settings.index.xlsx_merged_cells_max,
         ocr_confidence_threshold=settings.index.ocr_confidence_threshold,
         usage_submission=_LazyUsageSubmission(configured),
