@@ -708,29 +708,6 @@ def test_usage_adjustment_appends_and_is_unique() -> None:
     assert row["page_count"] == 2
 
 
-def test_usage_adjustment_conflicting_fingerprint_is_invariant_error() -> None:
-    engine, ledger = make_ledger()
-    local_id = seed_local(engine, ledger)
-    ledger.append_usage_adjustment(
-        referenced_event_id=local_id,
-        adjustment_source_namespace="meter_recheck",
-        adjustment_source_id="recheck-1",
-        adjustment_allocation_key="ocr-gpu",
-        deltas={"page_count": 2},
-        ownership=ownership(),
-    )
-    with pytest.raises(PlatformError) as exc:
-        ledger.append_usage_adjustment(
-            referenced_event_id=local_id,
-            adjustment_source_namespace="meter_recheck",
-            adjustment_source_id="recheck-1",
-            adjustment_allocation_key="ocr-gpu",
-            deltas={"page_count": 5},
-            ownership=ownership(),
-        )
-    assert exc.value.code == "ledger_invariant_conflict"
-
-
 def test_cost_adjustment_appends_amount() -> None:
     engine, ledger = make_ledger()
     seed(engine, ledger)

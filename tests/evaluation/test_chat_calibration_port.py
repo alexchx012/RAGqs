@@ -142,6 +142,13 @@ def test_increment_unknown_window_is_silent() -> None:
     port = EvaluationCalibrationWindowPort(env["engine"])
     with env["engine"].begin() as connection:
         port.increment_pairs_collected(connection, "missing_window")
+    with env["engine"].connect() as connection:
+        value = connection.execute(
+            select(calibration_window_table.c.pairs_collected).where(
+                calibration_window_table.c.window_id == "window_1"
+            )
+        ).scalar_one()
+    assert value == 0
 
 
 def test_chat_generation_calls_port_compatible() -> None:

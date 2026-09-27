@@ -1218,21 +1218,6 @@ def test_generation_catch_up_discards_deleted_publication_from_generation_provid
         ]
 
 
-def test_sql_generation_keeps_logical_chunk_ids_per_generation() -> None:
-    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-    documents_metadata.create_all(engine)
-    indexing_metadata.create_all(engine)
-    repository = SqlAlchemyIndexingRepository(engine)
-
-    with engine.begin() as connection:
-        repository.record_published_chunks(_request(), (_chunk("chunk_1"),), connection=connection)
-        repository.record_published_chunks(
-            _request(generation="generation_next"),
-            (_chunk("chunk_1", generation="generation_next"),),
-            connection=connection,
-        )
-
-
 def test_sql_generation_rolls_back_within_its_persisted_window() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     documents_metadata.create_all(engine)

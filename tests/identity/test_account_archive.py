@@ -264,7 +264,6 @@ def test_full_deletion_archive_and_tombstone_flow(tmp_path) -> None:
         assert "postgres.identity_spaces" in backend_kinds
         assert "object_store.avatar" in backend_kinds
         assert all(row["status"] == "completed" for row in targets)
-        assert True
         audit_results = set(
             connection.execute(
                 select(platform_audit_table.c.result).where(

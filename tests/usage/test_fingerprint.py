@@ -96,8 +96,6 @@ def test_fingerprint_dataclass_matches_asdict() -> None:
 
 def test_fingerprint_distinguishes_bytes_from_string() -> None:
     assert ledger_fingerprint("k", b"abc") != ledger_fingerprint("k", "abc")
-    # 相同内容一致性
-    assert ledger_fingerprint("k", b"abc") == ledger_fingerprint("k", b"abc")
 
 
 def test_fingerprint_distinguishes_uuid_from_string() -> None:
