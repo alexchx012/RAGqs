@@ -198,9 +198,15 @@ def _text(value: bytes | str) -> str:
 
 
 def _heading(line: str) -> bool:
+    """无状态静态标题规则：markdown 前缀、Title Case 与全大写。
+
+    编号前缀行不在此判定——它需要跨行的序列与段落块上下文，由
+    `_sections` 的 outline 逻辑处理（见 `_numbered_heading_number`）。
+    """
+
     stripped = line.strip()
     return bool(
-        re.match(r"^(?:#{1,6}\s+|(?:\d+\.){1,4}\s+)[^\s].*$", stripped)
+        re.match(r"^#{1,6}\s+[^\s].*$", stripped)
         # Title Case 相等只在行内存在带大小写的字母时才有意义；纯中文/纯数字行
         # 无大小写信息，title() 恒等，不能据此判为标题。
         or (
@@ -216,13 +222,48 @@ def _heading(line: str) -> bool:
             # 全大写判定要求每个字母都带大小写：isupper() 对无大小写字母
             # （如 CJK）视而不见，RAG系统 这类混排行不能借道判为标题。
             and all(
-                not character.isalpha()
-                or character.islower()
-                or character.isupper()
+                not character.isalpha() or character.islower() or character.isupper()
                 for character in stripped
             )
         )
     )
+
+
+# 无歧义写法（线性匹配）：首段数字后必须跟一个点号（纯 ``1 标题`` 不算
+# 编号行），其余段无组合歧义，不存在 ``(?:\d+\.?)*\d*`` 那类指数回溯。
+_NUMBERED_HEADING_PREFIX = re.compile(r"^(\d+\.(?:\d+(?:\.\d+)*)?\.?)\s+[^\s].*$")
+_NUMBERED_HEADING_STRIP = re.compile(r"^\s*\d+\.(?:\d+(?:\.\d+)*)?\.?\s+")
+
+
+def _numbered_heading_number(line: str) -> tuple[int, ...] | None:
+    """编号前缀行解析：支持 ``1.`` / ``1.1`` / ``1.2.`` 三种写法（末段可省
+    略尾点，但至少要有一个点号，纯 ``1 标题`` 不算编号行）。"""
+
+    match = _NUMBERED_HEADING_PREFIX.match(line)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.group(1).rstrip(".").split("."))
+
+
+def _number_continues_outline(outline: tuple[int, ...], number: tuple[int, ...]) -> bool:
+    """编号行只有延续既有标题 outline 才算章节：新子层从 1 开始，同层或
+    回退层在前一编号上加 1；乱序、跳层、重启一律拒绝。"""
+
+    if len(number) == len(outline) + 1:
+        return number[: len(outline)] == outline and number[-1] == 1
+    if len(number) <= len(outline):
+        if number[:-1] != outline[: len(number) - 1]:
+            return False
+        return number[-1] == outline[len(number) - 1] + 1
+    return False
+
+
+def _isolated_paragraph_line(lines: Sequence[str], index: int) -> bool:
+    """编号行独占段落块：前后均为空行或文本边界。"""
+
+    if index > 0 and lines[index - 1].strip():
+        return False
+    return index + 1 >= len(lines) or not lines[index + 1].strip()
 
 
 def _sections(text: str) -> list[tuple[str, str]]:
@@ -231,6 +272,7 @@ def _sections(text: str) -> list[tuple[str, str]]:
     body: list[str] = []
     saw_heading = False
     placeholder_number = 0
+    outline: tuple[int, ...] = ()
 
     def flush() -> None:
         nonlocal body, placeholder_number
@@ -244,14 +286,33 @@ def _sections(text: str) -> list[tuple[str, str]]:
         sections.append((section_path, value))
         body = []
 
-    for line in text.splitlines():
-        if _heading(line):
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        heading_level: int | None = None
+        heading_title = ""
+        stripped = line.strip()
+        number = _numbered_heading_number(stripped)
+        if number is not None:
+            # 编号行是排他判定：序列延续 + 独占段落块，缺一即回正文，
+            # 不再进入静态标题规则（不满足条件的编号行不作标题）。
+            if _isolated_paragraph_line(lines, index) and _number_continues_outline(
+                outline, number
+            ):
+                outline = number
+                heading_level = len(number)
+                heading_title = _NUMBERED_HEADING_STRIP.sub("", line).strip()
+        elif _heading(line):
+            if line.lstrip().startswith("#"):
+                heading_level = len(line) - len(line.lstrip("#"))
+                heading_title = re.sub(r"^\s*#+\s*", "", line).strip()
+            else:
+                heading_level = 1
+                heading_title = stripped
+        if heading_level is not None:
             flush()
-            title = re.sub(r"^\s*(?:#+\s*|(?:\d+\.){1,4}\s+)", "", line).strip()
-            level = len(line) - len(line.lstrip("#")) if line.lstrip().startswith("#") else 1
-            path = path[: max(0, level - 1)] + [title]
+            path = path[: max(0, heading_level - 1)] + [heading_title]
             saw_heading = True
-        elif line.strip():
+        elif stripped:
             # B9-locator：段落边界哨兵——空行在原始文本中分隔段落，section
             # 化时以显式空行保留（下游按空行切块/编段落号）；连续空行折叠。
             if body and body[-1] != "":
