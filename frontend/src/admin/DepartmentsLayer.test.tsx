@@ -10,7 +10,7 @@
  * 能力边界（无重新启用 / 物理删除 / 批量迁移 / 合并 / 部门描述入口）。
  */
 
-import { act, render, screen, waitFor, within, type RenderResult } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within, type RenderResult } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -356,18 +356,31 @@ describe('改名', () => {
     await userEvent.clear(input);
     await userEvent.type(input, '财务一部');
     expect(save).toBeEnabled();
-    await userEvent.click(save);
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // 闪现（FLASH_MS=400）与淡入（RENAME_FADE_MS=200）类随成功 commit 挂载、定时器移除：
+    // 真实定时器下采样与移除竞速（全量并行负载下复现失败）。改用仓库既有 fake-timers 模式
+    // （同 OperationsModule.test.tsx：fireEvent 同步触发 + advanceTimersByTimeAsync 冲刷；
+    // userEvent 在 fake timers 下会挂起，故触发动作改 fireEvent）。
+    vi.useFakeTimers();
+    fireEvent.click(save);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(api.renameDepartment).toHaveBeenCalledWith(
       'd_finance',
       1,
       '财务一部',
       expect.any(String),
     );
-    await screen.findByText('财务一部');
     const row = rowOf('财务一部');
     expect(row.className).toContain('bg-fog-white');
     expect(within(row).getByText('财务一部').className).toContain('ui-fade-enter-fast');
+    // 窗口后两类都被移除（400ms 覆盖 FLASH_MS 与 RENAME_FADE_MS）
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(rowOf('财务一部').className).not.toContain('bg-fog-white');
+    expect(within(rowOf('财务一部')).getByText('财务一部').className).not.toContain('ui-fade-enter-fast');
   });
 
   it('版本冲突：刷新该行并提示，基于新 version 以新键重试成功', async () => {

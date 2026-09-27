@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ApiError } from '../api/errors';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -209,22 +209,36 @@ describe('SubmissionsLayer 撤回行保留（《用户端设计.md》§5.2 / D1�
     await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.filterAria(copy.settings.knowledge.submissions.filters.pending) }));
     expect(await screen.findByText('待撤回-筛选.md')).toBeInTheDocument();
 
-    // 撤回
-    await user.click(screen.getAllByRole('button', { name: copy.settings.knowledge.submissions.withdraw })[0]);
-    await user.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.withdraw }));
+    // 淡入类是 STATUS_FADE_MS=200ms 的一次性窗口：真实定时器下 await 轮询采样与移除定时器
+    // 竞速（全量并行负载下复现失败）。改用仓库既有 fake-timers 模式（同 OperationsModule.test.tsx：
+    // fireEvent 同步触发 + advanceTimersByTimeAsync 冲刷；userEvent 在 fake timers 下会挂起）。
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getAllByRole('button', { name: copy.settings.knowledge.submissions.withdraw })[0]);
+      fireEvent.click(screen.getByRole('button', { name: copy.settings.knowledge.submissions.withdraw }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
 
-    // 行原地保留：状态 tag 转「已撤回」，行操作换为「查看内容」+「删除」，不再出现「撤回」
-    const row = (await screen.findByText('待撤回-筛选.md')).closest('li') as HTMLElement;
-    await waitFor(() =>
-      expect(within(row).getByText(copy.settings.knowledge.submissions.statusTag.withdrawn)).toBeInTheDocument(),
-    );
-    // §5.2 交叉淡变：就地状态迁移后 tag 挂一次性淡入类（--duration-fast）
-    expect(
-      within(row).getByText(copy.settings.knowledge.submissions.statusTag.withdrawn).className,
-    ).toContain('ui-fade-enter-fast');
-    expect(within(row).getByRole('button', { name: copy.settings.knowledge.submissions.viewContent })).toBeInTheDocument();
-    expect(within(row).getByRole('button', { name: copy.settings.knowledge.submissions.delete })).toBeInTheDocument();
-    expect(within(row).queryByRole('button', { name: copy.settings.knowledge.submissions.withdraw })).not.toBeInTheDocument();
+      // 行原地保留：状态 tag 转「已撤回」并挂一次性淡入类（窗口内确定性采样），
+      // 行操作换为「查看内容」+「删除」，不再出现「撤回」
+      const row = screen.getByText('待撤回-筛选.md').closest('li') as HTMLElement;
+      const tag = within(row).getByText(copy.settings.knowledge.submissions.statusTag.withdrawn);
+      expect(tag.className).toContain('ui-fade-enter-fast');
+      expect(within(row).getByRole('button', { name: copy.settings.knowledge.submissions.viewContent })).toBeInTheDocument();
+      expect(within(row).getByRole('button', { name: copy.settings.knowledge.submissions.delete })).toBeInTheDocument();
+      expect(within(row).queryByRole('button', { name: copy.settings.knowledge.submissions.withdraw })).not.toBeInTheDocument();
+
+      // 窗口后移除：一次性淡入不残留（STATUS_FADE_MS=200）
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      expect(
+        within(row).getByText(copy.settings.knowledge.submissions.statusTag.withdrawn).className,
+      ).not.toContain('ui-fade-enter-fast');
+    } finally {
+      vi.useRealTimers();
+    }
     // 服务端确实转 withdrawn（数据验证而非 mock 自证）
     const all = mockKnowledge.listSubmissions(`Bearer ${accessToken}`, 'withdrawn');
     expect(all.items.some((submission) => submission.submission_id === submissionId)).toBe(true);
