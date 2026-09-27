@@ -201,7 +201,14 @@ def _heading(line: str) -> bool:
     stripped = line.strip()
     return bool(
         re.match(r"^(?:#{1,6}\s+|(?:\d+\.){1,4}\s+)[^\s].*$", stripped)
-        or (stripped and len(stripped) <= 96 and stripped == stripped.title())
+        # Title Case 相等只在行内存在带大小写的字母时才有意义；纯中文/纯数字行
+        # 无大小写信息，title() 恒等，不能据此判为标题。
+        or (
+            stripped
+            and len(stripped) <= 96
+            and any(character.islower() or character.isupper() for character in stripped)
+            and stripped == stripped.title()
+        )
         or (
             stripped
             and len(stripped) <= 96
