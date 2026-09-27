@@ -98,16 +98,16 @@ describe('通知轮询层', () => {
       expect(store.getState().unreadCount).toBe(5);
     });
 
-    /** 手动决定 unread-count 响应何时到达（模拟登出后旧在飞响应晚到）。 */
+    /** 手动决定第 n 次 unread-count 响应何时到达（模拟旧会话在飞响应晚到）。 */
     function deferredUnreadCount() {
-      let resolveCount: (value: { count: number }) => void = () => {};
+      const resolvers: Array<(value: { count: number }) => void> = [];
       const unreadCount = vi.fn(
         () =>
           new Promise<{ count: number }>((resolve) => {
-            resolveCount = resolve;
+            resolvers.push(resolve);
           }),
       );
-      const resolve = (value: { count: number }) => resolveCount(value);
+      const resolve = (call: number, value: { count: number }) => resolvers[call - 1]!(value);
       return { unreadCount, resolve };
     }
 
@@ -118,27 +118,30 @@ describe('通知轮询层', () => {
       store.start();
       expect(store.getState().unreadCount).toBeNull();
       store.stop(); // 登出：状态清空、代际失效
-      resolve({ count: 9 }); // 旧会话响应晚到
+      resolve(1, { count: 9 }); // 旧会话响应晚到
       await flushMicrotasks();
       expect(unreadCount).toHaveBeenCalledTimes(1);
       expect(store.getState().unreadCount).toBeNull();
       store.dispose();
     });
 
-    it('登出→重登窗口：旧会话晚到响应不写入新会话视图', async () => {
+    it('登出→重登窗口：旧会话晚到响应不写入新会话视图，重登立即拉取新权威值', async () => {
       const { unreadCount, resolve } = deferredUnreadCount();
       const api = fakeNotificationsApi({ unreadCount });
       const store = new NotificationsStore(api);
       store.start(); // 旧会话：请求在飞
       store.stop();
-      store.start(); // 重登：single-flight 下复用同一在飞请求，30s 轮询收敛新值
-      resolve({ count: 9 }); // 旧会话的计数晚到
+      store.start(); // 重登：新代际作废旧在飞请求、立即发出自己的请求（StrictMode 双挂载同此序列）
+      expect(unreadCount).toHaveBeenCalledTimes(2);
+      resolve(1, { count: 9 }); // 旧会话的计数晚到
       await flushMicrotasks();
-      expect(store.getState().unreadCount).toBeNull();
-      // 下一轮询周期代际匹配，新会话权威值正常写入
-      await vi.advanceTimersByTimeAsync(NOTIFICATION_POLL_INTERVAL_MS);
-      resolve({ count: 2 });
+      expect(store.getState().unreadCount).toBeNull(); // A26 代际 fence：旧响应不写入
+      // 旧请求 settle 不得清掉新请求的 single-flight 槽位，否则并发刷新会重复发请求
+      const reused = store.refreshUnread();
+      expect(unreadCount).toHaveBeenCalledTimes(2);
+      resolve(2, { count: 2 }); // 新会话的权威计数
       await flushMicrotasks();
+      await reused;
       expect(store.getState().unreadCount).toBe(2);
       store.dispose();
     });

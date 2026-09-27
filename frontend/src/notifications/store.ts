@@ -58,6 +58,9 @@ export class NotificationsStore {
     }
     this.running = true;
     this.runGeneration += 1;
+    // 新代际不继承旧代际的在飞请求：single-flight 若复用它，其响应必被代际 fence 丢弃，
+    // 首个权威未读数将延迟到下一轮 30s 轮询（StrictMode 双挂载即每次加载复现）。
+    this.unreadInflight = null;
     void this.refreshUnread();
     this.pollTimer = setInterval(() => {
       void this.refreshUnread();
@@ -97,7 +100,10 @@ export class NotificationsStore {
       } catch {
         // 轮询失败静默：保持上次权威值，下个周期收敛
       } finally {
-        this.unreadInflight = null;
+        // 代际已更替时不清槽：start() 作废旧请求时已清槽并发出新请求，旧请求 settle 不得冲掉它
+        if (generation === this.runGeneration) {
+          this.unreadInflight = null;
+        }
       }
     })();
     this.unreadInflight = inflight;
