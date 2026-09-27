@@ -213,7 +213,14 @@ def _heading(line: str) -> bool:
             stripped
             and len(stripped) <= 96
             and stripped.isupper()
-            and any(character.isalpha() for character in stripped)
+            # 全大写判定要求每个字母都带大小写：isupper() 对无大小写字母
+            # （如 CJK）视而不见，RAG系统 这类混排行不能借道判为标题。
+            and all(
+                not character.isalpha()
+                or character.islower()
+                or character.isupper()
+                for character in stripped
+            )
         )
     )
 

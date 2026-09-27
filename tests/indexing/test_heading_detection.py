@@ -27,13 +27,9 @@ def _request() -> IndexStagingRequest:
     )
 
 
-def _chunk_text(
-    text: str, *, media_kind: str = "text/plain"
-) -> tuple[list, dict]:
+def _chunk_text(text: str, *, media_kind: str = "text/plain") -> tuple[list, dict]:
     processor = ContentProcessor()
-    chunks, summary, _ = processor._text_chunks(
-        _request(), text, media_kind, "manifest_hash_1"
-    )
+    chunks, summary, _ = processor._text_chunks(_request(), text, media_kind, "manifest_hash_1")
     return chunks, summary
 
 
@@ -85,3 +81,29 @@ def test_title_case_english_line_still_a_heading() -> None:
     assert summary["tree"]["tree_indexed"] is True
     assert chunks[0].metadata["section_path"] == "The Quick Brown Fox"
     assert "The Quick Brown Fox" not in chunks[0].text
+
+
+# --- 子修 B: 混排全大写行不作标题 ---
+
+
+def test_all_caps_latin_heading_still_detected() -> None:
+    chunks, summary = _chunk_text("INTRODUCTION\n\nbody paragraph follows here in english prose.")
+
+    assert summary["tree"]["tree_indexed"] is True
+    assert chunks[0].metadata["section_path"] == "INTRODUCTION"
+    assert "INTRODUCTION" not in chunks[0].text
+
+
+def test_upper_latin_with_cjk_not_heading() -> None:
+    caption = "RAG系统"
+    long_paragraph = (
+        "本段详细描述检索系统的整体架构，包括查询理解、多路召回、融合排序与重排等核心阶段"
+        "的详细设计说明，以及各阶段之间的数据流转关系、性能预算分配和失败降级路径的完整约定，"
+        "用于支撑后续章节的实现细节描述。"
+    )
+    chunks, summary = _chunk_text(f"{caption}\n\n{long_paragraph}")
+
+    assert summary["tree"]["tree_indexed"] is False
+    assert all(not chunk.metadata["section_path"] for chunk in chunks)
+    assert any(caption in chunk.text for chunk in chunks)
+    assert any(caption in chunk.embedding_text for chunk in chunks)
