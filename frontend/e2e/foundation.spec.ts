@@ -79,7 +79,7 @@ test('unauthenticated page follows light system scheme with light token values',
   await expect.poll(() => readToken(page, '--color-paper-white')).toBe('#ffffff');
   await expect.poll(() => readToken(page, '--color-ink-black')).toBe('#17191c');
   await expect.poll(() => readToken(page, '--color-hairline')).toBe('#ececec');
-  // Tailwind 工具类经 @theme inline 解析到运行时变量（text-slate-gray → #777b86）
+  // Tailwind 工具类经 @theme inline 解析到运行时变量；标语用 text-slate-strong（AA 4.5:1）→ #5c616c
   await expect
     .poll(() =>
       page.evaluate(
@@ -90,7 +90,7 @@ test('unauthenticated page follows light system scheme with light token values',
         copy.login.tagline,
       ),
     )
-    .toBe('rgb(119, 123, 134)');
+    .toBe('rgb(92, 97, 108)');
 });
 
 test('same token names resolve to dark values under dark scheme (base doc 2.1 table)', async ({ page }) => {
@@ -109,7 +109,7 @@ test('same token names resolve to dark values under dark scheme (base doc 2.1 ta
   await expect.poll(() => readToken(page, '--color-danger')).toBe('#d1826f');
   await expect.poll(() => readToken(page, '--color-warning')).toBe('#d3a24f');
   await expect.poll(() => readToken(page, '--color-success')).toBe('#8ab69b');
-  // 同一工具类 text-slate-gray 解析到暗色值（token 名不变换值）
+  // 同一工具类 text-slate-strong 解析到暗色值（token 名不变换值；AA 4.5:1 改判后标语跟随 slate-strong）
   await expect
     .poll(() =>
       page.evaluate(
@@ -120,7 +120,7 @@ test('same token names resolve to dark values under dark scheme (base doc 2.1 ta
         copy.login.tagline,
       ),
     )
-    .toBe('rgb(154, 160, 171)');
+    .toBe('rgb(182, 188, 199)');
 });
 
 test('theme switch applies instantly with a 250ms site-wide color transition', async ({ page }) => {
