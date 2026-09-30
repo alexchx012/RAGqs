@@ -28,7 +28,7 @@ def _policy(effort: str = "quick", *, pricer=lambda operation, tokens: 1.0) -> B
 def test_default_effort_tables_match_the_confirmed_policy() -> None:
     assert EFFORT_RAG_LIMITS == {"quick": 1, "think": 8, "deep": 10}
     assert EFFORT_WALL_LIMITS == {"quick": 20, "think": 60, "deep": 180}
-    assert EFFORT_TOKEN_LIMITS == {"quick": 12_000, "think": 24_000, "deep": 48_000}
+    assert EFFORT_TOKEN_LIMITS == {"quick": 80_000, "think": 160_000, "deep": 320_000}
     assert EFFORT_CANDIDATE_DOCUMENT_LIMITS == {"quick": 5, "think": 7, "deep": 9}
 
 
@@ -83,11 +83,11 @@ def test_deadline_and_token_gates_block_outbound_calls_before_side_effects() -> 
     assert expired.gate("retrieval", estimated_tokens=1, now=now) is not None
 
     full = BudgetMeter(policy=_policy("quick"))
-    full.tokens_consumed = 12_000
+    full.tokens_consumed = 80_000
     assert full.gate("retrieval", estimated_tokens=1, now=now) is not None
 
     pending = BudgetMeter(policy=_policy("quick"))
-    pending.tokens_reserved = 12_000
+    pending.tokens_reserved = 80_000
     assert pending.gate("retrieval", estimated_tokens=1, now=now) is not None
 
 

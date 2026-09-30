@@ -75,9 +75,9 @@ def test_default_policy_locks_effort_wall_and_candidate_limits() -> None:
         (10, 180),
     ]
     assert [limits[item].max_total_tokens for item in ("quick", "think", "deep")] == [
-        12000,
-        24000,
-        48000,
+        80000,
+        160000,
+        320000,
     ]
     assert [limits[item].candidate_document_limit for item in ("quick", "think", "deep")] == [
         5,
@@ -91,7 +91,7 @@ def test_default_policy_locks_effort_wall_and_candidate_limits() -> None:
     )
     assert meter.deadline_at_utc == NOW + timedelta(seconds=20)
     assert meter.max_rag_calls == 1
-    assert meter.max_total_tokens == 12000
+    assert meter.max_total_tokens == 80000
     assert meter.max_estimated_cost_amount == Decimal("0.100")
     assert meter.candidate_document_limit == 5
 
@@ -191,7 +191,7 @@ def test_budget_gates_are_conservative_and_fail_closed() -> None:
             generation_id="gen-1",
             reservation_id="tool-2",
             operation_kind="tool",
-            estimated_tokens=12001,
+            estimated_tokens=80001,
             estimated_cost=Decimal("0"),
             is_rag=False,
             request_fingerprint="tool-2",

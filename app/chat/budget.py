@@ -12,7 +12,7 @@ from app.platform.errors import PlatformError
 
 from .models import RetrievalHitOutcome
 
-RAG_BUDGET_POLICY_VERSION = "chat-rag-budget-v2"
+RAG_BUDGET_POLICY_VERSION = "chat-rag-budget-v3"
 
 # quick/think/deep logical RAG operation caps: each tier exactly covers one
 # hybrid retrieval plus its tree candidate documents (1+0 / 1+7 / 1+9).
@@ -21,9 +21,18 @@ EFFORT_RAG_LIMITS: dict[str, int] = {"quick": 1, "think": 8, "deep": 10}
 # retrieval + generation pass, not a logical operation count).
 _EFFORT_ROUND_LIMITS: dict[str, int] = {"quick": 1, "think": 4, "deep": 10}
 EFFORT_WALL_LIMITS: dict[str, int] = {"quick": 20, "think": 60, "deep": 180}
-EFFORT_TOKEN_LIMITS: dict[str, int] = {"quick": 12_000, "think": 24_000, "deep": 48_000}
+# Token caps cover full-text retrieval context (parent-child chunking): quick must
+# fit one answer call at the context hard cap, i.e. ceil((question 4,000 + context
+# 48,000 + history 13,500) x 1.1) + 2,000 = 74,050; think/deep keep the 1:2:4 ratio
+# and stop early instead of failing when a further step no longer fits.
+EFFORT_TOKEN_LIMITS: dict[str, int] = {"quick": 80_000, "think": 160_000, "deep": 320_000}
 EFFORT_CANDIDATE_DOCUMENT_LIMITS: dict[str, int] = {"quick": 5, "think": 7, "deep": 9}
 EFFORT_CANDIDATE_LIMITS: dict[str, int] = EFFORT_CANDIDATE_DOCUMENT_LIMITS
+# A retrieval tool observation carries the full context body of the top hits; the
+# allowance is the conservative estimate for that many default-size parent blocks
+# (2,560 chars) and gates whether one more tool step still leaves a final answer.
+TOOL_OBSERVATION_HITS = 5
+TOOL_OBSERVATION_TOKEN_ALLOWANCE = math.ceil(TOOL_OBSERVATION_HITS * 2_560 * 1.1)
 
 RAG_OPERATION_KINDS = ("retrieval", "rewrite", "tree")
 BUDGET_REASONS = ("budget_exhausted", "cost_unavailable")

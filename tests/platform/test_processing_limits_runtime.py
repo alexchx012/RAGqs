@@ -27,8 +27,10 @@ def test_runtime_injects_documents_and_processing_limits() -> None:
 
         assert isinstance(processor, ContentProcessor)
         assert processor._text_chunk_max_chars == 7
-        # 未设置 env 时装箱目标取配置默认 2000。
-        assert processor._text_chunk_target_chars == 2000
+        # 未设置 env 时取父子切块的配置默认值：子块目标 640、上限 1600、父块 2560。
+        assert processor._text_chunk_target_chars == 640
+        assert processor._text_child_chunk_max_chars == 1600
+        assert processor._text_parent_chunk_target_chars == 2560
         assert processor._xlsx_merged_cells_max == 11
         assert isinstance(documents, DocumentsService)
         assert documents._max_upload_bytes == 9
@@ -46,6 +48,8 @@ def test_runtime_wires_chunk_packing_target_from_env() -> None:
             "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
             "RAG_PROVIDER_NAME": "fake",
             "RAG_INDEX_TEXT_CHUNK_TARGET_CHARS": "9",
+            "RAG_INDEX_TEXT_CHILD_CHUNK_MAX_CHARS": "12",
+            "RAG_INDEX_TEXT_PARENT_CHUNK_TARGET_CHARS": "40",
         }
     )
     runtime = build_runtime(settings)
@@ -54,5 +58,7 @@ def test_runtime_wires_chunk_packing_target_from_env() -> None:
 
         assert isinstance(processor, ContentProcessor)
         assert processor._text_chunk_target_chars == 9
+        assert processor._text_child_chunk_max_chars == 12
+        assert processor._text_parent_chunk_target_chars == 40
     finally:
         runtime.close()

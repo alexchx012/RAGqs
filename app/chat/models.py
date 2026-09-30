@@ -238,6 +238,8 @@ class RetrievalHitOutcome:
     snippet: str | None
     library: str = "unknown"
     rerank_score: float | None = None
+    # 送入生成上下文的完整正文（父块或子块正文）；snippet 只供引用高亮定位。
+    context_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

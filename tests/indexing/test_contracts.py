@@ -1836,8 +1836,9 @@ def test_unheaded_text_is_split_into_bounded_chunks() -> None:
         content_manifest_hash="manifest_hash_1",
     )
 
-    assert len(output.chunks) == 3
-    assert all(len(chunk.text) <= 8_000 for chunk in output.chunks)
+    # 文本路径子块上限 1,600（父子切块）：ceil(16001 / 1600) = 11 个均衡子块。
+    assert len(output.chunks) == 11
+    assert all(len(chunk.text) <= 1_600 for chunk in output.chunks)
     assert "".join(chunk.text for chunk in output.chunks) == "x" * 16_001
 
 

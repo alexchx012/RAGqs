@@ -241,8 +241,10 @@ class RetrievalProfile:
     tokenizer_version: str = "default"
     score_threshold: float | None = None
     retrieval_context_items_per_space: int = 6
-    retrieval_context_tokens_per_space: int = 8000
-    retrieval_context_tokens_cap: int = 24000
+    # 父子切块后每条上下文是父块正文（≤ 2560 字），6 条约 15,360：单边 16000，
+    # 总量硬闸保持「单边 × 3」（《后端设计》§7.4③）。
+    retrieval_context_tokens_per_space: int = 16000
+    retrieval_context_tokens_cap: int = 48000
     expected_library_count: int = 1
     route_tree: bool = False
     route_graph: bool = False
@@ -339,6 +341,9 @@ class RetrievalHit:
     score: float
     source: str
     rerank_score: float | None = None
+    # 装配后实际送入生成上下文的正文（父块正文或子块正文），由检索装配填写；
+    # 未经装配的命中为 None，消费方回退到 chunk.text。
+    context_text: str | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         value = self.chunk.to_mapping()

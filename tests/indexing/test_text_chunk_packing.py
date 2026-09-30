@@ -22,8 +22,8 @@ def _text_chunks(processor: ContentProcessor, text: str):
 # ---------------------------------------------------------------------------
 
 
-def test_processor_defaults_to_2000_char_packing_target() -> None:
-    assert ContentProcessor()._text_chunk_target_chars == 2000
+def test_processor_defaults_to_640_char_packing_target() -> None:
+    assert ContentProcessor()._text_chunk_target_chars == 640
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +66,7 @@ def test_single_chunk_section_has_no_paragraph_anchor() -> None:
 
 
 def test_table_paragraph_stays_atomic_between_prose() -> None:
-    # 直接测装箱函数：markdown 表格的分隔行 `| --- |` 是无大小写行，穿过
-    # `_sections` 时会被标题误判吞掉（问题 1，另行 change 修复），无法在
-    # 端到端路径上构造表格用例。
+    # 直接测装箱函数；端到端表格路径见 test_parent_child_chunking。
     table = "| 表头 |\n| --- |\n| 行一 |\n| 行二 |"
 
     packed = _pack_section_paragraphs(["a" * 30, table, "b" * 30], target=8000, maximum=8000)
@@ -90,7 +88,7 @@ def test_table_paragraph_is_not_merged_even_under_target() -> None:
 
 
 def test_overlong_paragraph_splits_balanced_without_tail_fragment() -> None:
-    processor = ContentProcessor(text_chunk_max_chars=8000)
+    processor = ContentProcessor(text_child_chunk_max_chars=8000)
 
     chunks = _text_chunks(processor, "x" * 16001)
 
@@ -101,7 +99,7 @@ def test_overlong_paragraph_splits_balanced_without_tail_fragment() -> None:
 
 
 def test_two_overlong_paragraphs_keep_distinguishable_anchors() -> None:
-    processor = ContentProcessor(text_chunk_max_chars=8000)
+    processor = ContentProcessor(text_child_chunk_max_chars=8000)
     text = "\n\n".join(["a" * 9000, "b" * 9000])
 
     chunks = _text_chunks(processor, text)

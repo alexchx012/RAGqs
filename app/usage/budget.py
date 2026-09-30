@@ -19,13 +19,13 @@ from .ledger import Clock
 from .observability import UsageResourceMetrics
 from .schema import generation_budget_meter_table, generation_budget_reservation_table
 
-BUDGET_POLICY_VERSION = "chat-rag-budget-v2"
+BUDGET_POLICY_VERSION = "chat-rag-budget-v3"
 _EFFORTS = ("quick", "think", "deep")
 _UPGRADES = {"quick": "think", "think": "deep"}
 _DEFAULT_EFFORT_LIMITS = {
-    "quick": (1, 20, 12000, 5),
-    "think": (8, 60, 24000, 7),
-    "deep": (10, 180, 48000, 9),
+    "quick": (1, 20, 80000, 5),
+    "think": (8, 60, 160000, 7),
+    "deep": (10, 180, 320000, 9),
 }
 
 

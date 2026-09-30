@@ -409,7 +409,9 @@ class IndexingChatRetrievalPort:
             recent_queries=recent_queries,
         )
         self._active_request = request
-        candidates = result.candidates
+        # 生成只消费检索装配后的命中（精排、分数下限、库配额、token 预算与父块
+        # 组装）；精排前候选池（result.candidates）只供评测口径使用。
+        candidates = result.hits
         if not candidates:
             self._release_request(request)
             self._active_request = None
@@ -426,6 +428,7 @@ class IndexingChatRetrievalPort:
                 snippet=hit.chunk.snippet,
                 library=hit.source or "unknown",
                 rerank_score=hit.rerank_score,
+                context_text=hit.context_text or hit.chunk.text,
             )
             for hit in candidates
         )
@@ -531,8 +534,9 @@ class IndexingAbSourceFilterPort:
     """Same-source A/B pre-filter backed by the production indexing service.
 
     Opens one short-lived retrieval request per candidate config and compares
-    the (document_id, chunk_id) sets, independently of the chat retrieval
-    port's single pending request state.
+    the (document_id, chunk_id) sets of the assembled hits that would reach the
+    model, independently of the chat retrieval port's single pending request
+    state.
     """
 
     def __init__(self, indexing_service: Any) -> None:
@@ -565,7 +569,7 @@ class IndexingAbSourceFilterPort:
             finally:
                 request.__exit__(None, None, None)
             sources.append(
-                {(str(hit.chunk.document_id), str(hit.chunk.chunk_id)) for hit in result.candidates}
+                {(str(hit.chunk.document_id), str(hit.chunk.chunk_id)) for hit in result.hits}
             )
         return sources[0] == sources[1]
 

@@ -31,12 +31,14 @@ def _context_block(item: Mapping[str, Any]) -> str:
     locator = item.get("locator")
     locator_text = f" locator={locator}" if locator else ""
     source_text = f"{document_id}@{version_id}" if document_id or version_id else ""
-    snippet = str(item.get("snippet") or "")
+    # 上下文正文取检索装配后的完整正文（父块或子块）；snippet 是引用高亮用的
+    # 命中片段，只在未经装配的命中上作回退。
+    body = str(item.get("text") or item.get("snippet") or "")
     header = f"[库 {library} | space {space_id}"
     if source_text:
         header += f" | {source_text}"
     header += f"]{locator_text}"
-    return f"{header}\n{snippet}"
+    return f"{header}\n{body}"
 
 
 def _history_block(request: ChatProviderRequest) -> str | None:

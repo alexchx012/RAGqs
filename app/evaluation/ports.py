@@ -205,6 +205,8 @@ class IndexingReplayAdapter:
                     "space_id": hit.chunk.space_id,
                     "locator": dict(hit.chunk.locator),
                     "snippet": hit.chunk.snippet,
+                    # 回放生成与判官看到的正文与线上生成一致：装配后的完整上下文。
+                    "text": hit.context_text or hit.chunk.text,
                 }
 
             return {

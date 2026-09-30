@@ -36,6 +36,8 @@ from app.usage.reconcile import (
 
 from .budget import (
     EFFORT_UPGRADE_CHAIN,
+    TOOL_OBSERVATION_HITS,
+    TOOL_OBSERVATION_TOKEN_ALLOWANCE,
     BudgetMeter,
     BudgetPolicy,
     EffortPolicy,
@@ -1227,7 +1229,7 @@ class ChatGenerationWorker:
         if self._budget_meter is not None:
             next_step_tokens = conservative_chat_token_estimate(
                 estimate_query,
-                (hit.snippet for hit in hits),
+                (_context_text(hit) for hit in hits),
             )
             if (
                 self._budget_meter.upgrade(
@@ -1537,6 +1539,27 @@ class ChatGenerationWorker:
                 generation = upgrade.generation
                 budget_meter_snapshot = upgrade.budget_meter_snapshot
                 policy = effort_policy(budget.effort_level)
+            round_estimate = conservative_chat_token_estimate(
+                effective_query,
+                (
+                    *(_context_text(hit) for hit in hits),
+                    *(str(message.get("content") or "") for message in conversation_history),
+                ),
+            )
+            if _remaining_tokens(rag_budget_meter) < round_estimate:
+                # 剩余预算不够新一轮「检索 + 回答」：不再开新一轮，发布当前草稿
+                # （与上面的截止时间处理一致，《后端设计》§7.3.1）。
+                self._emit_notice(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    kind="retrieval_degraded",
+                    detail={"reason": "budget_exhausted"},
+                    generation=generation,
+                )
+                self._complete_deferred_provider_calls_public(candidates)
+                break
             # The current draft is discarded before the rewritten query is
             # retrieved; settle its provider calls independently of publish.
             self._complete_deferred_provider_calls_public(candidates)
@@ -1931,17 +1954,19 @@ class ChatGenerationWorker:
                 detail=dict(item),
                 generation=generation,
             )
+        # 工具观测与回答上下文同源：装配后前 5 条命中的完整上下文正文（父块或
+        # 子块），不按字符截断；中文不做 ASCII 转义（\uXXXX 让每字膨胀 6 倍）。
         documents = [
             {
                 "document_id": hit.document_id,
                 "document_version_id": hit.document_version_id,
-                "snippet": hit.snippet[:300] if hit.snippet else "",
+                "text": _context_text(hit),
             }
-            for hit in outcome.hits[:5]
+            for hit in outcome.hits[:TOOL_OBSERVATION_HITS]
         ]
         return json.dumps(
             {"query": query, "documents": documents, "degradations": degradations},
-            ensure_ascii=True,
+            ensure_ascii=False,
         )
 
     def _tool_resume_state(self, checkpoint: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1963,6 +1988,7 @@ class ChatGenerationWorker:
                 locator=dict(item.get("locator") or {}),
                 snippet=str(item.get("snippet") or ""),
                 library=str(item.get("library") or "unknown"),
+                context_text=(str(item["text"]) if item.get("text") else None),
             )
             for item in checkpoint.get("hits", ())
             if isinstance(item, Mapping)
@@ -2095,6 +2121,7 @@ class ChatGenerationWorker:
                     "library": hit.library,
                     "locator": dict(hit.locator),
                     "snippet": hit.snippet,
+                    "text": _context_text(hit),
                     "claim_contract": {
                         "annotate": ["library", "space_id"],
                         "conflicts": "state_each_claim_separately_with_own_citation",
@@ -2149,6 +2176,20 @@ class ChatGenerationWorker:
                     enable_thinking=policy_value.enable_thinking,
                     followup_messages=tuple(followup_messages),
                 )
+                if offer_tools and not self._tool_step_affordable(step_request, logical_budget):
+                    # 剩余预算覆盖不了「本次调用 + 一次工具观测 + 最终回答」：本次
+                    # 不再提供工具，以已有结果直接作答（《后端设计》§7.3.1）。
+                    offer_tools = False
+                    step_request = replace(step_request, tools=())
+                    self._emit_notice(
+                        generation_id=str(generation["id"]),
+                        execution_id=execution_id,
+                        fencing_token=fencing_token,
+                        control_version=control_version,
+                        kind="retrieval_degraded",
+                        detail={"reason": "budget_exhausted"},
+                        generation=generation,
+                    )
                 answer_mode = _answer_mode(candidate_hits, candidate_citations)
                 pending_checkpoint = {
                     "phase": "provider_pending",
@@ -2342,18 +2383,34 @@ class ChatGenerationWorker:
                 )
             raise
 
+    def _tool_step_affordable(
+        self, request: ChatProviderRequest, budget: BudgetMeter | None
+    ) -> bool:
+        """Whether this tool-offering call still leaves room for a final answer.
+
+        The final answer re-sends this call's prompt plus one tool observation,
+        so the step needs two such calls' worth of tokens plus the allowance.
+        """
+
+        if budget is None:
+            return True
+        this_call = self._estimated_provider_tokens(request)
+        return _remaining_tokens(budget) >= 2 * this_call + TOOL_OBSERVATION_TOKEN_ALLOWANCE
+
     def _estimated_provider_tokens(self, request: ChatProviderRequest) -> int:
-        snippets = [
-            str(item.get("snippet") or "")
+        # 估算对象与实际送入模型的内容一致：上下文正文（与 prompt 组装同一取值
+        # 规则）、会话历史与工具轮次追加的消息。
+        texts = [
+            str(item.get("text") or item.get("snippet") or "")
             for item in request.context_items
             if isinstance(item, Mapping)
         ]
-        snippets.extend(
+        texts.extend(
             str(message.get("content") or "")
-            for message in request.history_messages
+            for message in (*request.history_messages, *request.followup_messages)
             if isinstance(message, Mapping)
         )
-        return conservative_chat_token_estimate(request.content, snippets)
+        return conservative_chat_token_estimate(request.content, texts)
 
     def _provider_call(
         self,
@@ -3499,7 +3556,22 @@ def _hit_mapping(hit: RetrievalHitOutcome) -> Mapping[str, Any]:
         "library": hit.library,
         "locator": dict(hit.locator),
         "snippet": hit.snippet,
+        "text": _context_text(hit),
     }
+
+
+def _remaining_tokens(budget: BudgetMeter) -> int:
+    return budget.policy.max_total_tokens - budget.tokens_consumed - budget.tokens_reserved
+
+
+def _context_text(hit: RetrievalHitOutcome) -> str:
+    """The full context body sent to the model (parent or child text).
+
+    ``snippet`` only locates the citation highlight; hits restored from an
+    older checkpoint without a context body fall back to it.
+    """
+
+    return hit.context_text or hit.snippet or ""
 
 
 def _referenced_citations(

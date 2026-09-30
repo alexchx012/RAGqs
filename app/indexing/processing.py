@@ -205,6 +205,11 @@ def _heading(line: str) -> bool:
     """
 
     stripped = line.strip()
+    # 表格行排他：markdown 表格的表头/数据行形如 `| Name | Qty |`，Title Case
+    # 与全大写规则都会把它误判为标题，导致表头脱离正文进 section_path。
+    # 表格行一律留正文，由 `_sections` 聚成原子表格块。
+    if stripped.startswith("|"):
+        return False
     return bool(
         re.match(r"^#{1,6}\s+[^\s].*$", stripped)
         # Title Case 相等只在行内存在带大小写的字母时才有意义；纯中文/纯数字行
@@ -287,6 +292,7 @@ def _sections(text: str) -> list[tuple[str, str]]:
         body = []
 
     lines = text.splitlines()
+    in_table = False
     for index, line in enumerate(lines):
         heading_level: int | None = None
         heading_title = ""
@@ -310,14 +316,25 @@ def _sections(text: str) -> list[tuple[str, str]]:
                 heading_title = stripped
         if heading_level is not None:
             flush()
+            in_table = False
             path = path[: max(0, heading_level - 1)] + [heading_title]
             saw_heading = True
         elif stripped:
+            # 表格行不逐行补段落哨兵：连续 `|` 行必须是同一个段落单元，
+            # 否则装箱层拿到的永远是单行，`_is_table_block` 的整块保留落空
+            # （问题 7②）。表格首行前、末行后各留一个空行，与相邻正文分段。
+            is_table_line = stripped.startswith("|")
+            if (is_table_line and not in_table) or (not is_table_line and in_table):
+                if body and body[-1] != "":
+                    body.append("")
+            in_table = is_table_line
             # B9-locator：段落边界哨兵——空行在原始文本中分隔段落，section
             # 化时以显式空行保留（下游按空行切块/编段落号）；连续空行折叠。
-            if body and body[-1] != "":
+            if not is_table_line and body and body[-1] != "":
                 body.append("")
             body.append(line.rstrip())
+        elif in_table:
+            in_table = False
     flush()
     return sections
 
@@ -390,14 +407,39 @@ def _is_table_block(block: str) -> bool:
     return len(lines) >= 2 and all(line.lstrip().startswith("|") for line in lines)
 
 
+_TABLE_SEPARATOR_ROW = re.compile(r"^\s*\|(?:\s*:?-+:?\s*\|)+\s*$")
+
+
+def _split_table_rows(table: str, *, maximum: int) -> list[str]:
+    """超长 markdown 表格按整行分组，每组重复表头（D13）。
+
+    表头取首行，紧随其后的分隔行一并视为表头；组长不超过 maximum，单个
+    数据行本身超限时与表头独立成组——行内容永不切断。"""
+
+    lines = table.splitlines()
+    header_size = 2 if len(lines) >= 2 and _TABLE_SEPARATOR_ROW.match(lines[1]) else 1
+    header, rows = lines[:header_size], lines[header_size:]
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for row in rows:
+        if current and len("\n".join([*header, *current, row])) > maximum:
+            groups.append(current)
+            current = []
+        current.append(row)
+    if current:
+        groups.append(current)
+    return ["\n".join([*header, *group]) for group in groups] or [table]
+
+
 def _pack_section_paragraphs(
     paragraphs: Sequence[str], *, target: int, maximum: int
 ) -> list[tuple[str, int]]:
     """整段装箱（B9-locator 修正）：相邻段落合并到装箱目标才落块。
 
-    markdown 表格段保持原子自成块；超过 maximum 的段落按 ceil 份均衡
-    切分（不留固定步长切分的退化尾碎片），续块共享段首段号。返回
-    ``(chunk 正文, 块内首个段号)`` 列表。
+    markdown 表格段保持原子自成块，超过 maximum 的表格按整行分组并重复
+    表头；超过 maximum 的普通段落按 ceil 份均衡切分（不留固定步长切分的
+    退化尾碎片），续块共享段首段号。返回 ``(chunk 正文, 块内首个段号)``
+    列表。
     """
 
     packed: list[tuple[str, int]] = []
@@ -413,7 +455,12 @@ def _pack_section_paragraphs(
     for number, paragraph in enumerate(paragraphs, start=1):
         if _is_table_block(paragraph):
             flush()
-            packed.append((paragraph, number))
+            if len(paragraph) > maximum:
+                packed.extend(
+                    (group, number) for group in _split_table_rows(paragraph, maximum=maximum)
+                )
+            else:
+                packed.append((paragraph, number))
             continue
         if len(paragraph) > maximum:
             flush()
@@ -431,6 +478,41 @@ def _pack_section_paragraphs(
         buffer_paragraphs.append(number)
     flush()
     return packed
+
+
+def _pack_child_parent(
+    children: Sequence[tuple[str, int]], *, target: int
+) -> list[tuple[str, int, int]]:
+    """二级装箱：把同一章节内相邻子块聚成父块（small-to-big 的父级）。
+
+    父块是命中后的返回粒度，不进向量库也不做 CR（《后端设计》§5）。子块
+    已在 `_pack_section_paragraphs` 里受 maximum 约束，这里不再切分，只做
+    聚合。表格子块自成父块，避免父块正文把表格与相邻正文混成一段、丢失
+    「表格整体保留」的边界。返回 ``(父块正文, 首子块序号, 末子块序号)``，
+    序号为 1-based、相对本 section。"""
+
+    parents: list[tuple[str, int, int]] = []
+    buffer: list[str] = []
+    first = 0
+
+    def flush(last: int) -> None:
+        nonlocal buffer, first
+        if buffer:
+            parents.append(("\n\n".join(buffer), first, last))
+            buffer = []
+
+    for index, (body, _paragraph_number) in enumerate(children, start=1):
+        if _is_table_block(body):
+            flush(index - 1)
+            parents.append((body, index, index))
+            continue
+        if buffer and len("\n\n".join([*buffer, body])) > target:
+            flush(index - 1)
+        if not buffer:
+            first = index
+        buffer.append(body)
+    flush(len(children))
+    return parents
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
@@ -814,7 +896,9 @@ class ContentProcessor:
         image_describer: Callable[[bytes, Mapping[str, Any]], Any] | None = None,
         image_ocr: Callable[[bytes, Mapping[str, Any]], str] | None = None,
         text_chunk_max_chars: int = 8_000,
-        text_chunk_target_chars: int = 2_000,
+        text_chunk_target_chars: int = 640,
+        text_child_chunk_max_chars: int = 1_600,
+        text_parent_chunk_target_chars: int = 2_560,
         xlsx_merged_cells_max: int = 10_000,
         ocr_confidence_threshold: float = 0.9,
         usage_submission: UsageSubmissionPort | None = None,
@@ -833,6 +917,10 @@ class ContentProcessor:
         self._image_ocr = image_ocr
         self._text_chunk_max_chars = text_chunk_max_chars
         self._text_chunk_target_chars = text_chunk_target_chars
+        # 文本路径子块上限与父块装箱目标；text_chunk_max_chars 仍约束 CSV 行组
+        # 与代码符号切片，不随父子切块收窄。
+        self._text_child_chunk_max_chars = text_child_chunk_max_chars
+        self._text_parent_chunk_target_chars = text_parent_chunk_target_chars
         self._xlsx_merged_cells_max = xlsx_merged_cells_max
         self._ocr_confidence_threshold = float(ocr_confidence_threshold)
         self._usage_submission = usage_submission
@@ -1692,8 +1780,8 @@ class ContentProcessor:
         if not sections and text.strip():
             sections = [("", text.strip())]
         chunks: list[IndexChunk] = []
-        for section_index, (path, section) in enumerate(sections, start=1):
-            block_index = 0
+        parent_count = 0
+        for path, section in sections:
             # 段落锚点（B9-locator）与整段装箱：相邻段落合并到装箱目标才落块，
             # 表格段保持原子；超长段落均衡切分，续块共享段首段号。
             # 单 chunk section 不加锚（既有 locator 形状不变）。
@@ -1701,41 +1789,67 @@ class ContentProcessor:
             packed = _pack_section_paragraphs(
                 section_paragraphs,
                 target=self._text_chunk_target_chars,
-                maximum=self._text_chunk_max_chars,
+                maximum=self._text_child_chunk_max_chars,
             )
-            for body, paragraph_number in packed:
-                block_index += 1
-                index = len(chunks) + 1
-                compressed = self._compressor.compress(body, context={"section_path": path})
-                locator: dict[str, Any] = {"section_path": path} if path else {}
-                if len(packed) > 1:
-                    locator["paragraph"] = paragraph_number
-                metadata: dict[str, Any] = {
-                    "section_path": path,
-                    "cr_parent_group": f"{section_index}:{block_index}",
-                    "cr_unit": "chunk",
-                }
-                reverse_links = parse_reverse_links(body)
-                if reverse_links:
-                    metadata["reverse_links"] = [dict(link) for link in reverse_links]
-                chunks.append(
-                    IndexChunk(
-                        chunk_id=f"chunk_{index}",
-                        generation_id=request.expected_generation_id,
-                        publication_id=request.publication_id,
-                        document_id=request.document_id,
-                        document_version_id=request.document_version_id,
-                        space_id=request.space_id,
-                        text=body,
-                        embedding_text=compressed,
-                        sparse_text=(f"{path}\n{body}" if path else body),
-                        locator=locator,
-                        snippet=body[:500],
-                        media_kind=media_kind,
-                        manifest_hash=manifest_hash,
-                        metadata=metadata,
-                    )
+            # 子块末段号：同段续块共享段号，否则止于下一子块首段之前。
+            paragraph_ends = [
+                (
+                    max(start, packed[position + 1][1] - 1)
+                    if position + 1 < len(packed)
+                    else len(section_paragraphs)
                 )
+                for position, (_body, start) in enumerate(packed)
+            ]
+            # 父子切块（small-to-big）：子块是召回单元，父块是命中后的返回粒度。
+            # 父块正文内联进子块 metadata，检索期不需要回查；父块不做 CR、不产出
+            # 嵌入文本（《后端设计》§5）。cr_parent_group 取父块身份，使 CR 前缀
+            # 超限时按父块组降级。
+            for parent_text, first, last in _pack_child_parent(
+                packed, target=self._text_parent_chunk_target_chars
+            ):
+                parent_count += 1
+                parent_id = f"parent_{parent_count}"
+                parent_range = [packed[first - 1][1], paragraph_ends[last - 1]]
+                for body, paragraph_number in packed[first - 1 : last]:
+                    index = len(chunks) + 1
+                    # section_path 是同父共享结构信息：只进稀疏字段与 metadata，
+                    # 不喂给嵌入文本的压缩器。
+                    compressed = self._compressor.compress(body, context={})
+                    locator: dict[str, Any] = {"section_path": path} if path else {}
+                    if len(packed) > 1:
+                        locator["paragraph"] = paragraph_number
+                    if last > first:
+                        locator["parent_paragraphs"] = parent_range
+                    metadata: dict[str, Any] = {
+                        "section_path": path,
+                        "parent_id": parent_id,
+                        "parent_text": parent_text,
+                        "cr_parent_group": parent_id,
+                        "cr_unit": "chunk",
+                    }
+                    reverse_links = parse_reverse_links(body)
+                    if reverse_links:
+                        metadata["reverse_links"] = [dict(link) for link in reverse_links]
+                    chunks.append(
+                        IndexChunk(
+                            chunk_id=f"chunk_{index}",
+                            generation_id=request.expected_generation_id,
+                            publication_id=request.publication_id,
+                            document_id=request.document_id,
+                            document_version_id=request.document_version_id,
+                            space_id=request.space_id,
+                            text=body,
+                            embedding_text=compressed,
+                            sparse_text=(f"{path}\n{body}" if path else body),
+                            locator=locator,
+                            # 子块已受 child 上限约束，snippet 取完整子块正文，
+                            # 不再做固定字符数截断（问题 6）。
+                            snippet=body,
+                            media_kind=media_kind,
+                            manifest_hash=manifest_hash,
+                            metadata=metadata,
+                        )
+                    )
         return (
             chunks,
             {

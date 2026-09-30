@@ -1289,17 +1289,52 @@ class RetrievalService:
         used_total = 0
         # 超硬闸截断不得静默：记录越限事实，组装结束后经 observability 通道告警。
         hard_gate_breaches: list[dict[str, Any]] = []
+        # 父子切块（small-to-big）：命中子块按所属父块正文进上下文；同一父块只
+        # 占一个条数配额、父块正文只计一次 token，后续兄弟命中折叠进已接受的
+        # 父块。路由判定子块粒度时不扩展；树命中的正文是树搜索结果，不扩展；
+        # 缺父块信息的存量 chunk 按子块粒度进入。
+        expand_parents = route.return_granularity != "sub_chunk"
+        accepted_parents: set[tuple[str, str, str]] = set()
+
+        def parent_unit(hit: RetrievalHit) -> tuple[tuple[str, str, str], str] | None:
+            if not expand_parents or hit.source == "tree":
+                return None
+            parent_id = hit.chunk.metadata.get("parent_id")
+            parent_text = hit.chunk.metadata.get("parent_text")
+            if not isinstance(parent_id, str) or not parent_id:
+                return None
+            if not isinstance(parent_text, str) or not parent_text.strip():
+                return None
+            return (hit.chunk.generation_id, hit.chunk.publication_id, parent_id), parent_text
+
+        def folded(hit: RetrievalHit) -> bool:
+            unit = parent_unit(hit)
+            return unit is not None and unit[0] in accepted_parents
+
+        def count_tokens(text: str) -> int:
+            tokens = self._token_counter(text)
+            if not isinstance(tokens, int) or tokens < 1:
+                raise PlatformError("retrieval_degradation", "token counter is invalid", {}, 409)
+            return tokens
+
+        def fits(space_id: str, tokens: int) -> bool:
+            return (
+                used_by_space.get(space_id, 0) + tokens
+                <= selected.retrieval_context_tokens_per_space
+                and used_total + tokens <= selected.retrieval_context_tokens_cap
+            )
 
         def include(hit: RetrievalHit) -> bool:
             nonlocal used_total
-            tokens = self._token_counter(hit.chunk.text)
-            if not isinstance(tokens, int) or tokens < 1:
-                raise PlatformError("retrieval_degradation", "token counter is invalid", {}, 409)
+            unit = parent_unit(hit)
+            context_text = hit.chunk.text if unit is None else unit[1]
+            tokens = count_tokens(context_text)
+            if unit is not None and not fits(hit.chunk.space_id, tokens):
+                # 父块装不下剩余预算时退回子块本身，而不是整条丢弃。
+                unit, context_text = None, hit.chunk.text
+                tokens = count_tokens(context_text)
             space_used = used_by_space.get(hit.chunk.space_id, 0)
-            if (
-                space_used + tokens > selected.retrieval_context_tokens_per_space
-                or used_total + tokens > selected.retrieval_context_tokens_cap
-            ):
+            if not fits(hit.chunk.space_id, tokens):
                 if used_total + tokens > selected.retrieval_context_tokens_cap:
                     hard_gate_breaches.append(
                         {
@@ -1317,7 +1352,9 @@ class RetrievalService:
                 return False
             used_by_space[hit.chunk.space_id] = space_used + tokens
             used_total += tokens
-            budgeted.append(hit)
+            if unit is not None:
+                accepted_parents.add(unit[0])
+            budgeted.append(replace(hit, context_text=context_text))
             return True
 
         # A63：按库条数配额以知识空间为桶——树命中归入所属文档的 space 桶，
@@ -1325,6 +1362,8 @@ class RetrievalService:
         # 生效。token 预算按 space 的既有行为不变（见 include）。
         selected_per_space: dict[str, int] = {}
         for hit in filtered:
+            if folded(hit):
+                continue
             count = selected_per_space.get(hit.chunk.space_id, 0)
             if count >= selected.retrieval_context_items_per_space:
                 deferred.append(hit)
@@ -1340,7 +1379,8 @@ class RetrievalService:
             for hit in deferred:
                 if len(budgeted) >= selected.top_k:
                     break
-                include(hit)
+                if not folded(hit):
+                    include(hit)
         if hard_gate_breaches:
             self._alert_hard_gate_exceeded(
                 cap_tokens=selected.retrieval_context_tokens_cap,
