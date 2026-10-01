@@ -4,6 +4,7 @@ from app.documents.service import DocumentsService
 from app.indexing import ContentProcessor
 from app.platform.config import load_platform_settings
 from app.platform.runtime import build_runtime
+from tests.indexing.test_contracts import _request
 
 
 def test_runtime_injects_documents_and_processing_limits() -> None:
@@ -48,6 +49,7 @@ def test_runtime_wires_chunk_packing_target_from_env() -> None:
             "RAG_OBJECT_STORAGE_BUCKET": "rag-dev",
             "RAG_PROVIDER_NAME": "fake",
             "RAG_INDEX_TEXT_CHUNK_TARGET_CHARS": "9",
+            "RAG_INDEX_TEXT_TREE_CHUNK_TARGET_CHARS": "14",
             "RAG_INDEX_TEXT_CHILD_CHUNK_MAX_CHARS": "12",
             "RAG_INDEX_TEXT_PARENT_CHUNK_TARGET_CHARS": "40",
         }
@@ -60,5 +62,11 @@ def test_runtime_wires_chunk_packing_target_from_env() -> None:
         assert processor._text_chunk_target_chars == 9
         assert processor._text_child_chunk_max_chars == 12
         assert processor._text_parent_chunk_target_chars == 40
+        chunks, summary, _ = processor._text_chunks(
+            _request(), "# Guide\n\nabcde\n\nfghij\n\nklmno", "text/markdown", "manifest_hash_1"
+        )
+        assert summary["tree"]["tree_indexed"] is True
+        assert [chunk.text for chunk in chunks] == ["abcde\n\nfghij", "klmno"]
+        assert all("parent_id" not in chunk.metadata for chunk in chunks)
     finally:
         runtime.close()

@@ -364,14 +364,16 @@ class IndexingChatRetrievalPort:
     Keeps the originating retrieval request alive between ``search`` and
     ``resolve_citations`` so every published citation re-passes indexing's
     visibility, lifecycle and ACL checks against the same generation reference
-    lease. The chat worker drives this port synchronously for one generation at
-    a time, so a single pending request is sufficient.
+    lease. Earlier drafts retain their request until final revalidation so a
+    budget-limited rewrite can still publish the previous answer.
     """
 
     def __init__(self, indexing_service: Any) -> None:
         self._indexing = indexing_service
         self._active_request: Any = None
         self._active_hits: dict[tuple[str, str], Any] | None = None
+        self._retained_citations: dict[tuple[str, str, str, str], tuple[Any, Any]] = {}
+        self._retained_requests: list[Any] = []
 
     def search(
         self,
@@ -389,8 +391,10 @@ class IndexingChatRetrievalPort:
     ) -> RetrievalOutcome:
         from .models import RetrievalHitOutcome
 
-        if self._active_request is not None:
+        if self._active_request is not None and self._active_request not in self._retained_requests:
             self._release_request(self._active_request)
+        self._active_request = None
+        self._active_hits = None
         profile = RetrievalProfile(
             profile_id=profile_id,
             version=profile_version,
@@ -400,14 +404,18 @@ class IndexingChatRetrievalPort:
             route_graph=route_graph,
         )
         request = self._indexing.open_retrieval_request()
-        result = request.search(
-            query,
-            principal=principal,
-            narrowing_scope=narrowing_scope,
-            profile=profile,
-            budget=budget,
-            recent_queries=recent_queries,
-        )
+        try:
+            result = request.search(
+                query,
+                principal=principal,
+                narrowing_scope=narrowing_scope,
+                profile=profile,
+                budget=budget,
+                recent_queries=recent_queries,
+            )
+        except Exception:
+            self._release_request(request)
+            raise
         self._active_request = request
         # 生成只消费检索装配后的命中（精排、分数下限、库配额、token 预算与父块
         # 组装）；精排前候选池（result.candidates）只供评测口径使用。
@@ -416,7 +424,20 @@ class IndexingChatRetrievalPort:
             self._release_request(request)
             self._active_request = None
             self._active_hits = None
-        self._active_hits = {(hit.chunk.document_id, hit.chunk.chunk_id): hit for hit in candidates}
+        # Tree routing reuses the triggering chunk identity while replacing its
+        # text with a generated answer. Keep a source hit for citation lookup;
+        # the generated tree hit remains the context supplied to the model.
+        source_hits: dict[tuple[str, str], Any] = {}
+        selected_keys = {(hit.chunk.document_id, hit.chunk.chunk_id) for hit in candidates}
+        for hit in result.candidate_hits:
+            key = (hit.chunk.document_id, hit.chunk.chunk_id)
+            if key in selected_keys:
+                source_hits.setdefault(key, hit)
+        for hit in candidates:
+            key = (hit.chunk.document_id, hit.chunk.chunk_id)
+            if hit.source != "tree" or key not in source_hits:
+                source_hits[key] = hit
+        self._active_hits = source_hits
         hits = tuple(
             RetrievalHitOutcome(
                 document_id=hit.chunk.document_id,
@@ -424,8 +445,10 @@ class IndexingChatRetrievalPort:
                 publication_id=hit.chunk.publication_id,
                 chunk_id=hit.chunk.chunk_id,
                 space_id=hit.chunk.space_id,
-                locator=dict(hit.chunk.locator),
-                snippet=hit.chunk.snippet,
+                locator=dict(
+                    source_hits[(hit.chunk.document_id, hit.chunk.chunk_id)].chunk.locator
+                ),
+                snippet=source_hits[(hit.chunk.document_id, hit.chunk.chunk_id)].chunk.snippet,
                 library=hit.source or "unknown",
                 rerank_score=hit.rerank_score,
                 context_text=hit.context_text or hit.chunk.text,
@@ -473,6 +496,12 @@ class IndexingChatRetrievalPort:
                     "snippet": citation["snippet"],
                 }
             )
+            self._retained_citations[self._citation_key(citation)] = (
+                request,
+                hit,
+            )
+            if request not in self._retained_requests:
+                self._retained_requests.append(request)
         # Retain the originating lease until publication revalidation.
         return tuple(citations)
 
@@ -488,22 +517,13 @@ class IndexingChatRetrievalPort:
         check and remains alive through this final call.
         """
 
-        if not citations:
-            if self._active_request is not None:
-                self._release_request(self._active_request)
-                self._active_request = None
-                self._active_hits = None
-            return ()
-        request = self._active_request
-        lookup = self._active_hits
-        if request is None or lookup is None:
-            return ()
         try:
             resolved: list[Mapping[str, Any]] = []
             for citation in citations:
-                hit = lookup.get((str(citation["document_id"]), str(citation["chunk_id"])))
-                if hit is None:
+                retained = self._retained_citations.get(self._citation_key(citation))
+                if retained is None:
                     continue
+                request, hit = retained
                 result = request.resolve_citation(hit, principal=principal)
                 if result.get("state") != "available":
                     continue
@@ -521,9 +541,27 @@ class IndexingChatRetrievalPort:
                 )
             return tuple(resolved)
         finally:
+            self.close()
+
+    def close(self) -> None:
+        requests = self._retained_requests
+        if self._active_request is not None and self._active_request not in requests:
+            requests.append(self._active_request)
+        self._active_request = None
+        self._active_hits = None
+        self._retained_citations.clear()
+        self._retained_requests = []
+        for request in requests:
             self._release_request(request)
-            self._active_request = None
-            self._active_hits = None
+
+    @staticmethod
+    def _citation_key(citation: Mapping[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            str(citation["document_id"]),
+            str(citation["document_version_id"]),
+            str(citation["publication_id"]),
+            str(citation["chunk_id"]),
+        )
 
     @staticmethod
     def _release_request(request: Any) -> None:

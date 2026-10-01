@@ -675,6 +675,7 @@ def build_runtime(
         image_ocr=image_ocr,
         text_chunk_max_chars=settings.index.text_chunk_max_chars,
         text_chunk_target_chars=settings.index.text_chunk_target_chars,
+        text_tree_chunk_target_chars=settings.index.text_tree_chunk_target_chars,
         text_child_chunk_max_chars=settings.index.text_child_chunk_max_chars,
         text_parent_chunk_target_chars=settings.index.text_parent_chunk_target_chars,
         xlsx_merged_cells_max=settings.index.xlsx_merged_cells_max,
@@ -699,7 +700,9 @@ def build_runtime(
     dense_writer = configured.get("indexing_dense_writer")
     sparse_provider = configured.get("indexing_sparse_provider")
     if dense_writer is None and settings.index.vector_provider != "memory":
-        dense_writer = build_dense_writer(settings, embedding, allow_create=allow_create)
+        dense_writer = build_dense_writer(
+            settings, embedding, allow_create=allow_create, chunk_repository=generation_repository
+        )
         configured.setdefault("indexing_dense_writer", dense_writer)
     if sparse_provider is None and settings.index.sparse_url:
         sparse_provider = build_configured_sparse_provider(settings, allow_create=allow_create)

@@ -28,11 +28,12 @@ EFFORT_WALL_LIMITS: dict[str, int] = {"quick": 20, "think": 60, "deep": 180}
 EFFORT_TOKEN_LIMITS: dict[str, int] = {"quick": 80_000, "think": 160_000, "deep": 320_000}
 EFFORT_CANDIDATE_DOCUMENT_LIMITS: dict[str, int] = {"quick": 5, "think": 7, "deep": 9}
 EFFORT_CANDIDATE_LIMITS: dict[str, int] = EFFORT_CANDIDATE_DOCUMENT_LIMITS
-# A retrieval tool observation carries the full context body of the top hits; the
-# allowance is the conservative estimate for that many default-size parent blocks
-# (2,560 chars) and gates whether one more tool step still leaves a final answer.
+# A retrieval tool observation carries the full context body of the top hits.  A
+# parent block may be much larger than the historical 2,560-character default;
+# reserve the retrieval context hard cap so a large observation cannot consume
+# the final answer's budget.
 TOOL_OBSERVATION_HITS = 5
-TOOL_OBSERVATION_TOKEN_ALLOWANCE = math.ceil(TOOL_OBSERVATION_HITS * 2_560 * 1.1)
+TOOL_OBSERVATION_TOKEN_ALLOWANCE = math.ceil(48_000 * 1.1) + 2_000
 
 RAG_OPERATION_KINDS = ("retrieval", "rewrite", "tree")
 BUDGET_REASONS = ("budget_exhausted", "cost_unavailable")

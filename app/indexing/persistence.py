@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
-from sqlalchemy import Engine, and_, delete, or_, select, update
+from sqlalchemy import Engine, and_, delete, or_, select, tuple_, update
 from sqlalchemy.engine import Connection
 
 from app.documents.schema import (
@@ -28,6 +28,7 @@ from .models import (
     GenerationComponentReaderLease,
     GenerationReferenceLease,
     GenerationStatus,
+    IndexChunk,
     IndexGenerationGcReceipt,
 )
 from .observability import (
@@ -979,6 +980,47 @@ class SqlAlchemyIndexingRepository:
                     metadata_json=dict(chunk.metadata),
                     indexable=chunk.indexable,
                 )
+            )
+
+    def load_chunks(
+        self,
+        identities: Sequence[tuple[str, str, str]],
+        *,
+        connection: Connection | None = None,
+    ) -> tuple[IndexChunk, ...]:
+        """Hydrate Milvus payload references from the durable SQL chunk source."""
+        if not identities:
+            return ()
+        with self._connection(connection) as conn:
+            identity_columns = tuple_(
+                index_chunks_table.c.generation_id,
+                index_chunks_table.c.publication_id,
+                index_chunks_table.c.id,
+            )
+            rows = conn.execute(
+                select(index_chunks_table).where(identity_columns.in_(identities))
+            ).mappings()
+            return tuple(
+                IndexChunk(
+                    chunk_id=str(row["id"]),
+                    generation_id=str(row["generation_id"]),
+                    publication_id=str(row["publication_id"]),
+                    document_id=str(row["document_id"]),
+                    document_version_id=str(row["document_version_id"]),
+                    space_id=str(row["space_id"]),
+                    text=str(row["text"]),
+                    embedding_text=str(row["embedding_text"]),
+                    sparse_text=(
+                        str(row["sparse_text"]) if row["sparse_text"] is not None else None
+                    ),
+                    locator=dict(row["locator_json"] or {}),
+                    snippet=(str(row["snippet"]) if row["snippet"] is not None else None),
+                    media_kind=str(row["media_kind"]),
+                    manifest_hash=str(row["manifest_hash"]),
+                    metadata=dict(row["metadata_json"] or {}),
+                    indexable=bool(row["indexable"]),
+                )
+                for row in rows
             )
 
     def set_component_state(

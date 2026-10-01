@@ -13,6 +13,7 @@ from app.usage.ledger import OwnershipSnapshot
 from .embedding import EmbeddingProvider, EmbeddingUsageContext, InMemoryEmbeddingProvider
 from .generation import GenerationManager
 from .graph import GraphComponentCoordinator
+from .milvus import MilvusIndexWriter
 from .models import NarrowingScope, RetrievalProfile, RetrievalResult
 from .prefix_cache import PrefixCacheManager
 from .processing import ContentProcessor, ProcessingOutput
@@ -299,6 +300,9 @@ class IndexingService:
             stage_resource_manifest=output.receipt.stage_resources,
             content_hash=output.receipt.input_manifest_hash,
         )
+        repository = getattr(self.generation, "_repository", None)
+        assert repository is not None
+        repository.record_published_chunks(request, output.chunks, connection=connection)
         self.dense_writer.publish_staged(
             request.attempt_id,
             request.publication_id,
@@ -306,6 +310,11 @@ class IndexingService:
             expected_generation_id=request.expected_generation_id,
             stage_resource_manifest=output.receipt.stage_resources,
             content_hash=output.receipt.input_manifest_hash,
+            **(
+                {"connection": connection}
+                if isinstance(self.dense_writer, MilvusIndexWriter)
+                else {}
+            ),
         )
         self.sparse_provider.publish_staged(
             request.attempt_id,
@@ -315,9 +324,6 @@ class IndexingService:
             stage_resource_manifest=output.receipt.stage_resources,
             content_hash=output.receipt.input_manifest_hash,
         )
-        repository = getattr(self.generation, "_repository", None)
-        assert repository is not None
-        repository.record_published_chunks(request, output.chunks, connection=connection)
 
     def _ensure_current_generation(
         self, request: IndexStagingRequest, *, connection: Any | None = None
@@ -510,6 +516,15 @@ class IndexingService:
                 else IndexProcessingReceipt.from_mapping(receipt)
             )
             typed.validate_against(request)
+            repository = getattr(self.generation, "_repository", None)
+            staged_chunks = self._staged_chunks.get(
+                (request.attempt_id, request.publication_id), ()
+            )
+            if repository is not None and connection is not None:
+                # Oversized Milvus payloads reference this exact source data.
+                # Keep it in the publication transaction, so validation failure
+                # rolls it back and staging alone never creates published facts.
+                repository.record_published_chunks(request, staged_chunks, connection=connection)
             dense = self.dense_writer.publish_staged(
                 request.attempt_id,
                 request.publication_id,
@@ -518,6 +533,11 @@ class IndexingService:
                 expected_generation_id=request.expected_generation_id,
                 stage_resource_manifest=typed.stage_resources,
                 content_hash=typed.input_manifest_hash,
+                **(
+                    {"connection": connection}
+                    if isinstance(self.dense_writer, MilvusIndexWriter)
+                    else {}
+                ),
             )
             sparse = self.sparse_provider.publish_staged(
                 request.attempt_id,
@@ -532,12 +552,6 @@ class IndexingService:
                 raise PlatformError(
                     "indexing_publish_failed", "Index components did not publish", {}, 409
                 )
-            repository = getattr(self.generation, "_repository", None)
-            staged_chunks = self._staged_chunks.get(
-                (request.attempt_id, request.publication_id), ()
-            )
-            if repository is not None and connection is not None:
-                repository.record_published_chunks(request, staged_chunks, connection=connection)
         except PlatformError:
             self._discard_providers(request, typed)
             raise

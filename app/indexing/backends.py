@@ -52,6 +52,7 @@ def build_dense_writer(
     embedding: EmbeddingProvider | None,
     *,
     allow_create: bool,
+    chunk_repository: Any | None = None,
 ) -> Any:
     if settings.index.vector_provider == "memory":
         if settings.profile == "production":
@@ -69,6 +70,7 @@ def build_dense_writer(
         embedding,
         collection_prefix=settings.index.vector_collection_prefix,
         allow_create_collection=allow_create,
+        chunk_repository=chunk_repository,
     )
 
 

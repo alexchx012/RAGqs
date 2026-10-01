@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.indexing.processing import ContentProcessor, _heading, _sections
 from tests.indexing.test_contextual_retrieval_prefix_cache import FakeProvider
 from tests.indexing.test_contracts import _request
 
 
 def _text_chunks(processor: ContentProcessor, text: str):
+    """Exercise the basic path explicitly, including documents with section signals."""
     chunks, _summary, _degradations = processor._text_chunks(
-        _request(), text, "text/markdown", "manifest_hash_1"
+        _request(), text, "text/markdown", "manifest_hash_1", structure_class="basic"
     )
     return chunks
 
@@ -73,6 +76,95 @@ def test_children_never_exceed_child_maximum_even_for_one_long_paragraph() -> No
     assert "".join(chunk.text for chunk in chunks) == "长" * 5000
 
 
+@pytest.mark.parametrize("paragraph_sizes", [(900, 900), (400, 400, 400, 400), (5000, 900, 900)])
+def test_child_target_above_maximum_still_keeps_each_child_under_maximum(
+    paragraph_sizes: tuple[int, ...],
+) -> None:
+    processor = ContentProcessor(
+        text_chunk_target_chars=2000,
+        text_child_chunk_max_chars=1600,
+    )
+    paragraphs = [chr(0x4E00 + index) * size for index, size in enumerate(paragraph_sizes)]
+    text = "\n\n".join(paragraphs)
+
+    chunks = _text_chunks(processor, text)
+
+    assert all(len(chunk.text) <= 1600 for chunk in chunks)
+    assert "".join(chunk.text.replace("\n\n", "") for chunk in chunks) == "".join(paragraphs)
+    if paragraph_sizes == (900, 900):
+        assert [len(chunk.text) for chunk in chunks] == [900, 900]
+
+
+@pytest.mark.parametrize(
+    "child_target,child_max,parent_target", [(640, 1600, 2560), (100, 200, 800)]
+)
+def test_tree_leaf_chunks_keep_flat_metadata_and_tree_packing(
+    child_target: int, child_max: int, parent_target: int
+) -> None:
+    processor = ContentProcessor(
+        text_chunk_target_chars=child_target,
+        text_chunk_max_chars=8000,
+        text_child_chunk_max_chars=child_max,
+        text_parent_chunk_target_chars=parent_target,
+    )
+    text = "# 章\n\n" + "\n\n".join(_paragraphs("段", 6, 500))
+
+    chunks, summary, _ = processor._text_chunks(
+        _request(), text, "text/markdown", "manifest_hash_1"
+    )
+
+    assert summary["tree"]["tree_indexed"] is True
+    assert all("parent_id" not in chunk.metadata for chunk in chunks)
+    assert all("parent_text" not in chunk.metadata for chunk in chunks)
+    assert [len(chunk.text) for chunk in chunks] == [1504, 1504]
+    assert all(chunk.metadata["section_path"] == "章" for chunk in chunks)
+    assert [chunk.metadata["cr_parent_group"] for chunk in chunks] == ["1:1", "1:2"]
+    assert all(chunk.snippet == chunk.text for chunk in chunks)
+    assert all("parent_paragraphs" not in chunk.locator for chunk in chunks)
+
+
+def test_tree_long_paragraph_uses_tree_maximum_and_keeps_full_snippet() -> None:
+    chunks, _, _ = ContentProcessor(text_child_chunk_max_chars=200)._text_chunks(
+        _request(), "# 章\n\n" + "长" * 16001, "text/markdown", "manifest_hash_1"
+    )
+
+    assert [len(chunk.text) for chunk in chunks] == [5334, 5334, 5333]
+    assert all(chunk.snippet == chunk.text for chunk in chunks)
+    assert "".join(chunk.text for chunk in chunks) == "长" * 16001
+
+
+@pytest.mark.parametrize("structure_class", ["basic", "tree", "partial"])
+def test_mineru_structure_class_controls_parent_child_path_before_packing(
+    structure_class: str,
+) -> None:
+    text = "# 第一章\n\n" + "\n\n".join(_paragraphs("甲", 6, 500))
+    text += "\n\n# 第二章\n\n" + "\n\n".join(_paragraphs("乙", 6, 500))
+    processor = ContentProcessor(
+        mineru=lambda _: {"text": text, "structure": {"class": structure_class}}
+    )
+
+    output = processor.process(
+        _request(),
+        b"pdf",
+        media_kind="application/pdf",
+        content_manifest_id="manifest_1",
+        content_manifest_hash="manifest_hash_1",
+    )
+
+    if structure_class == "basic":
+        assert [len(chunk.text) for chunk in output.chunks] == [500] * 12
+        assert all("parent_id" in chunk.metadata for chunk in output.chunks)
+        assert all(
+            not ("甲" in chunk.metadata["parent_text"] and "乙" in chunk.metadata["parent_text"])
+            for chunk in output.chunks
+        )
+        assert output.receipt.processing_summary["tree"]["tree_indexed"] is False
+    else:
+        assert [len(chunk.text) for chunk in output.chunks] == [1504] * 4
+        assert all("parent_id" not in chunk.metadata for chunk in output.chunks)
+        assert output.receipt.processing_summary["tree"]["tree_indexed"] is True
+
+
 def test_short_paragraphs_still_pack_toward_child_target() -> None:
     text = "\n\n".join(["短" * 250, "短" * 250, "短" * 250])
 
@@ -112,7 +204,7 @@ def test_single_child_parent_keeps_existing_locator_shape() -> None:
 
 def test_only_children_are_emitted_and_cr_runs_once_per_child() -> None:
     provider = FakeProvider()
-    text = "# 章\n\n" + "\n\n".join(_paragraphs("段", 6, 500))
+    text = "\n\n".join(_paragraphs("段", 6, 500))
 
     output = ContentProcessor(contextual_provider=provider).process(
         _request(),

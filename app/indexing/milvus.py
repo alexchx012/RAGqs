@@ -19,6 +19,7 @@ from .providers import StageResult, validate_stage_chunks, validate_stage_identi
 _MILVUS_METRIC = {"cosine": "COSINE", "l2": "L2", "ip": "IP"}
 # Server-side query page size; stage/publish reads loop until a short page.
 _QUERY_PAGE_SIZE = 16384
+_PAYLOAD_MAX_BYTES = 65535
 
 
 def _invalidates_collection_cache(method):
@@ -377,11 +378,13 @@ class MilvusIndexWriter:
         *,
         collection_prefix: str = "ragqs",
         allow_create_collection: bool = False,
+        chunk_repository: Any | None = None,
     ) -> None:
         self._client = client
         self._embedding = embedding
         self._prefix = collection_prefix
         self._allow_create = allow_create_collection
+        self._chunk_repository = chunk_repository
         self._collection_ready = False
         self.collection_name = milvus_collection_name(
             collection_prefix, embedding.config.revision, embedding.config.dimension
@@ -583,6 +586,7 @@ class MilvusIndexWriter:
         expected_generation_id: str | None = None,
         stage_resource_manifest: Sequence[Mapping[str, Any]] | None = None,
         content_hash: str | None = None,
+        connection: Any | None = None,
     ) -> StageResult:
         self.ensure_collection()
         staged = self._load_rows(attempt_id, publication_id, "staged")
@@ -607,7 +611,9 @@ class MilvusIndexWriter:
             stage_resource_manifest=stage_resource_manifest,
             content_hash=content_hash,
         )
-        chunks = tuple(_chunk_from_row(row) for row in staged)
+        chunks = tuple(
+            _chunk_from_row(row) for row in self._hydrate_rows(staged, connection=connection)
+        )
         if validator is not None and not validator(chunks):
             raise PlatformError(
                 "index_release_blocked", "documents validation rejected publish", {}, 409
@@ -725,13 +731,55 @@ class MilvusIndexWriter:
             metric=self._embedding.config.metric,
             output_fields=_OUTPUT_FIELDS,
         )
-        items = tuple(_chunk_from_row(row) for row, _score in hits[:top_k])
+        hydrated_hits = self._hydrate_rows(
+            tuple(row for row, _score in hits[:top_k]), connection=None
+        )
+        items = tuple(_chunk_from_row(row) for row in hydrated_hits)
         next_cursor = _cursor_encode(offset + len(items)) if len(hits) > top_k else None
         scored = tuple(
             {**chunk.to_mapping(), "score": score, "publication_id": chunk.publication_id}
             for chunk, (_row, score) in zip(items, hits[:top_k], strict=True)
         )
         return ProviderSearchPage(scored, next_cursor)
+
+    def _hydrate_rows(
+        self, rows: Sequence[Mapping[str, Any]], *, connection: Any | None
+    ) -> tuple[Mapping[str, Any], ...]:
+        references = [row for row in rows if _is_payload_reference(row.get("payload"))]
+        if not references:
+            return tuple(rows)
+        if self._chunk_repository is None:
+            raise PlatformError(
+                "retrieval_degradation",
+                "Milvus chunk payload reference cannot be resolved",
+                {},
+                503,
+            )
+        identities = tuple(
+            (str(row["generation_id"]), str(row["publication_id"]), str(row["chunk_id"]))
+            for row in references
+        )
+        hydrated = self._chunk_repository.load_chunks(identities, connection=connection)
+        by_identity = {
+            (chunk.generation_id, chunk.publication_id, chunk.chunk_id): chunk for chunk in hydrated
+        }
+        output: list[Mapping[str, Any]] = []
+        for row in rows:
+            identity = (
+                str(row["generation_id"]),
+                str(row["publication_id"]),
+                str(row["chunk_id"]),
+            )
+            chunk = by_identity.get(identity) if _is_payload_reference(row.get("payload")) else None
+            if chunk is None and _is_payload_reference(row.get("payload")):
+                raise PlatformError(
+                    "retrieval_degradation",
+                    "Milvus chunk payload reference is missing from SQL",
+                    {"chunk_id": identity[2]},
+                    503,
+                )
+            output.append({**dict(row), "payload": chunk.to_mapping()} if chunk else row)
+        return tuple(output)
 
     def _load_rows(
         self, attempt_id: str, publication_id: str, status: str
@@ -770,6 +818,18 @@ def _row(
         if status == "staged"
         else f"published:{chunk.generation_id}:{chunk.publication_id}:{chunk.chunk_id}"
     )
+    payload = json.dumps(chunk.to_mapping(), ensure_ascii=False, separators=(",", ":"))
+    if len(payload.encode("utf-8")) > _PAYLOAD_MAX_BYTES:
+        payload = json.dumps(
+            {
+                "payload_ref": "index_chunks",
+                "generation_id": chunk.generation_id,
+                "publication_id": chunk.publication_id,
+                "chunk_id": chunk.chunk_id,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
     return {
         "id": identifier,
         "vector": list(vector),
@@ -783,7 +843,7 @@ def _row(
         "status": status,
         "content_hash": content_hash,
         "fencing_token": str(fencing_token),
-        "payload": json.dumps(chunk.to_mapping(), ensure_ascii=True, separators=(",", ":")),
+        "payload": payload,
     }
 
 
@@ -798,13 +858,12 @@ def _result_from_rows(
     rows: Sequence[Mapping[str, Any]],
 ) -> StageResult:
     first = rows[0]
-    chunks = tuple(_chunk_from_row(row) for row in rows)
     return StageResult(
         state,
         attempt_id,
         publication_id,
-        str(first.get("generation_id") or chunks[0].generation_id),
-        tuple(f"{attempt_id}:{publication_id}:{chunk.chunk_id}" for chunk in chunks),
+        str(first["generation_id"]),
+        tuple(f"{attempt_id}:{publication_id}:{row['chunk_id']}" for row in rows),
         str(first.get("content_hash") or ""),
         int(first.get("fencing_token") or 1),
     )
@@ -813,25 +872,34 @@ def _result_from_rows(
 def _chunk_from_row(row: Mapping[str, Any]) -> IndexChunk:
     payload = row.get("payload")
     if isinstance(payload, str) and payload:
-        return IndexChunk.from_mapping(json.loads(payload))
+        decoded = json.loads(payload)
+        if _is_payload_reference(decoded):
+            raise PlatformError(
+                "retrieval_degradation",
+                "Milvus chunk payload reference requires SQL hydration",
+                {},
+                503,
+            )
+        return IndexChunk.from_mapping(decoded)
     if isinstance(payload, Mapping):
+        if _is_payload_reference(payload):
+            raise PlatformError(
+                "retrieval_degradation",
+                "Milvus chunk payload reference requires SQL hydration",
+                {},
+                503,
+            )
         return IndexChunk.from_mapping(payload)
-    return IndexChunk.from_mapping(
-        {
-            "chunk_id": row["chunk_id"],
-            "generation_id": row["generation_id"],
-            "publication_id": row["publication_id"],
-            "document_id": row["document_id"],
-            "document_version_id": row["document_version_id"],
-            "space_id": row["space_id"],
-            "text": row.get("text") or row["chunk_id"],
-            "embedding_text": row.get("embedding_text") or row.get("text") or row["chunk_id"],
-            "locator": {},
-            "snippet": None,
-            "media_kind": "text",
-            "manifest_hash": row.get("manifest_hash") or "unknown",
-        }
-    )
+    raise PlatformError("retrieval_degradation", "Milvus chunk payload is missing", {}, 503)
+
+
+def _is_payload_reference(payload: Any) -> bool:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return False
+    return isinstance(payload, Mapping) and payload.get("payload_ref") == "index_chunks"
 
 
 def _collection_dimension(description: Mapping[str, Any]) -> int | None:

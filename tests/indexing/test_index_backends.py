@@ -706,4 +706,9 @@ def test_real_milvus_stage_publish_search() -> None:
     assert all(float(item["score"]) >= 0.0 for item in page.items)
     assert writer.delete_document("document_1", generation_id="generation_1") >= 1
     emptied = writer.search("中文文本", ["space_1"], 5, None, generation_id="generation_1")
+    deadline = time.monotonic() + 10
+    while emptied.items and time.monotonic() < deadline:
+        # Milvus uses bounded consistency; deletion visibility may lag the ack.
+        time.sleep(0.2)
+        emptied = writer.search("中文文本", ["space_1"], 5, None, generation_id="generation_1")
     assert emptied.items == ()

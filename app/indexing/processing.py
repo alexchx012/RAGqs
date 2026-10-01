@@ -472,7 +472,7 @@ def _pack_section_paragraphs(
                 packed.append((paragraph[offset : offset + size], number))
                 offset += size
             continue
-        if buffer and len("\n\n".join([*buffer, paragraph])) > target:
+        if buffer and len("\n\n".join([*buffer, paragraph])) > min(target, maximum):
             flush()
         buffer.append(paragraph)
         buffer_paragraphs.append(number)
@@ -897,6 +897,7 @@ class ContentProcessor:
         image_ocr: Callable[[bytes, Mapping[str, Any]], str] | None = None,
         text_chunk_max_chars: int = 8_000,
         text_chunk_target_chars: int = 640,
+        text_tree_chunk_target_chars: int = 2_000,
         text_child_chunk_max_chars: int = 1_600,
         text_parent_chunk_target_chars: int = 2_560,
         xlsx_merged_cells_max: int = 10_000,
@@ -917,8 +918,9 @@ class ContentProcessor:
         self._image_ocr = image_ocr
         self._text_chunk_max_chars = text_chunk_max_chars
         self._text_chunk_target_chars = text_chunk_target_chars
-        # 文本路径子块上限与父块装箱目标；text_chunk_max_chars 仍约束 CSV 行组
-        # 与代码符号切片，不随父子切块收窄。
+        self._text_tree_chunk_target_chars = text_tree_chunk_target_chars
+        # basic 子块与父块尺寸独立于 tree 叶子；text_chunk_max_chars 仍约束
+        # tree、CSV 行组与代码符号切片，不随父子切块收窄。
         self._text_child_chunk_max_chars = text_child_chunk_max_chars
         self._text_parent_chunk_target_chars = text_parent_chunk_target_chars
         self._xlsx_merged_cells_max = xlsx_merged_cells_max
@@ -1080,8 +1082,16 @@ class ContentProcessor:
             if not parsed_text.strip():
                 raise PlatformError("processing_failed", "MinerU returned no text", {}, 422)
             document_text = parsed_text
+            structure = parsed.get("structure")
+            structure_class = (
+                str(structure.get("class", "tree")) if isinstance(structure, Mapping) else "tree"
+            )
             chunks, summary, degradations = self._text_chunks(
-                request, parsed_text, media_kind, content_manifest_hash
+                request,
+                parsed_text,
+                media_kind,
+                content_manifest_hash,
+                structure_class=structure_class,
             )
             summary = dict(summary)
             page_count = int(parsed.get("page_count", page_count or 0))
@@ -1142,10 +1152,6 @@ class ContentProcessor:
                     ocr["threshold"] = self._ocr_confidence_threshold
                     ocr["threshold_version"] = f"ocr_threshold:{self._ocr_confidence_threshold}"
             summary["ocr"] = ocr
-            structure = parsed.get("structure")
-            structure_class = (
-                str(structure.get("class", "tree")) if isinstance(structure, Mapping) else "tree"
-            )
             if isinstance(structure, Mapping) and structure.get("signal_low_confidence"):
                 signal_values = [
                     float(value)
@@ -1774,22 +1780,31 @@ class ContentProcessor:
         text: str,
         media_kind: str,
         manifest_hash: str,
+        *,
+        structure_class: str | None = None,
     ) -> tuple[list[IndexChunk], Mapping[str, Any], tuple[Mapping[str, Any], ...]]:
         sections = _sections(text)
-        tree_indexed = bool(sections and any(path for path, _ in sections))
+        tree_indexed = structure_class != "basic" and any(path for path, _ in sections)
+        parent_child = structure_class == "basic" or (structure_class is None and not tree_indexed)
         if not sections and text.strip():
             sections = [("", text.strip())]
         chunks: list[IndexChunk] = []
         parent_count = 0
-        for path, section in sections:
+        for section_index, (path, section) in enumerate(sections, start=1):
             # 段落锚点（B9-locator）与整段装箱：相邻段落合并到装箱目标才落块，
             # 表格段保持原子；超长段落均衡切分，续块共享段首段号。
             # 单 chunk section 不加锚（既有 locator 形状不变）。
             section_paragraphs = [p for p in re.split(r"\n\s*\n", section) if p.strip()]
             packed = _pack_section_paragraphs(
                 section_paragraphs,
-                target=self._text_chunk_target_chars,
-                maximum=self._text_child_chunk_max_chars,
+                target=(
+                    self._text_chunk_target_chars
+                    if parent_child
+                    else self._text_tree_chunk_target_chars
+                ),
+                maximum=(
+                    self._text_child_chunk_max_chars if parent_child else self._text_chunk_max_chars
+                ),
             )
             # 子块末段号：同段续块共享段号，否则止于下一子块首段之前。
             paragraph_ends = [
@@ -1804,17 +1819,23 @@ class ContentProcessor:
             # 父块正文内联进子块 metadata，检索期不需要回查；父块不做 CR、不产出
             # 嵌入文本（《后端设计》§5）。cr_parent_group 取父块身份，使 CR 前缀
             # 超限时按父块组降级。
-            for parent_text, first, last in _pack_child_parent(
-                packed, target=self._text_parent_chunk_target_chars
-            ):
-                parent_count += 1
+            groups = (
+                _pack_child_parent(packed, target=self._text_parent_chunk_target_chars)
+                if parent_child
+                else [(body, index, index) for index, (body, _) in enumerate(packed, start=1)]
+            )
+            for block_index, (parent_text, first, last) in enumerate(groups, start=1):
+                if parent_child:
+                    parent_count += 1
                 parent_id = f"parent_{parent_count}"
                 parent_range = [packed[first - 1][1], paragraph_ends[last - 1]]
                 for body, paragraph_number in packed[first - 1 : last]:
                     index = len(chunks) + 1
                     # section_path 是同父共享结构信息：只进稀疏字段与 metadata，
                     # 不喂给嵌入文本的压缩器。
-                    compressed = self._compressor.compress(body, context={})
+                    compressed = self._compressor.compress(
+                        body, context={} if parent_child else {"section_path": path}
+                    )
                     locator: dict[str, Any] = {"section_path": path} if path else {}
                     if len(packed) > 1:
                         locator["paragraph"] = paragraph_number
@@ -1822,11 +1843,13 @@ class ContentProcessor:
                         locator["parent_paragraphs"] = parent_range
                     metadata: dict[str, Any] = {
                         "section_path": path,
-                        "parent_id": parent_id,
-                        "parent_text": parent_text,
-                        "cr_parent_group": parent_id,
+                        "cr_parent_group": (
+                            parent_id if parent_child else f"{section_index}:{block_index}"
+                        ),
                         "cr_unit": "chunk",
                     }
+                    if parent_child:
+                        metadata.update(parent_id=parent_id, parent_text=parent_text)
                     reverse_links = parse_reverse_links(body)
                     if reverse_links:
                         metadata["reverse_links"] = [dict(link) for link in reverse_links]
@@ -1842,8 +1865,7 @@ class ContentProcessor:
                             embedding_text=compressed,
                             sparse_text=(f"{path}\n{body}" if path else body),
                             locator=locator,
-                            # 子块已受 child 上限约束，snippet 取完整子块正文，
-                            # 不再做固定字符数截断（问题 6）。
+                            # basic 子块与 tree 叶子均保留完整原文引用。
                             snippet=body,
                             media_kind=media_kind,
                             manifest_hash=manifest_hash,

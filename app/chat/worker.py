@@ -844,6 +844,14 @@ class ChatGenerationWorker:
                 stage="failed",
                 details={"code": error.code},
             )
+        finally:
+            # Indexing retrieval ports may retain source requests across a
+            # rewrite so old-draft citations can be revalidated. Release every
+            # retained request when this generation ends, including failures
+            # that never reach publication revalidation.
+            close = getattr(self._retrieval, "close", None)
+            if callable(close):
+                close()
 
     def _claim_execution(self) -> tuple[str, str] | None:
         with self._engine.begin() as connection:
@@ -1560,8 +1568,8 @@ class ChatGenerationWorker:
                 )
                 self._complete_deferred_provider_calls_public(candidates)
                 break
-            # The current draft is discarded before the rewritten query is
-            # retrieved; settle its provider calls independently of publish.
+            # Settle this draft's usage, but keep its content and citations until
+            # a replacement answer fits the actual newly retrieved context.
             self._complete_deferred_provider_calls_public(candidates)
             rewrite_reservation_id = None
             if self._budget_meter is not None:
@@ -1615,6 +1623,27 @@ class ChatGenerationWorker:
                 hits = tuple(hit for hit in hits if (hit.document_id, hit.chunk_id) in visible_ids)
                 if not hits:
                     citations = []
+            next_answer_tokens = conservative_chat_token_estimate(
+                effective_query,
+                (
+                    *(_context_text(hit) for hit in hits),
+                    *(str(message.get("content") or "") for message in conversation_history),
+                ),
+            )
+            notice = rag_budget_meter.gate(
+                "chat_generation", estimated_tokens=next_answer_tokens, now=self._now()
+            )
+            if notice is not None:
+                self._emit_notice(
+                    generation_id=generation_id,
+                    execution_id=execution_id,
+                    fencing_token=fencing_token,
+                    control_version=control_version,
+                    kind="retrieval_degraded",
+                    detail=dict(notice["detail"]),
+                    generation=generation,
+                )
+                break
             if not self._persist_checkpoint(
                 generation_id=generation_id,
                 execution_id=execution_id,
@@ -2266,17 +2295,67 @@ class ChatGenerationWorker:
                 tool_turns: list[dict[str, Any]] = []
                 for call in calls:
                     name = str(call.get("name") or "")
-                    observation = self._execute_tool(
-                        name=name,
-                        arguments=str(call.get("arguments") or ""),
-                        generation=generation,
-                        execution_id=execution_id,
-                        fencing_token=fencing_token,
-                        control_version=control_version,
-                        rag_budget_meter=logical_budget or retrieval_budget,
-                        step_sequence=step,
-                        profile_version=tool_profile_version,
+                    final_request = replace(
+                        request,
+                        tools=(),
+                        followup_messages=tuple([*followup_messages, assistant_turn, *tool_turns]),
                     )
+                    observation = json.dumps(
+                        {"documents": [], "degradations": [{"code": "budget_exhausted"}]}
+                    )
+                    notice = (
+                        logical_budget.gate(
+                            "chat_generation",
+                            estimated_tokens=self._estimated_provider_tokens(final_request)
+                            + TOOL_OBSERVATION_TOKEN_ALLOWANCE,
+                            now=self._now(),
+                        )
+                        if logical_budget is not None
+                        else None
+                    )
+                    if notice is None:
+                        observation = self._execute_tool(
+                            name=name,
+                            arguments=str(call.get("arguments") or ""),
+                            generation=generation,
+                            execution_id=execution_id,
+                            fencing_token=fencing_token,
+                            control_version=control_version,
+                            rag_budget_meter=logical_budget or retrieval_budget,
+                            step_sequence=step,
+                            profile_version=tool_profile_version,
+                        )
+                        if logical_budget is not None:
+                            observed_request = replace(
+                                final_request,
+                                followup_messages=(
+                                    *final_request.followup_messages,
+                                    {"role": "tool", "content": observation},
+                                ),
+                            )
+                            notice = logical_budget.gate(
+                                "chat_generation",
+                                estimated_tokens=self._estimated_provider_tokens(observed_request),
+                                now=self._now(),
+                            )
+                    if notice is not None:
+                        # Each call in a multi-tool response needs its own
+                        # observation allowance; stop before adding another
+                        # full retrieval payload and give the model a result
+                        # for every requested call so it can answer directly.
+                        tools = ()
+                        observation = json.dumps(
+                            {"documents": [], "degradations": [{"code": "budget_exhausted"}]}
+                        )
+                        self._emit_notice(
+                            generation_id=str(generation["id"]),
+                            execution_id=execution_id,
+                            fencing_token=fencing_token,
+                            control_version=control_version,
+                            kind="retrieval_degraded",
+                            detail=dict(notice["detail"]),
+                            generation=generation,
+                        )
                     observations.append(
                         {
                             "tool": name,
@@ -2395,7 +2474,14 @@ class ChatGenerationWorker:
         if budget is None:
             return True
         this_call = self._estimated_provider_tokens(request)
-        return _remaining_tokens(budget) >= 2 * this_call + TOOL_OBSERVATION_TOKEN_ALLOWANCE
+        return (
+            budget.gate(
+                "chat_generation",
+                estimated_tokens=2 * this_call + TOOL_OBSERVATION_TOKEN_ALLOWANCE,
+                now=self._now(),
+            )
+            is None
+        )
 
     def _estimated_provider_tokens(self, request: ChatProviderRequest) -> int:
         # 估算对象与实际送入模型的内容一致：上下文正文（与 prompt 组装同一取值

@@ -1194,7 +1194,6 @@ class RetrievalService:
                                 tree_chunk = replace(
                                     trigger.chunk,
                                     text=text,
-                                    snippet=text[:200],
                                 )
                                 if self._visible(
                                     tree_chunk,
